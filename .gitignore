@@ -1,0 +1,11 @@
+# build artifacts & signing key
+build/
+*.apk
+*.keystore
+*.dex
+
+# large redownloadable build tool (fetch per README: r8/D8 from Google Maven)
+libs/*.jar
+
+# os cruft
+.DS_Store

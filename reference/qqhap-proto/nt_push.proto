@@ -1,0 +1,83 @@
+option optimize_for = LITE_RUNTIME;
+package com.tencent.push.pb;
+option java_outer_classname = "OnlinePushField";
+
+message SetTokenReq{
+  required uint64 uin = 170001;  // 必填
+  repeated int32 voip_token = 170002;
+  repeated int32 token_id = 170003;  // 必填
+  optional bytes new_token = 170004;
+  optional bytes new_voip_token = 170005;
+  repeated int32 voip_flag = 170006;
+  optional int32 photo_push = 170007;
+  optional int32 scenes = 170008;
+  optional int32 push_msg = 170009;
+  optional int32 push_qzone = 170010;
+  optional string push_sound = 170011;
+  optional string empty_sound = 170012;
+  optional string video_sound = 170013;
+  optional int32 enter_version = 170014;
+  optional uint32 group_pro_switch = 170015;
+  optional string dev_type = 170016;
+  optional string os_version = 170017;
+  optional int32 notify_switch = 170018;
+  optional int32 bind_uin_notify_switch = 170019;
+};
+
+message ForegroundReq{
+  required uint64 uin = 170101;  // 必填
+  optional uint32 received_voip_msg_count = 170102;
+};
+
+
+message BackgroundReq {
+  required uint64 uin = 170201;   // 必填
+  optional int64 c2c_unread_msg_count = 170202;
+  optional int64 grp_unread = 170203;
+  optional int64 dis_unread = 170204;
+  repeated uint32 dis_session_list = 170205;
+  repeated BindUinUnreadItem bind_uin_unread_item_list = 170206;
+  repeated SpecialMessageUnRead special_message_unread_list = 170207;
+  optional uint32 video_flag = 170208;
+  optional uint32 verify_unread = 170209;
+  optional uint32 recommend_unread = 170210;
+  optional uint32 contacts_unread = 170211;
+  repeated PublicAccountFolderInfo public_account_folder_info_list = 170212;
+  optional uint32 document_unread = 170213;
+  optional uint32 public_account_switch = 170214;
+  optional uint32 notify_switch = 170215;
+  repeated CustomUnreadInfo custom_unread_list = 170216;
+  optional uint32 bind_uin_notify_switch = 170217;
+  optional uint32 bind_uin_unread_status = 170218;
+  optional uint32 group_pro_unread = 170219;
+  optional uint32 group_pro_switch = 170220;
+  optional int64 group_pro_notify_box_unread = 170221;
+  optional int64 group_pro_subscribed_unread = 170222;
+  optional int64 group_guild_unread = 170223;
+};
+
+message BindUinUnreadItem {
+  optional int64 bind_uin_unread = 170301;
+  optional int64 bind_uin = 170302;
+  optional bytes cookie = 170303;
+};
+
+message SpecialMessageUnRead {
+  optional int32 bind_uin_unread = 170401;
+  optional int32 unread_number = 170402;
+};
+
+
+message PublicAccountFolderInfo {
+  optional uint32 folder_type = 170501;
+  optional uint32 folder_unread = 170502;
+  optional uint32 folder_status = 170503;
+  optional int64 dw_time_stamp = 170504;
+};
+
+message CustomUnreadInfo {
+  optional uint32 type = 170601;
+  optional int64 key = 170602;
+  optional uint32 unread = 170603;
+  optional uint32 status = 170604;
+};

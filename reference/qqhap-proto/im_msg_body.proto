@@ -1,0 +1,911 @@
+package tencent.im.msg;
+
+//////////////////////////////////////////////
+/// 更新 2013-04-23 v1.4
+//////////////////////////////////////////////
+option optimize_for = LITE_RUNTIME;
+
+option java_package = "tencent.im.msg";
+option java_outer_classname = "im_msg_body";
+
+message MsgBody
+{
+    optional RichText rich_text = 1; //可读消息
+    optional bytes msg_content = 2; // 透传的消息体
+    optional bytes msg_encrypt_content = 3; // 加密的消息体
+}
+
+message RichText //消息的正文描述，由消息的字体相关属性attr和消息的内容元素elem组成
+{
+    optional Attr attr = 1;                    //消息的字体，颜色，大小等相关属性
+    repeated Elem elems = 2;                   //消息的种类，包括文本消息，系统表情消息
+    optional NotOnlineFile not_online_file = 3;//离线文件
+    optional Ptt ptt = 4;                      //ptt
+    optional TmpPtt tmp_ptt = 5;               //临时会话 PTT
+    optional Trans211TmpMsg trans_211_tmp_msg = 6; //临时会话211透传协议，tmp_ptt 序列化后也可以使用该字段
+}
+
+message Trans211TmpMsg
+{
+    optional bytes bytes_msg_body = 1; // 211 的body
+    optional uint32 uint32_c2c_cmd = 2; // 用于区分透传的消息类型，比如ptt 为6，传文件为 4
+}
+
+message Attr
+{
+    optional sint32 code_page = 1 [default = -1];
+    optional uint32 time = 2 [default = 1];
+    optional uint32 random = 3; //随机数，用来消息的去重判断
+    optional uint32 color = 4;
+    optional uint32 size = 5 [default = 10];
+    optional uint32 effect = 6 [default = 7];
+    optional uint32 char_set = 7 [default = 0x4e];
+    optional uint32 pitch_and_family = 8 [default = 0x5a];
+    optional string font_name = 9 [default = "Times New Roman"];
+    optional bytes reserve_data = 10;
+}
+
+//消息元素，不一定完全对应hummer ELEM
+//注意：一个Elem里面只有一个结构体数据
+message Elem
+{
+    optional Text text = 1;                         //文本消息(ELEMTYPE=1)
+    optional Face face = 2;                         //系统表情消息(ELEMTYPE=2)
+    optional OnlineImage online_image = 3;          //在线图片(ELEMTYPE=5)
+    optional NotOnlineImage not_online_image = 4;   //离线图片(ELEMTYPE=6)
+    optional TransElem trans_elem_info = 5;         //透传 elem
+    optional MarketFace market_face = 6;            //QQ商城表情(ELEMTYPE=12)
+    optional ElemFlags elem_flags = 7;              //FLAGS，控制用(ELEMTYPE=8), 2015-7-21: 后续新增flag放到 general_flags
+    optional CustomFace custom_face = 8;            //图片，采用自定义表情传输逻辑(ELEMTYPE=3)
+    optional ElemFlags2 elem_flags2 = 9;            //业务数据(ELEMTYPE=14), 2015-7-21: 后续新增flag放到 general_flags 
+    optional FunFace fun_face = 10;                 //趣味表情(ELEMTYPE=19)
+    optional SecretFileMsg secret_file = 11;        //私密照片（ELEMTYPE=23
+    optional RichMsg rich_msg = 12;                 //结构化消息(ELEMTYPE=20)
+    optional GroupFile group_file = 13;             //讨论组传文件(ELEMTYPE=21)
+    optional PubGroup pub_group = 14;               //群公开(ELEMTYPE=15)
+    optional MarketTrans market_trans = 15;         //营销QQ透传(ELEMTYPE=22)
+    optional ExtraInfo extra_info = 16;             //消息附属信息(ELEMTYPE=18)
+    optional ShakeWindow shake_window = 17;         //抖一抖
+    optional PubAccount pub_account = 18;           //公共帐号(ELEMTYPE=16)
+    optional VideoFile video_file = 19;             //视频文件信息
+    optional TipsInfo tips_info = 20;               //tips提示信息
+    optional AnonymousGroupMsg anon_group_msg = 21; //匿名群消息
+    optional QQLiveOld qq_live_old = 22;            //老的QQLive消息
+    optional LifeOnlineAccount life_online = 23;    //生活服务
+    optional QQWalletMsg qqwallet_msg = 24;         //QQ钱包消息
+    optional CrmElem crm_elem = 25;                 //CRM自定义elem
+    optional ConferenceTipsInfo conference_tips_info = 26; //会议提示消息
+    optional RedBagInfo redbag_info = 27;           //红包消息相关信息
+    optional LowVersionTips low_version_tips = 28;  //PCQQ通用升级提醒
+    optional bytes bankcode_ctrl_info = 29;         //银行卡消息控制信息
+    optional NearByMessageType near_by_msg = 30; //附近的人表白消息
+    optional CustomElem custom_elem = 31;           //用户自定义数据, sdk
+    optional LocationInfo  location_info = 32;      //地理信息, sdk
+    optional PubAccInfo pub_acc_info = 33;          //公众账号自定义信息
+    optional SmallEmoji small_emoji = 34;           //面板小表情(区别于系统表情与小黄脸)
+    optional FSJMessageElem fsj_msg_elem = 35;      //泛社交消息相关Elem
+    optional ArkAppElem ark_app = 36;               //轻App应用，即aio里面嵌入轻量型app
+	optional GeneralFlags general_flags = 37;       //2015-7-21, 新增flag放到这里。对hummer来说，通过"万能ELEM(25)"包含该数据
+	optional CustomFace hc_flash_pic = 38;          //热聊闪照，为低版本兼容，独立开来
+	optional DeliverGiftMsg deliver_gift_msg = 39;  //justinytang, 群内送礼物消息，目前只有送花，为低版本兼容，新版本展示可定制化小灰条内容,使用该message请先联系justinytang
+	optional BitAppMsg bitapp_msg = 40; //轻app应用，即aio里面嵌入轻量型app，基于react
+    optional OpenQQData open_qq_data = 41;
+    optional ApolloActMsg  apollo_msg = 42;
+    optional GroupPubAccountInfo group_pub_acc_info = 43;
+    optional BlessingMessage bless_msg = 44;
+    optional SourceMsg src_msg = 45;
+	optional LolaMsg lola_msg = 46;					//劳拉消息系统
+	optional GroupBusinessMsg group_business_msg = 47;   ////群运营号消息(明星入群)
+	optional WorkflowNotifyMsg msg_workflow_notify = 48; //审批等业务通用C2C临时会话通知消息内容
+	optional PatsElem pat_elem = 49; //拍一拍
+    optional GroupPostElem group_post_elem = 50; //群话题透传消息
+	optional LightAppElem light_app = 51; //轻App应用
+	optional EIMInfo eim_info = 52; //EIM相关信息
+	optional CommonElem common_elem = 53; //扩展的通用的Elem, 彻底解决im_msg_body.proto文件频繁修改的问题
+}
+
+message CommonElem
+{
+    required uint32 uint32_service_type = 1;  //业务类型，统一管理, 参见hummer_commelem.proto的定义
+    optional bytes bytes_pb_elem = 2;         //不同业务类型对应的pb结构序列化的字符串, 参见hummer_commelem.proto的定义
+    optional uint32 uint32_business_type = 3; //业务子类型【目前取值限定在1到127，不能超出这个范围】，方便在同一个service_type下区分子类业务 ,业务可以把内部的分类填进去。这样消息后台可以基于 service_type 和 business_type 做处理。                                              
+}
+
+
+message GroupBusinessMsg
+{
+    optional uint32 uint32_flags = 1;         //群运营号消息 flag = 1,1:群运营号消息 2:他人发出的消息 3：自己发出的消息
+    optional bytes bytes_head_url = 2;        //头像url
+    optional bytes bytes_head_clk_url = 3;    //头像点击后的跳转url
+    optional bytes bytes_nick = 4;            //昵称
+    optional bytes bytes_nick_color = 5;      //昵称颜色#FFFFFF
+    optional bytes bytes_rank = 6;            //头衔名称
+    optional bytes bytes_rank_color = 7;      //头衔文字颜色
+    optional bytes bytes_rank_bgcolor = 8;    //头衔背景颜色
+}
+
+message LolaMsg
+{
+    optional bytes  bytes_msg_resid = 1; //长消息resid
+    optional bytes  bytes_encode_content = 2; //用于后台
+    optional bytes  bytes_long_msg_url = 3; 
+    optional bytes  bytes_download_key = 4; 
+}
+
+message GroupPubAccountInfo 
+{
+    optional uint64 uint64_pub_account = 1;
+}
+
+message ApolloActMsg
+{
+    optional uint32 uint32_action_id = 1;                   // 动作id
+    optional bytes bytes_action_name = 2;                   // 动作名称也用来转义动画
+    optional bytes bytes_action_text = 3;                   // 动作头顶的文字（C2C会话是文本，群中是好友昵称）
+    optional uint32 uint32_flag = 4;                        // 时间戳是否拉取标识符[0 bit:发送方是否拉取时间戳; 1 bit:接收方是否拉取时间戳]
+    optional uint32 uint32_peer_uin = 5;                    // 接收方UIN（好友或者群成员）
+    optional uint32 uint32_sender_ts = 6;                   // 发送者个性形象数据更新时间戳
+    optional uint32 uint32_peer_ts = 7;                     // 接受者个性形象数据更新时间戳
+    optional int32 int32_sender_status = 8;                 // 发送者阿波罗开通状态
+    optional int32 int32_peer_status = 9;                   // 接收者阿波罗开通状态
+    optional uint32 diytext_id = 10;                        // diy文本id
+    optional bytes diytext_content = 11;                    // diy文本内容
+    optional bytes input_text = 12;                         // 输入aio文本
+	optional bytes bytes_pb_reserve=13;						// 厘米秀动作消息扩展的pb结构，参见apollo_msg_auth.proto
+}
+
+message Text
+{
+    optional bytes str = 1;   //文本内容
+    optional string link = 2; //超链接, 这个客户端出于安全考虑已经废弃了，请以文本方式传链接
+    optional bytes attr_6_buf = 3; //Flag，用于fixbug(ATTR=6)
+    optional bytes attr_7_buf = 4; //表情商城兼容文本不分片标记(ATTR=7)
+    optional bytes buf = 11;  //文本其他信息Buffer
+    optional bytes bytes_pb_reserve = 12; //文本消息扩展的pb结构，参见hummer_resv_1.proto
+}
+
+message Face
+{
+    optional uint32 index = 1; //系统表情索引号
+    optional bytes old = 2;    //老格式的系统表情数据
+    optional bytes buf = 11;   //表情其他信息Buffer
+}
+
+message CustomFace
+{
+    optional bytes bytes_guid = 1;          //图片 Guid
+    optional string str_file_path = 2;      //文件系统路径
+    optional string str_shortcut = 3;       //快捷键
+    optional bytes bytes_buffer = 4;        //运营表情信息Buffer
+    optional bytes bytes_flag = 5;          //图片 Flag
+    optional bytes bytes_old_data = 6;      //旧版本数据
+    optional uint32 uint32_file_id = 7;     //图片文件ID（群消息使用）
+    optional uint32 uint32_server_ip = 8;   //取图片的serverIP（群消息使用）
+    optional uint32 uint32_server_port = 9; //取图片的serverPort（群消息使用）
+    optional uint32 uint32_file_type = 10;  //图片类型（群消息使用）
+    optional bytes bytes_signature = 11;    //文件验证码（群消息使用）   
+    optional uint32 uint32_useful = 12;     //图片文件可用标记（群消息使用）
+    optional bytes bytes_md5 = 13;          //图片MD5（群消息使用）
+    optional string str_thumb_url = 14;     //缩略图下载地址
+    optional string str_big_url = 15;       //大图下载地址
+    optional string str_orig_url = 16;      //原图下载地址
+    optional uint32 biz_type = 17;          //业务类型，1表示涂鸦 2->拍照 3->相册 4->转发 5->自定义表情
+    optional uint32 repeat_index = 18;      //重复的自定义表情索引（兼容GBK）
+    optional uint32 repeat_image = 19;      //重复的群图片索引（群消息使用，兼容GBK）
+    optional uint32 image_type = 20;        //图片格式：0-jpg，2-gif，3-bmp，静态图定义从0x1000开始，动态图定义从0x2000开始
+    optional uint32 index = 21;             //图片索引
+    optional uint32 uint32_width = 22;      //图片宽度
+    optional uint32 uint32_height = 23;     //图片高度
+    optional uint32 uint32_source = 24;     //图片来源id（截图，表情，上传等）
+    optional uint32 uint32_size = 25;       //图片大小，单位byte
+    optional uint32 uint32_origin = 26;     //是否原图
+    optional uint32 uint32_thumb_width = 27;      //图片对应缩略图宽度
+    optional uint32 uint32_thumb_height = 28;     //图片对应缩略图高度
+    optional uint32 uint32_show_len = 29;   //文件最小显示长度
+    optional uint32 uint32_download_len = 30;//文件最小下载长度
+    optional string str_400_url = 31;      //400缩略图下载地址    
+    optional uint32 uint32_400_width = 32;  //400缩略图的宽度
+    optional uint32 uint32_400_height = 33; //400缩略图的高度
+    optional bytes  bytes_pb_reserve = 34;  //图片的扩展结构,参见hummer_resv_3.proto        
+}
+
+message MarketFace
+{
+    optional bytes bytes_face_name = 1;   //表情名称，UTF-8
+    optional uint32 uint32_item_type = 2; //后台二进制编码是主机字节序，不是网络，默认值 6
+    optional uint32 uint32_face_info = 3; //默认为1
+    optional bytes bytes_face_id = 4;     //16字节，表情ID
+    optional uint32 uint32_tab_id = 5;    //表情的分组ID
+    optional uint32 uint32_sub_type = 6;  //表情类型: 0->None，1->魔法表情，2->gif，3->png
+    optional bytes bytes_key = 7;         //16字节，表情的加密KEY
+    optional bytes bytes_param = 8;       //魔法表情的播放参数
+    optional uint32 uint32_media_type = 9;//媒体类型：1->有声表情，2->动态表情秀
+    optional uint32 uint32_image_width =10;//表情图片的宽度
+    optional uint32 uint32_image_height=11;//表情图片的高度
+    optional bytes bytes_mobileparam = 12; //手Q的播放参数，避免与PC冲突
+    optional bytes bytes_pb_reserve = 13;    //商城表情业务控制的扩展结构,参见hummer_resv_12.proto
+}
+
+message OnlineImage
+{
+    optional bytes guid = 1;                //图片Guid
+    optional bytes file_path = 2;           //图片的 文件系统路径
+    optional bytes old_ver_send_file = 3;   //旧版本数据,server 收到后直接使用
+}
+
+message NotOnlineImage
+{
+    optional bytes file_path = 1;       //图片的 文件系统路径, 实际为: "/文件名"
+    optional uint32 file_len = 2;       //表示文件长度
+    optional bytes download_path = 3;   //表示文件下载路径, uuid
+    optional bytes old_ver_send_file = 4;//旧版本数据,server 收到后直接使用
+    optional uint32 img_type = 5;       //图片格式：BMP=1,JPG=2,GIF=3,其他=0，静态图定义从0x1000开始，动态图定义从0x2000开始
+    optional bytes  previews_image = 6; //缩略图
+    optional bytes pic_md5 = 7;         //原图MD5
+    optional uint32 pic_height = 8;     //图片高度
+    optional uint32 pic_width = 9;      //图片宽度
+    optional bytes res_id = 10;         //Res ID
+    optional bytes flag = 11;           //图片Flag
+    optional string str_thumb_url = 12; //缩略图下载地址
+    optional uint32 original = 13;      //是否为原图
+    optional string str_big_url = 14;   //大图下载地址
+    optional string str_orig_url = 15;  //原图下载地址
+    optional uint32 biz_type = 16;      //业务类型，1表示涂鸦 2->拍照 3->相册 4->转发 5->自定义表情 6->PAP涂鸦图片
+    optional uint32 result = 17;        //0-fail; 1-succ
+    optional uint32 index = 18;         //索引
+    optional bytes op_face_buf = 19;    //运营表情信息Buffer
+    optional bool old_pic_md5 = 20;     //（内部使用）pic_md5来自old_ver_send_file(true)，还是Hummer ATTR 27(false)
+    optional uint32 uint32_thumb_width = 21;      //图片对应缩略图宽度
+    optional uint32 uint32_thumb_height = 22;     //图片对应缩略图高度
+    optional uint32 uint32_file_id = 23;          //仅客户端使用，后台进行管理(svenyang)
+    optional uint32 uint32_show_len = 24;         //文件最小显示长度
+    optional uint32 uint32_download_len = 25;     //文件最小下载长度
+    optional string str_400_url = 26;             //400缩略图下载地址       
+    optional uint32 uint32_400_width = 27;        //400缩略图的宽度
+    optional uint32 uint32_400_height = 28;       //400缩略图的高度
+    optional bytes  bytes_pb_reserve = 29;         //离线图片的扩展结构,参见hummer_resv_6.proto    
+}
+
+message TransElem
+{
+    optional uint32 elem_type = 1; // 要透传的 elem 类型（取值范围1-255）
+    optional bytes elem_value = 2; //要透传的 elem 值
+    // elem_value 由一个或者多个 cTlvAttr(cType+wLen+sValue) 组成，具体取决于 elem_type。
+}
+
+//C2C离线文件信息，对应老协议0xa9
+message NotOnlineFile
+{
+    //文件类型，取值参照C2C_FILE_TYPE定义, 接收方回复时复用作为action 2--拒绝 1--成功
+    optional uint32 uint32_file_type = 1;
+    optional bytes bytes_sig = 2;
+    optional bytes bytes_file_uuid = 3;         //文件uuid
+    optional bytes bytes_file_md5 = 4;          //文件前10M MD5
+    optional bytes bytes_file_name = 5;         //文件名
+    optional uint64 uint64_file_size = 6;       //文件长度
+    optional bytes bytes_note = 7;              //文件NOTE,  接收方回复时复用作为buff
+    optional uint32 uint32_reserved = 8;        //预留字段，兼容老协议
+    optional uint32 uint32_subcmd= 9;           //1是发送notify 2是接收方回复 3是管家 4是微云
+    optional uint32 uint32_micro_cloud = 10;
+    repeated bytes rpt_bytes_file_urls = 11;        //文件下载地址
+    optional uint32 uint32_download_flag = 12;      //是否需要申请下载地址  0:到架平申请  1:到cos申请  2:不需要申请，直接拿url下载
+    //再次扩展协议字段
+    optional uint32 uint32_danger_evel = 50;    //>>文件安全等级
+    optional uint32 uint32_life_time = 51;      //>>剩余保存时间
+    optional uint32 uint32_upload_time = 52;    //>>上传时间
+    optional uint32 uint32_abs_file_type = 53;  //>>支持预览的文件后缀类型,0表示不支持预览,支持的类型从1开始递增,目前依次为doc,docx,xls,xlsx,ppt,pptx,rtf,pdf,bmp,jpg,png,gif
+    optional uint32 uint32_client_type = 54;    //>>客户端类型，申请上传时ReqBody中所填uint32_client_type
+    optional uint32 uint32_expire_time = 55;    //>>到期时间
+    optional bytes bytes_pb_reserve = 56;       //消息扩展的pb结构，参见hummer_resv_notonlinefile.proto    
+    optional string str_fileidcrc_media = 57;
+}
+
+//语音对讲，视频信息，对应老协议0xD0
+message Ptt
+{
+    optional uint32 uint32_file_type = 1;   //文件类型，0x4：语音，0x8视频留言
+    optional uint64 uint64_src_uin = 2;     //发送方UIN
+    optional bytes bytes_file_uuid = 3;     //服务器文件索引【UUID】
+    optional bytes bytes_file_md5 = 4;      //文件MD5 / 文件验证码
+    optional bytes bytes_file_name = 5;     //文件名
+    optional uint32 uint32_file_size = 6;   //文件长度
+    optional bytes bytes_reserve = 7;       //特别说明：
+                                            //1. 对于C2C消息，用于存放扩展信息（对应0xd0的resv）
+                                            //2. 对于群和讨论组来说，用于存放低版本的兼容信息，由server填写，客户端不能填写！
+    optional uint32 uint32_file_id = 8;     //图片文件ID（群PTT）
+    optional uint32 uint32_server_ip = 9;   //取图片的server ip
+    optional uint32 uint32_server_port = 10;//取图片的server port
+    optional bool bool_valid = 11;          //图片文件可用标记（群PTT）
+    optional bytes bytes_signature = 12;    //文件验证码（群PTT）
+    optional bytes bytes_shortcut = 13;     //快捷键（群PTT）
+    optional bytes bytes_file_key = 14;     //c2c ptt fileKey
+    optional uint32 uint32_magic_ptt_index = 15;//变声语音的索引号
+    optional uint32 uint32_voice_switch = 16;//语音自动播放开关
+    optional bytes bytes_ptt_url = 17;       //ptt的完整url下载地址
+    optional bytes bytes_group_file_key = 18;//群ptt file key
+    optional uint32 uint32_time = 19;        //当前语音时长
+    optional bytes bytes_down_para = 20;     //语音下载url参数 
+    optional uint32 uint32_format = 29;      //当前语音格式，0-amr，1-silk
+    optional bytes bytes_pb_reserve = 30;    //仅用于群和讨论组消息，存放和C2C-ptt一样的扩展信息，参见上面 bytes_reserve
+    repeated bytes rpt_bytes_ptt_urls = 31;      //ptt下载地址列表
+    optional uint32 uint32_download_flag = 32;   //是否需要申请下载地址  0:到架平申请  1:到cos申请  2:不需要申请，直接拿url下载
+}
+
+//视频文件
+message VideoFile
+{
+    optional bytes bytes_file_uuid = 1;     //服务器文件索引【UUID】
+    optional bytes bytes_file_md5 = 2;      //文件MD5 / 文件验证码
+    optional bytes bytes_file_name = 3;     //文件名
+    optional uint32 uint32_file_format = 4; //文件格式,1-avi,2-mp4,3-wmv,4-mkv,5-rmvb,6-rm,7-afs,8-mov,9-mod,10-ts,11-mts
+    optional uint32 uint32_file_time = 5;   //文件时长(秒)
+    optional uint32 uint32_file_size = 6;   //文件长度
+    optional uint32 uint32_thumb_width = 7; //视频对应缩略图宽度
+    optional uint32 uint32_thumb_height = 8;//视频对应缩略图高度
+    optional bytes bytes_thumb_file_md5 = 9;//缩略图文件MD5 / 文件验证码
+    optional bytes bytes_source = 10;       //camera:拍摄来源，album:相册来源
+    optional uint32 uint32_thumb_file_size = 11;  //缩略图大小
+    optional uint32 uint32_busi_type       = 12;  //业务类型,0=手Q短视频, 1=手Q小视频
+    optional uint32 uint32_from_chat_type  = 13;  //转发用：C2C-0，群-1，讨论组-2，临时会话-3，非转发填（-1）
+    optional uint32 uint32_to_chat_type    = 14;  //转发用：C2C-0，群-1，讨论组-2，临时会话-3，非转发填（-1）
+    optional bool bool_support_progressive = 15;  //标识mp4视频格式是否支持边下边播
+    optional uint32 uint32_file_width      = 16;  //视频对应文件分辨率宽度
+    optional uint32 uint32_file_height     = 17;  //视频对应文件分辨率高度
+    optional uint32 uint32_sub_busi_type   = 18;  //子业务类型,用于区分同个uint32_busi_type的不同子业务 0：普通视频，1：祝福视屏，2：animoji视屏
+    optional uint32 uint32_video_attr      = 19;  //视频属性值：0-普通视频，1-热门视频（一拖三视频）     
+    repeated bytes rpt_bytes_thumb_file_urls   = 20;  //视频对应缩略图下载地址列表
+    repeated bytes rpt_bytes_video_file_urls   = 21;  //视频对应文件下载地址列表
+    optional uint32 uint32_thumb_download_flag = 22;  //视频对应缩略图是否需要申请下载地址  0:到架平申请  1:到cos申请  2:不需要申请，直接拿url下载    
+    optional uint32 uint32_video_download_flag = 23;  //视频对应文件是否需要申请下载地址  0:到架平申请  1:到cos申请  2:不需要申请，直接拿url下载
+    optional bytes bytes_pb_reserve = 24;			  //VideoFile的扩展结构,参见hummer_resv_video_file.proto    
+}
+
+
+message ElemFlags
+{
+    optional bytes bytes_flags1 = 1;            //业务控制flags1
+    optional bytes bytes_business_data = 2;     //业务控制flags2
+}
+
+message ElemFlags2
+{
+    optional uint32 uint32_color_text_id = 1;   //超级会员的气泡ID
+    optional uint64 uint64_msg_id = 2;          //公共帐号qwMsgId
+    optional uint32 uint32_whisper_session_id = 3;//私聊消息的连接 ID
+    optional uint32 uint32_ptt_change_bit = 4;  //ptt转换为标记
+    optional uint32 uint32_vip_status = 5;      //长语音发送方的VIP/SVIP状态
+    optional uint32 uint32_compatible_id = 6;   //兼容处理ID
+    message Inst{
+        optional uint32 uint32_app_id = 1;
+        optional uint32 uint32_inst_id = 2;
+    }
+    repeated Inst rpt_insts = 7;                //对指定终端下发群消息漫游
+    optional uint32 uint32_msg_rpt_cnt = 8;     //相同的文本消息重复了多少次
+    optional Inst src_inst = 9;                 //消息来源的wAppId + dwInstId
+    optional uint32 uint32_longtitude = 10;     //用户经度
+    optional uint32 uint32_latitude = 11;       //用户纬度
+    optional uint32 uint32_custom_font = 12;    //用户个性字体ID
+    optional PcSupportDef pc_support_def = 13;
+    optional uint32 uint32_crm_flags = 14;      //crm特殊消息标志
+}
+
+message PcSupportDef
+{
+    optional uint32 uint32_pc_ptl_begin = 1;
+    optional uint32 uint32_pc_ptl_end = 2;
+    optional uint32 uint32_mac_ptl_begin = 3;
+    optional uint32 uint32_mac_ptl_end = 4;
+    repeated uint32 rpt_ptls_support = 5;
+    repeated uint32 rpt_ptls_not_support = 6;
+}
+
+message ExtraInfo
+{
+    optional bytes bytes_nick = 1;              //发送者的昵称
+    optional bytes bytes_group_card = 2;        //发送者的群名片
+    optional uint32 uint32_level = 3;           //群成员等级数值
+    optional uint32 uint32_flags = 4;           //群flag，具体含义请参考hummer协议文档
+    optional uint32 uint32_group_mask = 5;      //接收者的群消息屏蔽位
+    optional uint32 uint32_msg_tail_id = 6;     //群或讨论组消息尾巴ID
+    optional bytes bytes_sender_title = 7;      //发送者的群成员专属头衔，UTF8编码
+    optional bytes bytes_apns_tips = 8;         //APNs tips content --- utf8
+    optional uint64 uint64_uin = 9;             //红包口令消息标识红包发送者
+    optional uint32 uint32_msg_state_flag = 10; //红包口令消息状态标记位，0. 或者没有这个字段，表示普通消息
+                                                //1. 红包未抢完，用户发口令消息；
+                                                //2. 红包已经抢完，用户发口令消息； 
+                                                //3. 红包已经过期，用户发口令消息； 
+                                                //4. 其他异常的红包口令消息
+    optional uint32 uint32_apns_sound_type = 11;//0 : 普通; 1 : 音视频
+    optional uint32 uint32_new_group_flag  = 12;//新群flag
+}
+
+message FunFace
+{
+    message Turntable //转盘
+    {
+        repeated uint64 rpt_uint64_uin_list = 1;
+        optional uint64 uint64_hit_uin = 2;
+        optional string str_hit_uin_nick = 3;   //发送时后台填写，客户端无需填写
+    }
+    message Bomb //炸弹
+    {
+        optional bool bool_burst = 1;
+    }
+    //以下字段互斥，只能一个有效
+    optional Turntable msg_turntable = 1;
+    optional Bomb msg_bomb = 2;
+}
+
+message SecretFileMsg
+{
+    enum OperType{
+        TYPE_C2C = 0; //好友琳?        TYPE_CONTACTS = 1;//通讯录临时会话
+        TYPE_GROUP = 2;//群临时会话
+        TYPE_NEARBA = 3; //附近人临时会话
+        TYPE_DISCU = 4;//讨论组临时会话
+        TYPE_WPA = 5; //wpa临时会话
+    }
+
+    optional bytes  bytes_file_key       = 1;      //scretfile标识。上报scretfile状态时用这个标识。
+    optional uint64 uint64_from_uin      = 2;      // 发送方号码
+    optional uint64 uint64_to_uin        = 3;      // 接收方号码
+    optional uint32 uint32_status        = 4;      // 发送方发送图片时，填0；
+    optional uint32 uint32_ttl           = 5;      // 图片生存时间, 单位为秒
+    optional uint32 uint32_type          = 6;      // snapchat类型，1：图片,2：ptt, 3：video
+    optional uint32 uint32_encrypt_prehead_length  = 7;  // 加密的头部长度
+    optional uint32 uint32_encrypt_type  = 8;      // 加密类型
+    optional bytes  bytes_encrypt_key    = 9;      // 加密的key
+    optional uint32 uint32_read_times    = 10;     // 可以查看的次数
+    optional uint32 uint32_left_time     = 11;     // 剩余时长，单位秒
+    optional NotOnlineImage not_online_image = 12; // 离线图片
+    optional ElemFlags2 elem_flags2 = 13;          //业务数据(存放气泡id)
+    optional uint32 uint32_opertype      = 14;     //闪照类型，参考[OperType]
+    optional string str_fromphonenum     = 15;     //发送方手机号码
+}
+
+message RichMsg
+{
+    optional bytes bytes_template_1 = 1;        //Xml模板一
+    optional uint32 uint32_service_id = 2;      //对应的业务标识
+    optional bytes bytes_msg_resid = 3;         //长消息resid
+    optional uint32 uint32_rand = 4;            //需要删除的消息 rand 值
+    optional uint32 uint32_seq = 5;             //需要删除的消息 seq 
+    optional uint32 uint32_flags = 6;           //bit 0:消息是否来自UrlCache; bit 1:是否包含video标签; bit 2:来自公众帐号的video结构化消息; bit 3:消息在urlencode模块从url转成richmsg
+}
+
+message GroupFile
+{
+    optional bytes bytes_filename = 1;      //文件名
+    optional uint64 uint64_file_size = 2;   //FileSize
+    optional bytes bytes_file_id = 3;       //文件ID，包含父目录key
+    optional bytes bytes_batch_id = 4;      //文件批ID
+    optional bytes bytes_file_key = 5;      //FileKey
+    optional bytes bytes_mark = 6;          //文件附加标志
+    optional uint64 uint64_sequence = 7;    //发送序列号
+    optional bytes bytes_batch_item_id = 8; //文件批每项ID，GUID
+    optional uint32 uint32_feed_msg_time = 9;//feed消息时间
+    optional bytes bytes_pb_reserve = 10;    //参见 hum_21_reserv.proto
+}
+
+message MarketTrans
+{
+    optional int32 int32_flag   = 1;        //cFlag
+    optional bytes bytes_xml    = 2;        //xml buffer
+    optional bytes bytes_msg_resid = 3;     //长消息resid
+    optional uint32 uint32_ability = 4;     //手q客户端对应能力，对于支持的客户端下发，不支持的不下发
+    optional uint32 uint32_min_ability = 5; //下发此消息的最低版本能力
+}
+
+message PubGroup
+{
+    optional bytes bytes_nickname = 1;      //游客昵称
+    optional uint32 uint32_gender = 2;      //性别
+    optional uint32 uint32_age = 3;         //年龄
+    optional uint32 uint32_distance = 4;    //和群位置之间的距离
+}
+
+message MsgBody_subtype4
+{
+    optional NotOnlineFile msg_not_online_file = 1;
+    optional uint32 uint32_msg_time = 2;
+}
+
+//临时会话ptt协议
+message TmpPtt
+{
+    optional uint32 uint32_file_type = 1;   //文件类型，0x4：语音，0x8视频留言
+    optional bytes bytes_file_uuid = 2;     //服务器文件索引【UUID】
+    optional bytes bytes_file_md5 = 3;      //文件MD5 / 文件验证码
+    optional bytes bytes_file_name = 4;     //文件名
+    optional uint32 uint32_file_size = 5;   //文件长度
+    optional uint32 uint64_ptt_times = 6;   //语音时长，单位秒
+    optional uint32 uint32_user_type = 7;   //发送方身份级别，0-普通用户，1-vip;2-svip
+    optional uint32 uint32_ptttrans_flag = 8;//语音转文字标志，1：支持语音转文字
+    optional uint32 uint32_busi_type = 9;   //公众号-临时ptt-3, 公众号-永久ptt-4
+    optional uint64 uint64_msg_id = 10;		//公众号消息msgid
+    optional bytes bytes_pb_reserve = 30;   //自定义pb内容
+    optional bytes ptt_encode_data = 31;   //add by dellwang, 后台使用，客户端不能用
+}
+
+message ShakeWindow
+{
+    optional uint32 uint32_type = 1;         //填缺省值0
+    optional uint32 uint32_reserve = 2;      //预留字段，不填
+    optional uint64 uint64_uin = 3;
+}
+
+//公共帐号
+message PubAccount
+{
+    optional bytes bytes_buf = 1;               //cFlag + sXml
+    optional uint64 uint64_pub_account_uin = 2; //群与公众号联动，如果该消息是订阅号消息，需要传订阅号uin来和其他结构化消息区分
+}
+
+//tips提示信息
+message TipsInfo
+{
+    optional string text = 1;     //tips提示信息
+}
+
+message AnonymousGroupMsg
+{
+    optional uint32 uint32_flags = 1;           //群匿名消息 flag > 0为匿名消息 flag : 1 他人的消息 falg : 2 自己发送的消息
+    optional bytes str_anon_id = 2;             //发送者的匿名ID
+    optional bytes str_anon_nick = 3;           //发送者的群匿名昵称
+    optional uint32 uint32_head_portrait = 4;   //群匿名群头像索引
+    optional uint32 uint32_expire_time = 5;     //群匿名昵称过期时间
+    optional uint32 uint32_bubble_id = 6;       //发送者的匿名气泡ID
+    optional bytes str_rank_color = 7;          //群匿名消息头衔背景颜色，格式#72CCE6	
+}
+
+message QQLiveOld
+{
+    optional uint32 uint32_sub_cmd = 1;         //子命令号
+    optional bytes str_show_text = 2;           //显示的文字，UTF8编码
+    optional bytes str_param = 3;               //参数文字，UTF8编码
+    optional bytes str_introduce = 4;           //介绍文字，UTF8编码，仅部分sub cmd下才有
+}
+
+// QQ钱包消息
+message QQWalletMsg
+{
+    optional QQWalletAioBody aio_body = 1;      //  AIO消息
+}
+
+// QQ钱包AIO报文体
+message QQWalletAioBody
+{
+	optional uint64 uint64_senduin = 1;      // 发送者UIN
+	optional QQWalletAioElem sender   = 2;	 // 发送方AIO渲染内容.转账的发送方Elem
+	optional QQWalletAioElem receiver = 3;	 // 接收方AIO渲染内容,转账的接收方ELem，红包和AA收款的发送方和接收方都是这个Elem
+	optional sint32 sint32_channelid  = 4;	 // Channal渠道号
+	optional sint32 sint32_templateid = 5;	 // 消息模板id号
+	optional uint32 uint32_resend     = 6;   // 消息补发标志(0:首发， 1:补发)
+
+	optional uint32 uint32_msg_priority = 7;   // 消息优先级，取值为>=3或2或1；>=3时，优先级顺序 钱包消息>结构化消息>纯文本消息；为2时，优先级顺序 结构化消息>钱包消息>纯文本消息；为1时，优先级顺序 结构化消息>纯文本消息>钱包消息；
+
+    // 5.9.5红包改版
+    optional sint32 sint32_redtype   = 8;      // 1 拼手气红包  2 普通红包
+	optional bytes bytes_billno      = 9;      // 红包ID号, --PC8.7版本支持QQ红包，不下发给PC
+	optional bytes bytes_authkey     = 10;     // 签名， 财付通后台通过增值后台透传个字段，然后终端传给财付通sdk --PC8.7版本支持QQ红包，不下发给PC
+    optional sint32 sint32_sessiontype  = 11;  // 0：单对单 1：群发 2：讨论组 3：群临时会话 4：讨论组临时会话 5：热聊群 6：附近的人临时会话 10: 部落临时会话
+    optional sint32 sint32_msgtype   = 12;     // 取值含义
+                        // 1~1000：客户端定义的消息类型（如果该类型消息客户端不能识别，则只保留与该消息一起下发的文本消息），
+                        //    其中：
+                        //       1 表示转账和自动代付消息
+                        //       2 表示普通红包消息
+                        //       3 表示拼手气红包消息
+                        //       4 表示普通主题红包消息
+                        //       5 表示拼手气主题红包消息
+                        //       6 表示口令红包消息
+                        //       7 表示普通定向红包消息
+                        //       8 表示拼手气定向红包消息
+                        //       9 表示代付
+                        //       10 表示代付结果
+                        //       11 表示>3人的普通定向红包消息
+                        //       12 表示>3人的拼手气定向红包消息
+                        //       13 表示群讨论组语音口令红包消息
+                        //       14 表示表情红包消息
+                        //       15 表示C2C语音口令红包消息
+                        //       16 AA收款,7.5.0
+                        // 1001~2000：老版本红包体，用于其它业务扩展；
+                        // 2001~3000：新版本红包，用于其它业务扩展；
+                        //       2001 表示会员个性化红包消息
+                        //       2002 表示企点红包消息
+                        // 其它：抛弃该消息。
+    optional sint32 sint32_envelopeid = 13;    // 当msgtype==2001,7,8,11,12时有效，个性化背景图素材ID, 默认值0 
+    optional bytes bytes_name         = 14;    // 当msgtype==2001,7,8,11,12时有效，用户自定义姓氏
+    optional sint32 sint32_conftype   = 15;    // 当msgtype==2001,7,8,11,12时有效，1-文字红包 2-非文字红包
+    optional sint32 sint32_msg_from   = 16;    // 当msgtype==4或5时(0: 来自聊天窗口主题红包, 1: 来自群发小助手主题红包)
+    optional bytes bytes_pc_body      = 17;    // PC8.7版本支持QQ红包，下发给PC侧，手Q侧不下发，存储的是PC侧authkey,打击提示文本等字段pb序列化后的串,具体结构由PC侧终端和财付通侧约定
+	optional bytes string_index       = 18;    // 唯一标识PC和手Q上收到的红包，用于口令红包消息折叠
+    optional uint32 uint32_redchannel = 19;    // 透传给新版财付通SDK , 1024 表示定向红包
+    repeated uint64 uint64_grap_uin   = 20;    // sint32_redchannel==1024时拆定向红包用户uin，最多三人，群和讨论组有效
+    optional bytes bytes_pb_reserve   = 21;    // 业务控制的扩展结构, 参见qqwalletaio_resv.proto
+}
+
+// QQ钱包AIO消息内容
+message QQWalletAioElem
+{
+	optional uint32 uint32_background = 1;	// 背景色null|R|G|B, 8bit
+	optional uint32 uint32_icon   = 2;  //  图标ID
+    optional bytes bytes_title    = 3;  //  主标题 == 祝福语，当为口令红包时,也作为口令
+	optional bytes bytes_subtitle = 4;  //  副标题
+	optional bytes bytes_content  = 5;  //  内容
+	optional bytes bytes_linkurl  = 6;  //  链接地址
+	optional bytes bytes_blackstripe = 7;  // 小黑条（为空，表示不显示）
+	optional bytes bytes_notice   = 8;     // 对话框窗口提示语
+	
+	optional uint32 uint32_title_color = 9;	// 主标题颜色null|R|G|B, 8bit
+	optional uint32 uint32_subtitle_color = 10;	// 副标题颜色null|R|G|B, 8bit
+	optional bytes bytes_actions_priority = 11; // 跳转优先级列表，目前跳转类型有："1" - url跳转; "2" - mqqapi外部跳转; "3" - 钱包自定义跳转；
+																							// 该参数格式为： 跳转类型1|跳转类型2|跳转类型3  的字符串，使用"|"进行分隔。示例："3|2|1",优先级顺序 自定义跳转 > 外部跳转>url跳转，排列在前面的类型优先级最高，依次优先级降低
+	optional bytes bytes_jump_url = 12;		  // 手Q所有外部跳转地址：如mqqapi://... mqq://...等
+	optional bytes bytes_native_ios = 13;     // 钱包ios自定义跳转地址，格式“类名[?参数1=值1][&参数2=值2][&参数3=值3]”；如“com.mobileqq.app.MyActivity?p1=1&p2=conten”，“com.mobileqq.app.MyActivity”
+	optional bytes bytes_native_android = 14; // 钱包android自定义跳转地址，格式“类名[?参数1=值1][&参数2=值2][&参数3=值3]”；如“com.mobileqq.app.MyActivity?p1=1&p2=conten”，“com.mobileqq.app.MyActivity”
+
+	optional bytes bytes_iconurl = 15;  //  icon链接地址; 图标的显示逻辑优先级 非空时 bytes_iconurl > uint32_icon
+	optional uint32 uint32_content_color = 16;	// 底部留言文字颜色null|R|G|B, 8bit
+	optional uint32 uint32_content_bgcolor = 17;	// 底部背景颜色null|R|G|B, 8bit
+	optional bytes bytes_aio_image_left = 18;  // 新版红包aio主题背景图片url; 在非空情况下，背景图片url>默认背景
+	optional bytes bytes_aio_image_right = 19;  // 新版红包aio主题背景图片url; 在非空情况下，背景图片url>默认背景
+	optional bytes bytes_cft_image = 20;  // 新版红包cft主题红包背景图片url; 在非空情况下，背景图片url>默认背景
+    optional bytes bytes_pb_reserve = 21;    // 业务控制的扩展结构, 参见qqwalletaio_resv.proto
+}
+
+//生活服务帐号
+message LifeOnlineAccount
+{
+    optional uint64 uint64_unique_id = 1;      //消息唯一ID，用于更新或者取消预送达消息
+    optional uint32 uint32_op = 2;             //消息操作，0：插入定时消息   1：修改定时消息时间   9：删除定时消息
+    optional uint32 uint32_show_time = 3;      //预送达触发时间
+    optional uint32 uint32_report = 4;         //生活服务号消息是否需要终端日志上报
+    optional uint32 uint32_ack = 5;            //生活服务号消息是否需要终端确认
+	optional uint64 uint64_bitmap = 6;         //生活服务号能力位图
+	optional bytes gdt_imp_data = 7;          //曝光上报广点通的json数据，终端透传到后台
+	optional bytes gdt_cli_data = 8;          //点击上报广点通的json数据，终端透传到后台
+	optional bytes view_id = 9;               //终端透传字段
+}
+
+message CrmElem
+{
+    optional bytes crm_buf = 1;                // crm自定义buf
+    optional bytes bytes_msg_resid = 2;        //长消息resid
+    optional uint32 uint32_qidian_flag = 3;    //标识来自企点的消息        
+    optional uint32 uint32_push_flag = 4;    //是否推送，1 - 推送，0 - 不推送，不填默认推送
+    optional uint32 uint32_count_flag = 5;    //是否计数，1 - 计数，0 - 不计数，不填默认计数    
+}
+
+message ConferenceTipsInfo
+{
+    enum ECONF_SESSION_TYPE{
+        ECONFST_NONE        = 0; // 默认值，无意义
+        ECONFST_DISCUSS_AV  = 1; // 基于讨论组的会议
+        ECONFST_BUDDY_AV    = 2; // 基于双人的会议
+    }
+
+    optional uint32 uint32_session_type = 1;        //参考ECONF_SESSION_TYPE
+    optional uint64 uint64_session_uin = 2;         //所属uin
+    optional string str_text = 3;                   //提示信息
+}
+
+message RedBagInfo
+{
+    optional uint32 redbag_type = 1; //1为企业红包结构化消息
+}
+
+message LowVersionTips
+{
+	enum EBusinessID
+	{
+		EBusinessID_ConfScheduleMsg = 1; // 会议预约后发出消息
+		EBusinessID_DingDongMsg = 2; // 使用叮咚后发出消息
+	}
+	
+    enum EChatType
+    {
+        CF_UnknownChatType = -1; // 未知聊天类型
+        CF_BuddyChatType   = 0; // 好友联系人的聊天类型
+        CF_GroupChatType   = 1; // 群组的聊天类型
+        CF_TempChatType    = 2; // 临时会话的聊天类型
+        CF_DiscussChatType = 3; // 讨论组的聊天类型
+    }
+    optional uint32 uint32_business_id = 1;        //所属业务类型
+    optional uint32 uint32_session_type = 2;        //所属聊天窗口，参考EChatType 
+    optional uint64 uint64_session_uin = 3;         //所属uin
+    optional uint64 uint64_sender_uin = 4;          //所属发送者uin
+    optional string str_text = 5; //提示信息
+}
+
+message NearByMessageType
+{
+    enum ENearByMsgType
+    {
+        ETypeNormal = 0;  //普通消息
+        ETypeClearingText = 1;  //表白文本消息
+        ETypeClearingImg = 2; //表白图片消息
+    }
+    //add for jazzyfu
+	enum EIdentifyType
+    {
+        ETypeDefault = 0;  //无认证标识
+        ETypeIdentify = 1;  //有认证标识
+    }
+    optional uint32 uint32_type = 1;
+    optional uint32 uint32_identify_type = 2;
+}
+
+
+message CustomElem
+{
+    enum DataType
+    {
+        DataType_Text = 1;
+        DataType_Bin  = 2;
+    }
+
+    optional bytes bytes_desc = 1;
+    optional bytes bytes_data = 2;
+    optional DataType enum_type = 3;
+    optional bytes bytes_ext = 4;
+    optional bytes bytes_sound = 5;
+}
+
+message LocationInfo
+{
+    optional double double_longitude = 1; //经度
+    optional double double_latitude  = 2; //纬度
+    optional bytes  bytes_desc       = 3;
+}
+
+message PubAccInfo
+{
+    optional uint32 uint32_is_inter_num = 1;    //是否是兴趣号，用于兴趣号折叠
+    optional string string_msg_template_id = 2; //消息的模板ID
+	optional string string_long_msg_url = 3; //长消息url
+    optional bytes bytes_download_key = 4;//长消息使用，二进制的文件下载key，转成16进制后作为rkey的值拼在url后面
+}
+
+message SmallEmoji
+{
+	optional uint32 packIdSum = 1;    //用一个int来存储表情包id和子表情id
+	optional uint32 imageType = 2;		//来后8位来标示图片类型，没有或者0为gif，1为apng
+}	
+
+message FSJMessageElem
+{
+    enum EFSJMessageType
+    {
+        ETypeNormal = 0;    //普通消息
+        ETypeHotChatFlashPic = 1;   //热聊闪照消息
+    }
+    optional uint32 uint32_msg_type = 1;
+}
+
+message ArkAppElem
+{ 
+	optional string app_name = 1;   
+	optional string min_version = 2;  
+	optional string xml_template = 3;
+    optional bytes bytes_data = 4;
+}
+
+message LightAppElem
+{
+	optional bytes bytes_data = 1;
+	optional bytes bytes_msg_resid = 2; //长消息resid	
+}
+
+message GeneralFlags
+{
+	optional uint32 uint32_bubble_diy_text_id = 1; //DIY气泡ID
+	optional uint32 uint32_group_flag_new = 2;     //群flag
+	optional uint64 uint64_uin = 3;                //红包口令消息标识红包发送者, add by jimhou
+	optional bytes bytes_rp_id = 4; 			   //红包口令ID, add by jimhou
+	optional uint32 uint32_prp_fold = 5;   	       //红包口令消息收叠标志, add by jimhou
+	optional uint32 long_text_flag = 6;            //新长文本标志, 1:表示长文本消息    added by ruifanyuan
+	optional bytes long_text_resid = 7;            //新长文本消息体对应的resid added by ruifanyuan	
+	optional uint32 uint32_group_type = 8;  	//位值， 每个位代表的含义如下：   add by wesleyhe
+												//0x1:PC公开群
+												//0x2:热聊
+	optional uint32 uint32_to_uin_flag = 9;	 	//0,1或者没有这个字段，表明接收方是群成员   2:标识接收方是游客		add by wesleyhe									
+	optional uint32 uint32_glamour_level = 10;	//群送花魅力值等级		add by raftzhang	
+	optional uint32 uint32_member_level = 11;   //群成员等级  add by raftzhang
+	optional uint64 uint64_group_rank_seq = 12; //群成员等级seq add by raftzhang
+	optional uint32 uint32_olympic_torch = 13;	//火炬手标识, 0:非火炬手; 1:火炬手	add by raftzhang
+	optional bytes babyq_guide_msg_cookie = 14; //BabyQ新用户引导消息cookie
+	optional uint32 uin32_expert_flag = 15;	    //标记消息是用户发给行家还是行家发给用户的,1:行家到用户;2:用户到行家	add by tobinchen
+	optional uint32 uint32_bubble_sub_id = 16;  //气泡的子id，用于区分气泡套装中的子气泡  add by marlonlu
+	optional uint64 uint64_pendant_id = 17;     //用户挂件ID add by jwkuang
+	optional bytes bytes_rp_index = 18;         //红包口令index add by xiaoronglin
+	optional bytes bytes_pb_reserve = 19;		//GeneralFlags的扩展结构,参见hummer_resv_generalflags.proto
+}
+
+message DeliverGiftMsg
+{
+    optional bytes bytes_gray_tip_content = 1;          //群内送礼物成功的小灰条消息内容
+    optional uint32 uint32_animation_package_id = 2;    //群内送礼物成功的动画包id
+    optional bytes bytes_animation_package_url_a = 3;   //群内送礼物成功的动画包下载地址-android
+    optional bytes bytes_animation_package_url_i = 4;   //群内送礼物成功的动画包下载地址-ios
+    optional bytes bytes_remind_brief = 5;              //群内送礼物成功的小灰条消息在消息列表页的橙色提醒
+    optional uint32 uint32_gift_id = 6;                 //群内送礼物的礼物ID
+    optional uint32 uint32_gift_count = 7;              //群内送礼物的数量
+    optional bytes bytes_animation_brief = 8;           //群内送礼物的动画下方提示语
+    optional uint64 uint64_sender_uin = 9;              //群内送礼物的发送方号码
+    optional uint64 uint64_receiver_uin = 10;           //群内送礼物的接受方号码
+    optional bytes bytes_stmessage_title = 11;          //群内送礼物title
+    optional bytes bytes_stmessage_subtitle = 12;       //群内送礼物subtitle
+    optional bytes bytes_stmessage_message = 13;        //群内送礼物留言（花语）
+    optional uint32 uint32_stmessage_giftpicid = 14;    //群内送礼物的图片id（用来拼接图片URL）
+    optional bytes bytes_stmessage_comefrom = 15;       //群内送礼物来源
+    optional uint32 uint32_stmessage_exflag = 16;       //群内送礼物可扩展标志位（某些开关状态）
+    optional bytes bytes_to_all_gift_id = 17;           //全员送礼专属id
+    optional bytes bytes_comefrom_link = 18;            //送礼物来源链接,为空时跳转半屏商城    
+	optional bytes bytes_pb_reserve = 19;		        //DeliverGiftMsg的扩展结构,参见hummer_resv_deliver_gift_msg.proto 
+	
+	//明星排行榜需求添加
+	optional bytes bytes_receiver_name  = 20;           //接收方昵称
+    optional bytes bytes_receiver_pic = 21;     //接收方头像
+
+    optional bytes bytes_stmessage_gifturl = 22;        //群内送礼物的图片 URL
+}
+
+message BitAppMsg
+{
+	optional bytes bytes_buf = 1; //Xml
+}
+
+message OpenQQData
+{
+    optional bytes bytes_car_qq_data = 1;
+}   
+
+message BlessingMessage
+{
+    enum BlessingMessageType
+    {
+        ETypeNormal = 0; //普通消息
+        ETypeBlessing = 1; //群发祝福消息
+    }
+    optional uint32 uint32_msg_type = 1;
+    optional uint32 uint32_ex_flag  = 2;
+}
+
+message SourceMsg
+{
+    repeated uint32 uint32_orig_seqs = 1;       //原消息seq
+    optional uint64 uint64_sender_uin = 2;      //所属发送者uin
+    optional uint32 uint32_time = 3;
+    optional uint32 uint32_flag = 4;            //摘要里是否包括原消息的完整内容0 非完整内容，需要客户端拉取  1 完整内容，不用拉取
+    repeated Elem elems = 5;                    //消息的种类，包括文本消息，系统表情消息
+    optional uint32 uint32_type = 6;            //引用消息展示样式，0表示普通文本，对应解析elems字段；1表示部落类型类似结构化消息的样式，对应解析bytes_richMsg字段
+    optional bytes bytes_richMsg = 7;           //对应json字段，里面会带上title，summary，coverUrl，jumpUrl等字段
+    optional bytes bytes_pb_reserve = 8;        //SourceMsg的扩展结构,参见hummer_resv_source_msg.proto      
+    optional bytes bytes_src_msg = 9;           //原消息消息体msg_com.Msg	
+	optional uint64 uint64_to_uin = 10;         //所属接收者uin
+	optional bytes bytes_troop_name = 11;       //单独回复原消息群名
+}
+
+message WorkflowNotifyMsg
+{
+    optional bytes      bytes_ext_msg       = 1; //下发的附加消息，通用buffer，所有相关信息都放到些buffer中
+    optional uint64     uint64_create_uin   = 2;
+}
+
+message PatsElem
+{                                 
+    optional uint32 uint32_pat_type = 1;  // 客户端动画类型 [拍一下 = 0] or [击掌 = 1]
+    optional uint32 uint32_pat_count = 2; // 客户端动画次数
+}
+
+message GroupPostElem
+{                                  
+    optional uint32 uint32_trans_type = 1; //群话题透传消息类型    
+    optional bytes bytes_trans_msg = 2; // 群话题透传消息内容
+}
+
+message EIMInfo
+{
+    optional uint64 uint64_root_id = 1; //组织架构根节点ID
+    optional uint32 uint32_flag = 2;    //用于区分群的类型，0表示组织群聊，1表示多人会话
+}

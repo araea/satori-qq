@@ -47,6 +47,11 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
 - 这是独立大工程：需要一个"发任意 oidb 包 + 收回包"的基础设施，之后 send_like/special_title/
   很多群管操作都能在上面搭。
 
+## A2. 已实现的发送段（2026-08-27）
+`json`/`lightapp`→ArkElement(卡片)、`mface`→MarketFaceElement、`poke`→FaceElement(pokeType)。
+真机测 json 卡片发送+撤回 retcode 0。**注意：ayjx 实测不消费任何 notice 事件**（它的 recall 是
+/撤回命令，不是撤回通知），所以 A 节的 notice 事件对 ayjx 无用，已降级为"按需/其它客户端才需要"。
+
 ## E. 其它 OneBot 动作（按需）
 `get_stranger_info`/`get_friend_list`(BuddyService)、`set_group_kick`/`set_group_ban`/
 `set_group_card`/`set_group_admin`(GroupService 已有方法，见 ARCHITECTURE.md 群小节)、

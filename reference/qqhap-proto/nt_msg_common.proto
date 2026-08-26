@@ -1,0 +1,57 @@
+syntax = "proto2";
+
+package trpc.msg.common;
+
+option optimize_for = LITE_RUNTIME;
+option java_package = "tencent.im.msg";
+option java_outer_classname = "nt_msg_common";
+import "im_msg_body.proto";
+
+// 群消息
+message Group {
+    optional uint64 group_code        = 1;
+    optional uint32 group_type        = 2;  // 0x7f表示空消息，客户端不展示消息体
+    optional uint64 group_info_seq    = 3;
+    optional bytes group_card         = 4;  // 名片信息
+    optional uint32 group_card_type   = 5;  // group_card类型, 1:群名片; 2:昵称 3:智能备注
+    optional uint32 group_level       = 6;  // 群成员等级
+    optional bytes group_name         = 7;  // 群名
+    optional bytes ext_group_key_info = 8;  // 扩展的群关键信息, 透传
+    optional uint32 msg_flag          = 9;  // 消息标识: 第0位(mask:0x1)表示特别关注的人所发的消息
+}
+
+// c2c消息，系统消息，扩展信息
+message C2c {
+}
+
+message RoutingHead {
+    optional uint64 from_uin    = 1;  // 发送方uin
+    optional bytes from_uid     = 2;  // 发送方uid
+    optional uint32 from_appid  = 3;
+    optional uint32 from_instid = 4;
+    optional uint64 to_uin      = 5;  // 接收方
+    optional bytes to_uid       = 6;  // 接收方uid
+    optional C2c c2c            = 7;  // c2c消息相关属性，c2c消息非必填字段，不能根据这个字段是否存在来判断c2c消息
+    optional Group group        = 8;  // 群消息相关属性，群消息必填
+};
+
+message ContentHead {
+    optional uint64 msg_type   = 1;  // 消息类型
+    optional uint64 sub_type   = 2;  // 消息子类型（0x211\0x2dc\0x210等系统消息的子类型,取值同c2c_cmd）
+    optional uint32 c2c_cmd    = 3;  // c2c消息子类型
+    optional uint64 random     = 4;
+    optional uint64 msg_seq    = 5;  // 消息seq
+    optional uint64 msg_time   = 6;
+    optional uint32 pkg_num    = 7;  // 分包数目，消息需要分包发送时该值不为1
+    optional uint32 pkg_index  = 8;  // 当前分包索引，从 0开始
+    optional uint32 div_seq    = 9;  // 消息分包的序列号，同一条消息的各个分包的 div_seq 相同
+    optional uint32 auto_reply = 10;
+    optional uint64 nt_msg_seq = 11;  // 两个uin之间c2c消息唯一递增seq
+    optional uint64 msg_uid    = 12;
+};
+
+message Msg {
+    optional RoutingHead routing_head    = 1;
+    optional ContentHead content_head    = 2;
+    optional tencent.im.msg.MsgBody body = 3;  // 消息体
+};

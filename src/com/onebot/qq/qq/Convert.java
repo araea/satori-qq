@@ -35,6 +35,10 @@ public final class Convert {
                     case "face": addFace(out, d.optString("id", "0")); break;
                     case "reply":addReply(out, d.optString("id", "")); break;
                     case "image": addImage(out, d); break;
+                    case "json":  addArk(out, d.optString("data", d.optString("content", ""))); break;
+                    case "lightapp": addArk(out, d.optString("content", d.optString("data", ""))); break;
+                    case "mface": addMface(out, d); break;
+                    case "poke":  addPoke(out, d); break;
                     // record/video/file send need PTT/silk & video upload (milestone 3); degrade gracefully:
                     case "record":addText(out, "[语音]"); break;
                     case "video": addText(out, "[视频]"); break;
@@ -100,6 +104,63 @@ public final class Convert {
         ref.set(f, "faceType", 1);
         ref.set(e, "faceElement", f);
         out.add(e);
+    }
+
+    private static final String ARK_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.ArkElement";
+    private static final String LINK_INFO = "com.tencent.qqnt.kernel.nativeinterface.LinkInfo";
+    private static final String MARKET_FACE_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.MarketFaceElement";
+    private static final String FACE_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.FaceElement";
+
+    /** JSON / lightapp ark card -> KELEMTYPEARKSTRUCT(10). */
+    private void addArk(ArrayList<Object> out, String json) {
+        if (json == null || json.isEmpty()) return;
+        try {
+            Object e = newElement(10);
+            Object ark = ref.neuTyped(ARK_ELEMENT,
+                    new Class[]{String.class, ref.cls(LINK_INFO), Integer.class},
+                    new Object[]{json, null, 0});
+            ref.set(e, "arkElement", ark);
+            out.add(e);
+        } catch (Throwable t) {
+            L.e("addArk", t);
+            // fallback: default ctor + set field
+            try {
+                Object e = newElement(10);
+                Object ark = ref.neu(ARK_ELEMENT);
+                ref.set(ark, "bytesData", json);
+                ref.set(e, "arkElement", ark);
+                out.add(e);
+            } catch (Throwable t2) { L.e("addArk fallback", t2); }
+        }
+    }
+
+    /** Market face (商城表情) -> KELEMTYPEMARKETFACE(11). */
+    private void addMface(ArrayList<Object> out, org.json.JSONObject d) {
+        try {
+            Object e = newElement(11);
+            Object mf = ref.neu(MARKET_FACE_ELEMENT);
+            ref.set(mf, "emojiId", d.optString("emoji_id", ""));
+            ref.set(mf, "emojiPackageId", (int) parseLong(d.optString("emoji_package_id", "0")));
+            ref.set(mf, "key", d.optString("key", ""));
+            ref.set(mf, "faceName", d.optString("summary", "[表情]"));
+            ref.set(e, "marketFaceElement", mf);
+            out.add(e);
+        } catch (Throwable t) { L.e("addMface", t); }
+    }
+
+    /** Poke (戳一戳) as a FaceElement -> KELEMTYPEFACE(6). */
+    private void addPoke(ArrayList<Object> out, org.json.JSONObject d) {
+        try {
+            Object e = newElement(6);
+            Object f = ref.neu(FACE_ELEMENT);
+            int type = (int) parseLong(d.optString("type", d.optString("id", "1")));
+            ref.set(f, "faceType", 5);
+            ref.set(f, "faceIndex", 0);
+            ref.set(f, "pokeType", Integer.valueOf(type));
+            ref.set(f, "pokeStrength", Integer.valueOf(0));
+            ref.set(e, "faceElement", f);
+            out.add(e);
+        } catch (Throwable t) { L.e("addPoke", t); }
     }
 
     private void addImage(ArrayList<Object> out, org.json.JSONObject d) {

@@ -2,6 +2,12 @@
 
 > 已实现的见 HANDOFF.md。这里只讲**没做的**，以及每个该怎么下手（附 QQNT 线索）。
 
+> **2026-08-27 新增已实现（群管理，现成内核方法，fire-and-forget via IOperateCallback）：**
+> `get_group_info`、`set_group_kick`(kickMember)、`set_group_ban`(setMemberShutUp)、
+> `set_group_whole_ban`(setGroupShutUp)、`set_group_card`(modifyMemberCardName)、
+> `set_group_admin`(modifyMemberRole + MemberRole 静态枚举 ADMIN/MEMBER)、`set_group_leave`(quitGroup)。
+> 见 QQClient 群管理区 + OneBotHub。**注意：需 QQ 处于登录态才有 NT 会话**，登出时全部无效。
+
 ## A. notice 事件（优先，ayjx recall 插件要用）
 OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
 - **群撤回**：`IKernelMsgListener.onMsgRecall(int,String,long)`；更可靠的是收到的 `MsgRecord` 里

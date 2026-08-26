@@ -26,6 +26,9 @@ public final class QQClient {
     public static final String GROUP_LISTENER  = "com.tencent.qqnt.kernel.nativeinterface.IKernelGroupListener";
     public static final String MEMBER_LIST_CB  = "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberListCallback";
     public static final String OPERATE_CB      = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
+    public static final String KICK_CB         = "com.tencent.qqnt.kernel.nativeinterface.IKickMemberOperateCallback";
+    public static final String SHUTUP_INFO     = "com.tencent.qqnt.kernel.nativeinterface.GroupMemberShutUpInfo";
+    public static final String MEMBER_ROLE     = "com.tencent.qqnt.kernelpublic.nativeinterface.MemberRole";
 
     public static final int CT_C2C = 1;
     public static final int CT_GROUP = 2;
@@ -306,6 +309,50 @@ public final class QQClient {
             }
         }
         return groupInfoCache.values();
+    }
+
+    // ---------- group management (fire-and-forget via IOperateCallback) ----------
+    public boolean kickMember(long groupCode, String uid, boolean rejectAddReq) {
+        Object gs = getGroupService(); if (gs == null) return false;
+        java.util.ArrayList<String> uids = new java.util.ArrayList<>(); uids.add(uid);
+        ref.call(gs, "kickMember", groupCode, uids, rejectAddReq, "", ref.nullCb(KICK_CB));
+        return true;
+    }
+    public boolean banMember(long groupCode, String uid, int seconds) {
+        Object gs = getGroupService(); if (gs == null) return false;
+        Object info = ref.neu(SHUTUP_INFO);
+        ref.set(info, "uid", uid);
+        ref.set(info, "timeStamp", seconds);
+        java.util.ArrayList<Object> list = new java.util.ArrayList<>(); list.add(info);
+        ref.call(gs, "setMemberShutUp", groupCode, list, ref.nullCb(OPERATE_CB));
+        return true;
+    }
+    public boolean wholeBan(long groupCode, boolean enable) {
+        Object gs = getGroupService(); if (gs == null) return false;
+        ref.call(gs, "setGroupShutUp", groupCode, enable, ref.nullCb(OPERATE_CB));
+        return true;
+    }
+    public boolean setCard(long groupCode, String uid, String card) {
+        Object gs = getGroupService(); if (gs == null) return false;
+        ref.call(gs, "modifyMemberCardName", groupCode, uid, card == null ? "" : card, ref.nullCb(OPERATE_CB));
+        return true;
+    }
+    public boolean setAdmin(long groupCode, String uid, boolean enable) {
+        Object gs = getGroupService(); if (gs == null) return false;
+        Object role = ref.getStatic(MEMBER_ROLE, enable ? "ADMIN" : "MEMBER");
+        ref.call(gs, "modifyMemberRole", groupCode, uid, role, ref.nullCb(OPERATE_CB));
+        return true;
+    }
+    public boolean quitGroup(long groupCode) {
+        Object gs = getGroupService(); if (gs == null) return false;
+        ref.call(gs, "quitGroup", groupCode, ref.nullCb(OPERATE_CB));
+        return true;
+    }
+
+    /** Cached GroupSimpleInfo for one group, or null. */
+    public Object groupInfo(long groupCode) {
+        if (groupInfoCache.isEmpty()) getGroupList();
+        return groupInfoCache.get(groupCode);
     }
 
     /** Resolve a uin to its QQNT uid via the profile service (synchronous). Empty on failure. */

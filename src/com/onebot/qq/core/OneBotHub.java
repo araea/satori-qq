@@ -86,6 +86,33 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 setEmojiLike(p.optInt("message_id", 0), p.optLong("emoji_id", 0), p.optBoolean("set", true));
                 return new JSONObject();
             }
+            case "get_group_info": return groupInfoJson(p.optLong("group_id", 0));
+            case "set_group_kick": {
+                long g = p.optLong("group_id", 0), u = p.optLong("user_id", 0);
+                qq.kickMember(g, uidFor(g, u), p.optBoolean("reject_add_request", false));
+                return new JSONObject();
+            }
+            case "set_group_ban": {
+                long g = p.optLong("group_id", 0), u = p.optLong("user_id", 0);
+                qq.banMember(g, uidFor(g, u), p.optInt("duration", 1800));
+                return new JSONObject();
+            }
+            case "set_group_whole_ban":
+                qq.wholeBan(p.optLong("group_id", 0), p.optBoolean("enable", true));
+                return new JSONObject();
+            case "set_group_card": {
+                long g = p.optLong("group_id", 0), u = p.optLong("user_id", 0);
+                qq.setCard(g, uidFor(g, u), p.optString("card", ""));
+                return new JSONObject();
+            }
+            case "set_group_admin": {
+                long g = p.optLong("group_id", 0), u = p.optLong("user_id", 0);
+                qq.setAdmin(g, uidFor(g, u), p.optBoolean("enable", true));
+                return new JSONObject();
+            }
+            case "set_group_leave":
+                qq.quitGroup(p.optLong("group_id", 0));
+                return new JSONObject();
             // ---- need OIDB packet subsystem or extra upload work (milestone 3) ----
             case "get_forward_msg":
             case "send_like":
@@ -220,6 +247,37 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             if (n.contains("ADMIN")) return "admin";
         } catch (Throwable ignore) {}
         return "member";
+    }
+
+    private JSONObject groupInfoJson(long groupId) throws Exception {
+        Object gi = qq.groupInfo(groupId);
+        if (gi == null) throw new ApiError(1404, "group not found: " + groupId);
+        JSONObject o = new JSONObject();
+        o.put("group_id", Ref.asLong(qq.ref.get(gi, "groupCode")));
+        o.put("group_name", Ref.asStr(qq.ref.get(gi, "groupName")));
+        o.put("member_count", Ref.asInt(qq.ref.get(gi, "memberCount")));
+        o.put("max_member_count", Ref.asInt(qq.ref.get(gi, "maxMember")));
+        return o;
+    }
+
+    /** Resolve a uin to its uid for a group action: cache -> profile service -> group member list. */
+    private String uidFor(long groupId, long uin) throws Exception {
+        if (uin == 0) throw new ApiError(1400, "missing user_id");
+        String uid = store.uidOf(uin);
+        if (uid != null && !uid.isEmpty()) return uid;
+        uid = qq.resolveUid(uin);
+        if (uid != null && !uid.isEmpty()) { store.learnUid(uin, uid); return uid; }
+        java.util.Map<String, Object> members = qq.getAllMembers(groupId);
+        if (members != null) {
+            for (Object mi : members.values()) {
+                if (Ref.asLong(qq.ref.get(mi, "uin")) == uin) {
+                    String u = Ref.asStr(qq.ref.get(mi, "uid"));
+                    store.learnUid(uin, u);
+                    return u;
+                }
+            }
+        }
+        throw new ApiError(1404, "cannot resolve uid for user " + uin);
     }
 
     private void setEmojiLike(int messageId, long emojiId, boolean set) throws Exception {

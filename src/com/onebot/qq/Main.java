@@ -25,6 +25,10 @@ public final class Main implements IXposedHookLoadPackage {
             MsgStore store = new MsgStore();
             QQClient qq = new QQClient(lp.classLoader, true);
             OneBotHub hub = new OneBotHub(cfg, qq, store);
+            if (cfg.antiDetect) {
+                try { new com.onebot.qq.qq.AntiDetect(lp.classLoader).install(); }
+                catch (Throwable t) { L.e("AntiDetect install failed", t); }
+            }
             hub.start();          // set listener + start WS server + heartbeat
             qq.installHooks();    // capture kernel session -> registers receive listener
             L.i("OneBot-QQ started (OneBot 11 forward-WS on port " + cfg.port + ")");

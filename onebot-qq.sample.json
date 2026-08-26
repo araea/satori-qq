@@ -3,5 +3,6 @@
   "host": "0.0.0.0",
   "token": "",
   "heartbeat": true,
-  "heartbeat_ms": 15000
+  "heartbeat_ms": 15000,
+  "anti_detect": true
 }

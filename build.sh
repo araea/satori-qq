@@ -1,4 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
+# NOTE: libs/r8.jar is gitignored. After a fresh clone, download it once:
+#   curl -fsSL -o libs/r8.jar https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar
 set -e
 R=/data/media/0/dev/onebot-qq
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar

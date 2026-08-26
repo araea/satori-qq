@@ -31,6 +31,7 @@ ayjx (PRoot, OneBot 客户端)  --ws://127.0.0.1:3001-->  onebot-qq (QQ 进程�
 - [x] `get_group_list`（100 群实测）、`get_group_member_info`、`get_group_member_list`
 - [x] `set_msg_emoji_like`（贴表情回应）
 - [x] uin→uid 解析（ProfileService.getUidByUin，任意好友私聊）
+- **AntiDetect** 反检测（best-effort，缓解掉线，详见 docs/ANTIDETECT.md）
 - 已在真实群验证：文本 + 图片发送 + 撤回全部 retcode 0
 - 注意：**「私聊自己」不是有效投递目标**（图片会报 rich media transfer failed），测试请发真实群/好友
 
@@ -56,6 +57,13 @@ am force-stop com.tencent.mobileqq && monkey -p com.tencent.mobileqq 1
 工具链：javac(JDK21)+android.jar(API35)+libs/r8.jar(D8)+aapt/zipalign/apksigner。
 注意：Xposed API 桩类 (`stubs/de/robv/**`) 仅编译期用，**必须**排除出 dex（build.sh 已处理），
 否则框架报 “Xposed API classes are compiled into the module's APK” 拒绝加载。
+
+## 文档（重要）
+- [`docs/HANDOFF.md`](docs/HANDOFF.md) — **交接文档**：环境/工具链/构建部署/坑清单，无上下文也能接手
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 代码结构 + **完整 QQNT 9.3.50 内核映射表**
+- [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md) — 掉线/反检测：做了什么、能力边界、根治路线
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — 里程碑 3 每个待做动作的具体打法
+- 参考：`/data/media/0/dev/QQ.hap`（QQ 鸿蒙版源码泄露，352MB）——协议/OIDB 命令字的参考金矿
 
 ## 排错
 - `logcat -s OneBotQQ:*` 看模块日志

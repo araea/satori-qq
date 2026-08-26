@@ -64,6 +64,23 @@ KernelSU 的 umount-default / denylist 对"被注入的 QQ"无效（要注入就
      下一步只能上 syscall/inline hook（大工程，见上）。
 > 出事随时一键停：`sh .../cli scope rm com.onebot.qq com.tencent.mobileqq/0` 让 QQ 立刻回到干净无注入。
 
+### 2026-08-27 实测结论（重要，别再走这条弯路）
+maps_hide 外科版（只 patch libfekit）在真机测了：**patched 0 slots，无效**。两个原因：
+1. **linker 命名空间隔离**：我们的 `libmapshide.so` 经 `System.load` 加载在**模块 classloader 的
+   命名空间**里，`dl_iterate_phdr` 只枚举本命名空间，**看不到 QQ app 命名空间里的 libfekit.so**
+   （虽然 libfekit 确实在同进程、/proc/pid/maps 里能看到）。要 patch 它得改成：读真实
+   `/proc/self/maps` 定位 libfekit 基址 → 直接解析其 ELF 内存 → mprotect+patch GOT（跨 ns 同地址空间可行）。
+2. **就算 patch 到了，libfekit 是专业反篡改，极可能用裸 svc syscall 读 maps**，根本不走 libc GOT。
+好消息：**外科版不会再卡死 QQ**（只碰检测库，ART 读真 maps）。坏消息：**GOT 路线基本走死**。
+真要继续：只剩(a) 直接内存 patch libfekit + 赌它走 libc；(b) seccomp/inline-hook 拦裸 syscall（大工程）；
+(c) **换思路：别藏，改成压制"踢下线"动作**——但"设备异常要人脸"是**服务器**签发票据控制的，
+本地压制大概率让会话变成死号（能显示登录但发不出消息）。
+
+### 当前可用状态（2026-08-27）
+注入 + `anti_detect`(Java hook detectMethod/getXpsInfo) + maps_hide 关。实测 QQ **保持登录数分钟、
+会话活(get_login_info 返回真实昵称)、未被踢**。是否长期稳定需观察数小时。**诚实底线：libfekit 的
+native 检测无法保证绕过**；现实选择是"接受偶尔重登"或"换小号"。
+
 ## 一句话给下一个接手的人
 Java 层能做的都做了（detectMethod/getXpsInfo）。要根治掉线，去搞**框架级 maps 隐藏**（路 1）
 或**native maps 过滤 hook**（路 2）。别在 Java 里继续试图骗过 libfekit，那条路走不通。

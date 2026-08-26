@@ -23,12 +23,20 @@ public final class MapsHide {
                         String dir = Ref.asStr(ref.get(ai, "nativeLibraryDir"));
                         String so = dir + "/libmapshide.so";
                         System.load(so);
-                        int n = install();
                         loaded = true;
-                        L.i("MapsHide: loaded " + so + ", patched " + n + " GOT slots");
+                        L.i("MapsHide: loaded " + so);
+                        // libfekit loads lazily during login; re-scan for ~60s so we patch it
+                        // whenever it appears (install() is idempotent). Only detector libs are
+                        // touched, so this is safe to repeat.
+                        int lastPatched = -1;
+                        for (int k = 0; k < 30; k++) {
+                            int n = install();
+                            if (n != lastPatched) { L.i("MapsHide: patched " + n + " detector GOT slots"); lastPatched = n; }
+                            try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
+                        }
                         return;
                     }
-                } catch (Throwable ignore) {}
+                } catch (Throwable ex) { L.e("MapsHide load", ex); return; }
                 try { Thread.sleep(300); } catch (InterruptedException e) { return; }
             }
             if (!loaded) L.w("MapsHide: could not load native lib (context/so not found)");

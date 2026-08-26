@@ -185,7 +185,11 @@ static int iter_cb(void* info_v, size_t size, void* data) {
     ctx_t* ctx = (ctx_t*)data;
     const Elf64_Phdr* ph = (const Elf64_Phdr*)info->dlpi_phdr;
     const char* nm = info->dlpi_name ? info->dlpi_name : "";
-    if (strstr(nm,"mapshide") || strstr(nm,"linker")) return 0;
+    // SURGICAL: only patch the detector libs. Never touch ART/libc/libkernel/QQ itself —
+    // they legitimately read the REAL /proc/self/maps (ART GC/JIT/unwind); feeding them a
+    // filtered copy hangs QQ. Only libfekit (QSec) / libckguard need to be blinded.
+    if (!(strstr(nm, "fekit") || strstr(nm, "ckguard") || strstr(nm, "wtecdh"))) return 0;
+    LOGI("patching detector lib: %s", nm);
     for (int i = 0; i < info->dlpi_phnum; i++) {
         if (ph[i].p_type == PT_DYNAMIC) {
             const Elf64_Dyn* dyn = (const Elf64_Dyn*)(info->dlpi_addr + ph[i].p_vaddr);

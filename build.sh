@@ -30,9 +30,22 @@ java -cp $R8 com.android.tools.r8.D8 --release --min-api 26 \
   --lib $ANDROID_JAR --output $OUT/dex @$OUT/classlist.txt
 echo "   dex: $(ls -la $OUT/dex/classes.dex | awk '{print $5}') bytes"
 
+
+echo "== 2b. native maps-hider .so =="
+CLANG=/data/data/com.termux/files/usr/bin/clang
+if [ -x "$CLANG" ]; then
+  mkdir -p $OUT/lib/arm64-v8a
+  $CLANG --target=aarch64-linux-android24 -fPIC -shared -nostdlib -Os \
+    -o $OUT/lib/arm64-v8a/libmapshide.so $R/native/mapshide.c -L/system/lib64 -lc -llog -ldl \
+    && echo "   built libmapshide.so" || echo "   WARN native build failed (module still works, maps_hide off)"
+else
+  echo "   clang not found, skipping native (maps_hide unavailable)"
+fi
+
 echo "== 3. aapt package =="
 $AAPT package -f -M $R/AndroidManifest.xml -I $FRAMEWORK -A $R/assets -F $APK_UNSIGNED
 ( cd $OUT/dex && $AAPT add $APK_UNSIGNED classes.dex >/dev/null )
+if [ -f $OUT/lib/arm64-v8a/libmapshide.so ]; then ( cd $OUT && $AAPT add $APK_UNSIGNED lib/arm64-v8a/libmapshide.so >/dev/null ) && echo "   packaged libmapshide.so"; fi
 
 echo "== 4. keystore (generate once) =="
 if [ ! -f $KS ]; then

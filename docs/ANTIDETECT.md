@@ -40,6 +40,30 @@ QQ NT 的安全核心是 **native 的 `libfekit.so`**（腾讯 QSec/fekit SDK）
 但那些针对的是**其它风控 App**；QQ 的掉线是 **Xposed 注入**被 QSec native 抓到，和上面那套是两码事。
 KernelSU 的 umount-default / denylist 对"被注入的 QQ"无效（要注入就不能 denylist QQ）。
 
+---
+
+## Route 2 已实现：native maps 隐藏 (`maps_hide`, 默认关闭)
+`native/mapshide.c` → 编译成 `lib/arm64-v8a/libmapshide.so`，由 `qq/MapsHide.java` 在 QQ 进程里
+`System.load` + `install()`。原理：用 `dl_iterate_phdr` 遍历所有已加载 ELF，patch 它们 GOT 里的
+`open`/`openat`，重定向到我们的实现——读 `/proc/self/maps` 时返回一份**过滤掉**
+`vector/zygisk/xposed/lspd/riru/magisk/mapshide/onebot/data/adb` 行的 memfd。
+构建：`build.sh` 里 termux clang `--target=aarch64-linux-android24` 直接编 bionic .so。
+
+**⚠️ 诚实警告**：libfekit 是专业 native 反篡改，**很可能用裸系统调用 (svc #openat) 直接读 maps，
+绕过 libc**——那样 GOT hook 拦不到，`maps_hide` 就无效。这是 best-effort，不保证。
+真要拦裸 syscall，得做 seccomp/inline-hook syscall entry，工程量再上一个量级。
+
+### 测试步骤（**先确保主号已在干净 QQ 上登录稳定**）
+1. 写配置 `/sdcard/Android/data/com.tencent.mobileqq/files/onebot-qq.json`：`{"maps_hide": true, "token": "..."}`
+2. 把 QQ 加回作用域：`sh /data/adb/modules/zygisk_vector/cli scope add com.onebot.qq com.tencent.mobileqq/0`
+3. 冷启动 QQ：`am force-stop com.tencent.mobileqq; monkey -p com.tencent.mobileqq 1`
+4. 看日志：`logcat -s OneBotQQ:* MapsHide:*`，确认 `MapsHide: loaded ... patched N GOT slots`（N>0）。
+5. 观察 QQ 是否还掉线：
+   - **不掉了** → GOT 级过滤够用，成了。
+   - **还掉** → 基本可确认 libfekit 走裸 syscall；关掉 `maps_hide` + `scope rm` 停手，
+     下一步只能上 syscall/inline hook（大工程，见上）。
+> 出事随时一键停：`sh .../cli scope rm com.onebot.qq com.tencent.mobileqq/0` 让 QQ 立刻回到干净无注入。
+
 ## 一句话给下一个接手的人
 Java 层能做的都做了（detectMethod/getXpsInfo）。要根治掉线，去搞**框架级 maps 隐藏**（路 1）
 或**native maps 过滤 hook**（路 2）。别在 Java 里继续试图骗过 libfekit，那条路走不通。

@@ -9,3 +9,5 @@ libs/*.jar
 
 # os cruft
 .DS_Store
+libs/arm64-v8a/
+lib/

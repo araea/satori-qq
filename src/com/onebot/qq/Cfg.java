@@ -14,6 +14,7 @@ public final class Cfg {
     public volatile boolean heartbeat = true;
     public volatile int heartbeatMs = 15000;
     public volatile boolean antiDetect = true;   // best-effort Java-level anti-detection (see AntiDetect)
+    public volatile boolean mapsHide = false;    // EXPERIMENTAL native /proc/self/maps filter (default OFF)
 
     private static final String[] PATHS = new String[]{
         // QQ can always read its own external files dir under scoped storage
@@ -41,6 +42,7 @@ public final class Cfg {
                 c.heartbeat = o.optBoolean("heartbeat", c.heartbeat);
                 c.heartbeatMs = o.optInt("heartbeat_ms", c.heartbeatMs);
                 c.antiDetect = o.optBoolean("anti_detect", c.antiDetect);
+                c.mapsHide = o.optBoolean("maps_hide", c.mapsHide);
                 L.i("Config loaded from " + p + " (port=" + c.port + ", auth=" + (c.token.isEmpty()?"off":"on") + ")");
                 return c;
             } catch (Throwable t) {

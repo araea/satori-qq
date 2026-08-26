@@ -25,6 +25,10 @@ public final class Main implements IXposedHookLoadPackage {
             MsgStore store = new MsgStore();
             QQClient qq = new QQClient(lp.classLoader, true);
             OneBotHub hub = new OneBotHub(cfg, qq, store);
+            if (cfg.mapsHide) {
+                try { com.onebot.qq.qq.MapsHide.tryLoad(new com.onebot.qq.qq.Ref(lp.classLoader)); }
+                catch (Throwable t) { L.e("MapsHide load failed", t); }
+            }
             if (cfg.antiDetect) {
                 try { new com.onebot.qq.qq.AntiDetect(lp.classLoader).install(); }
                 catch (Throwable t) { L.e("AntiDetect install failed", t); }

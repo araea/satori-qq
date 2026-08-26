@@ -6,7 +6,8 @@
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <application
         android:label="OneBot-QQ 实现端"
-        android:hasCode="true">
+        android:hasCode="true"
+        android:extractNativeLibs="true">
         <meta-data android:name="xposedmodule" android:value="true" />
         <meta-data android:name="xposeddescription" android:value="将 QQ 封装为 OneBot 11 正向 WS 实现端 (供 ayjx 使用)" />
         <meta-data android:name="xposedminversion" android:value="93" />

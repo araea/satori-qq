@@ -12,6 +12,7 @@ public final class Ref {
 
     public Object neu(String clsName, Object... args) { return XposedHelpers.newInstance(cls(clsName), args); }
     public Object neu(Class<?> c, Object... args) { return XposedHelpers.newInstance(c, args); }
+    public Object neuTyped(String clsName, Class<?>[] types, Object[] args) { return XposedHelpers.newInstance(cls(clsName), types, args); }
 
     public Object call(Object o, String m, Object... args) { return XposedHelpers.callMethod(o, m, args); }
     public Object callS(String clsName, String m, Object... args) { return XposedHelpers.callStaticMethod(cls(clsName), m, args); }

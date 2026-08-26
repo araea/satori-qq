@@ -23,6 +23,9 @@ public final class QQClient {
     public static final String TEXT_ELEMENT    = "com.tencent.qqnt.kernel.nativeinterface.TextElement";
     public static final String IOPERATE_CB     = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
     public static final String MOBILEQQ        = "mqq.app.MobileQQ";
+    public static final String GROUP_LISTENER  = "com.tencent.qqnt.kernel.nativeinterface.IKernelGroupListener";
+    public static final String MEMBER_LIST_CB  = "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberListCallback";
+    public static final String OPERATE_CB      = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
 
     public static final int CT_C2C = 1;
     public static final int CT_GROUP = 2;
@@ -112,6 +115,7 @@ public final class QQClient {
             ref.call(msgService, "addKernelMsgListener", proxy);
             listenerRegistered = true;
             L.i("Registered IKernelMsgListener (receiving messages)");
+            tryRegisterGroupListener();
         } catch (Throwable t) {
             L.e("Failed to register msg listener", t);
         }
@@ -224,6 +228,85 @@ public final class QQClient {
 
     /** peerUid for a group is the group code string; for c2c it's the target's uid. */
     public String groupPeer(long groupCode) { return String.valueOf(groupCode); }
+
+    // ---------- group queries ----------
+    private final java.util.Map<Long, Object> groupInfoCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile boolean groupListenerRegistered;
+
+    private synchronized void tryRegisterGroupListener() {
+        if (groupListenerRegistered) return;
+        Object gs = getGroupService();
+        if (gs == null) return;
+        try {
+            Class<?> li = ref.cls(GROUP_LISTENER);
+            Object proxy = Proxy.newProxyInstance(ref.cl, new Class[]{li}, (p, m, args) -> {
+                try {
+                    if ("onGroupListUpdate".equals(m.getName()) && args != null && args.length >= 2
+                            && args[1] instanceof List) {
+                        for (Object gi : (List<?>) args[1]) {
+                            long code = Ref.asLong(ref.get(gi, "groupCode"));
+                            if (code != 0) groupInfoCache.put(code, gi);
+                        }
+                    }
+                } catch (Throwable ignore) {}
+                return defOf(m.getReturnType());
+            });
+            ref.call(gs, "addKernelGroupListener", proxy);
+            groupListenerRegistered = true;
+            L.i("Registered IKernelGroupListener (group list cache)");
+        } catch (Throwable t) {
+            L.e("register group listener", t);
+        }
+    }
+
+    private static Object defOf(Class<?> r) {
+        if (!r.isPrimitive() || r == void.class) return null;
+        if (r == boolean.class) return false;
+        if (r == long.class) return 0L; if (r == int.class) return 0;
+        if (r == double.class) return 0d; if (r == float.class) return 0f;
+        if (r == short.class) return (short) 0; if (r == byte.class) return (byte) 0;
+        if (r == char.class) return (char) 0;
+        return null;
+    }
+
+    /** All members of a group: HashMap<uid, MemberInfo>. Blocks up to 15s. Null on failure. */
+    @SuppressWarnings("unchecked")
+    public java.util.Map<String, Object> getAllMembers(long groupCode) {
+        Object gs = getGroupService();
+        if (gs == null) return null;
+        try {
+            final Object[] holder = new Object[1];
+            final CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MEMBER_LIST_CB)}, (p, m, args) -> {
+                if ("onResult".equals(m.getName()) && args != null && args.length >= 3 && args[2] != null) {
+                    try { holder[0] = ref.get(args[2], "infos"); } catch (Throwable ignore) {}
+                    latch.countDown();
+                }
+                return null;
+            });
+            ref.call(gs, "getAllMemberList", groupCode, false, cb);
+            latch.await(15, TimeUnit.SECONDS);
+            return (java.util.Map<String, Object>) holder[0];
+        } catch (Throwable t) {
+            L.e("getAllMembers " + groupCode, t);
+            return null;
+        }
+    }
+
+    /** Cached group simple-infos; triggers a refresh and waits briefly if the cache is empty. */
+    public java.util.Collection<Object> getGroupList() {
+        if (groupInfoCache.isEmpty()) {
+            Object gs = getGroupService();
+            if (gs != null) {
+                try {
+                    Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, a) -> null);
+                    ref.call(gs, "getGroupList", false, cb);
+                    for (int i = 0; i < 30 && groupInfoCache.isEmpty(); i++) Thread.sleep(100);
+                } catch (Throwable t) { L.e("getGroupList", t); }
+            }
+        }
+        return groupInfoCache.values();
+    }
 
     /** Resolve a uin to its QQNT uid via the profile service (synchronous). Empty on failure. */
     @SuppressWarnings("unchecked")

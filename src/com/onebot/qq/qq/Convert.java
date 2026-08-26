@@ -34,8 +34,8 @@ public final class Convert {
                     case "at":   addAt(out, d.optString("qq", "")); break;
                     case "face": addFace(out, d.optString("id", "0")); break;
                     case "reply":addReply(out, d.optString("id", "")); break;
-                    // media types need rich-media upload (milestone 2); degrade gracefully:
-                    case "image": addText(out, "[图片]"); break;
+                    case "image": addImage(out, d); break;
+                    // record/video/file send need PTT/silk & video upload (milestone 3); degrade gracefully:
                     case "record":addText(out, "[语音]"); break;
                     case "video": addText(out, "[视频]"); break;
                     default:
@@ -100,6 +100,14 @@ public final class Convert {
         ref.set(f, "faceType", 1);
         ref.set(e, "faceElement", f);
         out.add(e);
+    }
+
+    private void addImage(ArrayList<Object> out, org.json.JSONObject d) {
+        java.io.File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
+        Object msgService = qq.getMsgService();
+        Object elem = (f != null && msgService != null) ? Media.buildPicElement(ref, msgService, f) : null;
+        if (elem != null) out.add(elem);
+        else { L.w("image send failed, degrade to text"); addText(out, "[图片]"); }
     }
 
     private void addReply(ArrayList<Object> out, String id) {

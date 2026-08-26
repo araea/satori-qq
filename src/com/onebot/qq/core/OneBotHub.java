@@ -43,7 +43,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         JSONObject params = req.optJSONObject("params");
         if (params == null) params = new JSONObject();
         try {
-            JSONObject data = dispatch(action, params);
+            Object data = dispatch(action, params);
             conn.send(ok(data, echo).toString());
         } catch (ApiError e) {
             conn.send(fail(e.code, e.getMessage(), echo).toString());
@@ -57,7 +57,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         final int code; ApiError(int code, String msg) { super(msg); this.code = code; }
     }
 
-    private JSONObject dispatch(String action, JSONObject p) throws Exception {
+    private Object dispatch(String action, JSONObject p) throws Exception {
         switch (action) {
             case "get_login_info": {
                 JSONObject d = new JSONObject();
@@ -79,13 +79,17 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 return new JSONObject();
             }
             case "get_msg": return getMsg(p.optInt("message_id", 0));
-            // ---- not yet implemented (milestone 2) ----
-            case "get_group_list":
-            case "get_group_member_info":
+            case "get_group_list":        return getGroupList();
+            case "get_group_member_info": return getGroupMemberInfo(p.optLong("group_id", 0), p.optLong("user_id", 0));
+            case "get_group_member_list": return getGroupMemberList(p.optLong("group_id", 0));
+            case "set_msg_emoji_like": {
+                setEmojiLike(p.optInt("message_id", 0), p.optLong("emoji_id", 0), p.optBoolean("set", true));
+                return new JSONObject();
+            }
+            // ---- need OIDB packet subsystem or extra upload work (milestone 3) ----
             case "get_forward_msg":
             case "send_like":
             case "set_group_special_title":
-            case "set_msg_emoji_like":
             case "upload_group_file":
             case "upload_private_file":
                 throw new ApiError(1404, "action not implemented yet: " + action);
@@ -152,6 +156,87 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         return d;
     }
 
+    private JSONArray getGroupList() {
+        JSONArray arr = new JSONArray();
+        for (Object gi : qq.getGroupList()) {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("group_id", Ref.asLong(qq.ref.get(gi, "groupCode")));
+                o.put("group_name", Ref.asStr(qq.ref.get(gi, "groupName")));
+                o.put("member_count", Ref.asInt(qq.ref.get(gi, "memberCount")));
+                o.put("max_member_count", Ref.asInt(qq.ref.get(gi, "maxMember")));
+                arr.put(o);
+            } catch (Throwable ignore) {}
+        }
+        return arr;
+    }
+
+    private JSONObject getGroupMemberInfo(long groupId, long userId) throws Exception {
+        if (groupId == 0 || userId == 0) throw new ApiError(1400, "missing group_id/user_id");
+        java.util.Map<String, Object> members = qq.getAllMembers(groupId);
+        if (members == null) throw new ApiError(1500, "cannot fetch group members");
+        for (Object mi : members.values()) {
+            if (Ref.asLong(qq.ref.get(mi, "uin")) == userId) return memberJson(groupId, mi);
+        }
+        throw new ApiError(1404, "member " + userId + " not found in group " + groupId);
+    }
+
+    private JSONArray getGroupMemberList(long groupId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        java.util.Map<String, Object> members = qq.getAllMembers(groupId);
+        if (members == null) throw new ApiError(1500, "cannot fetch group members");
+        JSONArray arr = new JSONArray();
+        for (Object mi : members.values()) arr.put(memberJson(groupId, mi));
+        return arr;
+    }
+
+    private JSONObject memberJson(long groupId, Object mi) throws Exception {
+        JSONObject o = new JSONObject();
+        long uin = Ref.asLong(qq.ref.get(mi, "uin"));
+        String card = Ref.asStr(qq.ref.get(mi, "cardName"));
+        o.put("group_id", groupId);
+        o.put("user_id", uin);
+        o.put("nickname", Ref.asStr(qq.ref.get(mi, "nick")));
+        o.put("card", card);
+        o.put("sex", "unknown");
+        o.put("age", 0);
+        o.put("area", "");
+        o.put("join_time", Ref.asInt(qq.ref.get(mi, "joinTime")));
+        o.put("last_sent_time", Ref.asInt(qq.ref.get(mi, "lastSpeakTime")));
+        o.put("level", String.valueOf(Ref.asInt(qq.ref.get(mi, "memberLevel"))));
+        o.put("role", roleStr(qq.ref.get(mi, "role")));
+        o.put("unfriendly", false);
+        o.put("title", Ref.asStr(qq.ref.get(mi, "memberSpecialTitle")));
+        o.put("title_expire_time", Ref.asLong(qq.ref.get(mi, "specialTitleExpireTime")));
+        o.put("card_changeable", true);
+        store.learnUid(uin, Ref.asStr(qq.ref.get(mi, "uid")));
+        return o;
+    }
+
+    private String roleStr(Object roleEnum) {
+        try {
+            String n = String.valueOf(qq.ref.call(roleEnum, "name")).toUpperCase();
+            if (n.contains("OWNER")) return "owner";
+            if (n.contains("ADMIN")) return "admin";
+        } catch (Throwable ignore) {}
+        return "member";
+    }
+
+    private void setEmojiLike(int messageId, long emojiId, boolean set) throws Exception {
+        MsgStore.Rec r = store.get(messageId);
+        if (r == null) throw new ApiError(1404, "message not found: " + messageId);
+        Object msgService = qq.getMsgService();
+        if (msgService == null) throw new ApiError(1500, "kernel not ready");
+        Object contact = qq.ref.neu(QQClient.CONTACT, r.chatType,
+                r.peerUid == null || r.peerUid.isEmpty() ? String.valueOf(r.peerUin) : r.peerUid, "");
+        long emojiType = emojiId < 9000 ? 1L : 2L;   // 1=QQ face, 2=unicode emoji
+        Object cb = java.lang.reflect.Proxy.newProxyInstance(qq.ref.cl,
+                new Class[]{qq.ref.cls("com.tencent.qqnt.kernel.nativeinterface.ISetMsgEmojiLikesCallback")},
+                (proxy, m, a) -> null);
+        // setMsgEmojiLikes(Contact, long msgSeq, String emojiId, long emojiType, boolean set, cb)
+        qq.ref.call(msgService, "setMsgEmojiLikes", contact, r.msgSeq, String.valueOf(emojiId), emojiType, set, cb);
+    }
+
     // ============ QQ inbound: events ============
     private final java.util.Set<Long> seen = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -202,7 +287,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
     }
 
     // ============ response envelopes ============
-    private JSONObject ok(JSONObject data, Object echo) {
+    private JSONObject ok(Object data, Object echo) {
         try {
             JSONObject o = new JSONObject();
             o.put("status", "ok"); o.put("retcode", 0);

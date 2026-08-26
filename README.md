@@ -18,20 +18,26 @@ ayjx (PRoot, OneBot 客户端)  --ws://127.0.0.1:3001-->  onebot-qq (QQ 进程�
 - 会话获取：hook `IQQNTWrapperSession$CppProxy` 构造函数捕获实时会话，
   再 `getMsgService()/getGroupService()/...`（`nativeinterface` 名称稳定，避开混淆的 `api.*`）。
 
-## 现状（里程碑 1，已在设备上验证）
+## 现状（已在设备上验证）
+**里程碑 1：**
 - [x] 正向 WS 服务 + Bearer/access_token 鉴权 + 心跳 meta 事件
 - [x] `get_login_info` → 真实 uin + 昵称
 - [x] 接收群/私聊消息 → OneBot 事件（text / at / face / image / reply 段）
-- [x] 发送 `send_msg` / `send_group_msg` / `send_private_msg`（文本 / at / face / reply）
+- [x] 发送 `send_msg` / `send_group_msg` / `send_private_msg`（text / at / face / reply / **image**）
 - [x] `delete_msg`（撤回）、`get_msg`
-- 私聊发送需先与对方有过一次消息（用于建立 uin↔uid 缓存）
 
-## 待办（里程碑 2）
-- 图片/语音/视频/文件 **发送**（需 RichMediaService 上传；当前降级为文本占位）
-- `get_group_list` / `get_group_member_info` / `get_forward_msg`
-- `send_like` / `set_group_special_title` / `set_msg_emoji_like` / `upload_*`
+**里程碑 2：**
+- [x] **图片发送**（QQNT rich-media：copy 到 getRichMediaFilePathForMobileQQSend 路径后 sendMsg 自动上传；file 支持 路径/file://http/base64）
+- [x] `get_group_list`（100 群实测）、`get_group_member_info`、`get_group_member_list`
+- [x] `set_msg_emoji_like`（贴表情回应）
+- [x] uin→uid 解析（ProfileService.getUidByUin，任意好友私聊）
+- 已在真实群验证：文本 + 图片发送 + 撤回全部 retcode 0
+- 注意：**「私聊自己」不是有效投递目标**（图片会报 rich media transfer failed），测试请发真实群/好友
+
+## 待办（里程碑 3，需要 OIDB 原始封包子系统 / hook MSF 发包层）
+- `send_like`、`set_group_special_title`、`get_forward_msg`
+- `upload_group_file` / `upload_private_file`、语音/视频/文件**发送**
 - notice 事件：群撤回、戳一戳、进退群、禁言
-- uin→uid 转换服务（任意 uin 私聊，无需先收消息）
 
 ## 配置
 可选，放到 QQ 能读到的路径（否则用默认：3001 端口、无鉴权）：

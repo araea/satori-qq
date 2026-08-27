@@ -68,7 +68,8 @@
 
 - 任何高风险注入/native 实验先保留当前 APK、脚本和 scope 回滚路径，并明确观察窗口。
 - 不把账号凭据、token、cookies 或私有消息写入日志、Git 或回复。
-- 新消息/管理动作优先使用作者控制的测试群，避免把调试流量扩散给无关用户。
+- 作者已授权所有群聊用于测试，无需逐次询问。主号为群主的首选测试群是 `280183116`；涉及群文件、
+  群管理、OIDB 写操作或需要完整权限的验证优先选它。其它群可按样本、权限和影响自行选择。
 - 出现持续闪退、登录验证升级或消息能力异常时，先停实验并保存证据；scope 回滚：
   `su -c 'sh /data/adb/modules/zygisk_vector/cli scope rm com.onebot.qq com.tencent.mobileqq/0'`。
 
@@ -96,6 +97,16 @@ sh /data/adb/onebot-qq/qq-onebot-exposure-audit.sh latest
 ```
 
 ## 当前优先队列
+
+### 下一次对话已确认的执行顺序
+
+1. 保存 0.5.0/reportLog-block 基线 APK 与 exposure snapshot。
+2. 只改变 `block_qsec_tasks` 一个变量，做短窗口 A/B；验证登录、WS、收发、资源下载与 QSec/掉线指标，
+   异常即回到基线。即时稳定后转入 24h/72h 观察。
+3. 并行实现群文件接口组：`get_group_file_system_info`、`get_group_root_files`、
+   `get_group_files_by_folder`、`get_group_file_url`，优先用 `280183116` 真机验证。
+4. 若必须制造样本，可上传一个小型、可识别的测试文件并在验证后清理；作者已授权由接手者自行判断。
+5. 更新支持矩阵、反检测快照和真机结果，再决定下一批转发富媒体或 notice/request。
 
 ### 反检测
 

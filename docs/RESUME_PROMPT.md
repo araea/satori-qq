@@ -21,11 +21,11 @@
 作者要"**纯手机、不用 PC**"。达成这个目标有三条路，本项目只是其一：
 | 方案 | 平台 | 掉线问题 | 难点 | 轻重 |
 |---|---|---|---|---|
-| **本项目 Xposed 模块** | 安卓原生 QQ | ❌有(在死磕) | 反检测天花板 | 最轻 |
+| **本项目 Xposed 模块** | 安卓原生 QQ | ❌有(**范式固有,别再死磕**) | 反检测天花板在框架/native层 | 最轻 |
 | NapCat + Linux QQ(Termux) | 桌面 QQ(Electron) | ✅无 | Chromium-under-PRoot 难搞+重 | 最重 |
 | **Lagrange.OneBot(Termux)** | 独立协议客户端(.NET) | ✅无 | 配签名服务器 | 轻 |
 - **诚实定位**：论功能/成熟/稳定，**NapCat 全面碾压本项目**。本项目唯一真实优势=**能在安卓手机上跑不用 PC**(NapCat/LLOneBot 只能桌面)。有常开 PC 的话桌面 NapCat 远比这稳。**沟通别把本项目吹过头。**
-- 若作者想换省心方案：**Lagrange.OneBot 在 Termux PRoot 里跑**最优(纯 .NET,不需要 QQ 客户端/Electron,扫码登录,不注入→不掉线,给 ayjx 出 OneBot11;代价=签名服务器)。本项目作为"试安卓原生能到什么程度"的实验有价值,作者也玩得开心。
+- 若作者想换省心方案：**Lagrange.OneBot 在 Termux PRoot 里跑**最优(纯 .NET,不需要 QQ 客户端/Electron,扫码登录,不注入→不掉线,给 ayjx 出 OneBot11;代价=签名服务器)。本项目作为"试安卓原生能到什么程度"的实验有价值,作者也玩得开心。**掉线是范式固有代价的新认知,已重写 §6+§10,务必读。**
 
 ## 3. 环境 & 构建部署（关键，别踩坑）
 - 跑在 **rooted 手机的 Termux PRoot(Ubuntu)** 里。Android 二进制**直接能用**：`/system/bin/{pm,am,monkey,logcat,dumpsys,ps}`、`/data/adb/modules/zygisk_vector/cli`。`su`/`adb` 不行。
@@ -39,21 +39,22 @@
 ## 4. 当前进度
 **已实现 + 真机验证**：正向 WS + Bearer 鉴权 + 心跳；`get_login_info`；收发消息段 text/at/face/reply/**image**/**json(ark卡片)**/mface/poke；`delete_msg`(撤回)、`get_msg`；`get_group_list`、`get_group_member_info`/`_list`、`get_group_info`；`set_group_kick`/`ban`/`whole_ban`/`card`/`admin`/`leave`；`set_msg_emoji_like`；uin→uid 解析；**AntiDetect**(Java hook)。
 **封包子系统（已真机打通）**：`packet/Pb.java` 数据层 + `packet/PacketSvc.java` 发送/回包层已实现。发送走 QQNT 自带 `IDependsAdapter.onSendSSORequest`，显式传十六进制 serviceCmd 与 OIDB 外层；回包 hook `CppProxy.onSendSSOReply` 按 requestId 关联，QQ 自己完成 SSO/QSec 签名。`set_group_special_title` 的 0x8FC_2 已接入；在内部测试群 `675983807`（账号为 owner）把本人空头衔原值写回，真机返回 `status=ok, retcode=0`，成功分支已验证。
-**已新增(2026-08-27,真机验证)**：**合并转发** `send_group_forward_msg`/`send_private_forward_msg`(走 `packet/LongMsg.java` + `PacketSvc.sendSso` 发 `SsoSendLongMsg` 拿 resId → multimsg 卡片,测试群发+撤回 retcode 0,v1 文本节点)；`send_like`(0x7E5_104,协议对但被服务器 319 appid 策略拦,非代码问题)。
-**未做**：语音/视频/文件发送(silk+highway 上传)、upload_*、get_forward_msg(下载/取回方向)。
+**已新增(2026-08-27,真机)**：**合并转发** `send_group_forward_msg`/`send_private_forward_msg`(走 `packet/LongMsg.java` 拼 im_msg_body 假节点→gzip→`PacketSvc.sendSso("trpc...SsoSendLongMsg")` 拿 resId→multimsg 卡片,测试群发+撤回 retcode 0,v1 文本节点)；`send_like`(0x7E5_104,协议对但被服务器 `oidb=319 rule type not match appid` 策略拦——**非代码问题**,所有 source 都 319,是腾讯 appid 级封禁叠加主号风控)。
+**未做**：语音/视频/文件发送(silk+highway)、upload_*、get_forward_msg(下载/取回方向)。
 **别做**：notice 事件（ayjx 不消费,它的 recall 是 /撤回命令）。
 
 ## 5. 封包子系统怎么继续
 1. `PacketSvc` 已打通，不要退回 `onSendOidbRequest`：它会把 0x8FC 错拼成 `0x2300`，真机返回 236 `cmd not found`。
 2. 正确路线是 `onSendSSORequest(Pb.oidbCmd, Pb.oidb, ...)` + `onSendSSOReply`；0x8FC_2 已在群主测试群返回 retcode 0。
 3. 后续所有群内受控测试固定使用 `675983807`；非消息型动作尽量原值写回，消息型动作立即撤回。
-4. 现在可直接复用 `sendOidb` 实现 `send_like`/SsoSendLongMsg。不要手工 QSign：QQ 会签名，且 9.3.50 的 `QSec.getSign` 实际是 `(String,byte[])`。
+4. 传输层已有两条：`sendOidb(cmd,sub,body[,isReserved])`(套 OIDB 外层) 与 `sendSso(serviceCmd,body)`(裸 trpc,合并转发用)。不要手工 QSign：QQ 会签名,9.3.50 的 `QSec.getSign` 实际是 `(String,byte[])`。
+5. **appid 策略坑**：真机真 appid 反被服务器策略卡(send_like 319)。发新封包前先判断该命令是否社交/资料类(易被 319);群管/消息类多数不卡。
 **每步要真机发包测试(有风控风险)**,测试发到作者指定测试群 `675983807` 并立即 delete_msg 撤回。
 
-## 6. 反检测现状（读 ANTIDETECT.md 全文）
-- QQ 被注入触发 native `libfekit.so`(QSec)检测→服务器踢下线要人脸。
-- **Java 层 AntiDetect**(hook `QSec.detectMethod`→false、`getXpsInfo`→空)已生效;**疑似只靠它就能稳**(已连续挺过多次注入冷启动没掉线,需长期观察)。**别 hook** `getSign/doSomething/energy`(登录+签名要用)。
-- **maps_hide(native GOT) 是死路**:linker 命名空间隔离(我们.so 看不到 libfekit)+libfekit 走裸 syscall。默认关,别再走。
+## 6. 反检测现状（读 ANTIDETECT.md 全文）—— 认知已重构(2026-08-27)
+- **掉线不是本模块的锅,是"注入真机 QQ"这个范式的固有代价。** 作者实测:即便本模块不注入,只要有**别的 vector 模块**在全局注入,QQ 照样掉线。libfekit(QSec)检测的是"本进程被 Xposed/zygisk 注入"这个**事实**,不是"onebot-qq 的指纹"。
+- 因此:① **别再写/加 Java anti-detect**——天花板在框架/native 层,不在本模块,detectMethod/getXpsInfo 已到头,再投入是白费;② **别再碰 maps_hide**(已证死路:linker 命名空间隔离 + libfekit 走裸 syscall);③ **把掉线当既定事实,去设计"围绕它"的架构**(韧性/重登/换小号),而不是妄图消灭它。详见 §10。
+- 仍成立的红线:**别 hook** `getSign/getSignEntry/getEstInfo/doSomething/energy`(登录+签名要用,动了直接登不上)。
 
 ## 7. ⚠️ 安全铁律
 - 作者**主号**曾被风控判高危(一度连人脸都扫不了)。作者**明确接受主号风险**,但**任何可能触发掉线的操作前先说清楚**。
@@ -71,5 +72,68 @@ logcat -d -s OneBotQQ:* MapsHide:*|tail                                    # Reg
 连通测试(Node)：连 `ws://127.0.0.1:3001`,带 header `Authorization: Bearer onebot-qq-token`(token 在 `/sdcard/Android/data/com.tencent.mobileqq/files/onebot-qq.json`),发 `{"action":"get_login_info","echo":"x"}`;返回**真实昵称**=会话活。
 
 ## 9. 下一步（等作者定）
-候选：① 基于已通 PacketSvc 实现 send_like/SsoSendLongMsg ② 继续补协议 body ③ 帮作者在 Termux 里试 Lagrange.OneBot ④ 继续观察注入后的账号稳定性。
-**先读 6 篇文档 + reference/PACKETS.md + 确认运行态,再问作者。合作愉快 🤝**
+里程碑 3 三件已落地(合并转发✅、send_like 协议✅被 319 拦、封包传输层✅)。**后续方向别再靠直觉,先读 §10 全局战略再定。**
+剩余实打实价值点(均非 appid 策略卡):语音/文件发送(silk+highway)、`get_forward_msg`(下载=SsoRecvLongMsg)、更多群管 OIDB。
+**先读 6 篇文档 + reference/PACKETS.md + §10 + 确认运行态,再问作者。合作愉快 🤝**
+
+## 10. 全局战略与后续架构方向（2026-08-27 重写，动手前必读）
+
+> 触发这次重写的关键认知（作者亲述）：**掉线不是本模块的锅**。只要手机上有**任何** vector/Xposed 模块在全局注入，libfekit 就检测到"进程被注入"这个事实并让服务器踢下线——本模块注不注入、指纹干不干净都一样。这把过去"死磕反检测"的方向证伪了。以下是基于这个认知的全局重估。
+
+### 10.1 一个必须先接受的事实
+- **掉线 = "注入真机 QQ" 这个范式的固有税**，不是可修的 bug。天花板在 **vector 框架 + libfekit native**，不在本模块的 Java 层。
+- 直接推论（省下未来的你大把时间）：
+  - ❌ 别再写/调 Java anti-detect（`detectMethod`/`getXpsInfo` 已到头，再投入是纯浪费）。
+  - ❌ 别再碰 `maps_hide`（已证死路：linker 命名空间隔离 + libfekit 走裸 syscall）。
+  - ✅ 把掉线当**已知常量**，去设计"**围绕它**"的架构（韧性/重登/换小号），而不是妄图消灭它。
+- 一句话：**这场仗（消灭掉线）在本模块层面打不赢，别打了。**
+
+### 10.2 三条路的重新定位（带新认知 + 一个反直觉洞察）
+| 路 | 本质 | 掉线 | 功能天花板 | 真实定位 |
+|---|---|---|---|---|
+| **A=本项目** 注入真机 QQ | Xposed 模块 | ❌固有,无解 | 真客户端功能，但**真 appid 反被服务器策略卡** | 纯手机 + 真客户端 + 最大控制 + **实验/好玩** |
+| **B=NapCat+Linux QQ** | 桌面 QQ(Electron) | ✅无 | 最成熟最全 | 有常开 PC 时的最优；手机上太重 |
+| **C=Lagrange.OneBot** | 独立协议端(.NET) | ✅无(不注入) | 靠社区补协议 | **纯手机 + 稳定生产**的务实赢家；代价=签名服务器 |
+
+- **反直觉洞察（appid 悖论）**：本项目是"真身份"，却因真 appid 被服务器策略拦（`send_like` 全 source 都 319 `rule type not match appid`）。而 **Lagrange 用自己模拟的 appid，反而可能在白名单里、点赞照发**。→ "注入真 QQ = 功能最全" 这个直觉是**错的**：真身份既扛掉线税，又扛 appid 策略税。A 的价值不在"功能最全"，而在"真客户端体验 + 纯手机 + 可玩"。
+
+### 10.3 先回答：这个项目到底为谁、为什么（目标决定架构）
+两种目标，指向两种架构，别混为一谈：
+- **(a) 给 ayjx 一个能天天用的稳定手机 OneBot** → 该选 **C（Lagrange）**，或 A + 小号 + 重登韧性。别拿 A 去背"稳定生产"，那是它打不赢的仗。
+- **(b) 探索/学习 Android QQ 内核、追求真客户端保真度** → 留 **A**，它是唯一有"真 QQ"的路。
+
+**建议：双轨并行，各司其职。**
+- **A = 实验/保真轨**：继续挖协议、玩真客户端能力，用**小号**常驻，掉了就掉、无所谓。
+- **C = 生产/稳定轨**：真正给 ayjx 供稳定 OneBot11。
+- 关键是**别让 A 去干 C 的活**——过去大量精力耗在给 A 追求"不掉线"上，那是方向错配。
+
+### 10.4 架构解耦：让已有投入不白费
+- 本项目已沉淀的**干净、可复用资产**（与"QQ 怎么绑"无关）：`net/WsServer`、`core/OneBotHub`、`core/MsgStore`、`qq/Convert`——这是一整套 **OneBot11 协议面**。
+- **脆弱、随 QQ 更新碎**的：`qq/QQClient`（内核 hook）、`packet/PacketSvc`（封包）。
+- 建议把 OneBot 协议面做成**传输无关**（`OneBotHub` 只依赖一个 `Backend` 接口：发消息/收事件/查询）。这样：① A 轨的内核实现是一个 backend；② 未来若想，把同一套 OneBot 面架到 Lagrange 协议核上也不是重写。即使不真做，这种边界也让"停掉 anti-detect 之后，重心该放哪"变清晰。
+
+### 10.5 韧性层：围绕掉线设计，而不是消灭它（A 轨的正确投入方向）
+- **掉线检测**：轮询登录 activity（`Login=掉线`）/ `session==null` / 3001 是否在听 → 判定 bot online/offline。
+- **对 ayjx 暴露生命周期**：OneBot `meta_event`（lifecycle + heartbeat.status.online），让 ayjx 知道 bot 掉了、别把请求打进黑洞。
+- **自动恢复**：掉线后不崩，尝试 `monkey` 拉起 QQ / 引导扫码重登，恢复后自动重注册监听 + 重连事件流。
+- **换小号铁律**：主号已判高危，**任何注入实验一律用小号**，主号别再拿来试注入（这条应升格进 §7 安全铁律）。
+
+### 10.6 功能优先级：按"是否被 appid 策略卡"重排
+- ✅ **已验证可行、不卡策略**（优先继续）：群管 OIDB（`0x8FC_2` 头衔、kick/ban/card/admin 内核方法）、**合并转发**（`SsoSendLongMsg` 真机 retcode 0）。
+- ⛔ **被策略卡、非代码能解**（搁置，别耗时间）：`send_like`(319)、宠物类 OIDB。等换干净号或政策放开再说。
+- 🎯 **真有用且没被卡的下一步坑**：
+  1. **语音/文件发送**（`PttElement`/`FileElement` + silk 编码 + highway 上传）——ayjx 实用、不卡策略。
+  2. **`get_forward_msg`**（`SsoRecvLongMsg` + 解 gzip payload）——补全转发闭环，`sendSso` 已可复用。
+  3. 更多**非社交类**群管 OIDB。
+
+### 10.7 维护性 / 长期视角
+- **A 是与 QQ 版本更新赛跑的跑步机**：QQ 一升级，类名/签名/内核方法可能碎。需要：版本锁（记录当前 9.3.50 base.apk 指纹）+ 反编译重生成流程（jadx 已有）。这是 A 的**结构性成本**。
+- **C 也是跑步机，但有社区维护**（Lagrange 团队跟版本），单人 bus factor 更低。→ **长期看 C 更省心**，这也是为什么把 C 定为生产轨。
+- 本项目的封包/内核映射文档（ARCHITECTURE + PACKETS）是真资产，别让它随会话丢。
+
+### 10.8 一句话给下一个你（可执行的推动方向）
+1. **停**：Java anti-detect、maps_hide、send_like 这类被 appid 卡的功能——别再投入。
+2. **接受**：掉线是范式固有税；用**小号 + 韧性层**围绕它设计（§10.5）。
+3. **推进（A 轨）**：语音/文件发送 → `get_forward_msg` → 更多非策略卡的群管 OIDB（§10.6）。
+4. **并行（C 轨，建议真开）**：在 Termux PRoot 起 **Lagrange.OneBot** 做 ayjx 的稳定生产通道；A 保留为"纯手机保真实验轨"。
+5. **留给作者的决策点**：要不要真开 C 轨？A 是否换小号常驻？OneBot 面是否做传输无关解耦（为将来 A/C 共用铺路）？

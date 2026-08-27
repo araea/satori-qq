@@ -39,8 +39,9 @@ public final class Convert {
                     case "lightapp": addArk(out, d.optString("content", d.optString("data", ""))); break;
                     case "mface": addMface(out, d); break;
                     case "poke":  addPoke(out, d); break;
-                    // record/video/file send need PTT/silk & video upload (milestone 3); degrade gracefully:
-                    case "record":addText(out, "[语音]"); break;
+                    case "record":addRecord(out, d); break;
+                    case "file":  addFile(out, d); break;
+                    // video send still needs thumbnail+dimensions work (milestone 3); degrade:
                     case "video": addText(out, "[视频]"); break;
                     default:
                         String t = d.optString("text", "");
@@ -169,6 +170,23 @@ public final class Convert {
         Object elem = (f != null && msgService != null) ? Media.buildPicElement(ref, msgService, f) : null;
         if (elem != null) out.add(elem);
         else { L.w("image send failed, degrade to text"); addText(out, "[图片]"); }
+    }
+
+    private void addRecord(ArrayList<Object> out, org.json.JSONObject d) {
+        java.io.File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
+        Object msgService = qq.getMsgService();
+        Object elem = (f != null && msgService != null) ? Media.buildPttElement(ref, msgService, f) : null;
+        if (elem != null) out.add(elem);
+        else { L.w("record send failed, degrade to text"); addText(out, "[语音]"); }
+    }
+
+    private void addFile(ArrayList<Object> out, org.json.JSONObject d) {
+        java.io.File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
+        Object msgService = qq.getMsgService();
+        Object elem = (f != null && msgService != null)
+                ? Media.buildFileElement(ref, msgService, f, d.optString("name", "")) : null;
+        if (elem != null) out.add(elem);
+        else { L.w("file send failed, degrade to text"); addText(out, "[文件]"); }
     }
 
     private void addReply(ArrayList<Object> out, String id) {

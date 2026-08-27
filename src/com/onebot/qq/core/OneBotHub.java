@@ -135,10 +135,10 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 return new JSONObject();
             case "get_forward_msg":
                 return getForwardMsg(p.optString("id", p.optString("message_id", "")));
-            // ---- need OIDB packet subsystem or extra upload work (milestone 3) ----
             case "upload_group_file":
+                return sendGroup(p.optLong("group_id", 0), fileSeg(p));
             case "upload_private_file":
-                throw new ApiError(1404, "action not implemented yet: " + action);
+                return sendPrivate(p.optLong("user_id", 0), fileSeg(p));
             default:
                 throw new ApiError(1404, "unknown action: " + action);
         }
@@ -232,6 +232,14 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             }
         }
         return sb.toString();
+    }
+
+    /** Build a one-segment `file` message from upload_*_file params (file/url + name). */
+    private JSONArray fileSeg(JSONObject p) throws Exception {
+        JSONObject data = new JSONObject()
+                .put("file", p.optString("file", p.optString("url", "")))
+                .put("name", p.optString("name", ""));
+        return new JSONArray().put(new JSONObject().put("type", "file").put("data", data));
     }
 
     private JSONObject sendGroup(long groupId, Object message) throws Exception {

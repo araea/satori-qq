@@ -41,7 +41,8 @@
 **封包子系统（已真机打通）**：`packet/Pb.java` 数据层 + `packet/PacketSvc.java` 发送/回包层已实现。发送走 QQNT 自带 `IDependsAdapter.onSendSSORequest`，显式传十六进制 serviceCmd 与 OIDB 外层；回包 hook `CppProxy.onSendSSOReply` 按 requestId 关联，QQ 自己完成 SSO/QSec 签名。`set_group_special_title` 的 0x8FC_2 已接入；在内部测试群 `675983807`（账号为 owner）把本人空头衔原值写回，真机返回 `status=ok, retcode=0`，成功分支已验证。
 **已新增(2026-08-27,真机)**：**合并转发** `send_group_forward_msg`/`send_private_forward_msg`(走 `packet/LongMsg.java` 拼 im_msg_body 假节点→gzip→`PacketSvc.sendSso("trpc...SsoSendLongMsg")` 拿 resId→multimsg 卡片,测试群发+撤回 retcode 0,v1 文本节点)；`send_like`(0x7E5_104,协议对但被服务器 `oidb=319 rule type not match appid` 策略拦——**非代码问题**,所有 source 都 319,是腾讯 appid 级封禁叠加主号风控)。
 **已新增(2026-08-27,真机往返验证)**：`get_forward_msg`(下载=`SsoRecvLongMsg`,`LongMsg.buildDownloadReq`/`parseDownload`,resId→节点;send_forward 响应已带 `res_id`)。注:伪造节点**名字可控**,但非本人 uin 被服务器盖成占位值(自身真 uin 精确往返=编解码正确,是服务器反伪造)。
-**未做**：语音/视频/文件发送(silk+highway)、upload_*。
+**已新增(2026-08-27,真机)**：**语音**`record`(silk/amr passthrough,`Media.buildPttElement`,复用图片的 richmedia auto-upload,retcode 0)、**文件**`upload_group_file`/`upload_private_file`+`file`段(`Media.buildFileElement`,retcode 0)。注:语音不转码,输入须已是 silk/amr(QQ 语音即 `\x02#!SILK_V3`);getRichMediaFilePathForMobileQQSend 首参=elementType(PIC2/FILE3/PTT4/VIDEO5)。
+**未做**：视频发送(需缩略图+时长+分辨率)。
 **别做**：notice 事件（ayjx 不消费,它的 recall 是 /撤回命令）。
 
 ## 5. 封包子系统怎么继续

@@ -93,12 +93,13 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
   `packet/LongMsg.java` 拼 im_msg_body 假节点 → gzip → `PacketSvc.sendSso("trpc.group.long_msg_interface.MsgService.SsoSendLongMsg", ...)`
   拿 resId → 组 `com.tencent.multimsg` LightApp 卡片 → 复用现有 json/ark 发送。测试群 `675983807`
   发+撤回 retcode 0。v1 支持**文本节点**（图片/at 节点内容需各自补 Elem 编码）。
+- **语音/文件发送**（真机 retcode 0）：`record`(silk/amr)、`upload_group_file`/`upload_private_file` + `file` 段。走图片同款 richmedia auto-upload（`RichMediaFilePathInfo` 首参=elementType，PIC2/FILE3/PTT4/VIDEO5），QQ sendMsg 自动上传。语音不转码，输入须已是 silk/amr。
 - `get_forward_msg`（`SsoRecvLongMsg`）：真机往返验证——上传转发拿 resId → 下载解回节点(昵称/文本/时间)。伪造节点非本人 uin 被服务器盖占位值(自身真 uin 精确往返)。
 - `send_like`（0x7E5_104）：协议实现正确，但本机/本号被服务器 `oidb=319 rule type not match appid`
   策略拦截（非代码问题；换干净号或政策放开即可用）。
 
 **未做（里程碑 3，见 ROADMAP.md）：** 
-`upload_*`、语音/视频/文件**发送**、notice 事件（撤回/戳一戳/进退群/禁言）。
+**视频**发送(需缩略图+分辨率+时长)、notice 事件（撤回/戳一戳/进退群/禁言）。
 封包传输层和 0x8FC_2 成功分支均已打通；后续封包测试固定使用内部测试群 `675983807`。
 
 ## 重要坑清单

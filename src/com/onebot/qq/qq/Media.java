@@ -16,6 +16,11 @@ public final class Media {
     static final String QQNT_UTIL = "com.tencent.qqnt.kernel.nativeinterface.QQNTWrapperUtil$CppProxy";
     static final String RM_PATH_INFO = "com.tencent.qqnt.kernel.nativeinterface.RichMediaFilePathInfo";
     static final String PIC_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.PicElement";
+    static final String PTT_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.PttElement";
+    static final String FILE_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.FileElement";
+
+    // QQNT MsgConstant.KELEMTYPE*: PIC=2, FILE=3, PTT=4, VIDEO=5. RichMediaFilePathInfo's first
+    // ctor arg is the element type (image passes 2), so ptt/file just swap it.
 
     private static final String TMP_DIR = "/sdcard/Android/data/com.tencent.mobileqq/files/onebot-tmp";
 
@@ -109,6 +114,132 @@ public final class Media {
         } catch (Throwable t) {
             L.e("buildPicElement", t);
             return null;
+        }
+    }
+
+    /** RichMediaFilePathInfo(elementType, subType, md5, fileName, downloadType=1, thumbSize=0, null, "", true). */
+    private static String richMediaDest(Ref ref, Object msgService, int elementType, String md5, String fileName) {
+        Class<?>[] types = new Class[]{int.class, int.class, String.class, String.class,
+                int.class, int.class, byte[].class, String.class, boolean.class};
+        Object info = ref.neuTyped(RM_PATH_INFO, types,
+                new Object[]{elementType, 0, md5, fileName, 1, 0, null, "", true});
+        return Ref.asStr(ref.call(msgService, "getRichMediaFilePathForMobileQQSend", info));
+    }
+
+    private static void copyToDest(Ref ref, String srcPath, String destPath, long size) {
+        try {
+            boolean exist = (Boolean) ref.callS(QQNT_UTIL, "fileIsExist", destPath);
+            long dsize = Ref.asLong(ref.callS(QQNT_UTIL, "getFileSize", destPath));
+            if (!exist || dsize != size) ref.callS(QQNT_UTIL, "copyFile", srcPath, destPath);
+        } catch (Throwable t) {
+            ref.callS(QQNT_UTIL, "copyFile", srcPath, destPath);
+        }
+    }
+
+    /** Build a KELEMTYPEPTT(4) voice element. Input must already be SILK or AMR (QQ's voice codecs);
+     *  we do not transcode. Returns null on failure. */
+    public static Object buildPttElement(Ref ref, Object msgService, File file) {
+        try {
+            String path = file.getAbsolutePath();
+            String md5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", path));
+            int[] fmt = pttFormat(path);            // [formatType, durationSec]
+            String fileName = md5 + (fmt[0] == 0 ? ".amr" : ".silk");
+            String dest = richMediaDest(ref, msgService, 4, md5, fileName);
+            copyToDest(ref, path, dest, file.length());
+
+            Object ptt = ref.neu(PTT_ELEMENT);
+            ref.set(ptt, "md5HexStr", md5);
+            ref.set(ptt, "filePath", dest);
+            ref.set(ptt, "fileName", fileName);
+            ref.set(ptt, "fileSize", file.length());
+            ref.set(ptt, "duration", fmt[1]);
+            ref.set(ptt, "formatType", fmt[0]);     // 1=silk, 0=amr
+            ref.set(ptt, "voiceType", 1);
+            ref.set(ptt, "voiceChangeType", 0);
+            ref.set(ptt, "canConvert2Text", true);
+            ref.set(ptt, "fileUuid", "");
+            ref.set(ptt, "fileSubId", "");
+            ref.set(ptt, "text", "");
+
+            Object elem = ref.neu(QQClient.MSG_ELEMENT);
+            ref.set(elem, "elementType", 4);
+            ref.set(elem, "pttElement", ptt);
+            return elem;
+        } catch (Throwable t) {
+            L.e("buildPttElement", t);
+            return null;
+        }
+    }
+
+    /** Build a KELEMTYPEFILE(3) file element (QQ uploads on sendMsg). Returns null on failure. */
+    public static Object buildFileElement(Ref ref, Object msgService, File file, String displayName) {
+        try {
+            String path = file.getAbsolutePath();
+            String md5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", path));
+            String fileName = (displayName == null || displayName.isEmpty()) ? file.getName() : displayName;
+            String dest = richMediaDest(ref, msgService, 3, md5, fileName);
+            copyToDest(ref, path, dest, file.length());
+
+            Object fe = ref.neu(FILE_ELEMENT);
+            ref.set(fe, "fileMd5", md5);
+            ref.set(fe, "filePath", dest);
+            ref.set(fe, "fileName", fileName);
+            ref.set(fe, "fileSize", file.length());
+            ref.set(fe, "fileUuid", "");
+            ref.set(fe, "fileSubId", "");
+
+            Object elem = ref.neu(QQClient.MSG_ELEMENT);
+            ref.set(elem, "elementType", 3);
+            ref.set(elem, "fileElement", fe);
+            return elem;
+        } catch (Throwable t) {
+            L.e("buildFileElement", t);
+            return null;
+        }
+    }
+
+    /** Detect voice format + estimate duration (seconds). [0]=formatType(1 silk / 0 amr), [1]=durationSec. */
+    private static int[] pttFormat(String path) {
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(path, "r")) {
+            long len = raf.length();
+            byte[] head = new byte[Math.min(16, (int) len)];
+            raf.readFully(head);
+            String h = new String(head, "ISO-8859-1");
+            if (h.contains("#!AMR")) {
+                // AMR-NB ~ rough estimate; frames are 20ms, average ~13 bytes/frame.
+                int dur = (int) Math.max(1, Math.round((len - 6) / 1600.0));
+                return new int[]{0, dur};
+            }
+            if (h.contains("#!SILK")) {
+                return new int[]{1, silkDurationSec(raf, h.indexOf("#!SILK") == 1 ? 10 : 9)};
+            }
+            // Unknown container: assume silk-ish, best-effort duration from size.
+            return new int[]{1, (int) Math.max(1, Math.round(len / 2000.0))};
+        } catch (Throwable t) {
+            return new int[]{1, 1};
+        }
+    }
+
+    /** SILK v3: after the header, frames are [int16-LE blockLen][payload], 20ms each. */
+    private static int silkDurationSec(java.io.RandomAccessFile raf, int headerLen) {
+        try {
+            long len = raf.length();
+            raf.seek(headerLen);
+            int frames = 0;
+            long pos = headerLen;
+            while (pos + 2 <= len) {
+                int lo = raf.read(), hi = raf.read();
+                if (lo < 0 || hi < 0) break;
+                int blk = lo | (hi << 8);
+                if (blk <= 0 || blk == 0xFFFF) break;
+                pos += 2 + blk;
+                if (pos > len) break;
+                raf.seek(pos);
+                frames++;
+            }
+            return Math.max(1, (int) Math.round(frames * 20 / 1000.0));
+        } catch (Throwable t) {
+            return 1;
         }
     }
 

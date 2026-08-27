@@ -38,17 +38,16 @@
 
 ## 4. 当前进度
 **已实现 + 真机验证**：正向 WS + Bearer 鉴权 + 心跳；`get_login_info`；收发消息段 text/at/face/reply/**image**/**json(ark卡片)**/mface/poke；`delete_msg`(撤回)、`get_msg`；`get_group_list`、`get_group_member_info`/`_list`、`get_group_info`；`set_group_kick`/`ban`/`whole_ban`/`card`/`admin`/`leave`；`set_msg_emoji_like`；uin→uid 解析；**AntiDetect**(Java hook)。
-**封包子系统（进行中）**：**数据层已完成**——`packet/Pb.java`(零依赖 protobuf 编解码 + `Pb.oidb(cmd,sub,body,isReserved)` 打 trpc OIDB 包 + `Pb.oidbCmd`),离线验证过(0x8FC_2 头衔包正确)。命令号+body 结构见 `reference/PACKETS.md`(抄 NapCat/Lagrange)。**剩发送链路 `PacketSvc` 没做**。
-**未做**：合并转发(=封包 `SsoSendLongMsg` 拼假消息)、语音/视频/文件发送(silk+highway 上传)、send_like/set_group_special_title(=OIDB 封包,0x8FC_2/0xED3_1 已抄命令号)、upload_*、get_forward_msg。
+**封包子系统（已真机打通）**：`packet/Pb.java` 数据层 + `packet/PacketSvc.java` 发送/回包层已实现。发送走 QQNT 自带 `IDependsAdapter.onSendSSORequest`，显式传十六进制 serviceCmd 与 OIDB 外层；回包 hook `CppProxy.onSendSSOReply` 按 requestId 关联，QQ 自己完成 SSO/QSec 签名。`set_group_special_title` 的 0x8FC_2 已接入；在内部测试群 `675983807`（账号为 owner）把本人空头衔原值写回，真机返回 `status=ok, retcode=0`，成功分支已验证。
+**未做**：合并转发(=封包 `SsoSendLongMsg` 拼假消息)、语音/视频/文件发送(silk+highway 上传)、send_like、upload_*、get_forward_msg。
 **别做**：notice 事件（ayjx 不消费,它的 recall 是 /撤回命令）。
 
-## 5. 封包子系统怎么继续（PacketSvc,最后硬骨头）
-数据层(Pb.java)+命令号(PACKETS.md)已就绪。剩：
-1. **发送**：从主进程 `com.tencent.mobileqq.msf.sdk.o` 的 `this.q.sendToServiceMsg(ToServiceMsg)`(o 混淆,动态定位);`ToServiceMsg(appId,uin,serviceCmd)` serviceCmd=`Pb.oidbCmd(cmd,sub)`,setWupBuffer(Pb.oidb 出的 bytes)。或学 Shamrock 注入 :MSF。**安卓发送链路参考 Shamrock**(老但架构对;NapCat 是桌面 Electron,发送代码安卓用不了)。
-2. **签名 QSign**：trpc 包要 `QSec.getInstance().getSign(cmd, body, seq)`(反射调;AntiDetect **没碰** getSign,安全)。
-3. **回包**：MSFServlet 或 hook FromServiceMsg,按 seq/hash 关联(Shamrock PacketReceiver)。
-4. 先拿最简单的 **poke(0xED3_1)/头衔(0x8FC_2)** 打通链路,通了后面加命令=照 PACKETS.md 拼 body。
-**每步要真机发包测试(有风控风险)**,测试发到作者指定测试群 `253119763` 并立即 delete_msg 撤回。
+## 5. 封包子系统怎么继续
+1. `PacketSvc` 已打通，不要退回 `onSendOidbRequest`：它会把 0x8FC 错拼成 `0x2300`，真机返回 236 `cmd not found`。
+2. 正确路线是 `onSendSSORequest(Pb.oidbCmd, Pb.oidb, ...)` + `onSendSSOReply`；0x8FC_2 已在群主测试群返回 retcode 0。
+3. 后续所有群内受控测试固定使用 `675983807`；非消息型动作尽量原值写回，消息型动作立即撤回。
+4. 现在可直接复用 `sendOidb` 实现 `send_like`/SsoSendLongMsg。不要手工 QSign：QQ 会签名，且 9.3.50 的 `QSec.getSign` 实际是 `(String,byte[])`。
+**每步要真机发包测试(有风控风险)**,测试发到作者指定测试群 `675983807` 并立即 delete_msg 撤回。
 
 ## 6. 反检测现状（读 ANTIDETECT.md 全文）
 - QQ 被注入触发 native `libfekit.so`(QSec)检测→服务器踢下线要人脸。
@@ -58,7 +57,7 @@
 ## 7. ⚠️ 安全铁律
 - 作者**主号**曾被风控判高危(一度连人脸都扫不了)。作者**明确接受主号风险**,但**任何可能触发掉线的操作前先说清楚**。
 - **一键回滚**(掉线/卡死立刻执行)：`sh /data/adb/modules/zygisk_vector/cli scope rm com.onebot.qq com.tencent.mobileqq/0` → QQ 回干净无注入。
-- **别搞全局 native hook**(喂 ART 假 maps → QQ 卡死闪屏)。发送测试只发测试群 `253119763` 且立即撤回;别发陌生群;「私聊自己」不是有效投递目标(图片报 rich media transfer failed)。
+- **别搞全局 native hook**(喂 ART 假 maps → QQ 卡死闪屏)。发送测试只发测试群 `675983807` 且立即撤回;别发陌生群;「私聊自己」不是有效投递目标(图片报 rich media transfer failed)。
 
 ## 8. 确认运行态（先跑这些）
 ```bash
@@ -71,5 +70,5 @@ logcat -d -s OneBotQQ:* MapsHide:*|tail                                    # Reg
 连通测试(Node)：连 `ws://127.0.0.1:3001`,带 header `Authorization: Bearer onebot-qq-token`(token 在 `/sdcard/Android/data/com.tencent.mobileqq/files/onebot-qq.json`),发 `{"action":"get_login_info","echo":"x"}`;返回**真实昵称**=会话活。
 
 ## 9. 下一步（等作者定）
-候选：① 啃 PacketSvc 发送链路(先 poke/头衔试,参考 Shamrock 安卓发包+QSec 签名) ② 从 NapCat 抄全更多命令 body ③ 帮作者在 Termux 里试 Lagrange.OneBot(换省心方案) ④ 观察反检测稳定性。
+候选：① 基于已通 PacketSvc 实现 send_like/SsoSendLongMsg ② 继续补协议 body ③ 帮作者在 Termux 里试 Lagrange.OneBot ④ 继续观察注入后的账号稳定性。
 **先读 6 篇文档 + reference/PACKETS.md + 确认运行态,再问作者。合作愉快 🤝**

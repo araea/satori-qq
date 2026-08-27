@@ -4,6 +4,8 @@ import com.onebot.qq.Cfg;
 import com.onebot.qq.L;
 import com.onebot.qq.net.WsConn;
 import com.onebot.qq.net.WsServer;
+import com.onebot.qq.packet.PacketSvc;
+import com.onebot.qq.packet.Pb;
 import com.onebot.qq.qq.Convert;
 import com.onebot.qq.qq.QQClient;
 import com.onebot.qq.qq.Ref;
@@ -113,10 +115,14 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             case "set_group_leave":
                 qq.quitGroup(p.optLong("group_id", 0));
                 return new JSONObject();
+            case "set_group_special_title": {
+                long g = p.optLong("group_id", 0), u = p.optLong("user_id", 0);
+                setGroupSpecialTitle(g, uidFor(g, u), p.optString("special_title", ""));
+                return new JSONObject();
+            }
             // ---- need OIDB packet subsystem or extra upload work (milestone 3) ----
             case "get_forward_msg":
             case "send_like":
-            case "set_group_special_title":
             case "upload_group_file":
             case "upload_private_file":
                 throw new ApiError(1404, "action not implemented yet: " + action);
@@ -293,6 +299,20 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 (proxy, m, a) -> null);
         // setMsgEmojiLikes(Contact, long msgSeq, String emojiId, long emojiType, boolean set, cb)
         qq.ref.call(msgService, "setMsgEmojiLikes", contact, r.msgSeq, String.valueOf(emojiId), emojiType, set, cb);
+    }
+
+    /** OidbSvcTrpcTcp.0x8FC_2: set (or clear) one member's special title. */
+    private void setGroupSpecialTitle(long groupId, String targetUid, String title) {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        // D8FCReqBody: 1=groupCode, repeated 3=MemberInfo; MemberInfo: 1=uid, 5=title bytes.
+        // Match current Lagrange.Core behavior: OneBot's optional duration is not sent.
+        byte[] member = Pb.w().string(1, targetUid).string(5, title == null ? "" : title)
+                .toByteArray();
+        byte[] body = Pb.w().varint(1, groupId).message(3, member).toByteArray();
+        PacketSvc.Result result = qq.packets().sendOidb(0x8FC, 2, body);
+        if (!result.ok()) {
+            throw new ApiError(1500, "set special title failed: " + result.describe());
+        }
     }
 
     // ============ QQ inbound: events ============

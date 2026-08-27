@@ -36,33 +36,26 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
   `msgService.getMultiMsg(...)`/下载解析。字段名要反编译确认。
 
 ## D. OIDB/封包子系统（设计 + 进度）
-> **2026-08-27d 重要更新**：命令号**不必**啃 QQ.hap 的 abc——直接参考 **NapCatQQ**(维护中)/**Lagrange.Core** 源码，body protobuf 与安卓一致。已抄到 0x8FC_2(头衔)/0xED3_1(poke)/SsoSendLongMsg(转发) 等，见 `reference/PACKETS.md`。`Pb.oidb` 已改成正确的 trpc 格式(1/2/4/12)并离线验证。剩发送链路(PacketSvc+QSign)是硬骨头。
+> **2026-08-27 重要更新**：命令号**不必**啃 QQ.hap 的 abc——直接参考 **NapCatQQ**(维护中)/**Lagrange.Core** 源码，body protobuf 与安卓一致。已抄到 0x8FC_2(头衔)/0xED3_1(poke)/SsoSendLongMsg(转发) 等，见 `reference/PACKETS.md`。`Pb` 数据层及 `PacketSvc` 发送/回包层已经完成，并获得真机服务器回包。
 
 
 **已建（2026-08-27）**：`packet/Pb.java` — 零依赖 protobuf 编解码器（varint/bytes/fixed/message/嵌套 +
 `Pb.oidb(cmd,svcType,body)` 打 OIDBSSOPkg）。离线往返测试通过。**合并转发也归这里**（伪造节点要把多条
 消息拼成 protobuf 上传拿 resId，QQNT 内核 `multiForwardMsg` 只能转已存在的消息，办不了伪造）。
 
-**发包链路（QQNT，实测线索）**：
-- 主进程经 MSF SDK 发：`com.tencent.mobileqq.msf.sdk.o` 里 `this.q.sendToServiceMsg(ToServiceMsg)`
-  （`q` 是 IBaseService binder 代理，走到 :MSF 进程的 `MsfService.sendToServiceMsg`）。`o` 是混淆名，要动态定位。
-- `ToServiceMsg(String appId, String uin, String serviceCmd)` 构造 + 设 wupBuffer(SSO body)。
-- **回包**：注册 `mqq.app.MSFServlet` 或 hook FromServiceMsg 分发；按 seq 关联。Shamrock 的做法是**注入
-  :MSF 进程** + 跨进程广播 IPC（`PacketReceiver`/`PacketHandler`，hook `FromServiceMsg` 的
-  `internalOnReceive`）——更稳但更重。**先试主进程 MSFServlet 路线**，不行再学 Shamrock 注入 :MSF。
-- **签名（关键坑）**：现代 trpc/`OidbSvcTrpcTcp.0xXXXX_Y` 包**必须带 libfekit 签名**，否则服务器拒收。
-  调 `QSec.getInstance().getSign(cmd, body, seq)` 拿 sign（Shamrock 的 QSign.kt 就干这个）。注意 AntiDetect
-  hook 的是 detectMethod/getXpsInfo，**没碰 getSign，安全可用**。
-
-**待办组件**：
-1. `packet/PacketSvc.java`：定位 MSF SDK 发送对象 + 构造 ToServiceMsg + 发送 + 按 seq 收回包（latch 同步）。
-2. `packet/QSign.java`：反射调 QSec.getSign 给包签名。
-3. 命令号：从 QQ.hap 的 modules.abc（需 abc 反汇编器）或社区/抓包拿。已知形态 `OidbSvcTrpcTcp.0x{cmd}_{svc}`。
-4. 各动作组包：send_like（oidb 点赞）、set_group_special_title（oidb 0x8fc 改头衔）、
-   合并转发（SsoSendLongMsg 上传 PbMultiMsgTransmit → resId → 发引用它的 ark）。
-
-**注意进程模型**：当前模块只跑主进程（Main 里 `if(!mainProcess) return`）。若走 Shamrock 的 :MSF 路线，
-要放开 :MSF 进程并做 IPC。走主进程 MSFServlet 路线则不用。
+**发包链路（QQ 9.3.50 实际反编译 + 已实现）**：
+- `IKernelService` 的实现持有私有 `getIDependsAdapter()`。最终使用其 `onSendSSORequest`，显式传
+  `OidbSvcTrpcTcp.0x{HEX}_{sub}` 与 `Pb.oidb(...)`；入口继续进入 `KernelSendObserver`/`KernelServlet`/MSF，
+  QQ 自己完成 SSO framing 和 QSec 签名。
+- **不要用 `onSendOidbRequest`**：本机实现把 int 命令直接以十进制拼到 `0x` 后，0x8FC 会变成
+  `OidbSvcTrpcTcp.0x2300_2`，真机返回 236 `cmd not found`。
+- 因而**不需要也不应该手工 QSign**；旧笔记写的 `getSign(cmd,body,seq)` 也不符合本机 9.3.50，实际
+  `QSec` 是 `getSign(String,byte[])`。
+- 回包到 `IQQNTWrapperSession$CppProxy.onSendSSOReply(requestId,ssoCmd,resultCode,errorMsg,MsfRspInfo)`；
+  `PacketSvc` 只截获自身分配的 requestId 并用 latch 唤醒调用线程，其余 QQ 请求原样放行。
+- 当前 `set_group_special_title` 已按 0x8FC_2 接入。旧群中账号为 member 时返回业务码 1013；改在
+  内部测试群 `675983807`（账号为 owner）把本人空头衔原值写回，真机返回 retcode 0，成功分支已验证。
+  传输层现可复用于 send_like 和 SsoSendLongMsg。
 
 ## D2. 需要 OIDB 原始封包子系统的具体动作（组包细节）
 

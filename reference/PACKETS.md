@@ -27,9 +27,11 @@ body `{uin:target, ext:0, groupUin或friendUin:peer}`（群传 groupUin，私聊
 5. 发出→回 resId→再发一个引用 resId 的 ark/multiforward 消息元素。
    get_forward_msg 反过来：NapCat message/DownloadForwardMsg.ts。
 
-## 还差的发送链路（PacketSvc，风险在这）
-1. 从主进程发：`com.tencent.mobileqq.msf.sdk.o` 里 `this.q.sendToServiceMsg(ToServiceMsg)`(o 混淆,动态定位)；
-   `ToServiceMsg(appId, uin, serviceCmd)` + setWupBuffer(oidb pkg bytes)。或学 NapCat/Shamrock 注入 :MSF。
-2. **签名**：trpc 包要 `QSec.getInstance().getSign(cmd, body, seq)`(AntiDetect 没碰 getSign,安全)。
-3. 回包：MSFServlet 或 hook FromServiceMsg，按 seq/hash 关联(见 Shamrock PacketReceiver)。
-每步都要真机发包测试（有风控风险，测试发到用户指定测试群/自身）。
+## 安卓发送链路（QQ 9.3.50 已实现/真机回包）
+1. `PacketSvc` 反射取 `IKernelService.getIDependsAdapter()`，调用 `onSendSSORequest`，传精确的
+   `OidbSvcTrpcTcp.0x{CMD大写HEX}_{sub}` 与 `Pb.oidb(...)`。
+2. QQ 的 `KernelServlet`/MSF 继续负责 SSO framing、账号元数据和 QSec 签名；无需手工 QSign。
+3. hook `IQQNTWrapperSession$CppProxy.onSendSSOReply`，按自分配 requestId 关联回包，只消费模块自己的请求。
+4. 不要改用 `onSendOidbRequest`：它在本机把 0x8FC 的数值 2300 拼成字符串 `0x2300`，已实测得到
+   236 `cmd not found`。改为显式 SSO serviceCmd 后，在内部群主测试群 `675983807` 原值写回空头衔，
+   真机返回 OneBot `status=ok, retcode=0`。

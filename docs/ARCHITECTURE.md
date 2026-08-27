@@ -15,6 +15,8 @@ qq/Convert.java      段↔MsgElement 转换；MsgRecord→OneBot 事件
 qq/Media.java        file 解析(路径/file://http/base64) + 构建 PicElement (富媒体自动上传)
 qq/AntiDetect.java   best-effort 反检测 (hook QSec.detectMethod/getXpsInfo)
 qq/Ref.java          反射门面 (绑定 QQ classloader；new/call/get/set/neuTyped)
+packet/Pb.java       零依赖 protobuf wire 编解码器 + OIDB 辅助方法
+packet/PacketSvc.java QQNT 原始 OIDB 传输：IDependsAdapter 发包 + requestId 回包关联
 stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
 ```
 
@@ -23,6 +25,12 @@ stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
   `onRecvMsg(ArrayList<MsgRecord>)` → `Convert.recordToEvent` → `WsServer.broadcast(事件JSON)` → ayjx。
 - **发**：ayjx 发 `send_msg` → `OneBotHub.dispatch` → `Convert.toElements` → `QQClient.sendMsg`
   → `IKernelMsgService.sendMsg(...)` → 回执经 `IOperateCallback` → 返回 `{message_id}`。
+- **OIDB**：OneBot 动作组 raw protobuf body → `PacketSvc` 加 OIDB 外层 →
+  `KernelServiceImpl.getIDependsAdapter().onSendSSORequest(...)` → QQ 的 `KernelSendObserver`/
+  `KernelServlet`/MSF（由 QQ 做 SSO framing/QSec 签名）→ `CppProxy.onSendSSOReply(...)` 按自分配 requestId 收回包。
+  只消费 `PacketSvc` 自己的 requestId，QQ 原生请求不受影响。
+  不用 `onSendOidbRequest`：本机实现会把命令 int 直接十进制拼到 `0x` 后（0x8FC 变 `0x2300`），
+  真机返回 236 `cmd not found`；显式 SSO serviceCmd 后已进入正确业务路由。
 
 ## QQNT 内核映射（QQ 9.3.50 实测；均为稳定 JNI 名）
 > `api.*` 服务接口是**混淆**的（如 `IKernelService.getMsgService`→返回 `api.ac`），**避开**；
@@ -92,6 +100,7 @@ stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
 （emojiType：QQ 表情=1，unicode emoji=2）
 
 ### 安全 SDK（反检测相关，见 ANTIDETECT.md）
-`com.tencent.mobileqq.qsec.qsecurity.QSec`：核心 native（`getSign/doSomething/getEstInfo`）**别 hook**（登录要用）；
+`com.tencent.mobileqq.qsec.qsecurity.QSec`：本机 9.3.50 的签名是 `getSign(String, byte[])`/
+`getSignEntry(String, byte[])`，核心 native（以及 `doSomething/getEstInfo`）**别 hook**（登录要用）；
 可安全中和的：`detectMethod(String,String)→false`、`getXpsInfo()→空`。
 native 库 `libfekit.so`。`Dandelion.energy`、`QsecEst.d` 也是 native 采集。

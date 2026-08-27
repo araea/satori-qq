@@ -69,7 +69,7 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
 `get_forward_msg`、`get_group_member_info`、`get_group_list`、`send_like`、
 `set_group_special_title`、`set_msg_emoji_like`、`upload_group_file`/`upload_private_file`。
 
-## 现在完成到哪了（截至 2026-08-26，全部真机验证）
+## 现在完成到哪了（截至 2026-08-27）
 **已实现 + 验证：**
 - 正向 WS + Bearer 鉴权 + 心跳；`get_login_info`（真实 uin+昵称）
 - 收群/私聊消息→事件（text/at/face/image/reply）
@@ -80,9 +80,17 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
 - uin→uid 解析（`IKernelProfileService.getUidByUin`，任意好友私聊）
 - **AntiDetect**（best-effort 反检测，见 ANTIDETECT.md）
 
-**未做（里程碑 3，见 ROADMAP.md）：** `send_like`、`set_group_special_title`、`get_forward_msg`、
+**已实现，发包链路已真机验证：**
+- `packet/PacketSvc.java`：用 QQNT 自带的 `IDependsAdapter.onSendSSORequest` → `KernelServlet` → MSF，
+  显式传正确的十六进制 serviceCmd/OIDB 外层；在 `IQQNTWrapperSession$CppProxy.onSendSSOReply` 按
+  `requestId` 收包。QQ 继续完成 SSO framing 和 QSec 签名，不再手工调用 QSign。
+- `set_group_special_title`：0x8FC_2 body 已接入 OneBot 动作。错误路由曾返回 236 `cmd not found`；
+  修复后在旧群（账号为 member）返回业务码 1013，在内部测试群 `675983807`（账号为 owner）把本人空头衔
+  原值写回，真机返回 OneBot `status=ok, retcode=0`，成功分支已验证且没有可见改动。
+
+**未做（里程碑 3，见 ROADMAP.md）：** `send_like`、`get_forward_msg`、
 `upload_*`、语音/视频/文件**发送**、notice 事件（撤回/戳一戳/进退群/禁言）。
-这些大多需要 **OIDB 原始封包子系统**（hook QQ 的 MSF/SSO 发包层，手搓 protobuf），是块独立大工程。
+封包传输层和 0x8FC_2 成功分支均已打通；后续封包测试固定使用内部测试群 `675983807`。
 
 ## 重要坑清单
 - Xposed 桩类不能进 dex（见上）。

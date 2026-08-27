@@ -1,6 +1,7 @@
 package com.onebot.qq.qq;
 
 import com.onebot.qq.L;
+import com.onebot.qq.packet.PacketSvc;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 
@@ -39,6 +40,7 @@ public final class QQClient {
     }
 
     public final Ref ref;
+    private final PacketSvc packetSvc;
     private volatile Object session;        // IQQNTWrapperSession
     private volatile boolean listenerRegistered;
     private volatile Listener listener;
@@ -49,12 +51,14 @@ public final class QQClient {
     public QQClient(ClassLoader cl, boolean mainProcess) {
         this.ref = new Ref(cl);
         this.mainProcess = mainProcess;
+        this.packetSvc = new PacketSvc(this);
     }
 
     public void setListener(Listener l) { this.listener = l; }
 
     /** Install hooks that capture the live kernel session as soon as QQ creates it. */
     public void installHooks() {
+        packetSvc.installHooks();
         try {
             Class<?> sc = ref.cls(SESSION_CPP);
             XposedBridge.hookAllConstructors(sc, new XC_MethodHook() {
@@ -93,6 +97,17 @@ public final class QQClient {
     }
 
     public Object getSession() { return session; }
+    public PacketSvc packets() { return packetSvc; }
+
+    /** Current QQ AppRuntime, or null while logged out / before account startup. */
+    public Object appRuntime() {
+        try {
+            Object app = ref.callS(MOBILEQQ, "getMobileQQ");
+            return app == null ? null : ref.get(app, "mAppRuntime");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
 
     public Object getMsgService() {
         Object s = session;
@@ -169,9 +184,7 @@ public final class QQClient {
     public String selfUin() {
         if (!selfUin.isEmpty()) return selfUin;
         try {
-            Object app = ref.callS(MOBILEQQ, "getMobileQQ");
-            Object rt = null;
-            try { rt = ref.get(app, "mAppRuntime"); } catch (Throwable ignore) {}
+            Object rt = appRuntime();
             if (rt != null) {
                 String u = tryStr(rt, "getCurrentUin");
                 if (u == null || u.isEmpty()) u = tryStr(rt, "getAccount");

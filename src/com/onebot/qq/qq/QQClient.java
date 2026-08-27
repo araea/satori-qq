@@ -1,5 +1,8 @@
 package com.onebot.qq.qq;
 
+import android.app.ActivityManager;
+import android.content.ComponentName;
+import android.content.Context;
 import com.onebot.qq.L;
 import com.onebot.qq.packet.PacketSvc;
 import de.robv.android.xposed.XC_MethodHook;
@@ -30,6 +33,8 @@ public final class QQClient {
     public static final String KICK_CB         = "com.tencent.qqnt.kernel.nativeinterface.IKickMemberOperateCallback";
     public static final String SHUTUP_INFO     = "com.tencent.qqnt.kernel.nativeinterface.GroupMemberShutUpInfo";
     public static final String MEMBER_ROLE     = "com.tencent.qqnt.kernelpublic.nativeinterface.MemberRole";
+    public static final String BUDDY_REQ_TYPE  = "com.tencent.qqnt.kernel.nativeinterface.BuddyListReqType";
+    public static final String MSG_OPERATE_CB  = "com.tencent.qqnt.kernel.nativeinterface.IMsgOperateCallback";
 
     public static final int CT_C2C = 1;
     public static final int CT_GROUP = 2;
@@ -43,6 +48,7 @@ public final class QQClient {
     private final PacketSvc packetSvc;
     private volatile Object session;        // IQQNTWrapperSession
     private volatile boolean listenerRegistered;
+    private volatile Object listenerSession;
     private volatile Listener listener;
     private volatile String selfUin = "";
     private volatile String selfNick = "";
@@ -74,8 +80,15 @@ public final class QQClient {
 
     private volatile boolean listenerPollerStarted;
 
-    private void onSession(Object s) {
+    private synchronized void onSession(Object s) {
         if (s == null) return;
+        if (session != s) {
+            listenerRegistered = false;
+            listenerSession = null;
+            groupListenerRegistered = false;
+            groupListenerSession = null;
+            groupInfoCache.clear();
+        }
         session = s;
         L.d("Captured wrapper session: " + s.getClass().getName());
         if (mainProcess) ensureListenerAsync();
@@ -86,12 +99,23 @@ public final class QQClient {
         if (listenerRegistered || listenerPollerStarted) return;
         listenerPollerStarted = true;
         Thread t = new Thread(() -> {
-            for (int i = 0; i < 120 && !listenerRegistered; i++) {
-                tryRegisterListener();
-                if (listenerRegistered) break;
-                try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
+            try {
+                while (!listenerRegistered || listenerSession != session) {
+                    tryRegisterListener();
+                    if (listenerRegistered && listenerSession == session) break;
+                    try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
+                }
+            } finally {
+                boolean restart;
+                synchronized (QQClient.this) {
+                    listenerPollerStarted = false;
+                    restart = session != null && (!listenerRegistered || listenerSession != session);
+                }
+                // Close the narrow race where a replacement session arrived after the loop
+                // decided it was done but before listenerPollerStarted was cleared.
+                if (restart) ensureListenerAsync();
             }
-        }, "onebot-listener-register");
+        }, "pool-6-thread-1");
         t.setDaemon(true);
         t.start();
     }
@@ -111,8 +135,15 @@ public final class QQClient {
 
     public Object getMsgService() {
         Object s = session;
+        return getMsgService(s);
+    }
+    private Object getMsgService(Object s) {
+        return getMsgService(s, true);
+    }
+    private Object getMsgService(Object s, boolean logError) {
         if (s == null) return null;
-        try { return ref.call(s, "getMsgService"); } catch (Throwable t) { L.e("getMsgService", t); return null; }
+        try { return ref.call(s, "getMsgService"); }
+        catch (Throwable t) { if (logError) L.e("getMsgService", t); return null; }
     }
     public Object getGroupService() {
         Object s = session; if (s == null) return null;
@@ -122,15 +153,23 @@ public final class QQClient {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getProfileService"); } catch (Throwable t) { return null; }
     }
+    public Object getBuddyService() {
+        Object s = session; if (s == null) return null;
+        try { return ref.call(s, "getBuddyService"); } catch (Throwable t) { return null; }
+    }
 
     private synchronized void tryRegisterListener() {
-        if (listenerRegistered) return;
-        Object msgService = getMsgService();
+        Object targetSession = session;
+        if (targetSession == null) return;
+        if (listenerRegistered && listenerSession == targetSession) return;
+        Object msgService = getMsgService(targetSession);
         if (msgService == null) return;
         try {
             Class<?> li = ref.cls(MSG_LISTENER);
             Object proxy = Proxy.newProxyInstance(ref.cl, new Class[]{li}, new ListenerHandler());
             ref.call(msgService, "addKernelMsgListener", proxy);
+            if (session != targetSession) return;
+            listenerSession = targetSession;
             listenerRegistered = true;
             L.i("Registered IKernelMsgListener (receiving messages)");
             tryRegisterGroupListener();
@@ -182,22 +221,55 @@ public final class QQClient {
 
     // ---------- identity ----------
     public String selfUin() {
-        if (!selfUin.isEmpty()) return selfUin;
+        String current = currentUin();
+        return current.isEmpty() ? selfUin : current;
+    }
+
+    /** Strict current account probe. Unlike selfUin(), this never falls back to a cached account. */
+    private String currentUin() {
         try {
             Object rt = appRuntime();
             if (rt != null) {
                 String u = tryStr(rt, "getCurrentUin");
                 if (u == null || u.isEmpty()) u = tryStr(rt, "getAccount");
-                if (u != null && !u.isEmpty()) { selfUin = u; }
-                if (selfNick.isEmpty()) {
-                    String nk = tryStr(rt, "getCurrentNickname");
-                    if (nk != null && !nk.isEmpty()) selfNick = nk;
-                }
+                if (u == null) return "";
+                u = u.trim();
+                if (u.isEmpty() || "0".equals(u)) return "";
+                if (!u.equals(selfUin)) { selfUin = u; selfNick = ""; groupInfoCache.clear(); }
+                String nk = tryStr(rt, "getCurrentNickname");
+                if (nk != null && !nk.isEmpty()) selfNick = nk;
+                return u;
             }
-        } catch (Throwable t) { L.e("selfUin", t); }
-        return selfUin;
+        } catch (Throwable t) { L.e("currentUin", t); }
+        return "";
     }
-    public String selfNick() { return selfNick; }
+    public String selfNick() { currentUin(); return selfNick; }
+
+    /** True only when the current account, NT session, message service and receive listener are ready. */
+    public boolean isOnline() {
+        Object s = session;
+        if (s == null || !listenerRegistered || listenerSession != s) return false;
+        if (getMsgService(s, false) == null) return false;
+        if (loginActivityOnTop()) return false;
+        return !currentUin().isEmpty();
+    }
+
+    /** Own-task inspection needs no cross-app task permission and catches stale sessions on LoginActivity. */
+    private boolean loginActivityOnTop() {
+        try {
+            Object app = ref.callS(MOBILEQQ, "getMobileQQ");
+            if (!(app instanceof Context)) return false;
+            ActivityManager am = (ActivityManager) ((Context) app).getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return false;
+            for (ActivityManager.AppTask task : am.getAppTasks()) {
+                ActivityManager.RecentTaskInfo info = task.getTaskInfo();
+                ComponentName top = info == null ? null : info.topActivity;
+                if (top != null && "com.tencent.mobileqq.activity.LoginActivity".equals(top.getClassName()))
+                    return true;
+            }
+        } catch (Throwable ignore) {}
+        return false;
+    }
     public void learnSelf(String uin, String nick) {
         if (uin != null && !uin.isEmpty()) selfUin = uin;
         if (nick != null && !nick.isEmpty()) selfNick = nick;
@@ -242,15 +314,51 @@ public final class QQClient {
         return r;
     }
 
+    /** Query local/roamed message history around a message sequence; blocks up to 15 seconds. */
+    @SuppressWarnings("unchecked")
+    public List<?> getMsgs(int chatType, String peerUid, long messageSeq, int count) {
+        Object msgService = getMsgService();
+        if (msgService == null) return java.util.Collections.emptyList();
+        count = Math.max(1, Math.min(100, count));
+        try {
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            final Object[] holder = new Object[1];
+            final int[] code = new int[]{-1};
+            CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MSG_OPERATE_CB)}, (p, m, a) -> {
+                if ("onResult".equals(m.getName()) && a != null && a.length >= 3) {
+                    code[0] = Ref.asInt(a[0]);
+                    holder[0] = a[2];
+                    latch.countDown();
+                }
+                return null;
+            });
+            if (messageSeq > 0) {
+                ref.call(msgService, "getMsgsBySeqAndCount", contact, messageSeq, count, true, false, cb);
+            } else {
+                ref.call(msgService, "getMsgs", contact, 0L, count, true, cb);
+            }
+            latch.await(15, TimeUnit.SECONDS);
+            if (code[0] != 0 || !(holder[0] instanceof List)) return java.util.Collections.emptyList();
+            return (List<?>) holder[0];
+        } catch (Throwable t) {
+            L.e("getMsgs history", t);
+            return java.util.Collections.emptyList();
+        }
+    }
+
     /** peerUid for a group is the group code string; for c2c it's the target's uid. */
     public String groupPeer(long groupCode) { return String.valueOf(groupCode); }
 
     // ---------- group queries ----------
     private final java.util.Map<Long, Object> groupInfoCache = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile boolean groupListenerRegistered;
+    private volatile Object groupListenerSession;
 
     private synchronized void tryRegisterGroupListener() {
-        if (groupListenerRegistered) return;
+        Object targetSession = session;
+        if (targetSession == null) return;
+        if (groupListenerRegistered && groupListenerSession == targetSession) return;
         Object gs = getGroupService();
         if (gs == null) return;
         try {
@@ -268,6 +376,8 @@ public final class QQClient {
                 return defOf(m.getReturnType());
             });
             ref.call(gs, "addKernelGroupListener", proxy);
+            if (session != targetSession) return;
+            groupListenerSession = targetSession;
             groupListenerRegistered = true;
             L.i("Registered IKernelGroupListener (group list cache)");
         } catch (Throwable t) {
@@ -361,6 +471,11 @@ public final class QQClient {
         ref.call(gs, "quitGroup", groupCode, ref.nullCb(OPERATE_CB));
         return true;
     }
+    public boolean setGroupName(long groupCode, String name) {
+        Object gs = getGroupService(); if (gs == null) return false;
+        ref.call(gs, "modifyGroupName", groupCode, name == null ? "" : name, false, ref.nullCb(OPERATE_CB));
+        return true;
+    }
 
     /** Cached GroupSimpleInfo for one group, or null. */
     public Object groupInfo(long groupCode) {
@@ -386,5 +501,71 @@ public final class QQClient {
             L.e("resolveUid " + uin, t);
         }
         return "";
+    }
+
+    /** Ordered map uid -> CoreInfo for the current account's complete buddy list. */
+    @SuppressWarnings("unchecked")
+    public java.util.Map<String, Object> getFriendCoreInfos() {
+        java.util.LinkedHashMap<String, Object> out = new java.util.LinkedHashMap<>();
+        Object buddy = getBuddyService();
+        Object profile = getProfileService();
+        if (buddy == null || profile == null) return out;
+        try {
+            Object reqType = ref.getStatic(BUDDY_REQ_TYPE, "KNOMAL"); // spelling is QQ 9.3.50's enum
+            List<?> categories = (List<?>) ref.call(buddy, "getBuddyListFromCache", "", reqType);
+            if (categories == null || categories.isEmpty()) {
+                CountDownLatch latch = new CountDownLatch(1);
+                Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, a) -> {
+                    if ("onResult".equals(m.getName())) latch.countDown();
+                    return null;
+                });
+                ref.call(buddy, "getBuddyList", true, cb);
+                latch.await(10, TimeUnit.SECONDS);
+                categories = (List<?>) ref.call(buddy, "getBuddyListFromCache", "", reqType);
+            }
+            java.util.LinkedHashSet<String> uidSet = new java.util.LinkedHashSet<>();
+            if (categories != null) {
+                for (Object category : categories) {
+                    Object raw = ref.get(category, "buddyUids");
+                    if (!(raw instanceof List)) continue;
+                    for (Object uid : (List<?>) raw) {
+                        String value = Ref.asStr(uid);
+                        if (!value.isEmpty()) uidSet.add(value);
+                    }
+                }
+            }
+            ArrayList<String> all = new ArrayList<>(uidSet);
+            for (int from = 0; from < all.size(); from += 200) {
+                ArrayList<String> chunk = new ArrayList<>(all.subList(from, Math.min(from + 200, all.size())));
+                Object rawMap = ref.call(profile, "getCoreInfo", "", chunk);
+                if (!(rawMap instanceof java.util.Map)) continue;
+                java.util.Map<Object, Object> map = (java.util.Map<Object, Object>) rawMap;
+                for (String uid : chunk) {
+                    Object info = map.get(uid);
+                    if (info != null) out.put(uid, info);
+                }
+            }
+        } catch (Throwable t) {
+            L.e("getFriendCoreInfos", t);
+        }
+        return out;
+    }
+
+    /** CoreInfo for any resolvable uin (friend or stranger), or null when QQ has no cached profile. */
+    @SuppressWarnings("unchecked")
+    public Object getCoreInfo(long uin) {
+        try {
+            String uid = resolveUid(uin);
+            Object profile = getProfileService();
+            if (uid.isEmpty() || profile == null) return null;
+            ArrayList<String> uids = new ArrayList<>();
+            uids.add(uid);
+            Object raw = ref.call(profile, "getCoreInfo", "", uids);
+            if (!(raw instanceof java.util.Map)) return null;
+            return ((java.util.Map<Object, Object>) raw).get(uid);
+        } catch (Throwable t) {
+            L.e("getCoreInfo " + uin, t);
+            return null;
+        }
     }
 }

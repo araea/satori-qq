@@ -98,6 +98,33 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
 - `send_like`（0x7E5_104）：协议实现正确，但本机/本号被服务器 `oidb=319 rule type not match appid`
   策略拦截（非代码问题；换干净号或政策放开即可用）。
 
+**韧性层第一阶段（2026-08-27 接手续作；在线路径已由主号真机验证）：**
+- 新增标准 `get_status`，heartbeat 的 `status.online/good` 改为依据登录 Activity + 当前账号 + NT session +
+  MsgService + 当前 session 消息监听的真实状态，不再硬编码 `true`。
+- WS 建连即向该连接发送 lifecycle `connect` 和一次状态 heartbeat；online 状态切换时发送
+  lifecycle `enable/disable` + 即时 heartbeat。离线时除 `get_status` 外的动作快速返回 1500。
+- 修复重登录核心缺口：替换 NT session 到来时重置旧 listener 状态、清群缓存，并把消息/群监听重绑
+  到新 session；同时堵住 listener poller 结束与 session 替换之间的窄竞态。
+- 硬边界：模块在 QQ 进程内，整个进程被杀后无法自己运行 `monkey`；此时靠 WS 断连通知消费端，
+  必须由系统/用户/外部守护拉起 QQ。
+- **主号真机结果**：安装/冷启成功，端口与监听正常；lifecycle `connect`、即时/15 秒周期 heartbeat、
+  `get_status`、`get_login_info` 全部通过。随后从设置页强制退出：约 1 秒内发 lifecycle `disable` +
+  `online=false`，离线 `get_login_info` 快速失败 1500；一键登录后自动发 `enable` + `online=true`，登录查询
+  和群消息监听恢复，WS 三分钟监视全程未断、无二次抖动。此次 PID/CppProxy 未更换，所以“新 session
+  对象替换”竞态保护尚未被动态触发，但常见的同进程退出/重登路径已完整验证。
+
+**最终收口（2026-08-27，主号真机验证）：**
+- root watchdog 已安装到 `/data/adb/onebot-qq/` + `service.d`；force-stop 后 10 秒拉起新 PID，
+  `set_restart` 也能闭环恢复。LoginActivity 不重启循环，5 分钟退避。
+- watchdog 现将当前 `online/login/qq_down/port_missing` 状态原子写入 `watchdog.status`，并在
+  `watchdog.counters` 持久化掉线、恢复、拉起、冷重启等计数；`status`/`snapshot` 子命令可直接查看。
+- `get_friend_list`(153)、`get_stranger_info`、`get_group_msg_history`、`get_version_info`、
+  `can_send_image/record`、`clean_cache`、`set_restart`、`set_group_name` 全部通过。
+- `AudioTranscoder` 用系统 MediaCodec 把常见音频转 8k mono AMR-NB；MP3→AMR→发送→撤回通过。
+- 接收段扩到 record/video/file/json/mface；WS 只绑 127.0.0.1，线程名不含 onebot/xposed/vector。
+- 反检测审计：QQ scope 只有本模块；maps 仍有 vector=4、zygisk=6，vector 2.2 无 hide 开关。
+- 作者最终决定：**保持 Android 原生 QQ 单轨、使用主号，不转 Lagrange。**
+
 **未做（里程碑 3 主线已基本清空）：** notice 事件（撤回/戳一戳/进退群/禁言）。
 封包传输层和 0x8FC_2 成功分支均已打通；后续封包测试固定使用内部测试群 `675983807`。
 

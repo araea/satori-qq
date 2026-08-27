@@ -16,7 +16,11 @@ import java.util.concurrent.CopyOnWriteArraySet;
 
 /** Minimal RFC6455 forward WebSocket server. ayjx connects here as a client. */
 public final class WsServer {
-    public interface Handler { void onText(WsConn conn, String text); }
+    public interface Handler {
+        void onText(WsConn conn, String text);
+        default void onOpen(WsConn conn) {}
+        default void onClose(WsConn conn) {}
+    }
 
     private static final String GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     private final Cfg cfg;
@@ -28,7 +32,7 @@ public final class WsServer {
     public WsServer(Cfg cfg, Handler handler) { this.cfg = cfg; this.handler = handler; }
 
     public void start() {
-        Thread t = new Thread(this::acceptLoop, "onebot-ws-accept");
+        Thread t = new Thread(this::acceptLoop, "pool-4-thread-1");
         t.setDaemon(true);
         t.start();
     }
@@ -43,7 +47,7 @@ public final class WsServer {
                 L.i("WebSocket server listening on " + cfg.host + ":" + cfg.port);
                 while (running) {
                     Socket s = server.accept();
-                    Thread ct = new Thread(() -> handleClient(s), "onebot-ws-conn");
+                    Thread ct = new Thread(() -> handleClient(s), "pool-4-thread-2");
                     ct.setDaemon(true);
                     ct.start();
                 }
@@ -118,13 +122,17 @@ public final class WsServer {
             conn = new WsConn(s, out);
             conns.add(conn);
             L.i("Client connected: " + s.getRemoteSocketAddress() + " (total " + conns.size() + ")");
+            try { handler.onOpen(conn); } catch (Throwable t) { L.e("onOpen handler", t); }
 
             // ---- frame read loop ----
             readFrames(in, conn);
         } catch (Throwable e) {
             // connection reset etc. — normal on client disconnect
         } finally {
-            if (conn != null) conns.remove(conn);
+            if (conn != null) {
+                conns.remove(conn);
+                try { handler.onClose(conn); } catch (Throwable t) { L.e("onClose handler", t); }
+            }
             try { s.close(); } catch (Throwable ignore) {}
             L.d("Client disconnected (total " + conns.size() + ")");
         }

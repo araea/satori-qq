@@ -40,7 +40,7 @@ public final class MapsHide {
                 try { Thread.sleep(300); } catch (InterruptedException e) { return; }
             }
             if (!loaded) L.w("MapsHide: could not load native lib (context/so not found)");
-        }, "onebot-mapshide");
+        }, "pool-6-thread-2");
         t.setDaemon(true);
         t.start();
     }

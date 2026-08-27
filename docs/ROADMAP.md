@@ -8,6 +8,12 @@
 > `set_group_admin`(modifyMemberRole + MemberRole 静态枚举 ADMIN/MEMBER)、`set_group_leave`(quitGroup)。
 > 见 QQClient 群管理区 + OneBotHub。**注意：需 QQ 处于登录态才有 NT 会话**，登出时全部无效。
 
+> **2026-08-27 韧性层第一阶段已实现（在线路径已由主号真机验证）：** `get_status`、真实在线
+> heartbeat、WS lifecycle、离线动作快速失败，以及重登录替换 NT session 后的消息/群监听自动重绑。
+> lifecycle/connect、即时与周期 heartbeat、登录/状态查询、强制退出后的 offline/disable、离线 1500、
+> 一键登录后的 online/enable 与收消息恢复均已通过，WS 未断。此次复用同一 CppProxy，新对象替换分支未触发。
+> 未做进程外自动拉起：模块随 QQ 进程死亡，必须由外部守护或用户重新启动 QQ。
+
 ## A. notice 事件（优先，ayjx recall 插件要用）
 OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
 - **群撤回**：`IKernelMsgListener.onMsgRecall(int,String,long)`；更可靠的是收到的 `MsgRecord` 里
@@ -24,7 +30,8 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
 和图片同套路（copy 到 `getRichMediaFilePathForMobileQQSend` 路径 → 建对应 Element → sendMsg 自动上传）：
 - **语音 record**：`PttElement`。要把音频转 **silk/amr**（QQ 语音格式）。elementType=KELEMTYPEPTT(4)。
   字段：filePath/fileName/md5HexStr/fileSize/duration；RichMediaFilePathInfo 的 elemType 用 ptt 对应值。
-  转码可用现成 silk encoder（native）或让 ayjx 端传已编码的 silk。
+  **已完成**：非 SILK/AMR 输入经 Android MediaExtractor/MediaCodec 解码、8k mono 重采样并编码 AMR-NB；
+  1 秒 MP3 真机发送+撤回通过，无需外部 silk 服务。
 - **视频 video**：`VideoElement`（elementType=5）。要生成缩略图 + 时长/分辨率。
 - **文件 file / upload_group_file / upload_private_file**：群文件走 `IKernelRichMediaService` 或
   `IKernelMsgService` 的文件发送；或建 `FileElement`(elementType=3) sendMsg。群文件上传可能要
@@ -88,6 +95,9 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
 `set_group_card`/`set_group_admin`(GroupService 已有方法，见 ARCHITECTURE.md 群小节)、
 `get_group_info`(getGroupDetailInfo)。这些多数是现成 kernel service 方法 + 回调，照 get_group_member_info 的
 "Proxy 回调 + latch 同步"套路即可，工作量小，可先顺手补。
+
+> **已完成补齐**：`get_friend_list`、`get_stranger_info`、`get_group_msg_history`、`set_group_name`、
+> `get_version_info`、`can_send_image/record`、`clean_cache`、`set_restart`。详见 `ONEBOT11_SUPPORT.md`。
 
 ## 建议顺序
 1. GroupService 现成方法的动作（kick/ban/card/admin/get_group_info）——最快见效。

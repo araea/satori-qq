@@ -32,12 +32,21 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         server = new WsServer(cfg, this);
         server.start();
         qq.setListener(this);
-        if (cfg.heartbeat) startHeartbeat();
+        startStatusMonitor();
     }
 
     private long selfUin() { try { return Long.parseLong(qq.selfUin()); } catch (Throwable t) { return 0; } }
 
     // ============ WS inbound: OneBot actions ============
+    @Override public void onOpen(WsConn conn) {
+        try {
+            conn.send(lifecycle("connect").toString());
+            conn.send(heartbeat(qq.isOnline()).toString());
+        } catch (Throwable t) {
+            L.e("send initial lifecycle", t);
+        }
+    }
+
     @Override public void onText(WsConn conn, String text) {
         JSONObject req;
         try { req = new JSONObject(text); } catch (Throwable t) { return; }
@@ -61,6 +70,17 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
     }
 
     private Object dispatch(String action, JSONObject p) throws Exception {
+        if ("get_status".equals(action)) return status(qq.isOnline());
+        if ("get_version_info".equals(action)) return versionInfo();
+        if ("can_send_image".equals(action) || "can_send_record".equals(action))
+            return new JSONObject().put("yes", true);
+        if ("clean_cache".equals(action))
+            return new JSONObject().put("deleted", com.onebot.qq.qq.Media.cleanTemp());
+        if ("set_restart".equals(action)) {
+            scheduleRestart(Math.max(500, p.optInt("delay", 0)));
+            return new JSONObject();
+        }
+        if (!qq.isOnline()) throw new ApiError(1500, "QQ kernel offline or not ready");
         switch (action) {
             case "get_login_info": {
                 JSONObject d = new JSONObject();
@@ -91,7 +111,12 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 return new JSONObject();
             }
             case "get_msg": return getMsg(p.optInt("message_id", 0));
+            case "get_group_msg_history":
+                return getGroupMsgHistory(p.optLong("group_id", 0),
+                        p.optLong("message_seq", 0), p.optInt("count", 20));
             case "get_group_list":        return getGroupList();
+            case "get_friend_list":       return getFriendList();
+            case "get_stranger_info":     return getStrangerInfo(p.optLong("user_id", 0));
             case "get_group_member_info": return getGroupMemberInfo(p.optLong("group_id", 0), p.optLong("user_id", 0));
             case "get_group_member_list": return getGroupMemberList(p.optLong("group_id", 0));
             case "set_msg_emoji_like": {
@@ -125,6 +150,13 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             case "set_group_leave":
                 qq.quitGroup(p.optLong("group_id", 0));
                 return new JSONObject();
+            case "set_group_name": {
+                long groupId = p.optLong("group_id", 0);
+                if (groupId == 0) throw new ApiError(1400, "missing group_id");
+                if (!qq.setGroupName(groupId, p.optString("group_name", "")))
+                    throw new ApiError(1500, "group service not ready");
+                return new JSONObject();
+            }
             case "set_group_special_title": {
                 long g = p.optLong("group_id", 0), u = p.optLong("user_id", 0);
                 setGroupSpecialTitle(g, uidFor(g, u), p.optString("special_title", ""));
@@ -300,6 +332,26 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         return d;
     }
 
+    private JSONObject getGroupMsgHistory(long groupId, long messageSeq, int count) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        JSONArray messages = new JSONArray();
+        for (Object rec : qq.getMsgs(QQClient.CT_GROUP, String.valueOf(groupId), messageSeq, count)) {
+            JSONObject ev = conv.recordToEvent(rec, 0); // self=0 keeps messages sent by this account
+            if (ev == null) continue;
+            ev.put("self_id", selfUin());
+            JSONObject item = new JSONObject()
+                    .put("time", ev.optLong("time"))
+                    .put("message_type", ev.optString("message_type"))
+                    .put("message_id", ev.optInt("message_id"))
+                    .put("real_id", ev.optInt("message_id"))
+                    .put("sender", ev.optJSONObject("sender"))
+                    .put("message", ev.optJSONArray("message"))
+                    .put("raw_message", ev.optString("raw_message"));
+            messages.put(item);
+        }
+        return new JSONObject().put("messages", messages);
+    }
+
     private JSONArray getGroupList() {
         JSONArray arr = new JSONArray();
         for (Object gi : qq.getGroupList()) {
@@ -313,6 +365,38 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             } catch (Throwable ignore) {}
         }
         return arr;
+    }
+
+    private JSONArray getFriendList() throws Exception {
+        JSONArray arr = new JSONArray();
+        for (java.util.Map.Entry<String, Object> entry : qq.getFriendCoreInfos().entrySet()) {
+            Object info = entry.getValue();
+            long uin = Ref.asLong(qq.ref.get(info, "uin"));
+            if (uin == 0) continue;
+            String uid = Ref.asStr(qq.ref.get(info, "uid"));
+            store.learnUid(uin, uid.isEmpty() ? entry.getKey() : uid);
+            arr.put(new JSONObject()
+                    .put("user_id", uin)
+                    .put("nickname", Ref.asStr(qq.ref.get(info, "nick")))
+                    .put("remark", Ref.asStr(qq.ref.get(info, "remark"))));
+        }
+        return arr;
+    }
+
+    private JSONObject getStrangerInfo(long userId) throws Exception {
+        if (userId == 0) throw new ApiError(1400, "missing user_id");
+        Object info = qq.getCoreInfo(userId);
+        if (info == null) throw new ApiError(1404, "profile not found for user " + userId);
+        String uid = Ref.asStr(qq.ref.get(info, "uid"));
+        if (!uid.isEmpty()) store.learnUid(userId, uid);
+        return new JSONObject()
+                .put("user_id", userId)
+                .put("nickname", Ref.asStr(qq.ref.get(info, "nick")))
+                .put("sex", "unknown")
+                .put("age", 0)
+                .put("qid", "")
+                .put("level", 0)
+                .put("login_days", 0);
     }
 
     private JSONObject getGroupMemberInfo(long groupId, long userId) throws Exception {
@@ -477,26 +561,75 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         // notice event (milestone 2: map to group_recall / friend_recall)
     }
 
-    // ============ heartbeat ============
-    private void startHeartbeat() {
+    // ============ lifecycle / online status / heartbeat ============
+    private void startStatusMonitor() {
         Thread t = new Thread(() -> {
+            boolean previous = qq.isOnline();
+            long interval = Math.max(1000L, cfg.heartbeatMs);
+            long nextHeartbeat = System.currentTimeMillis() + interval;
             while (true) {
                 try {
-                    Thread.sleep(cfg.heartbeatMs);
-                    if (server.connectionCount() == 0) continue;
-                    JSONObject hb = new JSONObject();
-                    hb.put("time", System.currentTimeMillis() / 1000);
-                    hb.put("self_id", selfUin());
-                    hb.put("post_type", "meta_event");
-                    hb.put("meta_event_type", "heartbeat");
-                    hb.put("interval", cfg.heartbeatMs);
-                    JSONObject st = new JSONObject().put("online", true).put("good", true);
-                    hb.put("status", st);
-                    server.broadcast(hb.toString());
+                    Thread.sleep(1000);
+                    boolean online = qq.isOnline();
+                    long now = System.currentTimeMillis();
+                    if (online != previous) {
+                        L.i("QQ kernel state -> " + (online ? "online" : "offline"));
+                        if (server.connectionCount() > 0) {
+                            server.broadcast(lifecycle(online ? "enable" : "disable").toString());
+                            server.broadcast(heartbeat(online).toString());
+                        }
+                        previous = online;
+                    }
+                    if (cfg.heartbeat && now >= nextHeartbeat) {
+                        if (server.connectionCount() > 0) server.broadcast(heartbeat(online).toString());
+                        nextHeartbeat = now + interval;
+                    }
                 } catch (InterruptedException ie) { return; }
                 catch (Throwable ignore) {}
             }
-        }, "onebot-heartbeat");
+        }, "pool-5-thread-1");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private JSONObject status(boolean online) throws Exception {
+        return new JSONObject().put("online", online).put("good", online);
+    }
+
+    private JSONObject lifecycle(String subType) throws Exception {
+        return new JSONObject()
+                .put("time", System.currentTimeMillis() / 1000)
+                .put("self_id", selfUin())
+                .put("post_type", "meta_event")
+                .put("meta_event_type", "lifecycle")
+                .put("sub_type", subType);
+    }
+
+    private JSONObject heartbeat(boolean online) throws Exception {
+        return new JSONObject()
+                .put("time", System.currentTimeMillis() / 1000)
+                .put("self_id", selfUin())
+                .put("post_type", "meta_event")
+                .put("meta_event_type", "heartbeat")
+                .put("interval", Math.max(1000, cfg.heartbeatMs))
+                .put("status", status(online));
+    }
+
+    private JSONObject versionInfo() throws Exception {
+        return new JSONObject()
+                .put("app_name", "onebot-qq")
+                .put("app_version", "0.4.0")
+                .put("protocol_version", "v11")
+                .put("qq_version", "9.3.50")
+                .put("runtime", "Android QQNT/Xposed");
+    }
+
+    private void scheduleRestart(int delayMs) {
+        Thread t = new Thread(() -> {
+            try { Thread.sleep(delayMs); } catch (InterruptedException ignore) { return; }
+            L.i("set_restart requested; exiting QQ for external watchdog recovery");
+            Runtime.getRuntime().exit(0);
+        }, "pool-5-thread-2");
         t.setDaemon(true);
         t.start();
     }

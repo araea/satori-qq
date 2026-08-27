@@ -9,7 +9,7 @@ import java.io.ByteArrayOutputStream;
  *  Falls back to sane defaults so the module works out-of-the-box. */
 public final class Cfg {
     public volatile int port = 3001;
-    public volatile String host = "0.0.0.0";
+    public volatile String host = "127.0.0.1"; // forward WS is local-only; smaller network/detection surface
     public volatile String token = "";        // empty => no auth required
     public volatile boolean heartbeat = true;
     public volatile int heartbeatMs = 15000;

@@ -25,6 +25,37 @@ public final class Media {
 
     private static final String TMP_DIR = "/sdcard/Android/data/com.tencent.mobileqq/files/onebot-tmp";
 
+    /** Remove stale module-owned temporary files, never arbitrary QQ cache. */
+    public static int cleanTemp() {
+        int deleted = 0;
+        File dir = new File(TMP_DIR);
+        File[] files = dir.listFiles();
+        if (files == null) return 0;
+        long cutoff = System.currentTimeMillis() - 60L * 60L * 1000L;
+        for (File file : files) {
+            String name = file.getName();
+            boolean owned = name.startsWith("onebot") || name.startsWith("obpcm") || name.startsWith("obamr");
+            if (owned && file.isFile() && file.lastModified() < cutoff && file.delete()) deleted++;
+        }
+        return deleted;
+    }
+
+    /** Pass through QQ voice codecs; transcode any other Android-decodable audio to AMR-NB. */
+    public static File prepareVoice(File file) {
+        if (file == null || !file.isFile()) return null;
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+            byte[] head = new byte[(int) Math.min(16, raf.length())];
+            raf.readFully(head);
+            String value = new String(head, "ISO-8859-1");
+            if (value.contains("#!AMR") || value.contains("#!SILK")) return file;
+        } catch (Throwable t) {
+            L.e("prepareVoice header", t);
+        }
+        File dir = new File(TMP_DIR);
+        dir.mkdirs();
+        return AudioTranscoder.toAmr(file, dir);
+    }
+
     /** Resolve file / url (path, file://, http(s)://, base64://, or raw base64) to a local file. */
     public static File resolve(String file, String url) {
         try {
@@ -142,8 +173,7 @@ public final class Media {
         }
     }
 
-    /** Build a KELEMTYPEPTT(4) voice element. Input must already be SILK or AMR (QQ's voice codecs);
-     *  we do not transcode. Returns null on failure. */
+    /** Build a KELEMTYPEPTT(4) voice element. Input is prepared as SILK/AMR by prepareVoice(). */
     public static Object buildPttElement(Ref ref, Object msgService, File file) {
         try {
             String path = file.getAbsolutePath();

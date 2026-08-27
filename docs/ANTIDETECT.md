@@ -84,3 +84,14 @@ native 检测无法保证绕过**；现实选择是"接受偶尔重登"或"换�
 ## 一句话给下一个接手的人
 Java 层能做的都做了（detectMethod/getXpsInfo）。要根治掉线，去搞**框架级 maps 隐藏**（路 1）
 或**native maps 过滤 hook**（路 2）。别在 Java 里继续试图骗过 libfekit，那条路走不通。
+
+## 2026-08-27 最终收敛审计
+
+- vector 7 个启用模块中，QQ scope **只有 `com.onebot.qq`**，没有其它模块叠加注入。
+- QQ maps 计数：`vector=4`、`zygisk=6`，`xposed/lspd/riru/onebot/mapshide=0`；vector 2.2 CLI/Manager
+  没有 hide 配置。这 10 条 native 暴露是当前天花板。
+- 安全收敛已做：WS 只绑 `127.0.0.1`；工作线程名不含 onebot/xposed/vector；maps_hide 保持关闭；
+  仅保留 `detectMethod/getXpsInfo` 两个低风险 Java hook。
+- 禁止项不变：不碰 QSec 签名 JNI、不做 ART/全局 maps 欺骗、不因“反检测”引入更高崩溃风险。
+- 防掉线采用“降低表面指纹 + 量化观察 + 快速恢复”：真实 lifecycle/heartbeat、同进程重登、
+  root watchdog、`set_restart` 均已主号真机验证。

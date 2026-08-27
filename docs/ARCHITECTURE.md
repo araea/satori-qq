@@ -6,18 +6,20 @@ Main.java            Xposed 入口 (IXposedHookLoadPackage)；只在 QQ 主进�
                      装 AntiDetect → 起 OneBotHub → QQClient.installHooks()
 Cfg.java             配置 (port/host/token/heartbeat/anti_detect)，从 QQ 可读路径的 json 读，有默认值
 L.java               日志 (logcat tag=OneBotQQ + XposedBridge.log)
-net/WsServer.java    手写 RFC6455 正向 WS 服务端 (握手/鉴权/分帧/掩码/心跳)，无第三方依赖
+net/WsServer.java    手写 RFC6455 正向 WS 服务端 (握手/鉴权/分帧/掩码/连接生命周期)，无第三方依赖
 net/WsConn.java      单连接，服务端→客户端不掩码，同步写帧 (含 64-bit 长度)
-core/OneBotHub.java  OneBot 协议中枢：动作分发(WS in) + 事件下发(WS out) + 响应封包
+core/OneBotHub.java  OneBot 协议中枢：动作分发 + 事件下发 + 生命周期/真实在线心跳 + 响应封包
 core/MsgStore.java   OneBot int32 message_id ↔ QQ NT (chatType/peer/msgId/msgSeq) 映射 + uin↔uid 缓存
 qq/QQClient.java     QQ 桥：捕获会话、收发、监听、身份、群查询、uid 解析
 qq/Convert.java      段↔MsgElement 转换；MsgRecord→OneBot 事件
 qq/Media.java        file 解析(路径/file://http/base64) + 构建 PicElement (富媒体自动上传)
+qq/AudioTranscoder.java Android MediaCodec 解码/重采样/AMR-NB 编码
 qq/AntiDetect.java   best-effort 反检测 (hook QSec.detectMethod/getXpsInfo)
 qq/Ref.java          反射门面 (绑定 QQ classloader；new/call/get/set/neuTyped)
 packet/Pb.java       零依赖 protobuf wire 编解码器 + OIDB 辅助方法
 packet/PacketSvc.java QQNT 原始 OIDB 传输：IDependsAdapter 发包 + requestId 回包关联
 stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
+scripts/*watchdog*   root 进程外守护 + KernelSU/Magisk service.d 入口
 ```
 
 ## 数据流
@@ -32,6 +34,22 @@ stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
   不用 `onSendOidbRequest`：本机实现会把命令 int 直接十进制拼到 `0x` 后（0x8FC 变 `0x2300`），
   真机返回 236 `cmd not found`；显式 SSO serviceCmd 后已进入正确业务路由。
 
+## 韧性与在线状态（2026-08-27，在线路径已由主号真机验证）
+- `QQClient.isOnline()` 只有在当前账号、NT session、MsgService、当前 session 的消息监听全部就绪，
+  且 QQ 自己任务栈顶部不是 `com.tencent.mobileqq.activity.LoginActivity` 时才为真；`selfUin()` 的缓存
+  不再被用作在线判据。任务栈通过 `ActivityManager.getAppTasks()` 读取本应用任务，不依赖跨应用权限。
+- 每个 WS 客户端连接后先收到 lifecycle `connect` 和一次携带真实 `status.online/good` 的 heartbeat；
+  后续定时 heartbeat 与 online↔offline 转换事件由 `OneBotHub` 的 1 秒状态监视器产生。
+- `get_status` 离线时仍可调用；其它动作离线时统一快速失败 `retcode=1500`，避免阻塞/误成功。
+- 捕获到替换 NT session 时会清理旧注册状态和群缓存，并把消息/群监听绑定到新 session；这覆盖 QQ
+  进程仍存活时的重登录。若整个 QQ 进程被杀，WS 会断开，恢复拉起必须由进程外完成。
+- root watchdog 每 15 秒区分 `online/login/qq_down/port_missing`，在模块端口长期缺失时按 5 分钟退避
+  冷启 QQ，但绝不对 LoginActivity 重启循环；状态快照与累计计数分别落盘为
+  `/data/adb/onebot-qq/watchdog.status` 和 `watchdog.counters`。
+- 主号真机已验证 lifecycle `connect`、即时/15 秒周期 heartbeat、`get_status`、`get_login_info`，以及
+  设置页强制退出→LoginActivity offline/disable→一键登录 online/enable 的完整往返。WS 未断，离线动作
+  返回 1500，恢复后持续收群消息。QQ 此次复用了同一进程/CppProxy，替换成全新 session 对象的分支未触发。
+
 ## QQNT 内核映射（QQ 9.3.50 实测；均为稳定 JNI 名）
 > `api.*` 服务接口是**混淆**的（如 `IKernelService.getMsgService`→返回 `api.ac`），**避开**；
 > 一律 hook `IQQNTWrapperSession$CppProxy` 构造函数拿会话，再用下面 `nativeinterface` 名取服务。
@@ -41,6 +59,7 @@ stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
 - `session.getMsgService()` → `IKernelMsgService`
 - `session.getGroupService()` → `IKernelGroupService`
 - `session.getProfileService()` → `IKernelProfileService`
+- `session.getBuddyService()` → `IKernelBuddyService`
 - `session.getUixConvertService()` / `session.getRichMediaService()`
 - 自身 uin/昵称：`mqq.app.MobileQQ.getMobileQQ()` → 字段 `mAppRuntime` →
   `getCurrentUin()` / `getAccount()` / `getCurrentNickname()`
@@ -59,6 +78,15 @@ stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
   `onRecvMsg(ArrayList<MsgRecord>)`、`onMsgInfoListAdd/Update`、`onAddSendMsg`(自身发的)、
   `onMsgRecall(int,String,long)`。
 - 撤回：`recallMsg(Contact, ArrayList<Long> msgIds, IOperateCallback)`。
+- 历史：`getMsgs(Contact,long,int,boolean,IMsgOperateCallback)`；回调
+  `onResult(int,String,ArrayList<MsgRecord>)`，OneBot 侧最多返回 100 条。
+
+### 好友 / 资料
+- `IKernelBuddyService.getBuddyListFromCache("", BuddyListReqType.KNOMAL)`（QQ 枚举拼写就是 KNOMAL）
+  → `BuddyListCategory.buddyUids`。
+- uid 每 200 个分块调 `IKernelProfileService.getCoreInfo("", uids)`；`CoreInfo` 字段
+  `uid,uin,nick,remark`。主号真机好友列表 153 人。
+- 陌生人：`getUidByUin` 后同样走同步 `getCoreInfo`。
 
 ### MsgRecord 公有字段
 `chatType, peerUin(群号/对方uin), peerUid, senderUin, senderUid, sendNickName, sendMemberName,`

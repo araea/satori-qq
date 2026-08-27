@@ -172,7 +172,7 @@ public final class Convert {
     }
 
     private void addRecord(ArrayList<Object> out, org.json.JSONObject d) {
-        java.io.File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
+        java.io.File f = Media.prepareVoice(Media.resolve(d.optString("file", ""), d.optString("url", "")));
         Object msgService = qq.getMsgService();
         Object elem = (f != null && msgService != null) ? Media.buildPttElement(ref, msgService, f) : null;
         if (elem != null) out.add(elem);
@@ -326,6 +326,60 @@ public final class Convert {
                         long seq = Ref.asLong(ref.get(rp, "replayMsgSeq"));
                         seg(segs, "reply", "id", String.valueOf(seq));
                         raw.append("[CQ:reply,id=").append(seq).append("]");
+                        break;
+                    }
+                    case 3: { // file
+                        Object f = ref.get(e, "fileElement");
+                        JSONObject d = new JSONObject();
+                        d.put("file", safeStr(f, "fileUuid"));
+                        d.put("name", safeStr(f, "fileName"));
+                        d.put("path", safeStr(f, "filePath"));
+                        d.put("size", Ref.asLong(ref.get(f, "fileSize")));
+                        segObj(segs, "file", d);
+                        raw.append("[CQ:file,file=").append(d.optString("file")).append("]");
+                        break;
+                    }
+                    case 4: { // record / ptt
+                        Object ptt = ref.get(e, "pttElement");
+                        JSONObject d = new JSONObject();
+                        String file = safeStr(ptt, "fileUuid");
+                        if (file.isEmpty()) file = safeStr(ptt, "fileName");
+                        d.put("file", file);
+                        String path = safeStr(ptt, "filePath");
+                        if (!path.isEmpty()) d.put("path", path);
+                        d.put("duration", Ref.asInt(ref.get(ptt, "duration")));
+                        segObj(segs, "record", d);
+                        raw.append("[CQ:record,file=").append(file).append("]");
+                        break;
+                    }
+                    case 5: { // video
+                        Object v = ref.get(e, "videoElement");
+                        JSONObject d = new JSONObject();
+                        String file = safeStr(v, "fileUuid");
+                        if (file.isEmpty()) file = safeStr(v, "fileName");
+                        d.put("file", file);
+                        String path = safeStr(v, "filePath");
+                        if (!path.isEmpty()) d.put("path", path);
+                        segObj(segs, "video", d);
+                        raw.append("[CQ:video,file=").append(file).append("]");
+                        break;
+                    }
+                    case 10: { // ark/json card
+                        Object ark = ref.get(e, "arkElement");
+                        String data = safeStr(ark, "bytesData");
+                        seg(segs, "json", "data", data);
+                        raw.append("[CQ:json,data=").append(data).append("]");
+                        break;
+                    }
+                    case 11: { // market face
+                        Object mf = ref.get(e, "marketFaceElement");
+                        JSONObject d = new JSONObject();
+                        d.put("emoji_id", safeStr(mf, "emojiId"));
+                        d.put("emoji_package_id", Ref.asInt(ref.get(mf, "emojiPackageId")));
+                        d.put("key", safeStr(mf, "key"));
+                        d.put("summary", safeStr(mf, "faceName"));
+                        segObj(segs, "mface", d);
+                        raw.append("[商城表情]");
                         break;
                     }
                     default:

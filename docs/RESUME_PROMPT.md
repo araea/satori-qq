@@ -23,8 +23,17 @@
 
 ## 当前进度
 **已实现 + 真机验证**：正向 WS + Bearer 鉴权 + 心跳；`get_login_info`；收发消息段 text/at/face/reply/**image**/**json(ark卡片)**/mface/poke；`delete_msg`(撤回)、`get_msg`；`get_group_list`、`get_group_member_info`/`_list`、`get_group_info`；`set_group_kick`/`ban`/`whole_ban`/`card`/`admin`/`leave`；`set_msg_emoji_like`；uin→uid 解析；AntiDetect(Java hook)。
-**未做（见 ROADMAP.md 打法）**：合并转发(multiForwardMsgElement)、语音/视频/文件**发送**(要 silk 编码+上传)、`send_like`/`set_group_special_title`(要 **OIDB 原始封包子系统**——QQ.hap 的 proto 帮拼包体，命令号要另挖)、`upload_*`。
+**封包子系统（进行中）**：数据层**已完成**——`packet/Pb.java`(零依赖 protobuf 编解码 + `Pb.oidb(cmd,sub,body,isReserved)` 打 trpc OIDB 包 + `Pb.oidbCmd`)，离线验证过。命令号 + body 结构见 `reference/PACKETS.md`(从 **NapCat/Lagrange** 抄，**不用啃 QQ.hap abc**)。**剩发送链路 PacketSvc 没做**(主进程 `msf.sdk.o.sendToServiceMsg`+ToServiceMsg / 或注入:MSF；+`QSign` 调 `QSec.getSign` 签名，AntiDetect 没碰 getSign 安全；+seq 关联回包)——这是硬骨头，要真机发包(有风控风险)。
+**未做**：合并转发(=封包 `SsoSendLongMsg` 拼假消息)、语音/视频/文件发送(silk+highway 上传)、send_like/set_group_special_title(=OIDB 封包,0x8FC_2 头衔已抄)、upload_*。
 **ayjx 不消费 notice 事件**（它的 recall 是 /撤回命令），别在 notice 上花时间。
+
+## 参考库 & 项目定位（关键认知，别搞错方向）
+- **参考库分两层**：**body/命令号抄 NapCatQQ(维护中)/Lagrange.Core**(同一服务器协议，全平台一致)；
+  **安卓发送链路(ToServiceMsg/:MSF/QSec签名)只能抄 Shamrock**(老但架构对；NapCat 是桌面 Electron，发送代码安卓一行都用不了)。
+- **本项目 vs NapCat**：功能/成熟度/稳定性 NapCat 全面碾压。**我们唯一真实优势=能跑在安卓手机上不用 PC**
+  (NapCat/LLOneBot 只能桌面 QQ)。若用户有能常开的 PC，**桌面 QQ+NapCat 远比本项目稳**(桌面无安卓这套凶残反篡改)。
+  只有"纯手机、不碰 PC"是硬要求时本项目才是对的选择——沟通时要诚实,别把它吹成比 NapCat 强。
+- **能做到什么程度**：ayjx 要的功能能一步步做到；对标 NapCat 的广度/健壮性做不到；且安卓反检测有天花板(libfekit native+服务器风控)。
 
 ## 反检测现状（读 ANTIDETECT.md 全文）
 - QQ 被注入会触发 native `libfekit.so`(QSec) 检测 → 服务器踢下线要人脸验证。
@@ -48,4 +57,4 @@ logcat -d -s OneBotQQ:* | tail                                     # Registered/
 连通测试（Node）：连 `ws://127.0.0.1:3001`，带 header `Authorization: Bearer <token>`（token 见 `/sdcard/Android/data/com.tencent.mobileqq/files/onebot-qq.json`，当前 `onebot-qq-token`），发 `{"action":"get_login_info","echo":"x"}`；返回**真实昵称**=会话活。反编译 QQ 的产物在构建会话临时目录 `qqdex/full/sources/`（丢了用 jadx 重生成，QQ base.apk 从 `pm path com.tencent.mobileqq` 拿）。
 
 ## 下一步（等用户定）
-候选：合并转发 / OIDB 封包子系统 / 语音发送 / 继续观察反检测稳定性。**先读那四篇文档 + 确认运行态，再问用户。**
+候选：啃 PacketSvc 发送链路(先 poke/头衔试，参考 Shamrock 安卓发包+QSec 签名) / 从 NapCat 抄全更多命令 body / 观察反检测稳定性。**先读四篇文档 + reference/PACKETS.md + 确认运行态，再问用户。**

@@ -120,9 +120,11 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 setGroupSpecialTitle(g, uidFor(g, u), p.optString("special_title", ""));
                 return new JSONObject();
             }
+            case "send_like":
+                sendLike(p.optLong("user_id", 0), p.optInt("times", 1));
+                return new JSONObject();
             // ---- need OIDB packet subsystem or extra upload work (milestone 3) ----
             case "get_forward_msg":
-            case "send_like":
             case "upload_group_file":
             case "upload_private_file":
                 throw new ApiError(1404, "action not implemented yet: " + action);
@@ -312,6 +314,32 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         PacketSvc.Result result = qq.packets().sendOidb(0x8FC, 2, body);
         if (!result.ok()) {
             throw new ApiError(1500, "set special title failed: " + result.describe());
+        }
+    }
+
+    /** OidbSvcTrpcTcp.0x7E5_104: like a user's profile card `times` times (server caps daily total). */
+    /**
+     * OidbSvcTrpcTcp.0x7E5_104: like a user's profile card `times` times.
+     * Body per LagrangeGo: 11=targetUid(str), 12=source(71), 13=count; envelope isReserved=0.
+     *
+     * <p>Device note (QQ 9.3.50, 2026-08): the transport reaches the server and the command routes
+     * to the like service, but the server rejects it with oidb=319 "[oidb] rule type not match
+     * appid" for every source value. This is Tencent's appid/rule gating (the same 319 seen across
+     * clients since ~2026-08), not a packet-format bug — a wrong command number would return 236
+     * "cmd not found" instead. It may also compound with this account's existing risk-control state.
+     * Left as the protocol-correct implementation; it should succeed once the appid is un-gated or on
+     * a non-restricted account.</p>
+     */
+    private void sendLike(long userId, int times) throws Exception {
+        if (userId == 0) throw new ApiError(1400, "missing user_id");
+        if (times < 1) times = 1;
+        String uid = qq.resolveUid(userId);
+        if (uid == null || uid.isEmpty()) throw new ApiError(1404, "cannot resolve uid for user " + userId);
+        store.learnUid(userId, uid);
+        byte[] body = Pb.w().string(11, uid).varint(12, 71).varint(13, times).toByteArray();
+        PacketSvc.Result result = qq.packets().sendOidb(0x7E5, 104, body, false);
+        if (!result.ok()) {
+            throw new ApiError(1500, "send_like failed: " + result.describe());
         }
     }
 

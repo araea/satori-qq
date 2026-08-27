@@ -148,13 +148,27 @@ public final class PacketSvc {
     }
 
     public Result sendOidb(int command, int subCommand, byte[] body) {
-        return sendOidb(command, subCommand, body, DEFAULT_TIMEOUT_MS);
+        return sendOidb(command, subCommand, body, true, DEFAULT_TIMEOUT_MS);
+    }
+
+    /**
+     * Send with an explicit OIDB envelope isReserved (field 12). Most modern commands that carry a
+     * uid in the body use isReserved=1; a few (for example 0x7E5_104 friend-like) use 0. Match the
+     * reference implementation for the specific command rather than assuming.
+     */
+    public Result sendOidb(int command, int subCommand, byte[] body, boolean isReserved) {
+        return sendOidb(command, subCommand, body, isReserved, DEFAULT_TIMEOUT_MS);
+    }
+
+    public Result sendOidb(int command, int subCommand, byte[] body, long timeoutMs) {
+        return sendOidb(command, subCommand, body, true, timeoutMs);
     }
 
     /**
      * Send a raw OIDB body. Do not pass Pb.oidb(...) here; this method adds the envelope.
      */
-    public Result sendOidb(int command, int subCommand, byte[] body, long timeoutMs) {
+    public Result sendOidb(int command, int subCommand, byte[] body, boolean isReserved,
+                           long timeoutMs) {
         Result failure = new Result();
         failure.command = command;
         failure.subCommand = subCommand;
@@ -202,7 +216,7 @@ public final class PacketSvc {
             // Use the generic SSO entry so the service command retains hexadecimal formatting.
             // KernelServlet/MSF still apply QQ's ordinary framing and QSec signing.
             String serviceCmd = Pb.oidbCmd(command, subCommand);
-            byte[] packet = Pb.oidb(command, subCommand, body, true);
+            byte[] packet = Pb.oidb(command, subCommand, body, isReserved);
             ref.call(adapter, "onSendSSORequest", requestId, serviceCmd, packet,
                     param, "", new HashMap<String, byte[]>(), 0);
 

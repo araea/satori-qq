@@ -18,6 +18,7 @@ public final class Media {
     static final String PIC_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.PicElement";
     static final String PTT_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.PttElement";
     static final String FILE_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.FileElement";
+    static final String VIDEO_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.VideoElement";
 
     // QQNT MsgConstant.KELEMTYPE*: PIC=2, FILE=3, PTT=4, VIDEO=5. RichMediaFilePathInfo's first
     // ctor arg is the element type (image passes 2), so ptt/file just swap it.
@@ -117,13 +118,18 @@ public final class Media {
         }
     }
 
-    /** RichMediaFilePathInfo(elementType, subType, md5, fileName, downloadType=1, thumbSize=0, null, "", true). */
-    private static String richMediaDest(Ref ref, Object msgService, int elementType, String md5, String fileName) {
+    /** RichMediaFilePathInfo(elementType, elementSubType, md5, fileName, downloadType, thumbSize=0, null, "", true). */
+    private static String richMediaDest(Ref ref, Object msgService, int elementType, int subType,
+                                        String md5, String fileName, int downloadType) {
         Class<?>[] types = new Class[]{int.class, int.class, String.class, String.class,
                 int.class, int.class, byte[].class, String.class, boolean.class};
         Object info = ref.neuTyped(RM_PATH_INFO, types,
-                new Object[]{elementType, 0, md5, fileName, 1, 0, null, "", true});
+                new Object[]{elementType, subType, md5, fileName, downloadType, 0, null, "", true});
         return Ref.asStr(ref.call(msgService, "getRichMediaFilePathForMobileQQSend", info));
+    }
+
+    private static String richMediaDest(Ref ref, Object msgService, int elementType, String md5, String fileName) {
+        return richMediaDest(ref, msgService, elementType, 0, md5, fileName, 1);
     }
 
     private static void copyToDest(Ref ref, String srcPath, String destPath, long size) {
@@ -196,6 +202,79 @@ public final class Media {
             L.e("buildFileElement", t);
             return null;
         }
+    }
+
+    /** Build a KELEMTYPEVIDEO(5) element (thumbnail extracted locally; QQ uploads on sendMsg).
+     *  Recipe per OpenShamrock/QQ NT: orig path (elemType 5, subType 2, dl 1) + thumb path
+     *  (elemType 5, subType 1, dl 2). Returns null on failure. */
+    public static Object buildVideoElement(Ref ref, Object msgService, File file) {
+        android.media.MediaMetadataRetriever mmr = null;
+        try {
+            String path = file.getAbsolutePath();
+            String md5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", path));
+            String fileName = md5 + ".mp4";
+            String origPath = richMediaDest(ref, msgService, 5, 2, md5, fileName, 1);
+            String thumbPath = richMediaDest(ref, msgService, 5, 1, md5, fileName, 2);
+
+            mmr = new android.media.MediaMetadataRetriever();
+            mmr.setDataSource(path);
+            int durSec = (int) Math.max(1, parseLong(
+                    mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)) / 1000);
+            int vw = (int) parseLong(mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
+            int vh = (int) parseLong(mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
+            android.graphics.Bitmap frame = mmr.getFrameAtTime(0);
+
+            boolean exist = (Boolean) ref.callS(QQNT_UTIL, "fileIsExist", origPath);
+            long osize = Ref.asLong(ref.callS(QQNT_UTIL, "getFileSize", origPath));
+            if (!exist || osize != file.length()) {
+                ref.callS(QQNT_UTIL, "copyFile", path, origPath);
+                saveJpeg(frame, thumbPath);
+            }
+            String thumbMd5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", thumbPath));
+            int thumbSize = (int) Ref.asLong(ref.callS(QQNT_UTIL, "getFileSize", thumbPath));
+            int tw = frame != null ? frame.getWidth() : vw;
+            int th = frame != null ? frame.getHeight() : vh;
+            if (frame != null) frame.recycle();
+
+            Object v = ref.neu(VIDEO_ELEMENT);
+            ref.set(v, "videoMd5", md5);
+            ref.set(v, "fileName", fileName);
+            ref.set(v, "filePath", origPath);
+            ref.set(v, "fileSize", file.length());  // long in QQ 9.3.50
+            ref.set(v, "fileTime", durSec);
+            ref.set(v, "fileFormat", 2);            // NTVideoType mp4
+            ref.set(v, "thumbMd5", thumbMd5);
+            ref.set(v, "thumbSize", thumbSize);
+            ref.set(v, "thumbWidth", tw);
+            ref.set(v, "thumbHeight", th);
+            java.util.HashMap<Integer, String> tp = new java.util.HashMap<>();
+            tp.put(0, thumbPath);
+            ref.set(v, "thumbPath", tp);
+            ref.set(v, "fileUuid", "");
+
+            Object elem = ref.neu(QQClient.MSG_ELEMENT);
+            ref.set(elem, "elementType", 5);
+            ref.set(elem, "videoElement", v);
+            return elem;
+        } catch (Throwable t) {
+            L.e("buildVideoElement", t);
+            return null;
+        } finally {
+            if (mmr != null) try { mmr.release(); } catch (Throwable ignore) {}
+        }
+    }
+
+    private static void saveJpeg(android.graphics.Bitmap bmp, String destPath) {
+        if (bmp == null) return;
+        try (FileOutputStream o = new FileOutputStream(destPath)) {
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, o);
+        } catch (Throwable t) {
+            L.e("saveJpeg", t);
+        }
+    }
+
+    private static long parseLong(String s) {
+        try { return s == null ? 0 : Long.parseLong(s.trim()); } catch (Throwable t) { return 0; }
     }
 
     /** Detect voice format + estimate duration (seconds). [0]=formatType(1 silk / 0 amr), [1]=durationSec. */

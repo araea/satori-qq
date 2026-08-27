@@ -19,8 +19,8 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
 - **戳一戳**：C2C/群里是 `grayTipElement`（poke，JSON/PB 内容）或 `FaceElement.pokeType`。解析 grayTip。
 - 落点：`OneBotHub` 已有 `onRecall(...)` 空实现 + `onGroupNotice` 可扩展；把 group 监听回调接进来建 notice JSON。
 
-## B. 富媒体发送剩余：视频
-> **2026-08-27 已实现（真机 retcode 0）**：**语音 record**（`Media.buildPttElement`，silk/amr passthrough，不转码）+ **文件 upload_group_file/upload_private_file/`file` 段**（`Media.buildFileElement`）。都走图片同款 richmedia auto-upload：`RichMediaFilePathInfo(elementType, subType, md5, fileName, downloadType=1, thumbSize=0, null, "", true)`，首参 elementType=PIC2/FILE3/PTT4/VIDEO5，copyFile 到返回路径后 sendMsg，QQ 自动 highway 上传。**剩视频**（下面），需缩略图+分辨率+时长（Android `MediaMetadataRetriever`）。
+## B. 富媒体发送：语音/文件/视频 —— 全部已实现(2026-08-27 真机 retcode 0)
+> **2026-08-27 已实现（真机 retcode 0）**：**语音 record**（`Media.buildPttElement`，silk/amr passthrough，不转码）+ **文件 upload_group_file/upload_private_file/`file` 段**（`Media.buildFileElement`）。都走图片同款 richmedia auto-upload：`RichMediaFilePathInfo(elementType, subType, md5, fileName, downloadType=1, thumbSize=0, null, "", true)`，首参 elementType=PIC2/FILE3/PTT4/VIDEO5，copyFile 到返回路径后 sendMsg，QQ 自动 highway 上传。**视频也已实现**：`Media.buildVideoElement` 用 Android `MediaMetadataRetriever` 提取封面(getFrameAtTime→JPEG)/时长/分辨率,双 richmedia 路径 视频(elemType5,subType2,dl1)+缩略图(elemType5,subType1,dl2),copyFile+存封面后 sendMsg 自动上传。实测 VideoElement.fileSize=long 且**无 fileWidth/fileHeight 字段**(NapCat TS 有,9.3.50 无)。
 和图片同套路（copy 到 `getRichMediaFilePathForMobileQQSend` 路径 → 建对应 Element → sendMsg 自动上传）：
 - **语音 record**：`PttElement`。要把音频转 **silk/amr**（QQ 语音格式）。elementType=KELEMTYPEPTT(4)。
   字段：filePath/fileName/md5HexStr/fileSize/duration；RichMediaFilePathInfo 的 elemType 用 ptt 对应值。

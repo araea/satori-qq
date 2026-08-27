@@ -41,8 +41,7 @@ public final class Convert {
                     case "poke":  addPoke(out, d); break;
                     case "record":addRecord(out, d); break;
                     case "file":  addFile(out, d); break;
-                    // video send still needs thumbnail+dimensions work (milestone 3); degrade:
-                    case "video": addText(out, "[视频]"); break;
+                    case "video": addVideo(out, d); break;
                     default:
                         String t = d.optString("text", "");
                         if (!t.isEmpty()) addText(out, t);
@@ -187,6 +186,14 @@ public final class Convert {
                 ? Media.buildFileElement(ref, msgService, f, d.optString("name", "")) : null;
         if (elem != null) out.add(elem);
         else { L.w("file send failed, degrade to text"); addText(out, "[文件]"); }
+    }
+
+    private void addVideo(ArrayList<Object> out, org.json.JSONObject d) {
+        java.io.File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
+        Object msgService = qq.getMsgService();
+        Object elem = (f != null && msgService != null) ? Media.buildVideoElement(ref, msgService, f) : null;
+        if (elem != null) out.add(elem);
+        else { L.w("video send failed, degrade to text"); addText(out, "[视频]"); }
     }
 
     private void addReply(ArrayList<Object> out, String id) {

@@ -30,6 +30,12 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
   `IKernelGroupService`/`RichMediaService` 的 upload 接口 + 进度回调。先解 `FileElement` 字段。
 
 ## C. get_forward_msg / 合并转发
+> **2026-08-27 已实现「发」合并转发（真机 retcode 0）**：见 `packet/LongMsg.java` + `OneBotHub.sendForward`。
+> 不走内核 `multiForwardMsgElement`（只能转已存在消息，办不了伪造节点），而是拼 im_msg_body 假节点
+> → gzip → `PacketSvc.sendSso("trpc.group.long_msg_interface.MsgService.SsoSendLongMsg", req)` 拿 resId
+> → 组 `com.tencent.multimsg` LightApp 卡片 → 复用现有 json/ark 发送。字段号抄自 LagrangeDev/LagrangeGo
+> message proto。v1 仅文本节点；**取回** `get_forward_msg`（SsoRecvLongMsg + 解 payload）仍未做。
+
 - **发**合并转发：QQNT 用 `multiForwardMsgElement`（elementType=16）+ 先把子消息用
   `msgService` 造成 fake record 再打包；较绕。参考 OpenShamrock 的 `MsgSvc.uploadMultiMsg`。
 - **收/取** `get_forward_msg`：从 `MultiForwardMsgElement` 里拿 resId，再

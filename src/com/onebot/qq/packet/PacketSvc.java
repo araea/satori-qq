@@ -73,12 +73,14 @@ public final class PacketSvc {
     private static final class Pending {
         final int command;
         final int subCommand;
+        final boolean oidb;
         final CountDownLatch latch = new CountDownLatch(1);
         volatile Result result;
 
-        Pending(int command, int subCommand) {
+        Pending(int command, int subCommand, boolean oidb) {
             this.command = command;
             this.subCommand = subCommand;
+            this.oidb = oidb;
         }
     }
 
@@ -119,7 +121,7 @@ public final class PacketSvc {
                         // (requestId, ssoCmd, resultCode, errorMsg, MsfRspInfo). Retain the numeric
                         // command/sub-command in Pending for callers.
                         wait.result = decodeReply(requestId, wait.command,
-                                wait.subCommand, Ref.asInt(p.args[2]),
+                                wait.subCommand, wait.oidb, Ref.asInt(p.args[2]),
                                 Ref.asStr(p.args[3]), p.args[4]);
                     } catch (Throwable t) {
                         Result r = new Result();
@@ -169,10 +171,32 @@ public final class PacketSvc {
      */
     public Result sendOidb(int command, int subCommand, byte[] body, boolean isReserved,
                            long timeoutMs) {
+        if (body == null) body = new byte[0];
+        String serviceCmd = Pb.oidbCmd(command, subCommand);
+        byte[] packet = Pb.oidb(command, subCommand, body, isReserved);
+        return dispatch(serviceCmd, packet, command, subCommand, true, timeoutMs);
+    }
+
+    /**
+     * Send a raw trpc SSO request whose body is NOT wrapped in an OIDB envelope (for example
+     * trpc.group.long_msg_interface.MsgService.SsoSendLongMsg). The reply's pbBuffer is returned
+     * verbatim in Result.body / Result.packet; there is no OIDB error code to parse, so ok() rests
+     * on the SSO/trpc transport codes only.
+     */
+    public Result sendSso(String serviceCmd, byte[] body) {
+        return sendSso(serviceCmd, body, DEFAULT_TIMEOUT_MS);
+    }
+
+    public Result sendSso(String serviceCmd, byte[] body, long timeoutMs) {
+        if (body == null) body = new byte[0];
+        return dispatch(serviceCmd, body, 0, 0, false, timeoutMs);
+    }
+
+    private Result dispatch(String serviceCmd, byte[] packet, int command, int subCommand,
+                            boolean oidb, long timeoutMs) {
         Result failure = new Result();
         failure.command = command;
         failure.subCommand = subCommand;
-        if (body == null) body = new byte[0];
         if (!hookInstalled) {
             failure.error = "PacketSvc reply hook is not installed";
             return failure;
@@ -193,7 +217,7 @@ public final class PacketSvc {
 
         long requestId = NEXT_REQUEST.incrementAndGet();
         failure.requestId = requestId;
-        Pending wait = new Pending(command, subCommand);
+        Pending wait = new Pending(command, subCommand, oidb);
         pending.put(requestId, wait);
         try {
             Object kernel = ref.call(runtime, "getRuntimeService", ref.cls(KERNEL_SERVICE), "");
@@ -213,39 +237,36 @@ public final class PacketSvc {
             ref.set(param, "account", qq.selfUin());
             ref.set(param, "accountType", 0);
 
-            // Use the generic SSO entry so the service command retains hexadecimal formatting.
-            // KernelServlet/MSF still apply QQ's ordinary framing and QSec signing.
-            String serviceCmd = Pb.oidbCmd(command, subCommand);
-            byte[] packet = Pb.oidb(command, subCommand, body, isReserved);
+            // Generic SSO entry: KernelServlet/MSF still apply QQ's framing and QSec signing.
             ref.call(adapter, "onSendSSORequest", requestId, serviceCmd, packet,
                     param, "", new HashMap<String, byte[]>(), 0);
 
             if (!wait.latch.await(timeoutMs + 2_000L, TimeUnit.MILLISECONDS)) {
                 pending.remove(requestId, wait);
                 failure.timedOut = true;
-                failure.error = "OIDB reply timeout";
+                failure.error = serviceCmd + " reply timeout";
                 return failure;
             }
             Result result = wait.result;
             if (result == null) {
-                failure.error = "OIDB reply missing";
+                failure.error = serviceCmd + " reply missing";
                 return failure;
             }
             return result;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             pending.remove(requestId, wait);
-            failure.error = "interrupted while waiting for OIDB reply";
+            failure.error = "interrupted while waiting for " + serviceCmd + " reply";
             return failure;
         } catch (Throwable t) {
             pending.remove(requestId, wait);
-            L.e("PacketSvc send " + Pb.oidbCmd(command, subCommand), t);
+            L.e("PacketSvc send " + serviceCmd, t);
             failure.error = String.valueOf(t);
             return failure;
         }
     }
 
-    private Result decodeReply(long requestId, int command, int subCommand,
+    private Result decodeReply(long requestId, int command, int subCommand, boolean oidb,
                                int callbackResult, String callbackError, Object info) {
         Result r = new Result();
         r.requestId = requestId;
@@ -263,6 +284,12 @@ public final class PacketSvc {
         r.error = appendError(r.error, msfError);
         Object packet = ref.get(info, "pbBuffer");
         if (packet instanceof byte[]) r.packet = (byte[]) packet;
+        if (!oidb) {
+            // Raw trpc reply: hand the body back untouched, no OIDB envelope to parse.
+            r.body = r.packet;
+            r.oidbRetCode = 0;
+            return r;
+        }
         if (r.packet.length > 0) {
             try {
                 Pb.Reader envelope = new Pb.Reader(r.packet);

@@ -39,7 +39,8 @@
 ## 4. 当前进度
 **已实现 + 真机验证**：正向 WS + Bearer 鉴权 + 心跳；`get_login_info`；收发消息段 text/at/face/reply/**image**/**json(ark卡片)**/mface/poke；`delete_msg`(撤回)、`get_msg`；`get_group_list`、`get_group_member_info`/`_list`、`get_group_info`；`set_group_kick`/`ban`/`whole_ban`/`card`/`admin`/`leave`；`set_msg_emoji_like`；uin→uid 解析；**AntiDetect**(Java hook)。
 **封包子系统（已真机打通）**：`packet/Pb.java` 数据层 + `packet/PacketSvc.java` 发送/回包层已实现。发送走 QQNT 自带 `IDependsAdapter.onSendSSORequest`，显式传十六进制 serviceCmd 与 OIDB 外层；回包 hook `CppProxy.onSendSSOReply` 按 requestId 关联，QQ 自己完成 SSO/QSec 签名。`set_group_special_title` 的 0x8FC_2 已接入；在内部测试群 `675983807`（账号为 owner）把本人空头衔原值写回，真机返回 `status=ok, retcode=0`，成功分支已验证。
-**未做**：合并转发(=封包 `SsoSendLongMsg` 拼假消息)、语音/视频/文件发送(silk+highway 上传)、send_like、upload_*、get_forward_msg。
+**已新增(2026-08-27,真机验证)**：**合并转发** `send_group_forward_msg`/`send_private_forward_msg`(走 `packet/LongMsg.java` + `PacketSvc.sendSso` 发 `SsoSendLongMsg` 拿 resId → multimsg 卡片,测试群发+撤回 retcode 0,v1 文本节点)；`send_like`(0x7E5_104,协议对但被服务器 319 appid 策略拦,非代码问题)。
+**未做**：语音/视频/文件发送(silk+highway 上传)、upload_*、get_forward_msg(下载/取回方向)。
 **别做**：notice 事件（ayjx 不消费,它的 recall 是 /撤回命令）。
 
 ## 5. 封包子系统怎么继续

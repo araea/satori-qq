@@ -88,7 +88,15 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
   修复后在旧群（账号为 member）返回业务码 1013，在内部测试群 `675983807`（账号为 owner）把本人空头衔
   原值写回，真机返回 OneBot `status=ok, retcode=0`，成功分支已验证且没有可见改动。
 
-**未做（里程碑 3，见 ROADMAP.md）：** `send_like`、`get_forward_msg`、
+**新增（2026-08-27，真机验证）：**
+- **合并转发** `send_group_forward_msg`/`send_private_forward_msg`/`send_forward_msg`：走
+  `packet/LongMsg.java` 拼 im_msg_body 假节点 → gzip → `PacketSvc.sendSso("trpc.group.long_msg_interface.MsgService.SsoSendLongMsg", ...)`
+  拿 resId → 组 `com.tencent.multimsg` LightApp 卡片 → 复用现有 json/ark 发送。测试群 `675983807`
+  发+撤回 retcode 0。v1 支持**文本节点**（图片/at 节点内容需各自补 Elem 编码）。
+- `send_like`（0x7E5_104）：协议实现正确，但本机/本号被服务器 `oidb=319 rule type not match appid`
+  策略拦截（非代码问题；换干净号或政策放开即可用）。
+
+**未做（里程碑 3，见 ROADMAP.md）：** `get_forward_msg`(下载方向)、
 `upload_*`、语音/视频/文件**发送**、notice 事件（撤回/戳一戳/进退群/禁言）。
 封包传输层和 0x8FC_2 成功分支均已打通；后续封包测试固定使用内部测试群 `675983807`。
 

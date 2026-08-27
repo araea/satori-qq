@@ -4,6 +4,7 @@ import com.onebot.qq.Cfg;
 import com.onebot.qq.L;
 import com.onebot.qq.net.WsConn;
 import com.onebot.qq.net.WsServer;
+import com.onebot.qq.packet.LongMsg;
 import com.onebot.qq.packet.PacketSvc;
 import com.onebot.qq.packet.Pb;
 import com.onebot.qq.qq.Convert;
@@ -76,6 +77,15 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             }
             case "send_group_msg":   return sendGroup(p.optLong("group_id", 0), p.opt("message"));
             case "send_private_msg": return sendPrivate(p.optLong("user_id", 0), p.opt("message"));
+            case "send_group_forward_msg":
+                return sendForward(p.optLong("group_id", 0), 0, p.opt("messages"));
+            case "send_private_forward_msg":
+                return sendForward(0, p.optLong("user_id", 0), p.opt("messages"));
+            case "send_forward_msg": {
+                long gid = p.optLong("group_id", 0);
+                return gid != 0 ? sendForward(gid, 0, p.opt("messages"))
+                        : sendForward(0, p.optLong("user_id", 0), p.opt("messages"));
+            }
             case "delete_msg": {
                 recall(p.optInt("message_id", 0));
                 return new JSONObject();
@@ -131,6 +141,73 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             default:
                 throw new ApiError(1404, "unknown action: " + action);
         }
+    }
+
+    /**
+     * Merge-forward: upload fake nodes via SsoSendLongMsg, then send the multimsg card that
+     * references the returned resId as an ordinary ark/json message. Exactly one of groupId/userId
+     * is non-zero.
+     */
+    private JSONObject sendForward(long groupId, long userId, Object messages) throws Exception {
+        if (groupId == 0 && userId == 0) throw new ApiError(1400, "missing group_id/user_id");
+        List<LongMsg.Node> nodes = parseForwardNodes(messages);
+        if (nodes.isEmpty()) throw new ApiError(1400, "empty forward messages");
+        String selfUid = "";
+        if (groupId == 0) {
+            selfUid = qq.resolveUid(selfUin());
+            if (selfUid == null || selfUid.isEmpty()) throw new ApiError(1500, "cannot resolve self uid");
+        }
+        byte[] req = LongMsg.buildUploadReq(groupId, selfUid, nodes);
+        PacketSvc.Result r = qq.packets().sendSso(LongMsg.CMD, req);
+        if (!r.ok()) throw new ApiError(1500, "forward upload failed: " + r.describe());
+        String resId = LongMsg.parseResId(r.body);
+        if (resId == null || resId.isEmpty()) throw new ApiError(1500, "forward upload: no resId in reply");
+        String card = LongMsg.buildCardJson(resId, nodes);
+        JSONArray msg = new JSONArray().put(new JSONObject().put("type", "json")
+                .put("data", new JSONObject().put("data", card)));
+        return groupId != 0 ? sendGroup(groupId, msg) : sendPrivate(userId, msg);
+    }
+
+    private List<LongMsg.Node> parseForwardNodes(Object messages) {
+        List<LongMsg.Node> out = new java.util.ArrayList<>();
+        if (!(messages instanceof JSONArray)) return out;
+        JSONArray arr = (JSONArray) messages;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject seg = arr.optJSONObject(i);
+            if (seg == null) continue;
+            JSONObject d = seg.optJSONObject("data");
+            if (d == null) continue;
+            LongMsg.Node n = new LongMsg.Node();
+            n.senderUin = d.optLong("uin", d.optLong("user_id", selfUin()));
+            n.senderName = d.optString("name", d.optString("nickname", String.valueOf(n.senderUin)));
+            n.text = extractText(d.opt("content"));
+            out.add(n);
+        }
+        return out;
+    }
+
+    /** Flatten OneBot node content (string or segment array) to display text for a forward node. */
+    private String extractText(Object content) {
+        if (content == null) return "";
+        if (content instanceof String) return (String) content;
+        if (!(content instanceof JSONArray)) return String.valueOf(content);
+        StringBuilder sb = new StringBuilder();
+        JSONArray a = (JSONArray) content;
+        for (int i = 0; i < a.length(); i++) {
+            JSONObject s = a.optJSONObject(i);
+            if (s == null) { sb.append(a.optString(i)); continue; }
+            String t = s.optString("type", "");
+            JSONObject sd = s.optJSONObject("data");
+            switch (t) {
+                case "text": sb.append(sd == null ? "" : sd.optString("text", "")); break;
+                case "at": sb.append("@").append(sd == null ? "" : sd.optString("qq", "")); break;
+                case "face": sb.append("[表情]"); break;
+                case "image": sb.append("[图片]"); break;
+                case "json": case "lightapp": sb.append("[卡片]"); break;
+                default: break;
+            }
+        }
+        return sb.toString();
     }
 
     private JSONObject sendGroup(long groupId, Object message) throws Exception {

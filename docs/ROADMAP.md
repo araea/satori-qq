@@ -34,7 +34,7 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
 > 不走内核 `multiForwardMsgElement`（只能转已存在消息，办不了伪造节点），而是拼 im_msg_body 假节点
 > → gzip → `PacketSvc.sendSso("trpc.group.long_msg_interface.MsgService.SsoSendLongMsg", req)` 拿 resId
 > → 组 `com.tencent.multimsg` LightApp 卡片 → 复用现有 json/ark 发送。字段号抄自 LagrangeDev/LagrangeGo
-> message proto。v1 仅文本节点；**取回** `get_forward_msg`（SsoRecvLongMsg + 解 payload）仍未做。
+> message proto。v1 仅文本节点。**取回** `get_forward_msg`（`SsoRecvLongMsg` + gunzip payload）**已实现并真机往返验证**：见 `LongMsg.buildDownloadReq/parseDownload` + `OneBotHub.getForwardMsg`；send_forward 响应带 `res_id`。伪造节点非本人 uin 被服务器归一(反伪造)。
 
 - **发**合并转发：QQNT 用 `multiForwardMsgElement`（elementType=16）+ 先把子消息用
   `msgService` 造成 fake record 再打包；较绕。参考 OpenShamrock 的 `MsgSvc.uploadMultiMsg`。

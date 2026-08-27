@@ -133,8 +133,9 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             case "send_like":
                 sendLike(p.optLong("user_id", 0), p.optInt("times", 1));
                 return new JSONObject();
-            // ---- need OIDB packet subsystem or extra upload work (milestone 3) ----
             case "get_forward_msg":
+                return getForwardMsg(p.optString("id", p.optString("message_id", "")));
+            // ---- need OIDB packet subsystem or extra upload work (milestone 3) ----
             case "upload_group_file":
             case "upload_private_file":
                 throw new ApiError(1404, "action not implemented yet: " + action);
@@ -165,7 +166,30 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         String card = LongMsg.buildCardJson(resId, nodes);
         JSONArray msg = new JSONArray().put(new JSONObject().put("type", "json")
                 .put("data", new JSONObject().put("data", card)));
-        return groupId != 0 ? sendGroup(groupId, msg) : sendPrivate(userId, msg);
+        JSONObject sent = groupId != 0 ? sendGroup(groupId, msg) : sendPrivate(userId, msg);
+        return sent.put("res_id", resId).put("forward_id", resId);
+    }
+
+    /** get_forward_msg: download a merged-forward by res_id via SsoRecvLongMsg, return its nodes. */
+    private JSONObject getForwardMsg(String resId) throws Exception {
+        if (resId == null || resId.isEmpty()) throw new ApiError(1400, "missing id (forward res_id)");
+        String selfUid = qq.resolveUid(selfUin());
+        if (selfUid == null || selfUid.isEmpty()) throw new ApiError(1500, "cannot resolve self uid");
+        PacketSvc.Result r = qq.packets().sendSso(LongMsg.RECV_CMD, LongMsg.buildDownloadReq(selfUid, resId));
+        if (!r.ok()) throw new ApiError(1500, "get_forward_msg failed: " + r.describe());
+        List<LongMsg.Node> nodes = LongMsg.parseDownload(r.body);
+        if (nodes.isEmpty()) throw new ApiError(1404, "forward not found or empty: " + resId);
+        JSONArray messages = new JSONArray();
+        for (LongMsg.Node n : nodes) {
+            JSONArray content = new JSONArray().put(new JSONObject().put("type", "text")
+                    .put("data", new JSONObject().put("text", n.text == null ? "" : n.text)));
+            messages.put(new JSONObject().put("type", "node").put("data", new JSONObject()
+                    .put("user_id", n.senderUin)
+                    .put("nickname", n.senderName == null ? "" : n.senderName)
+                    .put("time", n.time)
+                    .put("content", content)));
+        }
+        return new JSONObject().put("messages", messages);
     }
 
     private List<LongMsg.Node> parseForwardNodes(Object messages) {

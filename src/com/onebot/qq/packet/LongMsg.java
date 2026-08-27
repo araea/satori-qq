@@ -25,12 +25,14 @@ import java.util.zip.GZIPOutputStream;
  */
 public final class LongMsg {
     public static final String CMD = "trpc.group.long_msg_interface.MsgService.SsoSendLongMsg";
+    public static final String RECV_CMD = "trpc.group.long_msg_interface.MsgService.SsoRecvLongMsg";
     private static final Random RND = new Random();
 
     public static final class Node {
         public long senderUin;
         public String senderName = "";
         public String text = "";
+        public long time;
     }
 
     // ---- upload request (SendLongMsgReq) ----
@@ -95,6 +97,67 @@ public final class LongMsg {
         return result == null ? null : result.str(3);
     }
 
+    // ---- download (get_forward_msg): SsoRecvLongMsg ----
+    public static byte[] buildDownloadReq(String selfUid, String resId) {
+        Pb.Writer uid = Pb.w().string(2, selfUid == null ? "" : selfUid);
+        Pb.Writer info = Pb.w().message(1, uid).string(2, resId).varint(3, 1); // Acquire=true
+        Pb.Writer settings = Pb.w().varint(1, 2).varint(2, 0).varint(3, 0).varint(4, 0);
+        return Pb.w().message(1, info).message(15, settings).toByteArray();
+    }
+
+    /** Parse a RecvLongMsgResp reply into the forwarded nodes (text content). */
+    public static List<Node> parseDownload(byte[] replyBody) {
+        List<Node> out = new ArrayList<>();
+        if (replyBody == null || replyBody.length == 0) return out;
+        Pb.Reader result = new Pb.Reader(replyBody).msg(1);   // RecvLongMsgResp.Result=1
+        if (result == null) return out;
+        byte[] payload = result.bytes(4);                     // RecvLongMsgResult.Payload=4
+        if (payload == null) return out;
+        byte[] raw = gunzip(payload);
+        if (raw.length == 0) return out;
+        List<Object> actions = new Pb.Reader(raw).all(2);     // LongMsgResult.Action=2 (repeated)
+        if (actions == null) return out;
+        for (Object ao : actions) {
+            Pb.Reader action = new Pb.Reader((byte[]) ao);
+            if (!"MultiMsg".equals(action.str(1))) continue;
+            Pb.Reader data = action.msg(2);                   // LongMsgContent
+            if (data == null) continue;
+            List<Object> bodies = data.all(1);                // MsgBody=1 (repeated PushMsgBody)
+            if (bodies == null) continue;
+            for (Object bo : bodies) out.add(parseNode(new Pb.Reader((byte[]) bo)));
+        }
+        return out;
+    }
+
+    private static Node parseNode(Pb.Reader body) {
+        Node n = new Node();
+        Pb.Reader rh = body.msg(1);   // ResponseHead
+        if (rh != null) {
+            n.senderUin = rh.num(1);  // FromUin
+            Pb.Reader grp = rh.msg(8); // Grp
+            if (grp != null) {
+                n.senderName = grp.str(4);           // MemberName
+            } else {
+                Pb.Reader fwd = rh.msg(7);           // ResponseForward
+                if (fwd != null) n.senderName = fwd.str(6);
+            }
+        }
+        Pb.Reader ch = body.msg(2);   // ContentHead
+        if (ch != null) n.time = ch.num(6); // TimeStamp
+        if (n.senderName == null) n.senderName = "";
+
+        StringBuilder sb = new StringBuilder(); // Body.RichText.Elems[].Text.Str
+        Pb.Reader mb = body.msg(3);
+        Pb.Reader rt = mb == null ? null : mb.msg(1);
+        List<Object> elems = rt == null ? null : rt.all(2);
+        if (elems != null) for (Object eo : elems) {
+            Pb.Reader text = new Pb.Reader((byte[]) eo).msg(1);
+            if (text != null) { String s = text.str(1); if (s != null) sb.append(s); }
+        }
+        n.text = sb.toString();
+        return n;
+    }
+
     // ---- outgoing multimsg LightApp card ----
     public static String buildCardJson(String resId, List<Node> nodes) throws org.json.JSONException {
         String uniseq = UUID.randomUUID().toString();
@@ -136,6 +199,19 @@ public final class LongMsg {
         try {
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             try (GZIPOutputStream gz = new GZIPOutputStream(bos)) { gz.write(data); }
+            return bos.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    private static byte[] gunzip(byte[] data) {
+        try (java.util.zip.GZIPInputStream gz =
+                     new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(data))) {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int r;
+            while ((r = gz.read(buf)) != -1) bos.write(buf, 0, r);
             return bos.toByteArray();
         } catch (Exception e) {
             return new byte[0];

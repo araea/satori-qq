@@ -20,8 +20,9 @@ public final class Main implements IXposedHookLoadPackage {
         started = true;
 
         try {
-            L.i("OneBot-QQ loading in process " + lp.processName);
             Cfg cfg = Cfg.load();
+            L.configure(cfg.verboseLogs);
+            L.i("bridge loading in process " + lp.processName);
             MsgStore store = new MsgStore();
             QQClient qq = new QQClient(lp.classLoader, true);
             OneBotHub hub = new OneBotHub(cfg, qq, store);
@@ -30,14 +31,15 @@ public final class Main implements IXposedHookLoadPackage {
                 catch (Throwable t) { L.e("MapsHide load failed", t); }
             }
             if (cfg.antiDetect) {
-                try { new com.onebot.qq.qq.AntiDetect(lp.classLoader).install(); }
+                try { new com.onebot.qq.qq.AntiDetect(lp.classLoader,
+                        cfg.blockQsecTasks, cfg.blockQsecReports).install(); }
                 catch (Throwable t) { L.e("AntiDetect install failed", t); }
             }
             hub.start();          // set listener + start WS server + heartbeat
             qq.installHooks();    // capture kernel session -> registers receive listener
-            L.i("OneBot-QQ started (OneBot 11 forward-WS on port " + cfg.port + ")");
+            L.i("bridge started on local port " + cfg.port);
         } catch (Throwable t) {
-            L.e("OneBot-QQ failed to start", t);
+            L.e("bridge failed to start", t);
         }
     }
 }

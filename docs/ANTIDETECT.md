@@ -1,5 +1,20 @@
 # 反检测 (掉线绕过) 说明 — 请务必读完再判断预期
 
+## 2026-08-28：双主线重新开放后的 0.5.0 进展
+
+旧实验说明保留用于避免重复踩坑，但“不再继续研究”不再是项目结论。当前策略是：低风险指纹持续收敛、
+Java/QSec 入口做单变量 A/B、native/framework 路线用证据逐层推进，同时保留 watchdog 恢复。
+
+- 默认静默日志，tag 改为中性 `Q.Kernel`；XposedBridge verbose 日志仅显式开启。
+- `getXpsInfo` 从 after-hook 改为 replacement：原实现中的 `T.ad(...)` 不再先执行，避免采集副作用。
+- `QSec.reportLog` 默认返回 0；`execTasks` 由 `block_qsec_tasks` 独立控制，默认关闭。
+- `getSign/getSignEntry/getEstInfo/Dandelion` 仍保持原样，避免把登录签名变量混进第一轮 A/B。
+- 新增 root `qq-onebot-exposure-audit.sh`，watchdog 状态切换自动记录 maps、线程与日志指纹。
+- reportLog 阻断启用后的即时真机结果：登录、WS、图片内核下载、文件获取均正常；
+  maps `vector=4, zygisk=6, fekit=3, onebot/xposed/lspd/mapshide=0`，可疑线程与旧日志指纹为 0。
+
+下一步是 24h/72h 数据、`execTasks` 独立短窗口实验，以及跨 namespace 精确观测 libfekit 的读取路径。
+
 ## 症状
 QQ 被注入后，报"设备环境不安全"，隔一阵把账号踢下线，要重新登录 + 验证。很烦。
 
@@ -81,9 +96,9 @@ maps_hide 外科版（只 patch libfekit）在真机测了：**patched 0 slots�
 会话活(get_login_info 返回真实昵称)、未被踢**。是否长期稳定需观察数小时。**诚实底线：libfekit 的
 native 检测无法保证绕过**；现实选择是"接受偶尔重登"或"换小号"。
 
-## 一句话给下一个接手的人
-Java 层能做的都做了（detectMethod/getXpsInfo）。要根治掉线，去搞**框架级 maps 隐藏**（路 1）
-或**native maps 过滤 hook**（路 2）。别在 Java 里继续试图骗过 libfekit，那条路走不通。
+## 历史阶段的一句话结论
+当时 Java 层只做了 detectMethod/getXpsInfo，GOT maps_hide 也未奏效。该结论仅说明旧方案失败；当前继续
+从 replacement 副作用、遥测入口、框架加载暴露和更精确的 native 观测推进，详见本文开头 0.5.0 更新。
 
 ## 2026-08-27 最终收敛审计
 

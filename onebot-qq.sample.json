@@ -1,8 +1,12 @@
 {
   "port": 3001,
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "token": "",
   "heartbeat": true,
   "heartbeat_ms": 15000,
-  "anti_detect": true
+  "anti_detect": true,
+  "maps_hide": false,
+  "verbose_logs": false,
+  "block_qsec_tasks": false,
+  "block_qsec_reports": true
 }

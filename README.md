@@ -49,6 +49,12 @@ ayjx (PRoot, OneBot 客户端)  --ws://127.0.0.1:3001-->  onebot-qq (QQ 进程�
 - [x] 任意常见音频经 Android MediaCodec 转 AMR-NB；MP3 发送+撤回 retcode 0
 - [x] 接收侧补齐 record/video/file/json/mface 段
 
+**里程碑 5（0.5.0，反检测 × 协议双主线）：**
+- [x] 默认静默/中性日志，`getXpsInfo` 前置 replacement，QSec reportLog 可配置阻断
+- [x] exposure audit + watchdog 状态切换快照，用于 24h/72h 反检测 A/B
+- [x] `get_image/get_file` 资源注册与 QQNT 内核下载闭环（主号历史只读验证）
+- [x] `get_record` 同路径实现（等待自然语音样本验证）
+
 **韧性层（2026-08-27；主号真机已验证在线路径）：**
 - [x] `get_status` 返回真实 `online/good`，心跳不再把离线硬编码成在线
 - [x] WS 建连立即发送 lifecycle `connect` + 当前状态心跳；在线切换发送 enable/disable

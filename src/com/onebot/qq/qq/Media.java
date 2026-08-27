@@ -34,7 +34,8 @@ public final class Media {
         long cutoff = System.currentTimeMillis() - 60L * 60L * 1000L;
         for (File file : files) {
             String name = file.getName();
-            boolean owned = name.startsWith("onebot") || name.startsWith("obpcm") || name.startsWith("obamr");
+            boolean owned = name.startsWith("onebot") || name.startsWith("obpcm")
+                    || name.startsWith("obamr") || name.startsWith("obget");
             if (owned && file.isFile() && file.lastModified() < cutoff && file.delete()) deleted++;
         }
         return deleted;

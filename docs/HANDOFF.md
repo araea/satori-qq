@@ -125,6 +125,15 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
 - 反检测审计：QQ scope 只有本模块；maps 仍有 vector=4、zygisk=6，vector 2.2 无 hide 开关。
 - 作者最终决定：**保持 Android 原生 QQ 单轨、使用主号，不转 Lagrange。**
 
+**0.5.0 双主线续作（2026-08-28，主号真机只读验证）：**
+- 方向升级为“反检测/防掉线 + OneBot 11 完整度”并行；不再用旧实验失败封死后续研究。
+- 默认静默/中性日志；`getXpsInfo` 前置 replacement；`reportLog` 默认阻断；`execTasks` 独立开关默认关。
+- 新增 exposure audit，watchdog 状态切换自动保存 maps/线程/日志快照。
+- 新增资源注册表与 `get_image/get_record/get_file`，走本地 → QQNT `downloadRichMedia` 回调 → URL。
+- 真机历史只读验证：图片和文件均返回真实本地路径 retcode 0；record/video 等待样本。
+- NapCat 当前源码缓存于 Termux `.cache/NapCatQQ` 供查阅；`/storage/emulated/0/Dev/QQ.hap` 同时作为
+  鸿蒙 libkernel/proto/业务结构参考，最终以 Android 9.3.50 类型校正。
+
 **未做（里程碑 3 主线已基本清空）：** notice 事件（撤回/戳一戳/进退群/禁言）。
 封包传输层和 0x8FC_2 成功分支均已打通；后续封包测试固定使用内部测试群 `675983807`。
 

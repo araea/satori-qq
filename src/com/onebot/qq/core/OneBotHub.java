@@ -74,6 +74,9 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         if ("get_version_info".equals(action)) return versionInfo();
         if ("can_send_image".equals(action) || "can_send_record".equals(action))
             return new JSONObject().put("yes", true);
+        if ("get_image".equals(action)) return getResource(p, "image");
+        if ("get_record".equals(action)) return getResource(p, "record");
+        if ("get_file".equals(action)) return getResource(p, null);
         if ("clean_cache".equals(action))
             return new JSONObject().put("deleted", com.onebot.qq.qq.Media.cleanTemp());
         if ("set_restart".equals(action)) {
@@ -174,6 +177,50 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             default:
                 throw new ApiError(1404, "unknown action: " + action);
         }
+    }
+
+    /** Resolve an opaque file id learned from an incoming segment to a local path and/or source URL. */
+    private JSONObject getResource(JSONObject p, String expectedType) throws Exception {
+        String id = p.optString("file", p.optString("file_id", p.optString("id", ""))).trim();
+        if (id.isEmpty()) throw new ApiError(1400, "missing file/file_id");
+        MsgStore.Resource resource = store.getResource(id);
+        if (resource == null) {
+            // Also accept a direct local path or URL for compatibility with clients that retain segment data.
+            resource = new MsgStore.Resource();
+            resource.id = id;
+            resource.type = expectedType == null ? "file" : expectedType;
+            if (id.startsWith("http://") || id.startsWith("https://")) resource.url = id;
+            else resource.path = id.startsWith("file://") ? id.substring(7) : id;
+        }
+        if (expectedType != null && resource.type != null && !expectedType.equals(resource.type))
+            throw new ApiError(1400, "resource type is " + resource.type + ", expected " + expectedType);
+
+        // Prefer an existing local file, then QQ's authenticated kernel downloader. Old qpic URLs
+        // frequently expire or stall, so direct HTTP is deliberately the final fallback.
+        java.io.File local = com.onebot.qq.qq.Media.resolve(resource.path, "");
+        if (local == null && resource.msgId != 0 && qq.isOnline()) {
+            String downloaded = qq.downloadRichMedia(
+                    resource.chatType, resource.peerUid, resource.msgId, resource.elementId);
+            if (!downloaded.isEmpty()) {
+                local = new java.io.File(downloaded);
+                resource.path = downloaded;
+                resource.size = local.length();
+            }
+        }
+        if (local == null && resource.url != null && !resource.url.isEmpty())
+            local = com.onebot.qq.qq.Media.resolve("", resource.url);
+        if (local == null && (resource.url == null || resource.url.isEmpty()))
+            throw new ApiError(1404, "resource unavailable: " + id);
+
+        JSONObject out = new JSONObject()
+                .put("resource_id", resource.id)
+                .put("resource_type", resource.type == null ? "file" : resource.type)
+                .put("file_name", resource.name == null ? "" : resource.name)
+                .put("file_size", local != null ? local.length() : resource.size);
+        if (local != null) out.put("file", local.getAbsolutePath());
+        else out.put("file", resource.url);
+        if (resource.url != null && !resource.url.isEmpty()) out.put("url", resource.url);
+        return out;
     }
 
     /**
@@ -618,7 +665,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
     private JSONObject versionInfo() throws Exception {
         return new JSONObject()
                 .put("app_name", "onebot-qq")
-                .put("app_version", "0.4.0")
+                .put("app_version", "0.5.0")
                 .put("protocol_version", "v11")
                 .put("qq_version", "9.3.50")
                 .put("runtime", "Android QQNT/Xposed");

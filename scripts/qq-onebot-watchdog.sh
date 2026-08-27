@@ -8,6 +8,7 @@ PID_FILE="$STATE_DIR/watchdog.pid"
 LOG_FILE="$STATE_DIR/watchdog.log"
 STATUS_FILE="$STATE_DIR/watchdog.status"
 COUNTERS_FILE="$STATE_DIR/watchdog.counters"
+EXPOSURE_AUDIT="$STATE_DIR/qq-onebot-exposure-audit.sh"
 QQ_PACKAGE=com.tencent.mobileqq
 ONEBOT_PORT_HEX=0BB9
 CHECK_SECONDS=15
@@ -90,6 +91,9 @@ record_state() {
     current_state="$observed_state"
     save_counters
     log_msg "state ${previous_state:-unknown} -> $current_state"
+    if [ -x "$EXPOSURE_AUDIT" ]; then
+        "$EXPOSURE_AUDIT" snapshot --quiet "${previous_state:-unknown}-to-$current_state" >/dev/null 2>&1 &
+    fi
 }
 
 log_msg() {

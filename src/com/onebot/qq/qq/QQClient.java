@@ -35,6 +35,7 @@ public final class QQClient {
     public static final String MEMBER_ROLE     = "com.tencent.qqnt.kernelpublic.nativeinterface.MemberRole";
     public static final String BUDDY_REQ_TYPE  = "com.tencent.qqnt.kernel.nativeinterface.BuddyListReqType";
     public static final String MSG_OPERATE_CB  = "com.tencent.qqnt.kernel.nativeinterface.IMsgOperateCallback";
+    public static final String RICH_MEDIA_GET_REQ = "com.tencent.qqnt.kernel.nativeinterface.RichMediaElementGetReq";
 
     public static final int CT_C2C = 1;
     public static final int CT_GROUP = 2;
@@ -53,6 +54,15 @@ public final class QQClient {
     private volatile String selfUin = "";
     private volatile String selfNick = "";
     private final boolean mainProcess;
+    private final java.util.concurrent.ConcurrentHashMap<String, MediaDownload> mediaDownloads =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final class MediaDownload {
+        final CountDownLatch latch = new CountDownLatch(1);
+        volatile String path = "";
+        volatile long errorCode = -1;
+        volatile String errorMessage = "";
+    }
 
     public QQClient(ClassLoader cl, boolean mainProcess) {
         this.ref = new Ref(cl);
@@ -182,6 +192,10 @@ public final class QQClient {
         @Override public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
             String name = m.getName();
             try {
+                if ("onRichMediaDownloadComplete".equals(name) && args != null && args.length > 0) {
+                    onRichMediaDownloadComplete(args[0]);
+                    return def(m);
+                }
                 Listener l = listener;
                 if (l == null) return def(m);
                 switch (name) {
@@ -216,6 +230,26 @@ public final class QQClient {
             if (r == byte.class) return (byte) 0;
             if (r == char.class) return (char) 0;
             return null;
+        }
+    }
+
+    private static String mediaDownloadKey(long msgId, long elementId) {
+        return msgId + ":" + elementId;
+    }
+
+    private void onRichMediaDownloadComplete(Object info) {
+        if (info == null) return;
+        try {
+            long msgId = Ref.asLong(ref.get(info, "msgId"));
+            long elementId = Ref.asLong(ref.get(info, "msgElementId"));
+            MediaDownload pending = mediaDownloads.get(mediaDownloadKey(msgId, elementId));
+            if (pending == null) return;
+            pending.path = Ref.asStr(ref.get(info, "filePath"));
+            pending.errorCode = Ref.asLong(ref.get(info, "fileErrCode"));
+            pending.errorMessage = Ref.asStr(ref.get(info, "fileErrMsg"));
+            pending.latch.countDown();
+        } catch (Throwable t) {
+            L.e("rich media completion", t);
         }
     }
 
@@ -344,6 +378,39 @@ public final class QQClient {
         } catch (Throwable t) {
             L.e("getMsgs history", t);
             return java.util.Collections.emptyList();
+        }
+    }
+
+    /** Ask QQ NT to materialize a received rich-media element and return its callback path. */
+    public String downloadRichMedia(int chatType, String peerUid, long msgId, long elementId) {
+        Object msgService = getMsgService();
+        if (msgService == null || chatType == 0 || peerUid == null || peerUid.isEmpty()
+                || msgId == 0) return "";
+        String key = mediaDownloadKey(msgId, elementId);
+        MediaDownload pending = new MediaDownload();
+        mediaDownloads.put(key, pending);
+        try {
+            Class<?>[] types = new Class[]{long.class, String.class, int.class, long.class,
+                    int.class, int.class, String.class, long.class, int.class, int.class};
+            Object req = ref.neuTyped(RICH_MEDIA_GET_REQ, types,
+                    new Object[]{msgId, peerUid, chatType, elementId,
+                            1, 0, "", 0L, 0, 1});
+            ref.call(msgService, "downloadRichMedia", req);
+            if (!pending.latch.await(30, TimeUnit.SECONDS)) return "";
+            if (pending.errorCode != 0) {
+                L.w("downloadRichMedia code=" + pending.errorCode + " " + pending.errorMessage);
+                return "";
+            }
+            java.io.File result = new java.io.File(pending.path);
+            return result.isFile() && result.length() > 0 ? result.getAbsolutePath() : "";
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        } catch (Throwable t) {
+            L.e("downloadRichMedia", t);
+            return "";
+        } finally {
+            mediaDownloads.remove(key, pending);
         }
     }
 

@@ -237,7 +237,8 @@ public final class Convert {
         Object elements = ref.get(rec, "elements");
         JSONArray segs = new JSONArray();
         StringBuilder raw = new StringBuilder();
-        parseElements(elements, segs, raw);
+        String resourcePeer = chatType == QQClient.CT_GROUP ? String.valueOf(peerUin) : peerUid;
+        parseElements(elements, segs, raw, chatType, resourcePeer, msgId);
 
         try {
             JSONObject ev = new JSONObject();
@@ -271,7 +272,8 @@ public final class Convert {
         }
     }
 
-    private void parseElements(Object elements, JSONArray segs, StringBuilder raw) {
+    private void parseElements(Object elements, JSONArray segs, StringBuilder raw,
+                               int chatType, String peerUid, long msgId) {
         if (!(elements instanceof java.util.List)) return;
         java.util.List<?> list = (java.util.List<?>) elements;
         for (Object e : list) {
@@ -308,14 +310,19 @@ public final class Convert {
                     case 2: { // pic
                         Object p = ref.get(e, "picElement");
                         String md5 = Ref.asStr(ref.get(p, "md5HexStr"));
-                        String url = safeStr(p, "originImageUrl");
+                        String url = normalizeUrl(safeStr(p, "originImageUrl"));
                         String path = safeStr(p, "sourcePath");
                         String file = md5.isEmpty() ? safeStr(p, "fileName") : (md5 + ".image");
+                        String name = safeStr(p, "fileName");
+                        long size = Ref.asLong(ref.get(p, "fileSize"));
+                        file = store.putResource("image", file, path, url, name, size);
+                        attachResource(file, e, p, chatType, peerUid, msgId);
                         JSONObject d = new JSONObject();
                         try {
                             d.put("file", file);
-                            if (!url.isEmpty()) d.put("url", url.startsWith("http") ? url : ("https://gchat.qpic.cn" + url));
+                            if (!url.isEmpty()) d.put("url", url);
                             if (!path.isEmpty()) d.put("path", path);
+                            if (size > 0) d.put("file_size", size);
                         } catch (Exception ignore) {}
                         segObj(segs, "image", d);
                         raw.append("[CQ:image,file=").append(file).append("]");
@@ -330,11 +337,18 @@ public final class Convert {
                     }
                     case 3: { // file
                         Object f = ref.get(e, "fileElement");
+                        String name = safeStr(f, "fileName");
+                        String path = safeStr(f, "filePath");
+                        String url = firstNonEmpty(safeStr(f, "fileUrl"), safeStr(f, "url"));
+                        long size = Ref.asLong(ref.get(f, "fileSize"));
+                        String file = store.putResource("file", safeStr(f, "fileUuid"), path, url, name, size);
+                        attachResource(file, e, f, chatType, peerUid, msgId);
                         JSONObject d = new JSONObject();
-                        d.put("file", safeStr(f, "fileUuid"));
-                        d.put("name", safeStr(f, "fileName"));
-                        d.put("path", safeStr(f, "filePath"));
-                        d.put("size", Ref.asLong(ref.get(f, "fileSize")));
+                        d.put("file", file);
+                        d.put("name", name);
+                        if (!path.isEmpty()) d.put("path", path);
+                        if (!url.isEmpty()) d.put("url", url);
+                        d.put("size", size);
                         segObj(segs, "file", d);
                         raw.append("[CQ:file,file=").append(d.optString("file")).append("]");
                         break;
@@ -344,9 +358,14 @@ public final class Convert {
                         JSONObject d = new JSONObject();
                         String file = safeStr(ptt, "fileUuid");
                         if (file.isEmpty()) file = safeStr(ptt, "fileName");
-                        d.put("file", file);
                         String path = safeStr(ptt, "filePath");
+                        String url = firstNonEmpty(safeStr(ptt, "originPttUrl"), safeStr(ptt, "fileUrl"));
+                        long size = Ref.asLong(ref.get(ptt, "fileSize"));
+                        file = store.putResource("record", file, path, url, safeStr(ptt, "fileName"), size);
+                        attachResource(file, e, ptt, chatType, peerUid, msgId);
+                        d.put("file", file);
                         if (!path.isEmpty()) d.put("path", path);
+                        if (!url.isEmpty()) d.put("url", url);
                         d.put("duration", Ref.asInt(ref.get(ptt, "duration")));
                         segObj(segs, "record", d);
                         raw.append("[CQ:record,file=").append(file).append("]");
@@ -357,9 +376,15 @@ public final class Convert {
                         JSONObject d = new JSONObject();
                         String file = safeStr(v, "fileUuid");
                         if (file.isEmpty()) file = safeStr(v, "fileName");
-                        d.put("file", file);
                         String path = safeStr(v, "filePath");
+                        String url = firstNonEmpty(safeStr(v, "fileUrl"), safeStr(v, "videoUrl"));
+                        long size = Ref.asLong(ref.get(v, "fileSize"));
+                        file = store.putResource("video", file, path, url, safeStr(v, "fileName"), size);
+                        attachResource(file, e, v, chatType, peerUid, msgId);
+                        d.put("file", file);
                         if (!path.isEmpty()) d.put("path", path);
+                        if (!url.isEmpty()) d.put("url", url);
+                        if (size > 0) d.put("file_size", size);
                         segObj(segs, "video", d);
                         raw.append("[CQ:video,file=").append(file).append("]");
                         break;
@@ -392,6 +417,28 @@ public final class Convert {
     }
 
     private String safeStr(Object o, String f) { try { return Ref.asStr(ref.get(o, f)); } catch (Throwable t) { return ""; } }
+
+    private long safeLong(Object o, String f) {
+        try { return Ref.asLong(ref.get(o, f)); } catch (Throwable t) { return 0; }
+    }
+
+    private void attachResource(String id, Object element, Object media, int chatType,
+                                String peerUid, long msgId) {
+        long elementId = safeLong(element, "elementId");
+        long fileModelId = safeLong(media, "fileModelId");
+        if (fileModelId == 0) fileModelId = safeLong(element, "fileModelId");
+        store.attachResourceContext(id, chatType, peerUid, msgId, elementId, fileModelId);
+    }
+
+    private String firstNonEmpty(String a, String b) {
+        return a != null && !a.isEmpty() ? a : (b == null ? "" : b);
+    }
+
+    private String normalizeUrl(String url) {
+        if (url == null || url.isEmpty()) return "";
+        if (url.startsWith("http://") || url.startsWith("https://")) return url;
+        return url.startsWith("/") ? "https://gchat.qpic.cn" + url : url;
+    }
 
     private void seg(JSONArray arr, String type, String k, String v) {
         try {

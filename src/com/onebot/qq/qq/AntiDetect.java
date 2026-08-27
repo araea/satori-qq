@@ -1,7 +1,6 @@
 package com.onebot.qq.qq;
 
 import com.onebot.qq.L;
-import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 
@@ -10,31 +9,31 @@ import java.lang.reflect.Method;
 /**
  * Best-effort anti-detection for QQ's "device environment unsafe" / forced re-login.
  *
- * IMPORTANT / HONEST LIMITATIONS:
- *  - QQ's real gatekeeper is the NATIVE security SDK libfekit.so (QSec.getSign / doSomething /
- *    Dandelion.energy are all JNI). It scans /proc/self/maps and the process natively and reports
- *    device risk to the server, which then forces the re-login/verify flow. A Java Xposed module
- *    CANNOT stop that native scan. So this class only neutralises the JAVA-level detection seams,
- *    which reduces — but does not guarantee removal of — the risk trigger.
- *  - We deliberately DO NOT hook the signing methods (getSign/getSignEntry/getEstInfo/doSomething/
- *    energy) — QQ needs those to produce a valid login signature; faking them breaks login entirely.
- *  - For a reliable fix you must hide the Xposed/Vector native .so from QQ's process maps at the
- *    FRAMEWORK level (Vector "hide", or a native maps-filter hook in a zygisk companion). See
- *    docs/ANTIDETECT.md.
+ * The signing path stays intact. Experimental task/report suppression is separately configurable
+ * so it can be A/B tested and rolled back without changing the stable Java probe neutralisation.
  *
  * What we hook (pure detection helpers, safe to neutralise):
  *  - QSec.detectMethod(String cls, String method)  -> false   (defeats class/method-existence probes)
- *  - QSec.getXpsInfo()                              -> empty   ("Xps" = Xposed info collector)
+ *  - QSec.getXpsInfo()                              -> empty   (replacement: original collector never runs)
+ *  - optional QSec.execTasks/reportLog              -> 0       (experimental native worker/telemetry suppression)
  */
 public final class AntiDetect {
     private static final String QSEC = "com.tencent.mobileqq.qsec.qsecurity.QSec";
 
     private final Ref ref;
-    public AntiDetect(ClassLoader cl) { this.ref = new Ref(cl); }
+    private final boolean blockTasks;
+    private final boolean blockReports;
+    public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports) {
+        this.ref = new Ref(cl);
+        this.blockTasks = blockTasks;
+        this.blockReports = blockReports;
+    }
 
     public void install() {
         hookDetectMethod();
         hookGetXpsInfo();
+        if (blockTasks) hookIntMethod("execTasks", 2);
+        if (blockReports) hookIntMethod("reportLog", 4);
     }
 
     /** QSec.detectMethod(cls, method): returns true if the class defines that method — used to
@@ -59,14 +58,27 @@ public final class AntiDetect {
             if (qsec == null) return;
             Method m = findMethod(qsec, "getXpsInfo", 0);
             if (m == null) { L.w("AntiDetect: getXpsInfo not found"); return; }
-            XposedBridge.hookMethod(m, new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam p) {
-                    p.setResult(new byte[0]);
-                }
-            });
+            // Replacement matters: an after-hook still lets T.ad(...) collect data and side effects.
+            XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(new byte[0]));
             L.i("AntiDetect: neutralised QSec.getXpsInfo");
         } catch (Throwable t) {
             L.e("AntiDetect.getXpsInfo", t);
+        }
+    }
+
+    private void hookIntMethod(String name, int argc) {
+        try {
+            Class<?> qsec = ref.clsOrNull(QSEC);
+            if (qsec == null) return;
+            Method m = findMethod(qsec, name, argc);
+            if (m == null || m.getReturnType() != int.class) {
+                L.w("AntiDetect: " + name + " not found");
+                return;
+            }
+            XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(0));
+            L.i("AntiDetect: experimental block " + name);
+        } catch (Throwable t) {
+            L.e("AntiDetect." + name, t);
         }
     }
 

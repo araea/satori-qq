@@ -10,6 +10,7 @@ net/WsServer.java    手写 RFC6455 正向 WS 服务端 (握手/鉴权/分帧/�
 net/WsConn.java      单连接，服务端→客户端不掩码，同步写帧 (含 64-bit 长度)
 core/OneBotHub.java  OneBot 协议中枢：动作分发 + 事件下发 + 生命周期/真实在线心跳 + 响应封包
 core/MsgStore.java   OneBot int32 message_id ↔ QQ NT (chatType/peer/msgId/msgSeq) 映射 + uin↔uid 缓存
+                     + 富媒体 file_id ↔ 下载上下文/本地路径/URL 注册表
 qq/QQClient.java     QQ 桥：捕获会话、收发、监听、身份、群查询、uid 解析
 qq/Convert.java      段↔MsgElement 转换；MsgRecord→OneBot 事件
 qq/Media.java        file 解析(路径/file://http/base64) + 构建 PicElement (富媒体自动上传)
@@ -20,6 +21,7 @@ packet/Pb.java       零依赖 protobuf wire 编解码器 + OIDB 辅助方法
 packet/PacketSvc.java QQNT 原始 OIDB 传输：IDependsAdapter 发包 + requestId 回包关联
 stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
 scripts/*watchdog*   root 进程外守护 + KernelSU/Magisk service.d 入口
+scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
 ```
 
 ## 数据流
@@ -49,6 +51,15 @@ scripts/*watchdog*   root 进程外守护 + KernelSU/Magisk service.d 入口
 - 主号真机已验证 lifecycle `connect`、即时/15 秒周期 heartbeat、`get_status`、`get_login_info`，以及
   设置页强制退出→LoginActivity offline/disable→一键登录 online/enable 的完整往返。WS 未断，离线动作
   返回 1500，恢复后持续收群消息。QQ 此次复用了同一进程/CppProxy，替换成全新 session 对象的分支未触发。
+
+## 富媒体取回（0.5.0）
+
+- `Convert` 收到 PIC/PTT/VIDEO/FILE 时，用消息上下文和 elementId 注册 opaque file_id。
+- `get_image/get_record/get_file` 先复用本地路径；缺失时构造 Android 9.3.50
+  `RichMediaElementGetReq(msgId,peerUid,chatType,elementId,1,0,"",0,0,1)`。
+- `QQClient` 调 `IKernelMsgService.downloadRichMedia(req)`，以 msgId+elementId 等待
+  `IKernelMsgListener.onRichMediaDownloadComplete`，校验 fileErrCode 后返回 QQ 生成的 filePath；最后才用 URL。
+- 字段由本机 jadx + NapCat 当前源码 + QQ.hap/libkernel 三方核对。图片/文件已真机只读通过。
 
 ## QQNT 内核映射（QQ 9.3.50 实测；均为稳定 JNI 名）
 > `api.*` 服务接口是**混淆**的（如 `IKernelService.getMsgService`→返回 `api.ac`），**避开**；

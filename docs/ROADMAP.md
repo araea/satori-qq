@@ -35,7 +35,36 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
 - **收/取** `get_forward_msg`：从 `MultiForwardMsgElement` 里拿 resId，再
   `msgService.getMultiMsg(...)`/下载解析。字段名要反编译确认。
 
-## D. 需要 OIDB 原始封包子系统的（最重，单独一块）
+## D. OIDB/封包子系统（设计 + 进度）
+
+**已建（2026-08-27）**：`packet/Pb.java` — 零依赖 protobuf 编解码器（varint/bytes/fixed/message/嵌套 +
+`Pb.oidb(cmd,svcType,body)` 打 OIDBSSOPkg）。离线往返测试通过。**合并转发也归这里**（伪造节点要把多条
+消息拼成 protobuf 上传拿 resId，QQNT 内核 `multiForwardMsg` 只能转已存在的消息，办不了伪造）。
+
+**发包链路（QQNT，实测线索）**：
+- 主进程经 MSF SDK 发：`com.tencent.mobileqq.msf.sdk.o` 里 `this.q.sendToServiceMsg(ToServiceMsg)`
+  （`q` 是 IBaseService binder 代理，走到 :MSF 进程的 `MsfService.sendToServiceMsg`）。`o` 是混淆名，要动态定位。
+- `ToServiceMsg(String appId, String uin, String serviceCmd)` 构造 + 设 wupBuffer(SSO body)。
+- **回包**：注册 `mqq.app.MSFServlet` 或 hook FromServiceMsg 分发；按 seq 关联。Shamrock 的做法是**注入
+  :MSF 进程** + 跨进程广播 IPC（`PacketReceiver`/`PacketHandler`，hook `FromServiceMsg` 的
+  `internalOnReceive`）——更稳但更重。**先试主进程 MSFServlet 路线**，不行再学 Shamrock 注入 :MSF。
+- **签名（关键坑）**：现代 trpc/`OidbSvcTrpcTcp.0xXXXX_Y` 包**必须带 libfekit 签名**，否则服务器拒收。
+  调 `QSec.getInstance().getSign(cmd, body, seq)` 拿 sign（Shamrock 的 QSign.kt 就干这个）。注意 AntiDetect
+  hook 的是 detectMethod/getXpsInfo，**没碰 getSign，安全可用**。
+
+**待办组件**：
+1. `packet/PacketSvc.java`：定位 MSF SDK 发送对象 + 构造 ToServiceMsg + 发送 + 按 seq 收回包（latch 同步）。
+2. `packet/QSign.java`：反射调 QSec.getSign 给包签名。
+3. 命令号：从 QQ.hap 的 modules.abc（需 abc 反汇编器）或社区/抓包拿。已知形态 `OidbSvcTrpcTcp.0x{cmd}_{svc}`。
+4. 各动作组包：send_like（oidb 点赞）、set_group_special_title（oidb 0x8fc 改头衔）、
+   合并转发（SsoSendLongMsg 上传 PbMultiMsgTransmit → resId → 发引用它的 ark）。
+
+**注意进程模型**：当前模块只跑主进程（Main 里 `if(!mainProcess) return`）。若走 Shamrock 的 :MSF 路线，
+要放开 :MSF 进程并做 IPC。走主进程 MSFServlet 路线则不用。
+
+## D2. 需要 OIDB 原始封包子系统的具体动作（组包细节）
+
+### 原细节：
 `send_like`(点赞资料卡)、`set_group_special_title`(专属头衔) 在 QQNT **没有内核 service 方法**，
 必须发 **OIDB protobuf 封包**：
 - 打法：hook QQ 的 MSF/SSO 发送通道（`sendOidb`/`sendSSO`），或找到 `IKernelMSFService`/

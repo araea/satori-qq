@@ -36,6 +36,8 @@ OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
   `msgService.getMultiMsg(...)`/下载解析。字段名要反编译确认。
 
 ## D. OIDB/封包子系统（设计 + 进度）
+> **2026-08-27d 重要更新**：命令号**不必**啃 QQ.hap 的 abc——直接参考 **NapCatQQ**(维护中)/**Lagrange.Core** 源码，body protobuf 与安卓一致。已抄到 0x8FC_2(头衔)/0xED3_1(poke)/SsoSendLongMsg(转发) 等，见 `reference/PACKETS.md`。`Pb.oidb` 已改成正确的 trpc 格式(1/2/4/12)并离线验证。剩发送链路(PacketSvc+QSign)是硬骨头。
+
 
 **已建（2026-08-27）**：`packet/Pb.java` — 零依赖 protobuf 编解码器（varint/bytes/fixed/message/嵌套 +
 `Pb.oidb(cmd,svcType,body)` 打 OIDBSSOPkg）。离线往返测试通过。**合并转发也归这里**（伪造节点要把多条

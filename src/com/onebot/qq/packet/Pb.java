@@ -87,12 +87,20 @@ public final class Pb {
         return new long[]{v, p};
     }
 
-    // ---------------- OIDB wrapper (oidb_sso.OIDBSSOPkg, from QQ.hap oidb.proto) ----------------
-    /** Build an OIDBSSOPkg: cmd=0xXXXX, serviceType, body. */
-    public static byte[] oidb(int command, int serviceType, byte[] body) {
-        return w().varint(1, command).varint(2, serviceType).bytes(4, body).string(6, "9.3.50").toByteArray();
+    // ---------------- OIDB wrapper (modern OidbSvcTrpcTcpBase; fields per NapCat) ----------------
+    // OidbSvcTrpcTcpBase: 1=command,2=subCommand,3=errorCode,4=body,5=errorMsg,12=isReserved.
+    // serviceCmd string for ToServiceMsg = "OidbSvcTrpcTcp.0x{CMD_HEX_UPPER}_{sub}".
+    /** Build a trpc OIDB packet body. isReserved=1 when the body uses uid (most modern cmds). */
+    public static byte[] oidb(int command, int subCommand, byte[] body, boolean isReserved) {
+        return w().varint(1, command).varint(2, subCommand).bytes(4, body)
+                .varint(12, isReserved ? 1 : 0).toByteArray();
     }
-    /** Extract bytes_bodybuffer (field 4) + result (field 3) from an OIDBSSOPkg reply. */
+    /** The serviceCmd string for a trpc OIDB command. */
+    public static String oidbCmd(int command, int subCommand) {
+        return "OidbSvcTrpcTcp.0x" + Integer.toHexString(command).toUpperCase() + "_" + subCommand;
+    }
+    /** Extract body (field 4) + errorCode (field 3) from an OidbSvcTrpcTcpBase reply. */
     public static byte[] oidbBody(byte[] pkg) { return new Reader(pkg).bytes(4); }
     public static long oidbResult(byte[] pkg) { return new Reader(pkg).num(3); }
+    public static String oidbErrMsg(byte[] pkg) { return new Reader(pkg).str(5); }
 }

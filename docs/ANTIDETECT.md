@@ -1,5 +1,19 @@
 # 反检测 (掉线绕过) 说明 — 请务必读完再判断预期
 
+## 2026-08-28 13:27：anonymous 单变量结果与 execTasks 新基线
+
+- 13:27:36 再次捕获 `KICK_TO_LOGIN` + `ACCOUNT_KICKED`，发生在群文件 APK 部署之前；排除构建/冷启
+  导致本次踢号。此时 Zygisk anonymous 已运行约 33 分钟，精确 maps 仍为 vector=0、zygisk=0。
+- 结论：anonymous 显著消除了路径级暴露，但不能单独阻止 libfekit/服务器风控；旧的
+  “anonymous + reportLog-block”基线在短窗口内已失败，`account_kicks` 回填为 2。
+- 为避免带注入完成验证，已临时移除 QQ scope、停止 watchdog，并在干净进程中确认 QQ 自动恢复且没有
+  登录 Activity；随后才重新加入 scope。
+- 当前严格只新增 `block_qsec_tasks=true`，其它变量保持 anonymous + reportLog-block +
+  detectMethod/getXpsInfo replacement。重新注入后登录、WS、群文件查询和资源 URL 均正常，开始新的
+  短窗口 A/B。异常时先 scope rm；关闭本变量只需把配置改回 false 后冷启。
+- watchdog 的近期事件查询也已修复：Android logcat 不接受 `-T 2m`，现改用 epoch 计算绝对时间，避免
+  后续真实 `ACCOUNT_KICKED` 因时间参数无效而漏计。
+
 ## 2026-08-28 12:47：真实踢号证据与 Zygisk 匿名映射基线
 
 - Android events 明确记录 `mqq.intent.action.KICK_TO_LOGIN`，随后创建
@@ -13,7 +27,7 @@
   `maps_vector=0`、`maps_zygisk=0`，且无新增错误。
 - 旧审计把系统通用 `[anon:InternalMmapVector]` 误算成 Vector；短信、Termux、桌面等干净进程也有
   同一行。新审计的 `maps_vector` 只统计框架特征，`maps_vector_generic` 保留旧关键词口径用于对照。
-- 当前保留匿名模式进入 24h/72h 观察。回滚：
+- anonymous 路径收敛继续保留，但它的单变量防踢结论已在 13:27 失败。回滚：
   `/data/adb/modules/zygisksu/bin/zygiskd memory-type default`，随后冷启 QQ；原值另存于
   `/data/adb/onebot-qq/zygisksu-memory_type.pre-anonymous`。
 - watchdog 已修复“登录页存在但 3001 仍开着就误报 online”的逻辑：登录任务优先，新增

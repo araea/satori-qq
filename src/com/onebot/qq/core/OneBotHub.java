@@ -5,6 +5,7 @@ import com.onebot.qq.L;
 import com.onebot.qq.net.WsConn;
 import com.onebot.qq.net.WsServer;
 import com.onebot.qq.packet.LongMsg;
+import com.onebot.qq.packet.GroupFiles;
 import com.onebot.qq.packet.PacketSvc;
 import com.onebot.qq.packet.Pb;
 import com.onebot.qq.qq.Convert;
@@ -127,6 +128,15 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 return new JSONObject();
             }
             case "get_group_info": return groupInfoJson(p.optLong("group_id", 0));
+            case "get_group_file_system_info":
+                return getGroupFileSystemInfo(p.optLong("group_id", 0));
+            case "get_group_root_files":
+                return getGroupFiles(p.optLong("group_id", 0), "/");
+            case "get_group_files_by_folder":
+                return getGroupFiles(p.optLong("group_id", 0), p.optString("folder_id", ""));
+            case "get_group_file_url":
+                return getGroupFileUrl(p.optLong("group_id", 0),
+                        p.optString("file_id", ""), p.optInt("busid", p.optInt("bus_id", 0)));
             case "set_group_kick": {
                 long g = p.optLong("group_id", 0), u = p.optLong("user_id", 0);
                 qq.kickMember(g, uidFor(g, u), p.optBoolean("reject_add_request", false));
@@ -506,6 +516,93 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         o.put("member_count", Ref.asInt(qq.ref.get(gi, "memberCount")));
         o.put("max_member_count", Ref.asInt(qq.ref.get(gi, "maxMember")));
         return o;
+    }
+
+    private JSONObject getGroupFileSystemInfo(long groupId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        PacketSvc.Result countPacket = qq.packets().sendOidb(GroupFiles.VIEW_CMD,
+                GroupFiles.COUNT_SUB, GroupFiles.countRequest(groupId), true, 15_000L);
+        if (!countPacket.ok())
+            throw new ApiError(1500, "group file count failed: " + countPacket.describe());
+        GroupFiles.CountResult count = GroupFiles.parseCount(countPacket.body);
+        if (count.code != 0)
+            throw new ApiError(1500, "group file count failed (code=" + count.code + "): " + count.message);
+
+        PacketSvc.Result spacePacket = qq.packets().sendOidb(GroupFiles.VIEW_CMD,
+                GroupFiles.SPACE_SUB, GroupFiles.spaceRequest(groupId), true, 15_000L);
+        if (!spacePacket.ok())
+            throw new ApiError(1500, "group file space failed: " + spacePacket.describe());
+        GroupFiles.SpaceResult space = GroupFiles.parseSpace(spacePacket.body);
+        if (space.code != 0)
+            throw new ApiError(1500, "group file space failed (code=" + space.code + "): " + space.message);
+        return new JSONObject()
+                .put("file_count", count.fileCount)
+                .put("limit_count", count.limitCount)
+                .put("used_space", space.usedSpace)
+                .put("total_space", space.totalSpace);
+    }
+
+    private JSONObject getGroupFiles(long groupId, String folderId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        if (folderId == null || folderId.isEmpty())
+            throw new ApiError(1400, "missing folder_id");
+        JSONArray files = new JSONArray();
+        JSONArray folders = new JSONArray();
+        int startIndex = 0;
+        final int pageSize = 50;
+        for (int page = 0; page < 100; page++) {
+            PacketSvc.Result packet = qq.packets().sendOidb(GroupFiles.VIEW_CMD,
+                    GroupFiles.LIST_SUB,
+                    GroupFiles.listRequest(groupId, folderId, startIndex, pageSize), true, 15_000L);
+            if (!packet.ok())
+                throw new ApiError(1500, "group file list failed: " + packet.describe());
+            GroupFiles.ListResult result = GroupFiles.parseList(packet.body);
+            if (result.code != 0)
+                throw new ApiError(1500, "group file list failed (code=" + result.code + "): " + result.message);
+            for (GroupFiles.Entry entry : result.entries) {
+                if (entry.folder) {
+                    folders.put(new JSONObject()
+                            .put("folder_id", entry.id)
+                            .put("folder_name", entry.name)
+                            .put("create_time", entry.uploadTime)
+                            .put("creator", entry.creatorUin)
+                            .put("creator_name", entry.creatorName)
+                            .put("total_file_count", entry.totalFileCount));
+                } else {
+                    files.put(new JSONObject()
+                            .put("file_id", entry.id)
+                            .put("file_name", entry.name)
+                            .put("busid", entry.busId)
+                            .put("file_size", entry.size)
+                            .put("upload_time", entry.uploadTime)
+                            .put("dead_time", entry.deadTime)
+                            .put("modify_time", entry.modifyTime)
+                            .put("download_times", entry.downloadTimes)
+                            .put("uploader", entry.uploaderUin)
+                            .put("uploader_name", entry.uploaderName));
+                }
+            }
+            if (result.end) return new JSONObject().put("files", files).put("folders", folders);
+            int next = result.nextIndex > startIndex ? result.nextIndex : startIndex + pageSize;
+            if (next <= startIndex)
+                throw new ApiError(1500, "group file list returned a stalled cursor");
+            startIndex = next;
+        }
+        throw new ApiError(1500, "group file list exceeded pagination limit");
+    }
+
+    private JSONObject getGroupFileUrl(long groupId, String fileId, int busId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        if (fileId == null || fileId.isEmpty()) throw new ApiError(1400, "missing file_id");
+        PacketSvc.Result packet = qq.packets().sendOidb(GroupFiles.DOWNLOAD_CMD,
+                GroupFiles.DOWNLOAD_SUB, GroupFiles.urlRequest(groupId, fileId, busId), true, 15_000L);
+        if (!packet.ok())
+            throw new ApiError(1500, "group file URL failed: " + packet.describe());
+        GroupFiles.UrlResult result = GroupFiles.parseUrl(packet.body);
+        if (result.code != 0)
+            throw new ApiError(1500, "group file URL failed (code=" + result.code + "): " + result.message);
+        if (result.url.isEmpty()) throw new ApiError(1500, "group file URL response is empty");
+        return new JSONObject().put("url", result.url);
     }
 
     /** Resolve a uin to its uid for a group action: cache -> profile service -> group member list. */

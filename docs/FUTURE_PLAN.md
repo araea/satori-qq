@@ -22,9 +22,10 @@
 
 ### 下一步
 
-1. 以 Zygisk anonymous + reportLog-block 为新基线做 24h/72h 观察；用 `account_kicks` 而不是旧的
-   进程死亡/端口恢复数判断服务器踢号。
-2. anonymous 观察窗口结束后再单独评估 `block_qsec_tasks`；不与其它高风险变量同时改变。
+1. anonymous + reportLog-block 在约 33 分钟后再次真实踢号，单变量结果已失败；anonymous 仍保留作
+   maps 收敛，但不再把它视为足够方案。
+2. 当前只新增 `block_qsec_tasks=true` 做短窗口 A/B；用 `account_kicks` 判断服务器踢号，不与其它
+   高风险变量同时改变。
 3. 跟进 vector 新版本、加载路径和框架级隐藏能力，记录升级前后 maps 差异。
 4. 设计下一代 native 实验：跨 linker namespace 精确定位 libfekit，先观测真实读取点，再决定
    GOT/inline/syscall 处理；保持限定检测库、配置开关和旧 APK 回滚。
@@ -39,11 +40,13 @@
 - 按 NapCat 当前源码与本机/QQ.hap 核对：普通消息下载使用 fileModelId=0、downSourceType=0、
   triggerType=1，并通过 `onRichMediaDownloadComplete` 返回真实路径。
 - 真机只读验证：`get_image`、`get_file` 均 retcode 0 且返回真实本地文件；最近历史无 record/video 样本。
+- 群文件四项查询已完成：0x6D8 文件数/真实上限/空间/分页列表，0x6D6_2 URL；空根目录、已有文件
+  HTTPS 与自然子目录均真机通过，未制造写样本。
 
 ### 下一步
 
 1. 等自然样本或准备本地样本验证 `get_record` 与 video→`get_file`；为 `get_record.out_format` 增加转码。
-2. 接入 `IKernelRichMediaService.getGroupFileList`、群文件空间、文件 URL 与目录操作。
+2. 群文件查询已完成；下一步补目录创建/删除/移动、文件删除与 upload 返回真实 file_id/callback。
 3. 完善历史游标与私聊历史；避免只返回空数组而不区分超时/内核错误。
 4. 合并转发节点从文本扩展到 image/at/reply/file，并解决转发资源 file_id 上下文。
 5. 基于 IKernelMsgListener/GroupListener 补 recall、poke、群成员变化、禁言等 notice；再补 request。

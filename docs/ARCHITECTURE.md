@@ -19,6 +19,7 @@ qq/AntiDetect.java   best-effort 反检测 (hook QSec.detectMethod/getXpsInfo)
 qq/Ref.java          反射门面 (绑定 QQ classloader；new/call/get/set/neuTyped)
 packet/Pb.java       零依赖 protobuf wire 编解码器 + OIDB 辅助方法
 packet/PacketSvc.java QQNT 原始 OIDB 传输：IDependsAdapter 发包 + requestId 回包关联
+packet/GroupFiles.java 群文件 0x6D8 列表/计数/空间 + 0x6D6_2 下载 URL codec
 stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
 scripts/*watchdog*   root 进程外守护 + KernelSU/Magisk service.d 入口
 scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
@@ -63,6 +64,17 @@ scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
 - `QQClient` 调 `IKernelMsgService.downloadRichMedia(req)`，以 msgId+elementId 等待
   `IKernelMsgListener.onRichMediaDownloadComplete`，校验 fileErrCode 后返回 QQ 生成的 filePath；最后才用 URL。
 - 字段由本机 jadx + NapCat 当前源码 + QQ.hap/libkernel 三方核对。图片/文件已真机只读通过。
+
+## 群文件查询（2026-08-28，主号真机验证）
+
+- `get_group_file_system_info` 用 `0x6D8_2` 文件计数/真实上限和 `0x6D8_3` 空间；不采用 NapCat
+  当前硬编码的 10000。测试群返回真实 limit=1500、total=10 GiB。
+- `get_group_root_files`/`get_group_files_by_folder` 用 `0x6D8_1`，根目录 ID=`/`，每页 50，优先
+  使用服务端 nextIndex 并限制 100 页；按 QQ 的 FileInfo/FolderInfo 映射 go-cqhttp 字段。
+- `get_group_file_url` 用 `0x6D6_2`，body 为 group/app=7/busid/fileId；响应 DNS + token hex 组成
+  `https://.../ftn_handler/.../?fname=`。现有群文件已真机返回 HTTPS。
+- 全部复用 `PacketSvc` 的 Android QQNT SSO/QSec 通道，没有新增 Java/native hook；空根目录、现有文件 URL
+  和自然子目录均已只读验证，无测试写入。
 
 ## QQNT 内核映射（QQ 9.3.50 实测；均为稳定 JNI 名）
 > `api.*` 服务接口是**混淆**的（如 `IKernelService.getMsgService`→返回 `api.ac`），**避开**；

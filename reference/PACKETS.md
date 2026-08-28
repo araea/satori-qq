@@ -27,6 +27,21 @@ body `{uin:target, ext:0, groupUin或friendUin:peer}`（群传 groupUin，私聊
 5. 发出→回 resId→再发一个引用 resId 的 ark/multiforward 消息元素。
    get_forward_msg 反过来：NapCat message/DownloadForwardMsg.ts。
 
+### 群文件查询  cmd=0x6D8
+
+- sub=1：body field2=`GetFileListReq{1:group,2:appId=7,3:folderId,5:count,9:sortBy=1,
+  12:fieldFlag=0xFFFFFF,13:startIndex,17:sortOrder=2,18:showOnlineDoc=0}`；响应 field2，item field5，
+  type=1/file(field3)、type=2/folder(field2)，isEnd=4、nextIndex=13。
+- sub=2：body field3=`GetFileCountReq{1:group,2:appId=7,3:busSelector=6}`；响应 field3 的
+  `4=fileCount,6=limitCount,7=isFull`。
+- sub=3：body field4=`GetSpaceReq{1:group,2:appId=7}`；响应 field4 的 `4=totalSpace,5=usedSpace`。
+
+### 群文件 URL  cmd=0x6D6 sub=2
+
+body field3=`DownloadReq{1:group,2:appId=7,3:busId(默认102),4:fileId}`；响应 field3 的
+`1=retCode,5=downloadDns,6=downloadUrl(bytes),13=httpsDns`，URL 为 DNS + token hex 的
+`/ftn_handler/.../?fname=`。以上均已走 Android PacketSvc 真机回包。
+
 ## 安卓发送链路（QQ 9.3.50 已实现/真机回包）
 1. `PacketSvc` 反射取 `IKernelService.getIDependsAdapter()`，调用 `onSendSSORequest`，传精确的
    `OidbSvcTrpcTcp.0x{CMD大写HEX}_{sub}` 与 `Pb.oidb(...)`。

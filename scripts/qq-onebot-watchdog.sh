@@ -138,7 +138,10 @@ recent_account_kick() {
     # Only classify a login transition as a server kick when Android recorded QQ's
     # ACCOUNT_KICKED activity in the recent event buffer. Ordinary manual logout remains
     # a plain login transition.
-    /system/bin/logcat -b events -d -T 2m 2>/dev/null \
+    kick_since_epoch=$(( $(date +%s) - 120 ))
+    kick_since="$(date -d "@$kick_since_epoch" '+%m-%d %H:%M:%S.000' 2>/dev/null)"
+    [ -n "$kick_since" ] || return 1
+    /system/bin/logcat -b events -d -T "$kick_since" 2>/dev/null \
         | grep -q 'mqq.intent.action.ACCOUNT_KICKED'
 }
 

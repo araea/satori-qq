@@ -136,6 +136,10 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
 - 12:47 捕获真实 `KICK_TO_LOGIN` + `ACCOUNT_KICKED`；用户验证后恢复。Zygisk Next 切换官方 anonymous
   memory mode 后，精确 maps 由 vector=3/zygisk=6 降到 0/0，登录、WS、OneBot health 均通过。
   watchdog 已改为登录任务优先并单独累计 account kick；详见 `ANTIDETECT.md`。
+- 13:27 anonymous 基线再次真实踢号，证明路径隐藏不足；干净 scope 恢复后已只新增
+  `block_qsec_tasks=true` 开始新 A/B，累计 account_kicks=2。watchdog 的 logcat 相对时间参数漏计也已修复。
+- 群文件查询四动作已实现并真机只读通过：0x6D8 的系统信息/根目录/子目录与 0x6D6_2 URL；
+  `280183116` 空根、`675983807` 现有文件 HTTPS、另一个自然子目录样本均成功，无写入残留。
 
 **未做（里程碑 3 主线已基本清空）：** notice 事件（撤回/戳一戳/进退群/禁言）。
 封包传输层和 0x8FC_2 成功分支均已打通。作者现已授权所有群聊用于测试；主号为群主的

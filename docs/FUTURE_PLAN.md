@@ -25,11 +25,10 @@
 1. anonymous + reportLog-block 在约 33 分钟后再次真实踢号，单变量结果已失败；anonymous 仍保留作
    maps 收敛，但不再把它视为足够方案。
 2. `block_qsec_tasks=true` 在约 75 分钟后于 14:51 第三次真实踢号，Java `execTasks` 阻断已证伪。
-   保持该配置作对照，禁止与下一变量同时改变。
-3. libfekit 仍导入 libc `open/fopen/read/syscall/dl_iterate_phdr`，并扫描 `/proc/self/maps|smaps`
-   与 ART；路径隐藏后剩余硬指纹是匿名 RWX（本机约 1828 KiB）。下一实验是跨 ns GOT 过滤，默认关。
-4. exposure audit 增加 `maps_anon_exec` / `maps_anon_rwx`；只读清单见
-   `scripts/qq-onebot-fekit-inventory.sh`。
+3. maps_hide v2 已作为下一单变量启用：跨 ns 打 libfekit/ckguard 的 open/fopen/syscall GOT，
+   并过滤匿名 RWX；真机 patched 5–6 slots，登录/WS 正常。观察 `account_kicks`。
+4. exposure audit 含 `maps_anon_exec` / `maps_anon_rwx`；启用 maps_hide 后真实 maps 会出现
+   `libmapshide.so`（过滤目标正是让 fekit 看不到它）。
 
 ## 主线二：OneBot 11 完整实现
 
@@ -46,8 +45,8 @@
 ### 下一步
 
 1. 等自然样本或准备本地样本验证 `get_record` 与 video→`get_file`；为 `get_record.out_format` 增加转码。
-2. 群文件查询已完成；目录创建/重命名/删除已在 `280183116` 真机闭环。
-   下一步补文件删除/移动样本，或 upload 返回真实 file_id/callback。
+2. 群文件查询已完成；目录创建/重命名/删除与文件重命名/移动/删除已在 `280183116` 真机闭环。
+   下一步补 upload 返回真实 file_id/callback。
 3. 完善历史游标与私聊历史；避免只返回空数组而不区分超时/内核错误。
 4. 合并转发节点从文本扩展到 image/at/reply/file，并解决转发资源 file_id 上下文。
 5. 基于 IKernelMsgListener/GroupListener 补 recall、poke、群成员变化、禁言等 notice；再补 request。
@@ -76,7 +75,6 @@
 
 ## 下一次对话的已确认计划
 
-1. 反检测：`block_qsec_tasks` 已证伪；下一变量是跨 ns 过滤 libfekit GOT（默认关），启用前先留
-   fekit inventory 与 `maps_anon_rwx` 快照。不要和现有 QSec 开关一起改。
-2. OneBot 11：群文件目录写已在 `280183116` 真机闭环；文件删除/移动/重命名待样本。
+1. 反检测：maps_hide v2 短窗口，只看 `account_kicks`。失败则关 maps_hide，不要叠新变量。
+2. OneBot 11：群文件目录与文件写已在 `280183116` 真机闭环。
 3. 本轮之后优先级：upload 真实 file_id → 转发 image/at/reply/file → notice/request。

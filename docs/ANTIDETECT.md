@@ -1,5 +1,22 @@
 # 反检测 (掉线绕过) 说明 — 请务必读完再判断预期
 
+## 2026-08-28 15:26：maps_hide v2 已作为下一单变量启用
+
+- 跨 linker namespace：不再用本模块 `dl_iterate_phdr`（v1 patched 0），改为解析
+  `/proc/self/maps` 定位 `libfekit.so` / `libckguard.so` 基址，再解析 ELF 打 GOT。
+- 只替换检测库的 `open`/`openat`/`fopen`/`syscall`。本 so 自己的读写走自身 GOT 的 libc
+  `syscall()`，不递归。过滤关键词 + **匿名 RWX 行**。
+- 真机：登录/WS 正常。第一次冷启 patched **5→6** slots（fekit 然后 ckguard）；安静版再启
+  时先打到 fekit **5** slots，`Q.Maps` 只在计数变化时打日志。PID 733 上 ckguard 已加载，
+  本进程启动循环可能早于它；下一次冷启的 20s 重扫会补上。
+- 真实 maps 会出现 `libmapshide.so`（`maps_mapshide=3`），这是模块 so 路径；过滤后
+  **libfekit 不应再读到**。audit 读的是未过滤 maps，数字升高不代表过滤失败。
+- 当前配置：`maps_hide=true` 为**唯一新增变量**；`block_qsec_tasks=true` 保持不变作对照。
+  用 `account_kicks` 判断。回滚：配置改回 false 后冷启，或
+  `OneBotQQ-0.5.0-group-file-writes.apk`。APK：
+  `/data/adb/onebot-qq/OneBotQQ-0.5.0-mapshide-v2.apk`。
+- 直接 `svc` 仍可能绕过。匿名 RWX 仍在真实 maps 里，只是希望检测库看不到。
+
 ## 2026-08-28 14:51：block_qsec_tasks 短窗口已证伪
 
 - 14:51:14 watchdog 记录 `server account kick observed`，状态 `online -> login`；同 PID 15023

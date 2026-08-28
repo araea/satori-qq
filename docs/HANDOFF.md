@@ -140,10 +140,9 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
   `block_qsec_tasks=true` 开始新 A/B，累计 account_kicks=2。watchdog 的 logcat 相对时间参数漏计也已修复。
 - 群文件查询四动作已实现并真机只读通过：0x6D8 的系统信息/根目录/子目录与 0x6D6_2 URL；
   `280183116` 空根、`675983807` 现有文件 HTTPS、另一个自然子目录样本均成功，无写入残留。
-- 14:51 `block_qsec_tasks` 短窗口第三次真实踢号，execTasks 阻断已证伪；保持当前配置，不叠加新变量。
-  libfekit 仍导入 libc open/syscall/dl_iterate_phdr，残留匿名 RWX；详见 `ANTIDETECT.md`。
-- 群文件写操作：`create_group_file_folder`/`rename_group_folder`/`delete_group_folder` 走 0x6D7，
-  `280183116` 真机自建自改自删无残留；`delete/rename/move_group_file` 走 0x6D6，离线编解码通过。
+- 14:51 `block_qsec_tasks` 短窗口第三次真实踢号，execTasks 阻断已证伪。
+- 15:26 maps_hide v2 跨 ns 打 libfekit GOT，真机 patched 5–6 slots，登录/WS 正常；当前观察踢号。
+- 群文件写操作：目录 0x6D7 与文件 0x6D6 删除/改名/移动均已在 `280183116` 真机闭环并清理。
 
 **未做（里程碑 3 主线已基本清空）：** notice 事件（撤回/戳一戳/进退群/禁言）。
 封包传输层和 0x8FC_2 成功分支均已打通。作者现已授权所有群聊用于测试；主号为群主的

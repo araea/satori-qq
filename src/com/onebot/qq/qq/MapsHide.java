@@ -4,8 +4,8 @@ import com.onebot.qq.L;
 
 /**
  * Loads the native /proc/self/maps filter (libmapshide.so) into QQ's process and installs it.
- * DEFAULT OFF (config maps_hide). Experimental best-effort anti-detection — see docs/ANTIDETECT.md.
- * The native GOT hook only catches libc open/openat; a detector using raw syscalls bypasses it.
+ * DEFAULT OFF (config maps_hide). v2 locates libfekit via /proc/self/maps (cross linker
+ * namespace) and patches open/openat/fopen/syscall GOT slots. See docs/ANTIDETECT.md.
  */
 public final class MapsHide {
     public static native int install();   // returns #GOT slots patched
@@ -29,10 +29,10 @@ public final class MapsHide {
                         // whenever it appears (install() is idempotent). Only detector libs are
                         // touched, so this is safe to repeat.
                         int lastPatched = -1;
-                        for (int k = 0; k < 30; k++) {
+                        for (int k = 0; k < 20; k++) {
                             int n = install();
                             if (n != lastPatched) { L.i("MapsHide: patched " + n + " detector GOT slots"); lastPatched = n; }
-                            try { Thread.sleep(2000); } catch (InterruptedException e) { return; }
+                            try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
                         }
                         return;
                     }

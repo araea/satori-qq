@@ -75,8 +75,8 @@ scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
   `https://.../ftn_handler/.../?fname=`。现有群文件已真机返回 HTTPS。
 - 全部复用 `PacketSvc` 的 Android QQNT SSO/QSec 通道，没有新增 Java/native hook；空根目录、现有文件 URL
   和自然子目录均已只读验证，无测试写入。
-- 写操作：`create/rename/delete_group_folder` 走 `0x6D7_0/2/1`，`280183116` 真机自建自改自删无残留；
-  `delete/rename/move_group_file` 走 `0x6D6_3/4/5`，离线编解码已通过。
+- 写操作：`create/rename/delete_group_folder` 走 `0x6D7_0/2/1`；`delete/rename/move_group_file`
+  走 `0x6D6_3/4/5`。`280183116` 真机自建目录、上传小文件、改名、移入目录、删除文件与目录，无残留。
 
 ## QQNT 内核映射（QQ 9.3.50 实测；均为稳定 JNI 名）
 > `api.*` 服务接口是**混淆**的（如 `IKernelService.getMsgService`→返回 `api.ac`），**避开**；

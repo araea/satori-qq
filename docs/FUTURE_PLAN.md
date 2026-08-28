@@ -16,11 +16,15 @@
 - `/data/adb/onebot-qq/qq-onebot-exposure-audit.sh` 可生成可比较快照；watchdog 状态切换自动留档。
 - 0.5.0 真机基线：onebot/xposed/lspd/mapshide maps=0，可疑线程=0，旧日志指纹=0；
   剩余 vector=4、zygisk=6、fekit=3。
+- 2026-08-28 12:47 已捕获真实 `KICK_TO_LOGIN` + `ACCOUNT_KICKED`。随后把 Zygisk Next 切到官方
+  anonymous memory mode，精确 maps 口径降为 vector=0、zygisk=0、fekit=3，登录与 OneBot health 正常。
+  旧 vector=4 中有 1 条是系统通用 `InternalMmapVector` 假阳性。
 
 ### 下一步
 
-1. 对 `reportLog` 阻断做 24h/72h A/B，比较掉线、恢复、登录与消息能力。
-2. 单独评估 `block_qsec_tasks`，先短窗口再长期；不与其它高风险变量同时改变。
+1. 以 Zygisk anonymous + reportLog-block 为新基线做 24h/72h 观察；用 `account_kicks` 而不是旧的
+   进程死亡/端口恢复数判断服务器踢号。
+2. anonymous 观察窗口结束后再单独评估 `block_qsec_tasks`；不与其它高风险变量同时改变。
 3. 跟进 vector 新版本、加载路径和框架级隐藏能力，记录升级前后 maps 差异。
 4. 设计下一代 native 实验：跨 linker namespace 精确定位 libfekit，先观测真实读取点，再决定
    GOT/inline/syscall 处理；保持限定检测库、配置开关和旧 APK 回滚。

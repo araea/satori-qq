@@ -1,5 +1,24 @@
 # 反检测 (掉线绕过) 说明 — 请务必读完再判断预期
 
+## 2026-08-28 12:47：真实踢号证据与 Zygisk 匿名映射基线
+
+- Android events 明确记录 `mqq.intent.action.KICK_TO_LOGIN`，随后创建
+  `mqq.intent.action.ACCOUNT_KICKED` 的 NotificationActivity；本次是服务器令牌失效/踢号，
+  不是 QQ Java/native 崩溃。用户完成验证后登录与 OneBot 均恢复。
+- 当时已启用 reportLog 阻断约 5 小时，`block_qsec_tasks=false`。这说明 reportLog 单点阻断不足以
+  消灭踢号，但一次事件不足以判断它使风险变好还是变坏，继续保持单变量观察。
+- Zygisk Next 1.4.5 原为 `memory_type=0`，QQ maps 直接暴露
+  `zygisk_vector/zygisk/arm64-v8a.so` 与 `zygisksu/lib64/libzygisk.so`。改用官方
+  `zygiskd memory-type anonymous` 后冷启，登录、WS 与 OneBot health 均通过；精确计数
+  `maps_vector=0`、`maps_zygisk=0`，且无新增错误。
+- 旧审计把系统通用 `[anon:InternalMmapVector]` 误算成 Vector；短信、Termux、桌面等干净进程也有
+  同一行。新审计的 `maps_vector` 只统计框架特征，`maps_vector_generic` 保留旧关键词口径用于对照。
+- 当前保留匿名模式进入 24h/72h 观察。回滚：
+  `/data/adb/modules/zygisksu/bin/zygiskd memory-type default`，随后冷启 QQ；原值另存于
+  `/data/adb/onebot-qq/zygisksu-memory_type.pre-anonymous`。
+- watchdog 已修复“登录页存在但 3001 仍开着就误报 online”的逻辑：登录任务优先，新增
+  `account_kicks` 与 `last_account_kick_epoch`。已将本次事件作为第一条基线计入。
+
 ## 2026-08-28：双主线重新开放后的 0.5.0 进展
 
 旧实验说明保留用于避免重复踩坑，但“不再继续研究”不再是项目结论。当前策略是：低风险指纹持续收敛、

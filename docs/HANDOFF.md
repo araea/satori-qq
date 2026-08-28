@@ -133,6 +133,9 @@ cat /proc/net/tcp6 | grep 0BB9                 # 3001 端口在听
 - 真机历史只读验证：图片和文件均返回真实本地路径 retcode 0；record/video 等待样本。
 - NapCat 当前源码缓存于 Termux `.cache/NapCatQQ` 供查阅；`/storage/emulated/0/Dev/QQ.hap` 同时作为
   鸿蒙 libkernel/proto/业务结构参考，最终以 Android 9.3.50 类型校正。
+- 12:47 捕获真实 `KICK_TO_LOGIN` + `ACCOUNT_KICKED`；用户验证后恢复。Zygisk Next 切换官方 anonymous
+  memory mode 后，精确 maps 由 vector=3/zygisk=6 降到 0/0，登录、WS、OneBot health 均通过。
+  watchdog 已改为登录任务优先并单独累计 account kick；详见 `ANTIDETECT.md`。
 
 **未做（里程碑 3 主线已基本清空）：** notice 事件（撤回/戳一戳/进退群/禁言）。
 封包传输层和 0x8FC_2 成功分支均已打通。作者现已授权所有群聊用于测试；主号为群主的

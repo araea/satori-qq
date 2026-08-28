@@ -9,7 +9,7 @@ mkdir -p "$SNAPSHOT_DIR"
 
 count_maps() {
     keyword="$1"
-    [ -n "$qq_pid" ] && grep -ai "$keyword" "/proc/$qq_pid/maps" 2>/dev/null | wc -l || echo 0
+    [ -n "$qq_pid" ] && grep -aEi "$keyword" "/proc/$qq_pid/maps" 2>/dev/null | wc -l || echo 0
 }
 
 capture() {
@@ -36,12 +36,12 @@ capture() {
     module_version="$(dumpsys package com.onebot.qq 2>/dev/null \
         | sed -n 's/.*versionName=//p' | head -n 1)"
     top_activity="$(dumpsys activity activities 2>/dev/null \
-        | grep -i topResumedActivity | grep -i mobileqq | head -n 1 \
+        | grep -E 'Hist +#[0-9]+: ActivityRecord.*com\.tencent\.mobileqq/' | head -n 1 \
         | sed -n 's/.*com.tencent.mobileqq\/\([^ }]*\).*/\1/p')"
     legacy_logs="$(logcat -d 2>/dev/null | grep -Ec 'OneBotQQ|OneBot-QQ|MapsHide')"
     neutral_errors="$(logcat -d -s Q.Kernel:E 2>/dev/null | wc -l)"
     {
-        echo "format_version=1"
+        echo "format_version=2"
         echo "captured_at_epoch=$now_epoch"
         echo "reason=$reason"
         echo "qq_pid=${qq_pid:-0}"
@@ -49,13 +49,17 @@ capture() {
         echo "port_3001=$port"
         echo "top_activity=${top_activity:-unknown}"
         echo "maps_total=$maps_total"
-        echo "maps_vector=$(count_maps vector)"
+        # InternalMmapVector is a normal Android runtime mapping found in clean apps too;
+        # do not count that generic name as evidence of the Vector framework.
+        echo "maps_vector=$(count_maps 'zygisk_vector|JingMatrix|libvector')"
+        echo "maps_vector_generic=$(count_maps vector)"
         echo "maps_zygisk=$(count_maps zygisk)"
         echo "maps_xposed=$(count_maps xposed)"
         echo "maps_lspd=$(count_maps lspd)"
         echo "maps_onebot=$(count_maps onebot)"
         echo "maps_mapshide=$(count_maps mapshide)"
         echo "maps_fekit=$(count_maps fekit)"
+        echo "zygisk_memory_type=$(cat /data/adb/zygisksu/memory_type 2>/dev/null || echo unknown)"
         echo "thread_total=$thread_total"
         echo "suspicious_thread_names=$suspicious_threads"
         echo "legacy_log_fingerprints=$legacy_logs"

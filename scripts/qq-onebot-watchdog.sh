@@ -23,6 +23,8 @@ launch_requests=0
 cold_restarts=0
 state_changes=0
 watchdog_starts=0
+account_kicks=0
+last_account_kick_epoch=0
 
 load_counters() {
     [ -f "$COUNTERS_FILE" ] || return 0
@@ -35,6 +37,8 @@ load_counters() {
             cold_restarts) cold_restarts="$counter_value" ;;
             state_changes) state_changes="$counter_value" ;;
             watchdog_starts) watchdog_starts="$counter_value" ;;
+            account_kicks) account_kicks="$counter_value" ;;
+            last_account_kick_epoch) last_account_kick_epoch="$counter_value" ;;
         esac
     done < "$COUNTERS_FILE"
 }
@@ -48,6 +52,8 @@ save_counters() {
         echo "cold_restarts=$cold_restarts"
         echo "state_changes=$state_changes"
         echo "watchdog_starts=$watchdog_starts"
+        echo "account_kicks=$account_kicks"
+        echo "last_account_kick_epoch=$last_account_kick_epoch"
     } > "$counters_tmp" && mv "$counters_tmp" "$COUNTERS_FILE"
 }
 
@@ -58,7 +64,7 @@ write_status() {
     observed_login="$4"
     status_tmp="$STATUS_FILE.$$"
     {
-        echo "format_version=1"
+        echo "format_version=2"
         echo "checked_at_epoch=$checked_at"
         echo "state=$current_state"
         echo "previous_state=${previous_state:-unknown}"
@@ -73,6 +79,8 @@ write_status() {
         echo "cold_restarts=$cold_restarts"
         echo "state_changes=$state_changes"
         echo "watchdog_starts=$watchdog_starts"
+        echo "account_kicks=$account_kicks"
+        echo "last_account_kick_epoch=$last_account_kick_epoch"
     } > "$status_tmp" && mv "$status_tmp" "$STATUS_FILE"
 }
 
@@ -89,6 +97,11 @@ record_state() {
     fi
     state_changes=$((state_changes + 1))
     current_state="$observed_state"
+    if [ "$observed_state" = "login" ] && recent_account_kick; then
+        account_kicks=$((account_kicks + 1))
+        last_account_kick_epoch="$(date +%s)"
+        log_msg "server account kick observed"
+    fi
     save_counters
     log_msg "state ${previous_state:-unknown} -> $current_state"
     if [ -x "$EXPOSURE_AUDIT" ]; then
@@ -112,10 +125,21 @@ port_ready() {
         /proc/net/tcp /proc/net/tcp6 2>/dev/null
 }
 
-login_visible() {
+login_active() {
+    # LoginActivity is usually inside QQ's own background task, so checking only the
+    # globally resumed activity misses server kicks whenever another app is foreground.
+    # A live LoginActivity is destroyed after a successful login, making task presence a
+    # better signal. LoginPublicFragmentActivity covers the verification flow.
     dumpsys activity activities 2>/dev/null \
-        | grep -i topResumedActivity \
-        | grep -q 'com.tencent.mobileqq/.activity.LoginActivity'
+        | grep -Eq 'ActivityRecord.*com\.tencent\.mobileqq/\.activity\.(LoginActivity|LoginPublicFragmentActivity)'
+}
+
+recent_account_kick() {
+    # Only classify a login transition as a server kick when Android recorded QQ's
+    # ACCOUNT_KICKED activity in the recent event buffer. Ordinary manual logout remains
+    # a plain login transition.
+    /system/bin/logcat -b events -d -T 2m 2>/dev/null \
+        | grep -q 'mqq.intent.action.ACCOUNT_KICKED'
 }
 
 launch_qq() {
@@ -156,12 +180,13 @@ run_loop() {
         observed_login=no
         if [ -z "$pid" ]; then
             observed_state=qq_down
+        elif login_active; then
+            observed_state=login
+            observed_login=yes
+            port_ready && observed_port=up
         elif port_ready; then
             observed_state=online
             observed_port=up
-        elif login_visible; then
-            observed_state=login
-            observed_login=yes
         else
             observed_state=port_missing
         fi
@@ -222,7 +247,8 @@ case "${1:-run}" in
         load_counters
         old_pid="$(cat "$PID_FILE" 2>/dev/null)"
         if [ -f "$ENABLED" ] && [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-            echo "enabled running pid=$old_pid qq_pid=$(qq_pid) port=$(port_ready && echo up || echo down) offline=$offline_events recovered=$recovery_events launches=$launch_requests cold_restarts=$cold_restarts"
+            live_state="$(sed -n 's/^state=//p' "$STATUS_FILE" 2>/dev/null | tail -n 1)"
+            echo "enabled running pid=$old_pid qq_pid=$(qq_pid) state=${live_state:-unknown} port=$(port_ready && echo up || echo down) offline=$offline_events recovered=$recovery_events account_kicks=$account_kicks launches=$launch_requests cold_restarts=$cold_restarts"
         elif [ -f "$ENABLED" ]; then
             echo "enabled not-running"
             exit 1

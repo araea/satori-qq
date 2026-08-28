@@ -48,6 +48,9 @@ scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
 - root watchdog 每 15 秒区分 `online/login/qq_down/port_missing`，在模块端口长期缺失时按 5 分钟退避
   冷启 QQ，但绝不对 LoginActivity 重启循环；状态快照与累计计数分别落盘为
   `/data/adb/onebot-qq/watchdog.status` 和 `watchdog.counters`。
+- `login` 判定优先于 3001 端口，并扫描 QQ 自己的后台任务栈而不是只看系统全局前台 Activity；
+  近期 events 若出现 `ACCOUNT_KICKED`，额外累计 `account_kicks` 和时间戳。这样服务器踢号后即使
+  模块进程/端口尚存也不会误报 online/recovered。
 - 主号真机已验证 lifecycle `connect`、即时/15 秒周期 heartbeat、`get_status`、`get_login_info`，以及
   设置页强制退出→LoginActivity offline/disable→一键登录 online/enable 的完整往返。WS 未断，离线动作
   返回 1500，恢复后持续收群消息。QQ 此次复用了同一进程/CppProxy，替换成全新 session 对象的分支未触发。

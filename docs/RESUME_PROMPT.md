@@ -35,7 +35,9 @@
 - 常见音频可经 MediaCodec 转 AMR-NB；`send_like` 当前受服务器 appid 319 限制。
 - 0.5.0 默认静默日志；`QSec.detectMethod/getXpsInfo` 前置替换，`reportLog` 默认阻断，`execTasks` 独立开关关闭。
 - exposure audit 已安装并由 watchdog 状态切换触发；当前 onebot/xposed/lspd maps、可疑线程与旧日志均为 0，
-  剩余 vector=4、zygisk=6、fekit=3。
+  Zygisk Next anonymous 模式下精确 vector=0、zygisk=0、fekit=3；通用 `InternalMmapVector` 不再误算。
+- 2026-08-28 12:47 已捕获服务器 `KICK_TO_LOGIN` + `ACCOUNT_KICKED`；用户验证后恢复。watchdog 现以
+  登录任务优先于端口并持久化 `account_kicks`，避免把踢号误报成 online/recovered。
 - `get_image/get_file` 已通过 QQNT `downloadRichMedia` 回调返回真实本地文件；`get_record` 已实现待样本。
 - 已知 native 暴露仍包括 vector/zygisk maps；旧 GOT maps_hide 因 linker namespace 与裸 syscall 风险未奏效，
   这是一条实验结果，不是禁止继续研究其它 native/框架方案。
@@ -100,9 +102,9 @@ sh /data/adb/onebot-qq/qq-onebot-exposure-audit.sh latest
 
 ### 下一次对话已确认的执行顺序
 
-1. 保存 0.5.0/reportLog-block 基线 APK 与 exposure snapshot。
-2. 只改变 `block_qsec_tasks` 一个变量，做短窗口 A/B；验证登录、WS、收发、资源下载与 QSec/掉线指标，
-   异常即回到基线。即时稳定后转入 24h/72h 观察。
+1. 保存 0.5.0/reportLog-block + Zygisk anonymous 基线 APK、配置回滚值与 exposure snapshot。
+2. 先完成 anonymous 新基线 24h/72h 观察，以 `account_kicks` 判断服务器踢号；窗口结束后才只改变
+   `block_qsec_tasks` 一个变量做短窗口 A/B，避免变量混叠。
 3. 并行实现群文件接口组：`get_group_file_system_info`、`get_group_root_files`、
    `get_group_files_by_folder`、`get_group_file_url`，优先用 `280183116` 真机验证。
 4. 若必须制造样本，可上传一个小型、可识别的测试文件并在验证后清理；作者已授权由接手者自行判断。

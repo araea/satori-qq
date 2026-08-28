@@ -19,7 +19,7 @@ qq/AntiDetect.java   best-effort 反检测 (hook QSec.detectMethod/getXpsInfo)
 qq/Ref.java          反射门面 (绑定 QQ classloader；new/call/get/set/neuTyped)
 packet/Pb.java       零依赖 protobuf wire 编解码器 + OIDB 辅助方法
 packet/PacketSvc.java QQNT 原始 OIDB 传输：IDependsAdapter 发包 + requestId 回包关联
-packet/GroupFiles.java 群文件 0x6D8 列表/计数/空间 + 0x6D6_2 下载 URL codec
+packet/GroupFiles.java 群文件 0x6D8 列表/计数/空间、0x6D6 下载/删/改名/移动、0x6D7 目录写
 stubs/de/robv/...    Xposed API 桩 (仅编译期，不进 dex)
 scripts/*watchdog*   root 进程外守护 + KernelSU/Magisk service.d 入口
 scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
@@ -75,6 +75,8 @@ scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
   `https://.../ftn_handler/.../?fname=`。现有群文件已真机返回 HTTPS。
 - 全部复用 `PacketSvc` 的 Android QQNT SSO/QSec 通道，没有新增 Java/native hook；空根目录、现有文件 URL
   和自然子目录均已只读验证，无测试写入。
+- 写操作：`create/rename/delete_group_folder` 走 `0x6D7_0/2/1`，`280183116` 真机自建自改自删无残留；
+  `delete/rename/move_group_file` 走 `0x6D6_3/4/5`，离线编解码已通过。
 
 ## QQNT 内核映射（QQ 9.3.50 实测；均为稳定 JNI 名）
 > `api.*` 服务接口是**混淆**的（如 `IKernelService.getMsgService`→返回 `api.ac`），**避开**；

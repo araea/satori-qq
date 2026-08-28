@@ -1,5 +1,38 @@
 # 反检测 (掉线绕过) 说明 — 请务必读完再判断预期
 
+## 2026-08-28 14:51：block_qsec_tasks 短窗口已证伪
+
+- 14:51:14 watchdog 记录 `server account kick observed`，状态 `online -> login`；同 PID 15023
+  在 14:51:59 用户重登后回到 online。累计 `account_kicks=3`，`last_account_kick_epoch=1787899874`。
+- 当时唯一新增变量仍是 `block_qsec_tasks=true`（13:36 起，约 75 分钟），maps 精确口径保持
+  vector=0、zygisk=0、fekit=3，可疑线程/旧日志均为 0。踢号不是崩溃。
+- 结论：阻断 `QSec.execTasks` **不能**阻止服务器踢号。它只是 Java 对 native `doSomething` 的包装；
+  签名/心跳仍走 `getSign/getFeKitAttach/Dandelion/QsecEst`，libfekit 自己的定时扫描不依赖这个入口。
+  75 分钟 vs 此前 anonymous 基线约 33 分钟，样本太少，**不得**写成“有延迟效果”。
+- 本轮**不**再叠加新的反检测变量，也未 scope rm：账号已由用户完成验证并回到 ChatActivity，WS
+  health 正常。保持当前配置作对照，下一变量必须在单独窗口启用。
+- 证据：`/data/adb/onebot-qq/exposure-snapshots/20260828-145114.status`（online-to-login）与
+  `20260828-145159.status`（login-to-online）；watchdog.log 同步记录。
+
+## 2026-08-28 15:10：libfekit 无注入静态观测（下一层方向）
+
+对 QQ 9.3.50 的 `libfekit.so` 与 PID 15023 maps 做只读分析，没有新 hook、没有新 so。
+
+- 导入了 libc：`open`、`fopen`、`read`、`access`、`stat`、`dl_iterate_phdr`、`dlopen`、`dlsym`，
+  **以及 `syscall`**。动态节 `BIND_NOW`。因此跨 namespace 的 GOT patch **有机会**拦住 libc 路径，
+  包括 `syscall()` 包装；直接 `svc` 仍可能绕过，需后续反汇编确认。
+- 明文检测面：`/proc/self/maps`、`smaps`、`mountinfo`、`cmdline`、`parse_libart.cpp`、
+  `lsposed`、`zygisk`、`libriru`、`frida`、`.magisk`。`getXpsInfo`/`detectMethod` 盖不住这些。
+- Zygisk anonymous 消掉了路径名，但 QQ 仍有 **匿名 RWX 约 1828 KiB**（`maps_anon_rwx`）。Termux
+  干净进程有类似的匿名 r-xp（ART），**没有**这块 RWX。这是路径隐藏之后最硬的 native 指纹。
+- `QSec.getFeKitAttach` 把 native `getXwDebugID` 附到 SSO cmd 上，是“签名附带风险数据”的 Java
+  可见入口；**不要阻断**，只允许计数观测。
+- 下一步（仍默认关、单变量）：跨 ns 定位 libfekit → patch 其 GOT 的 `open/fopen/read/syscall/
+  dl_iterate_phdr`，过滤 maps/smaps 中的匿名 RWX 与 framework 特征；同时把 exposure audit 的
+  `maps_anon_exec` / `maps_anon_rwx` 纳入 A/B。旧 GOT maps_hide 因命名空间看不到 libfekit 而
+  patched 0 slots，这条新路线是对那次失败的定向修正，不是重做全局 libc hook。
+- 只读清单脚本：`scripts/qq-onebot-fekit-inventory.sh`。
+
 ## 2026-08-28 13:27：anonymous 单变量结果与 execTasks 新基线
 
 - 13:27:36 再次捕获 `KICK_TO_LOGIN` + `ACCOUNT_KICKED`，发生在群文件 APK 部署之前；排除构建/冷启

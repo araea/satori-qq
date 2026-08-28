@@ -3,7 +3,7 @@ package com.onebot.qq.packet;
 import java.util.ArrayList;
 import java.util.List;
 
-/** QQ group-file protobuf codecs for OIDB 0x6D8 (view) and 0x6D6_2 (download URL). */
+/** QQ group-file protobuf codecs for OIDB 0x6D8 (view), 0x6D6 (file) and 0x6D7 (folder). */
 public final class GroupFiles {
     public static final int VIEW_CMD = 0x6D8;
     public static final int LIST_SUB = 1;
@@ -11,6 +11,13 @@ public final class GroupFiles {
     public static final int SPACE_SUB = 3;
     public static final int DOWNLOAD_CMD = 0x6D6;
     public static final int DOWNLOAD_SUB = 2;
+    public static final int DELETE_FILE_SUB = 3;
+    public static final int RENAME_FILE_SUB = 4;
+    public static final int MOVE_FILE_SUB = 5;
+    public static final int FOLDER_CMD = 0x6D7;
+    public static final int CREATE_FOLDER_SUB = 0;
+    public static final int DELETE_FOLDER_SUB = 1;
+    public static final int RENAME_FOLDER_SUB = 2;
     public static final int APP_ID = 7;
     public static final int DEFAULT_BUS_ID = 102;
 
@@ -65,6 +72,12 @@ public final class GroupFiles {
         public String url = "";
     }
 
+    public static final class OpResult {
+        public int code = -1;
+        public String message = "missing group-file op response";
+        public Entry folder;
+    }
+
     /** D6D8ReqBody.groupFileCntReq. Bus id 6 is QQ's count-service selector. */
     public static byte[] countRequest(long groupId) {
         byte[] req = Pb.w().varint(1, groupId).varint(2, APP_ID).varint(3, 6)
@@ -104,6 +117,67 @@ public final class GroupFiles {
                 .varint(3, busId).string(4, fileId == null ? "" : fileId)
                 .toByteArray();
         return Pb.w().message(3, req).toByteArray();
+    }
+
+    /** D6D7ReqBody.createFolderReq. */
+    public static byte[] createFolderRequest(long groupId, String parentId, String name) {
+        if (parentId == null || parentId.isEmpty()) parentId = "/";
+        byte[] req = Pb.w().varint(1, groupId).varint(2, APP_ID)
+                .string(3, parentId).string(4, name == null ? "" : name)
+                .toByteArray();
+        return Pb.w().message(1, req).toByteArray();
+    }
+
+    /** D6D7ReqBody.deleteFolderReq. */
+    public static byte[] deleteFolderRequest(long groupId, String folderId) {
+        byte[] req = Pb.w().varint(1, groupId).varint(2, APP_ID)
+                .string(3, folderId == null ? "" : folderId).toByteArray();
+        return Pb.w().message(2, req).toByteArray();
+    }
+
+    /** D6D7ReqBody.renameFolderReq. */
+    public static byte[] renameFolderRequest(long groupId, String folderId, String newName) {
+        byte[] req = Pb.w().varint(1, groupId).varint(2, APP_ID)
+                .string(3, folderId == null ? "" : folderId)
+                .string(4, newName == null ? "" : newName)
+                .toByteArray();
+        return Pb.w().message(3, req).toByteArray();
+    }
+
+    /** D6D6ReqBody.deleteFileReq. File id is field 5, matching Lagrange/NapCat. */
+    public static byte[] deleteFileRequest(long groupId, String fileId, int busId) {
+        if (busId <= 0) busId = DEFAULT_BUS_ID;
+        byte[] req = Pb.w().varint(1, groupId).varint(2, APP_ID)
+                .varint(3, busId).string(5, fileId == null ? "" : fileId)
+                .toByteArray();
+        return Pb.w().message(4, req).toByteArray();
+    }
+
+    /** D6D6ReqBody.renameFileReq. */
+    public static byte[] renameFileRequest(long groupId, String fileId, String parentId,
+                                           String newName, int busId) {
+        if (busId <= 0) busId = DEFAULT_BUS_ID;
+        if (parentId == null || parentId.isEmpty()) parentId = "/";
+        byte[] req = Pb.w().varint(1, groupId).varint(2, APP_ID).varint(3, busId)
+                .string(4, fileId == null ? "" : fileId)
+                .string(5, parentId)
+                .string(6, newName == null ? "" : newName)
+                .toByteArray();
+        return Pb.w().message(5, req).toByteArray();
+    }
+
+    /** D6D6ReqBody.moveFileReq. */
+    public static byte[] moveFileRequest(long groupId, String fileId, String parentId,
+                                         String destId, int busId) {
+        if (busId <= 0) busId = DEFAULT_BUS_ID;
+        if (parentId == null || parentId.isEmpty()) parentId = "/";
+        if (destId == null || destId.isEmpty()) destId = "/";
+        byte[] req = Pb.w().varint(1, groupId).varint(2, APP_ID).varint(3, busId)
+                .string(4, fileId == null ? "" : fileId)
+                .string(5, parentId)
+                .string(6, destId)
+                .toByteArray();
+        return Pb.w().message(6, req).toByteArray();
     }
 
     public static CountResult parseCount(byte[] body) {
@@ -181,6 +255,30 @@ public final class GroupFiles {
             }
         } catch (Throwable t) {
             out.message = "invalid group-file URL response: " + t;
+        }
+        return out;
+    }
+
+    public static OpResult parseCreateFolder(byte[] body) { return parseOp(body, 1, true); }
+    public static OpResult parseDeleteFolder(byte[] body) { return parseOp(body, 2, false); }
+    public static OpResult parseRenameFolder(byte[] body) { return parseOp(body, 3, true); }
+    public static OpResult parseDeleteFile(byte[] body) { return parseOp(body, 4, false); }
+    public static OpResult parseRenameFile(byte[] body) { return parseOp(body, 5, false); }
+    public static OpResult parseMoveFile(byte[] body) { return parseOp(body, 6, false); }
+
+    private static OpResult parseOp(byte[] body, int field, boolean folder) {
+        OpResult out = new OpResult();
+        try {
+            Pb.Reader result = msg(body, field);
+            if (result == null) return out;
+            out.code = (int) result.num(1);
+            out.message = wording(result);
+            if (folder) {
+                Pb.Reader info = result.msg(4);
+                if (info != null) out.folder = parseFolder(info);
+            }
+        } catch (Throwable t) {
+            out.message = "invalid group-file op response: " + t;
         }
         return out;
     }

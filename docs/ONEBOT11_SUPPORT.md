@@ -19,6 +19,8 @@
 | 群管理 | `set_group_special_title`, `set_msg_emoji_like` | ✅ | 0x8FC_2 与内核 emoji API |
 | 文件 | `upload_group_file`, `upload_private_file` | ✅ | FileElement rich-media auto-upload |
 | 群文件 | `get_group_file_system_info`, `get_group_root_files`, `get_group_files_by_folder`, `get_group_file_url` | ✅ | 0x6D8/0x6D6；空根、现有文件 URL、自然子目录均真机通过 |
+| 群文件 | `create_group_file_folder`, `rename_group_folder`, `delete_group_folder` | ✅ | 0x6D7；`280183116` 自建自改自删，根目录无残留 |
+| 群文件 | `delete_group_file`, `rename_group_file`, `move_group_file` | 🧪 | 0x6D6_3/4/5；离线编解码通过，待真实文件样本 |
 | notice/request | 撤回、戳一戳、进退群、加好友请求事件 | 📋 | 已重新纳入双主线后续计划 |
 | 凭据 | cookies/csrf/credentials | — | 不暴露主号敏感凭据；原生 QQ backend 也不需要 |
 

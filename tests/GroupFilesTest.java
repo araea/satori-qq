@@ -8,6 +8,7 @@ public final class GroupFilesTest {
         testSystemInfo();
         testList();
         testUrl();
+        testWrites();
         System.out.println("GroupFilesTest OK");
     }
 
@@ -27,6 +28,31 @@ public final class GroupFilesTest {
         Pb.Reader url = new Pb.Reader(GroupFiles.urlRequest(123, "/file", 0)).msg(3);
         eq(102, url.num(3), "default download bus");
         eq("/file", url.str(4), "download file id");
+
+        Pb.Reader create = new Pb.Reader(GroupFiles.createFolderRequest(123, "", "docs")).msg(1);
+        eq(123, create.num(1), "create group");
+        eq(7, create.num(2), "create app");
+        eq("/", create.str(3), "create parent default");
+        eq("docs", create.str(4), "create name");
+
+        Pb.Reader deleteFolder = new Pb.Reader(GroupFiles.deleteFolderRequest(123, "/fid")).msg(2);
+        eq("/fid", deleteFolder.str(3), "delete folder id");
+
+        Pb.Reader renameFolder = new Pb.Reader(GroupFiles.renameFolderRequest(123, "/fid", "x")).msg(3);
+        eq("x", renameFolder.str(4), "rename folder name");
+
+        Pb.Reader deleteFile = new Pb.Reader(GroupFiles.deleteFileRequest(123, "/file", 0)).msg(4);
+        eq(102, deleteFile.num(3), "delete file bus");
+        eq("/file", deleteFile.str(5), "delete file id");
+
+        Pb.Reader renameFile = new Pb.Reader(GroupFiles.renameFileRequest(123, "/file", "", "a.txt", 0)).msg(5);
+        eq("/", renameFile.str(5), "rename parent default");
+        eq("a.txt", renameFile.str(6), "rename new name");
+
+        Pb.Reader moveFile = new Pb.Reader(GroupFiles.moveFileRequest(123, "/file", "/", "/dest", 0)).msg(6);
+        eq("/file", moveFile.str(4), "move file id");
+        eq("/", moveFile.str(5), "move parent");
+        eq("/dest", moveFile.str(6), "move dest");
     }
 
     private static void testSystemInfo() {
@@ -81,6 +107,33 @@ public final class GroupFilesTest {
                 Pb.w().message(3, download).toByteArray());
         eq(0, result.code, "url code");
         eq("https://example.qq.com/ftn_handler/01ab/?fname=", result.url, "url");
+    }
+
+    private static void testWrites() {
+        byte[] createBody = Pb.w().message(1, Pb.w().varint(1, 0)
+                .message(4, Pb.w().string(1, "/fid").string(2, "/").string(3, "docs")
+                        .varint(4, 9).varint(6, 1).string(7, "alice"))).toByteArray();
+        GroupFiles.OpResult created = GroupFiles.parseCreateFolder(createBody);
+        eq(0, created.code, "create code");
+        check(created.folder != null, "create folder present");
+        eq("/fid", created.folder.id, "create folder id");
+        eq("docs", created.folder.name, "create folder name");
+
+        GroupFiles.OpResult deleted = GroupFiles.parseDeleteFolder(
+                Pb.w().message(2, Pb.w().varint(1, 0).string(3, "ok")).toByteArray());
+        eq(0, deleted.code, "delete folder code");
+
+        GroupFiles.OpResult renamed = GroupFiles.parseRenameFolder(
+                Pb.w().message(3, Pb.w().varint(1, 12).string(3, "busy")).toByteArray());
+        eq(12, renamed.code, "rename folder error code");
+        eq("busy", renamed.message, "rename folder wording");
+
+        GroupFiles.OpResult fileDeleted = GroupFiles.parseDeleteFile(
+                Pb.w().message(4, Pb.w().varint(1, 0)).toByteArray());
+        eq(0, fileDeleted.code, "delete file code");
+        GroupFiles.OpResult moved = GroupFiles.parseMoveFile(
+                Pb.w().message(6, Pb.w().varint(1, 0)).toByteArray());
+        eq(0, moved.code, "move file code");
     }
 
     private static void check(boolean value, String name) {

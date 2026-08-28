@@ -25,10 +25,14 @@ capture() {
         suspicious_threads="$(for comm in /proc/$qq_pid/task/*/comm; do cat "$comm" 2>/dev/null; done \
             | grep -Eic 'onebot|xposed|vector|zygisk|mapshide')"
         maps_total="$(wc -l < "/proc/$qq_pid/maps" 2>/dev/null)"
+        maps_anon_exec="$(awk '$2 ~ /x/ && (NF < 6 || $6 == "") { n++ } END { print n+0 }' "/proc/$qq_pid/maps")"
+        maps_anon_rwx="$(awk '$2 ~ /rwx/ && (NF < 6 || $6 == "") { n++ } END { print n+0 }' "/proc/$qq_pid/maps")"
     else
         thread_total=0
         suspicious_threads=0
         maps_total=0
+        maps_anon_exec=0
+        maps_anon_rwx=0
     fi
     port=down
     awk -v p=":0BB9" '$2 ~ p && $4 == "0A" { found=1 } END { exit !found }' \
@@ -41,7 +45,7 @@ capture() {
     legacy_logs="$(logcat -d 2>/dev/null | grep -Ec 'OneBotQQ|OneBot-QQ|MapsHide')"
     neutral_errors="$(logcat -d -s Q.Kernel:E 2>/dev/null | wc -l)"
     {
-        echo "format_version=2"
+        echo "format_version=3"
         echo "captured_at_epoch=$now_epoch"
         echo "reason=$reason"
         echo "qq_pid=${qq_pid:-0}"
@@ -59,6 +63,8 @@ capture() {
         echo "maps_onebot=$(count_maps onebot)"
         echo "maps_mapshide=$(count_maps mapshide)"
         echo "maps_fekit=$(count_maps fekit)"
+        echo "maps_anon_exec=${maps_anon_exec:-0}"
+        echo "maps_anon_rwx=${maps_anon_rwx:-0}"
         echo "zygisk_memory_type=$(cat /data/adb/zygisksu/memory_type 2>/dev/null || echo unknown)"
         echo "thread_total=$thread_total"
         echo "suspicious_thread_names=$suspicious_threads"

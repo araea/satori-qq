@@ -38,8 +38,10 @@
   Zygisk Next anonymous 模式下精确 vector=0、zygisk=0、fekit=3；通用 `InternalMmapVector` 不再误算。
 - 2026-08-28 12:47 已捕获服务器 `KICK_TO_LOGIN` + `ACCOUNT_KICKED`；用户验证后恢复。watchdog 现以
   登录任务优先于端口并持久化 `account_kicks`，避免把踢号误报成 online/recovered。
-- 13:27 anonymous 基线再次踢号（累计 2），故它只解决 maps 路径暴露、不足以防踢；当前唯一新增变量是
-  `block_qsec_tasks=true`，重新注入后登录/WS/群文件均正常，正在做短窗口 A/B。
+- 13:27 anonymous 基线再次踢号（累计 2），故它只解决 maps 路径暴露、不足以防踢；随后只新增
+  `block_qsec_tasks=true` 做短窗口。14:51 第三次真实踢号（同 PID 重登），execTasks 阻断已证伪。
+  当前不叠加新变量。libfekit 静态观测见 `ANTIDETECT.md`：仍导入 libc `open/syscall/dl_iterate_phdr`，
+  残留匿名 RWX ~1828 KiB。
 - `get_image/get_file` 已通过 QQNT `downloadRichMedia` 回调返回真实本地文件；`get_record` 已实现待样本。
 - 群文件系统信息、根/子目录和 URL 已以 0x6D8/0x6D6 完整实现并真机只读通过。
 - 已知 native 暴露仍包括 vector/zygisk maps；旧 GOT maps_hide 因 linker namespace 与裸 syscall 风险未奏效，
@@ -105,9 +107,10 @@ sh /data/adb/onebot-qq/qq-onebot-exposure-audit.sh latest
 
 ### 下一次对话已确认的执行顺序
 
-1. 保存当前 0.5.0 + anonymous + reportLog-block + blockQsecTasks 基线 APK、配置与 exposure snapshot。
-2. 继续 `block_qsec_tasks` 单变量短窗口 A/B，以 `account_kicks` 判断；即时稳定后才进入 24h/72h。
-3. 群文件四查询已完成；下一批做目录/删除闭环、upload 真实 file_id/callback，或转发富媒体。
+1. `block_qsec_tasks` 短窗口已于 14:51 第三次踢号证伪；保持当前配置，不要同时开新变量。
+2. 下一反检测实验（默认关）：跨 ns GOT patch libfekit 的 `open/fopen/read/syscall/dl_iterate_phdr`，
+   以匿名 RWX 和 maps 过滤为观察指标；先用 `qq-onebot-fekit-inventory.sh` 留启用前快照。
+3. 群文件查询与目录写（创建/重命名/删除）已在 `280183116` 真机闭环；下一步补文件删除/移动样本，或转发富媒体。
 4. 若必须制造样本，可上传一个小型、可识别的测试文件并在验证后清理；作者已授权由接手者自行判断。
 5. 更新支持矩阵、反检测快照和真机结果，再决定下一批转发富媒体或 notice/request。
 

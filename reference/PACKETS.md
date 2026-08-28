@@ -42,6 +42,16 @@ body field3=`DownloadReq{1:group,2:appId=7,3:busId(默认102),4:fileId}`；响�
 `1=retCode,5=downloadDns,6=downloadUrl(bytes),13=httpsDns`，URL 为 DNS + token hex 的
 `/ftn_handler/.../?fname=`。以上均已走 Android PacketSvc 真机回包。
 
+### 群文件写  cmd=0x6D6 / 0x6D7
+
+- `0x6D6_3` 删除文件：body field4=`{1:group,2:appId=7,3:busId,5:fileId}`。
+- `0x6D6_4` 重命名文件：body field5=`{1:group,2:appId=7,3:busId,4:fileId,5:parent,6:newName}`。
+- `0x6D6_5` 移动文件：body field6=`{1:group,2:appId=7,3:busId,4:fileId,5:parent,6:dest}`。
+- `0x6D7_0` 创建目录：body field1=`{1:group,2:appId=7,3:parent,4:name}`；响应 field1.4=FolderInfo。
+- `0x6D7_1` 删除目录：body field2=`{1:group,2:appId=7,3:folderId}`。
+- `0x6D7_2` 重命名目录：body field3=`{1:group,2:appId=7,3:folderId,4:newName}`。
+  字段抄自 Lagrange `Oidb_0x6D6/0x6D7` 与 NapCat `Oidb.0x6D6.ts`；appId 与已验证查询保持 7。
+
 ## 安卓发送链路（QQ 9.3.50 已实现/真机回包）
 1. `PacketSvc` 反射取 `IKernelService.getIDependsAdapter()`，调用 `onSendSSORequest`，传精确的
    `OidbSvcTrpcTcp.0x{CMD大写HEX}_{sub}` 与 `Pb.oidb(...)`。

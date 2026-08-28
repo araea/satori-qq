@@ -137,6 +137,37 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             case "get_group_file_url":
                 return getGroupFileUrl(p.optLong("group_id", 0),
                         p.optString("file_id", ""), p.optInt("busid", p.optInt("bus_id", 0)));
+            case "create_group_file_folder":
+                return createGroupFileFolder(p.optLong("group_id", 0),
+                        p.optString("folder_id", p.optString("parent_id", "/")),
+                        firstNonEmpty(p.optString("folder_name", ""), p.optString("name", "")));
+            case "delete_group_folder":
+            case "delete_group_file_folder":
+                return deleteGroupFolder(p.optLong("group_id", 0),
+                        firstNonEmpty(p.optString("folder_id", ""), p.optString("folder", "")));
+            case "rename_group_folder":
+                return renameGroupFolder(p.optLong("group_id", 0),
+                        firstNonEmpty(p.optString("folder_id", ""), p.optString("folder", "")),
+                        firstNonEmpty(p.optString("new_folder_name", ""),
+                                p.optString("name", p.optString("folder_name", ""))));
+            case "delete_group_file":
+                return deleteGroupFile(p.optLong("group_id", 0),
+                        p.optString("file_id", ""), p.optInt("busid", p.optInt("bus_id", 0)));
+            case "move_group_file":
+                return moveGroupFile(p.optLong("group_id", 0),
+                        p.optString("file_id", ""),
+                        firstNonEmpty(p.optString("parent_directory", ""),
+                                p.optString("current_parent_directory", "/")),
+                        firstNonEmpty(p.optString("target_directory", ""),
+                                p.optString("target_parent_directory", "/")),
+                        p.optInt("busid", p.optInt("bus_id", 0)));
+            case "rename_group_file":
+                return renameGroupFile(p.optLong("group_id", 0),
+                        p.optString("file_id", ""),
+                        firstNonEmpty(p.optString("parent_directory", ""),
+                                p.optString("current_parent_directory", "/")),
+                        firstNonEmpty(p.optString("new_name", ""), p.optString("name", "")),
+                        p.optInt("busid", p.optInt("bus_id", 0)));
             case "set_group_kick": {
                 long g = p.optLong("group_id", 0), u = p.optLong("user_id", 0);
                 qq.kickMember(g, uidFor(g, u), p.optBoolean("reject_add_request", false));
@@ -603,6 +634,128 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             throw new ApiError(1500, "group file URL failed (code=" + result.code + "): " + result.message);
         if (result.url.isEmpty()) throw new ApiError(1500, "group file URL response is empty");
         return new JSONObject().put("url", result.url);
+    }
+
+    private JSONObject createGroupFileFolder(long groupId, String parentId, String name) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        if (name == null || name.isEmpty()) throw new ApiError(1400, "missing folder_name");
+        GroupFiles.OpResult parsed = GroupFiles.parseCreateFolder(
+                sendGroupFileBody(GroupFiles.FOLDER_CMD, GroupFiles.CREATE_FOLDER_SUB,
+                        GroupFiles.createFolderRequest(groupId, parentId, name), "create group folder"));
+        if (parsed.code != 0)
+            throw new ApiError(1500, "create group folder failed (code=" + parsed.code + "): " + parsed.message);
+        JSONObject created = folderJson(parsed.folder, name, parentId);
+        if (created.optString("folder_id", "").isEmpty()) {
+            JSONObject listed = getGroupFiles(groupId, parentId == null || parentId.isEmpty() ? "/" : parentId);
+            JSONArray folders = listed.optJSONArray("folders");
+            if (folders != null) {
+                for (int i = 0; i < folders.length(); i++) {
+                    JSONObject folder = folders.optJSONObject(i);
+                    if (folder != null && name.equals(folder.optString("folder_name"))) {
+                        created.put("folder_id", folder.optString("folder_id"));
+                        created.put("create_time", folder.optLong("create_time"));
+                        created.put("creator", folder.optLong("creator"));
+                        created.put("creator_name", folder.optString("creator_name"));
+                        break;
+                    }
+                }
+            }
+        }
+        if (created.optString("folder_id", "").isEmpty())
+            throw new ApiError(1500, "create group folder succeeded without folder_id");
+        return created;
+    }
+
+    private JSONObject deleteGroupFolder(long groupId, String folderId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        if (folderId == null || folderId.isEmpty()) throw new ApiError(1400, "missing folder_id");
+        GroupFiles.OpResult parsed = GroupFiles.parseDeleteFolder(
+                sendGroupFileBody(GroupFiles.FOLDER_CMD, GroupFiles.DELETE_FOLDER_SUB,
+                        GroupFiles.deleteFolderRequest(groupId, folderId), "delete group folder"));
+        if (parsed.code != 0)
+            throw new ApiError(1500, "delete group folder failed (code=" + parsed.code + "): " + parsed.message);
+        return new JSONObject().put("folder_id", folderId);
+    }
+
+    private JSONObject renameGroupFolder(long groupId, String folderId, String newName) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        if (folderId == null || folderId.isEmpty()) throw new ApiError(1400, "missing folder_id");
+        if (newName == null || newName.isEmpty()) throw new ApiError(1400, "missing new_folder_name");
+        GroupFiles.OpResult parsed = GroupFiles.parseRenameFolder(
+                sendGroupFileBody(GroupFiles.FOLDER_CMD, GroupFiles.RENAME_FOLDER_SUB,
+                        GroupFiles.renameFolderRequest(groupId, folderId, newName), "rename group folder"));
+        if (parsed.code != 0)
+            throw new ApiError(1500, "rename group folder failed (code=" + parsed.code + "): " + parsed.message);
+        JSONObject o = folderJson(parsed.folder, newName, null);
+        o.put("folder_id", folderId);
+        return o;
+    }
+
+    private JSONObject deleteGroupFile(long groupId, String fileId, int busId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        if (fileId == null || fileId.isEmpty()) throw new ApiError(1400, "missing file_id");
+        GroupFiles.OpResult parsed = GroupFiles.parseDeleteFile(
+                sendGroupFileBody(GroupFiles.DOWNLOAD_CMD, GroupFiles.DELETE_FILE_SUB,
+                        GroupFiles.deleteFileRequest(groupId, fileId, busId), "delete group file"));
+        if (parsed.code != 0)
+            throw new ApiError(1500, "delete group file failed (code=" + parsed.code + "): " + parsed.message);
+        return new JSONObject().put("file_id", fileId);
+    }
+
+    private JSONObject moveGroupFile(long groupId, String fileId, String parentId, String destId,
+                                     int busId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        if (fileId == null || fileId.isEmpty()) throw new ApiError(1400, "missing file_id");
+        GroupFiles.OpResult parsed = GroupFiles.parseMoveFile(
+                sendGroupFileBody(GroupFiles.DOWNLOAD_CMD, GroupFiles.MOVE_FILE_SUB,
+                        GroupFiles.moveFileRequest(groupId, fileId, parentId, destId, busId),
+                        "move group file"));
+        if (parsed.code != 0)
+            throw new ApiError(1500, "move group file failed (code=" + parsed.code + "): " + parsed.message);
+        return new JSONObject().put("file_id", fileId).put("parent_id", destId);
+    }
+
+    private JSONObject renameGroupFile(long groupId, String fileId, String parentId, String newName,
+                                       int busId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        if (fileId == null || fileId.isEmpty()) throw new ApiError(1400, "missing file_id");
+        if (newName == null || newName.isEmpty()) throw new ApiError(1400, "missing new_name");
+        GroupFiles.OpResult parsed = GroupFiles.parseRenameFile(
+                sendGroupFileBody(GroupFiles.DOWNLOAD_CMD, GroupFiles.RENAME_FILE_SUB,
+                        GroupFiles.renameFileRequest(groupId, fileId, parentId, newName, busId),
+                        "rename group file"));
+        if (parsed.code != 0)
+            throw new ApiError(1500, "rename group file failed (code=" + parsed.code + "): " + parsed.message);
+        return new JSONObject().put("file_id", fileId).put("file_name", newName);
+    }
+
+    private byte[] sendGroupFileBody(int cmd, int sub, byte[] body, String action) throws Exception {
+        PacketSvc.Result packet = qq.packets().sendOidb(cmd, sub, body, true, 15_000L);
+        if (!packet.ok()) throw new ApiError(1500, action + " failed: " + packet.describe());
+        return packet.body == null ? new byte[0] : packet.body;
+    }
+
+    private JSONObject folderJson(GroupFiles.Entry folder, String fallbackName, String fallbackParent)
+            throws Exception {
+        JSONObject o = new JSONObject();
+        if (folder != null) {
+            o.put("folder_id", folder.id);
+            o.put("folder_name", folder.name);
+            o.put("parent_id", folder.parentId);
+            o.put("create_time", folder.uploadTime);
+            o.put("modify_time", folder.modifyTime);
+            o.put("creator", folder.creatorUin);
+            o.put("creator_name", folder.creatorName);
+            o.put("total_file_count", folder.totalFileCount);
+        } else {
+            if (fallbackName != null) o.put("folder_name", fallbackName);
+            if (fallbackParent != null) o.put("parent_id", fallbackParent);
+        }
+        return o;
+    }
+
+    private static String firstNonEmpty(String a, String b) {
+        return (a != null && !a.isEmpty()) ? a : (b == null ? "" : b);
     }
 
     /** Resolve a uin to its uid for a group action: cache -> profile service -> group member list. */

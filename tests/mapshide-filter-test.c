@@ -91,6 +91,15 @@ int main(void) {
         if ((rc = expect(path_denied("/data/data/com.tencent.mobileqq"), 0, 51))) return rc;
         if ((rc = expect(path_denied("/data/app/de.robv.android.xposed.installer"), 1, 52)))
             return rc;
+        const char zwsp[] = "/data/ad" "\xE2\x80\x8B" "b/magisk";
+        if ((rc = expect(path_denied(zwsp), 1, 53))) return rc;
+        const char shy[] = "/data/adb/mag\xC2\xADisk";
+        if ((rc = expect(path_denied(shy), 1, 54))) return rc;
+        char usb[16];
+        if ((rc = expect(adb_prop_safe_copy("persist.sys.usb.config", usb) == 3, 1, 55)))
+            return rc;
+        if ((rc = expect(strcmp(usb, "mtp") == 0, 1, 56))) return rc;
+        if ((rc = expect(adb_prop_safe_copy("ro.build.type", usb), 0, 57))) return rc;
     }
     return 0;
 }

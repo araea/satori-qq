@@ -535,9 +535,19 @@ public final class QQClient {
      * viewer can open it via getMultiMsg instead of showing 消息加载失败.
      */
     public void prefetchForward(int chatType, String peerUid, long msgId) {
-        if (msgId == 0 || peerUid == null || peerUid.isEmpty()) return;
+        MsgListResult result = getMultiMsg(chatType, peerUid, msgId);
+        if (!result.ok()) L.e("getMultiMsg " + result.describe(), null);
+    }
+
+    /** Resolve a native merge-forward card by its parent message id. */
+    public MsgListResult getMultiMsg(int chatType, String peerUid, long msgId) {
+        MsgListResult result = new MsgListResult();
+        if (msgId == 0 || peerUid == null || peerUid.isEmpty()) {
+            result.msg = "missing contact or msgId";
+            return result;
+        }
         Object msgService = getMsgService();
-        if (msgService == null) return;
+        if (msgService == null) { result.msg = "kernel session not ready"; return result; }
         try {
             Object contact = ref.neu(CONTACT, chatType, peerUid, "");
             try {
@@ -548,23 +558,36 @@ public final class QQClient {
             final CountDownLatch latch = new CountDownLatch(1);
             final int[] code = new int[]{-1};
             final String[] wording = new String[]{""};
+            final Object[] records = new Object[1];
             Object cb = Proxy.newProxyInstance(ref.cl,
                     new Class[]{ref.cls("com.tencent.qqnt.kernel.nativeinterface.IGetMultiMsgCallback")},
                     (proxy, m, args) -> {
                         if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
                             code[0] = Ref.asInt(args[0]);
                             if (args.length >= 2) wording[0] = Ref.asStr(args[1]);
+                            if (args.length >= 3) records[0] = args[2];
                             latch.countDown();
                         }
                         return null;
                     });
             ref.call(msgService, "getMultiMsg", contact, msgId, msgId, cb);
             if (latch.await(8, TimeUnit.SECONDS)) {
-                if (code[0] != 0) L.e("getMultiMsg code=" + code[0] + " " + wording[0], null);
+                result.code = code[0];
+                result.msg = wording[0] == null ? "" : wording[0];
+                if (records[0] instanceof List) result.records = (List<?>) records[0];
+            } else {
+                result.timedOut = true;
+                result.msg = "getMultiMsg timeout";
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            result.timedOut = true;
+            result.msg = "getMultiMsg interrupted";
         } catch (Throwable t) {
-            L.e("prefetchForward", t);
+            L.e("getMultiMsg", t);
+            result.msg = String.valueOf(t);
         }
+        return result;
     }
 
     /** Native merge-forward of already-sent messages. src and dest are usually the same contact. */

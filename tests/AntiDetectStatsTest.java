@@ -54,6 +54,14 @@ public final class AntiDetectStatsTest {
         check(!AntiDetect.isHiddenPointQueryPackage("com.satori.qq"), "keep module point query");
         check(AntiDetect.isHiddenInstalledPackage("org.lsposed.manager"), "hide lsposed list");
         check(AntiDetect.isHiddenPointQueryPackage("org.lsposed.manager"), "hide lsposed point");
+        check(AntiDetect.isDeniedPath("/data/ad\u200bb/magisk"), "zwsp adb");
+        check(AntiDetect.isDeniedPath("/data/adb/mag\u00adisk"), "soft-hyphen magisk");
+        check(AntiDetect.isHiddenPointQueryPackage("com.resukisu.resukisu"), "hide resukisu");
+        check(AntiDetect.isHiddenPointQueryPackage("com.tsng.hidemyapplist"), "hide hma");
+        check(AntiDetect.isXposedMetaKey("xposedmodule"), "xposed meta");
+        check(!AntiDetect.isXposedMetaKey("android.app.lib_name"), "keep other meta");
+        check("mtp".equals(AntiDetect.adbPropSafe("persist.sys.usb.config")), "usb config");
+        check(AntiDetect.adbPropSafe("ro.build.type") == null, "keep build type");
         System.out.println("AntiDetectStatsTest OK");
     }
 

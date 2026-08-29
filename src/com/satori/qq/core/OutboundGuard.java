@@ -24,14 +24,15 @@ public final class OutboundGuard {
     static {
         HashSet<String> actions = new HashSet<>();
         Collections.addAll(actions,
-                "message.create", "message.delete", "message.update",
-                "reaction.create", "reaction.delete", "reaction.clear",
+                "message.create", "message.delete",
+                "reaction.create", "reaction.delete",
                 "guild.member.kick", "guild.member.mute",
                 "guild.member.role.set", "guild.member.role.unset",
-                "channel.mute", "channel.update", "channel.create", "channel.delete",
+                "channel.mute", "channel.update",
                 "friend.approve", "friend.delete",
                 "guild.approve", "guild.member.approve",
-                "internal.poke", "internal.like", "internal.special_title", "internal.group_file");
+                "internal.poke", "internal.like", "internal.special_title", "internal.group_file",
+                "internal.invite");
         MUTATIONS = Collections.unmodifiableSet(actions);
     }
 

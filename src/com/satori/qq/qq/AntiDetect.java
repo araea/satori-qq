@@ -83,6 +83,7 @@ public final class AntiDetect {
             hookMsfInbound();
         }
         hookAdbSettings();
+        hookAdbProperties();
     }
 
     /** QSec / ChannelManager environment reports. Never matches ecdh_access (login). */
@@ -609,6 +610,10 @@ public final class AntiDetect {
                         p.setThrowable(new PackageManager.NameNotFoundException((String) p.args[0]));
                     }
                 }
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    if (p.getThrowable() != null) return;
+                    stripXposedMeta(p.getResult());
+                }
             };
             Class<?> appPm = ref.clsOrNull("android.app.ApplicationPackageManager");
             if (appPm != null) {
@@ -646,7 +651,7 @@ public final class AntiDetect {
         boolean changed = false;
         for (Object item : src) {
             String pkg = packageNameOf(item);
-            if (hiddenInstalledPackage(pkg)) { changed = true; continue; }
+            if (hiddenInstalledPackage(pkg) || hasXposedMeta(item)) { changed = true; continue; }
             out.add(item);
         }
         if (changed) p.setResult(out);
@@ -659,6 +664,45 @@ public final class AntiDetect {
             return v == null ? "" : String.valueOf(v);
         } catch (Throwable ignore) {}
         return "";
+    }
+
+    static boolean hasXposedMeta(Object item) {
+        if (item == null) return false;
+        try {
+            Object ai = item;
+            try { ai = item.getClass().getField("applicationInfo").get(item); }
+            catch (Throwable ignore) {}
+            if (ai == null) return false;
+            Object bd = ai.getClass().getField("metaData").get(ai);
+            if (!(bd instanceof android.os.Bundle)) return false;
+            android.os.Bundle b = (android.os.Bundle) bd;
+            for (String k : b.keySet()) {
+                if (isXposedMetaKey(k)) return true;
+            }
+        } catch (Throwable ignore) {}
+        return false;
+    }
+
+    public static boolean isXposedMetaKey(String key) {
+        if (key == null) return false;
+        String k = key.toLowerCase();
+        return k.startsWith("xposed");
+    }
+
+    private static void stripXposedMeta(Object result) {
+        if (result == null) return;
+        try {
+            Object ai = result;
+            try { ai = result.getClass().getField("applicationInfo").get(result); }
+            catch (Throwable ignore) {}
+            if (ai == null) return;
+            Object bd = ai.getClass().getField("metaData").get(ai);
+            if (!(bd instanceof android.os.Bundle)) return;
+            android.os.Bundle b = (android.os.Bundle) bd;
+            for (String k : new java.util.ArrayList<>(b.keySet())) {
+                if (isXposedMetaKey(k)) b.remove(k);
+            }
+        } catch (Throwable ignore) {}
     }
 
     private void hookRuntimeExec() {
@@ -775,35 +819,75 @@ public final class AntiDetect {
         }
     }
 
+    /** Narrow keys only. Do not spoof the rest of SystemProperties (0.5.4). */
+    private void hookAdbProperties() {
+        try {
+            Class<?> sp = ref.clsOrNull("android.os.SystemProperties");
+            if (sp == null) return;
+            XposedBridge.hookAllMethods(sp, "get", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (p.args == null || p.args.length < 1 || !(p.args[0] instanceof String)) return;
+                    String safe = adbPropSafe((String) p.args[0]);
+                    if (safe != null) p.setResult(safe);
+                }
+            });
+            L.i("AntiDetect: adb property hide");
+        } catch (Throwable t) {
+            L.e("AntiDetect.sysprop", t);
+        }
+    }
+
+    public static String adbPropSafe(String name) {
+        if (name == null) return null;
+        if ("persist.sys.usb.config".equals(name) || "sys.usb.config".equals(name)) return "mtp";
+        if ("init.svc.adbd".equals(name)) return "stopped";
+        return null;
+    }
+
     private static boolean hiddenPackage(String pkg) {
         if (pkg == null) return false;
-        return pkg.startsWith("org.lsposed")
-                || pkg.startsWith("io.github.lsposed")
-                || pkg.startsWith("io.github.huskydg")
-                || "com.topjohnwu.magisk".equals(pkg)
-                || "me.weishu.kernelsu".equals(pkg)
-                || "com.rifsxd.ksunext".equals(pkg)
-                || "me.bmax.apatch".equals(pkg)
-                || "com.noshufou.android.su".equals(pkg)
-                || "eu.chainfire.supersu".equals(pkg)
-                || "de.robv.android.xposed.installer".equals(pkg)
-                || "org.meowcat.edxposed.manager".equals(pkg)
-                || pkg.contains("lsposed")
-                || pkg.contains("xposed")
-                || pkg.contains("magisk")
-                || pkg.contains("kernelsu")
-                || pkg.contains("zygisk");
+        String p = stripIgnorable(pkg).toLowerCase();
+        return p.startsWith("org.lsposed")
+                || p.startsWith("io.github.lsposed")
+                || p.startsWith("io.github.huskydg")
+                || "com.topjohnwu.magisk".equals(p)
+                || "me.weishu.kernelsu".equals(p)
+                || "com.rifsxd.ksunext".equals(p)
+                || "me.bmax.apatch".equals(p)
+                || "com.noshufou.android.su".equals(p)
+                || "eu.chainfire.supersu".equals(p)
+                || "de.robv.android.xposed.installer".equals(p)
+                || "org.meowcat.edxposed.manager".equals(p)
+                || "com.resukisu.resukisu".equals(p)
+                || "com.tsng.hidemyapplist".equals(p)
+                || "com.tsng.pzyhrx.hma".equals(p)
+                || "ru.blays.bootloaderspoofer".equals(p)
+                || "es.chiteroman.bootloaderspoofer".equals(p)
+                || "com.aistra.hail".equals(p)
+                || "com.jy.notewatermark".equals(p)
+                || "com.suqi8.oshin".equals(p)
+                || "bin.mt.termex".equals(p)
+                || p.contains("lsposed")
+                || p.contains("xposed")
+                || p.contains("magisk")
+                || p.contains("kernelsu")
+                || p.contains("resukisu")
+                || p.contains("sukisu")
+                || p.contains("hidemyapplist")
+                || p.contains("bootloaderspoofer")
+                || p.contains("zygisk");
     }
 
     /** Installed-list filter also drops this module. Point queries stay
      *  visible so MapsHide can still resolve nativeLibraryDir as a fallback. */
     private static boolean hiddenInstalledPackage(String pkg) {
-        return hiddenPackage(pkg) || "com.satori.qq".equals(pkg);
+        String p = pkg == null ? "" : stripIgnorable(pkg);
+        return hiddenPackage(p) || "com.satori.qq".equals(p);
     }
 
     private static boolean cmdDenied(String cmd) {
         if (cmd == null) return false;
-        String c = collapsePath(cmd.toLowerCase());
+        String c = collapsePath(stripIgnorable(cmd).toLowerCase());
         if (c.contains("magisk") || c.contains("ksud") || c.contains("apatch")
                 || c.contains("which su")) return true;
         return c.equals("su") || c.startsWith("su ") || c.endsWith("/su") || c.contains("/su ");
@@ -827,9 +911,26 @@ public final class AntiDetect {
                 || n.contains("ksud") || n.contains("apatch") || n.contains("shamiko");
     }
 
+    static String stripIgnorable(String path) {
+        if (path == null || path.isEmpty()) return path;
+        StringBuilder sb = new StringBuilder(path.length());
+        for (int i = 0; i < path.length(); ) {
+            int cp = path.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp < 0x20) continue;
+            if (cp == 0x00AD || cp == 0xFEFF || cp == 0x2060) continue;
+            if (cp >= 0x200B && cp <= 0x200F) continue;
+            if (cp >= 0x202A && cp <= 0x202E) continue;
+            if (cp >= 0x2066 && cp <= 0x2069) continue;
+            if (Character.getType(cp) == Character.FORMAT) continue;
+            sb.appendCodePoint(cp);
+        }
+        return sb.toString();
+    }
+
     static String collapsePath(String path) {
         if (path == null || path.isEmpty()) return path;
-        String p = path.replace('\\', '/');
+        String p = stripIgnorable(path).replace('\\', '/');
         boolean abs = p.charAt(0) == '/';
         String[] parts = p.split("/", -1);
         java.util.ArrayList<String> out = new java.util.ArrayList<>();
@@ -853,7 +954,7 @@ public final class AntiDetect {
 
     static boolean deniedPath(String path) {
         if (path == null) return false;
-        String p = collapsePath(path.toLowerCase());
+        String p = collapsePath(path.toLowerCase()); // stripIgnorable is inside collapsePath
         return p.contains("magisk") || p.contains("lsposed") || p.contains("/lspd")
                 || p.contains("zygisk") || p.contains("/data/adb") || p.contains("kernelsu")
                 || p.contains("mapshide") || p.contains("satori") || p.contains("/debug_ramdisk")

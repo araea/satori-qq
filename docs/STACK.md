@@ -25,7 +25,7 @@
 | 3. Xposed | vector（`zygisk_vector`），LSPosed API | LSPosed / vector 都行。**QQ scope 里只能有本模块** |
 | 4. 模块表面 | 日志 tag `Q.Kernel` / `Q.Maps`，线程名无 satori/xposed，WS 只绑 127.0.0.1 | 不要把 verbose / XposedBridge 日志默认打开 |
 | 5. Java | `detectMethod`→false；`getXpsInfo` replacement；`reportLog`/`execTasks` 阻断；`File.exists/canRead/...`（**不** hook `list`）；`pm` 点查 + **拷贝过滤**已装列表；`adb` settings；Runtime.exec。出站拦 `trpc.o3.report.*` / `mobile_security.*` / `gc_indust.device_report.*`。入站只对上述前缀空成功（QQNTHookBypass）。**禁止** `trpc.o3.*` 通配、禁止全局 `SystemProperties`、禁止 `Class.forName` | 不要拦 `ecdh_access`。0.5.4 通配 + 入站清空导致登录「请求超时」 |
-| 6. maps_hide v5.10 | 主进程 **和 MSF**：v5.9 全部 + 路径 `/.`/`/..` 归一化后再匹配 BLOCK。`loop_ok=1` 当 `dlsym≥1` 且 `leak_maps=0` 且 tcp/env 没有 **正数** 泄漏（`-1` 是打不开，不算漏）。登录超时回 0.8.5 | 0.8.6 把 tcp/env 打不开写成 `loop_ok=0`。0.8.8 只修现有过滤器绕过，不是新藏层 |
+| 6. maps_hide v5.11 | 主进程 **和 MSF**：v5.10 全部 + 去掉路径里的 ZWSP/软连字符后再匹配；检测库 GOT 把 `persist.sys.usb.config` 读成 `mtp`。`loop_ok=1` 当 `dlsym≥1` 且 `leak_maps=0` 且 tcp/env 没有 **正数** 泄漏。登录超时回 0.8.5 | 0.8.8 路径 `/.`。0.8.9 对的是 Duck Detector 报告里的 I/O 项，不是 TEE |
 | 7. seccomp | 自身 text 范围外的裸 `openat` / `faccessat` / `stat` / `readlinkat` 等 `SECCOMP_RET_TRAP` | BPF 跳转必须带 `BPF_JMP`（code `0x15`），否则 EINVAL。主进程 `Seccomp_filters` 应比 `:MSF` 多 1，且 `NoNewPrivs=1`。fekit 读 `/proc/self/status` 时会被改写成 filters=1 |
 | 8. watchdog | `/data/adb/service.d` 拉起；**1s** 解冻 QQ+MSF 的 uid **和 pid_*** cgroup；`account_kicks` | OEM 冻结策略不同。ColorOS Hans 的 sticky unfreeze **无效**，必须反复写 `cgroup.freeze=0`。进程卡在 `do_freezer_trap` 时 MSF 心跳发不出去，服务端会当掉线踢 |
 

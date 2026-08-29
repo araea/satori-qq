@@ -53,6 +53,7 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 | --- | --- |
 | `poke` | 戳一戳。`user_id` + 可选 `guild_id` |
 | `like` | 资料卡点赞（服务器常 319） |
+| `invite` | 邀请用户入群。`guild_id` + `user_id` |
 | `special_title` | 群头衔 |
 | `group_file` | `op=info\|list\|url\|upload` |
 | `get_forward` | 按 resid 取合并转发 |

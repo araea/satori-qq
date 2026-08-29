@@ -1,5 +1,7 @@
 // mapshide.c — detector-lib GOT filter + in-process seccomp for bare svc.
 //
+// v5.11 (0.8.9): strip ZWSP/soft-hyphen before path match (CVE-2024-43093);
+// detector GOT rewrites persist.sys.usb.config to mtp. Rollback 0.8.8.
 // v5.10 (0.8.8): collapse /./ /../ before path_denied; case-insensitive
 // BLOCK match; treat trailing /su as denied. Rollback 0.8.7 / 0.8.5.
 // v5.9 (0.8.7): loop_ok treats leak_tcp/env -1 as unverified, not failed.
@@ -224,6 +226,34 @@ static int ends_with(const char* p, const char* suf) {
     return strcmp(p + lp - ls, suf) == 0;
 }
 
+/* Drop ZWSP / soft hyphen / C0 controls so /data/ad\u200bb still matches. */
+static int strip_ignorable(const char* in, char* out, unsigned outsz) {
+    if (!in || !out || outsz < 2) return 0;
+    const unsigned char* s = (const unsigned char*)in;
+    unsigned oi = 0;
+    while (*s) {
+        unsigned skip = 0;
+        if (s[0] < 0x20) skip = 1;
+        else if (s[0] == 0xC2 && s[1] == 0xAD) skip = 2;
+        else if (s[0] == 0xE2 && s[1] == 0x80 && s[2] >= 0x8B && s[2] <= 0x8F) skip = 3;
+        else if (s[0] == 0xE2 && s[1] == 0x80 && s[2] >= 0xAA && s[2] <= 0xAE) skip = 3;
+        else if (s[0] == 0xE2 && s[1] == 0x81 && s[2] == 0xA0) skip = 3;
+        else if (s[0] == 0xE2 && s[1] == 0x81 && s[2] >= 0xA6 && s[2] <= 0xA9) skip = 3;
+        else if (s[0] == 0xEF && s[1] == 0xBB && s[2] == 0xBF) skip = 3;
+        if (skip) { s += skip; continue; }
+        unsigned clen = 1;
+        if ((s[0] & 0x80) == 0) clen = 1;
+        else if ((s[0] & 0xE0) == 0xC0) clen = 2;
+        else if ((s[0] & 0xF0) == 0xE0) clen = 3;
+        else if ((s[0] & 0xF8) == 0xF0) clen = 4;
+        if (oi + clen >= outsz) return 0;
+        for (unsigned i = 0; i < clen && s[i]; i++) out[oi++] = (char)s[i];
+        s += clen;
+    }
+    out[oi] = 0;
+    return 1;
+}
+
 /* Collapse //, /./ and /../ so /data/./adb and /data/adb/../adb still match. */
 static int collapse_path(const char* in, char* out, unsigned outsz) {
     if (!in || !out || outsz < 2) return 0;
@@ -314,9 +344,11 @@ static int is_status_path(const char* p) {
 
 static int path_denied(const char* p) {
     if (!p) return 0;
+    char stripped[768];
     char norm[768];
     const char* q = p;
-    if (collapse_path(p, norm, sizeof(norm))) q = norm;
+    if (strip_ignorable(p, stripped, sizeof(stripped))) q = stripped;
+    if (collapse_path(q, norm, sizeof(norm))) q = norm;
     size_t n = strlen(q);
     for (int i = 0; BLOCK[i]; i++) {
         if (contains_ci(q, n, BLOCK[i])) return 1;
@@ -720,11 +752,27 @@ static void* my_dlopen(const char* filename, int flags) {
     return dlopen(filename, flags);
 }
 
+static int adb_prop_safe_copy(const char* name, char* value) {
+    if (!name) return 0;
+    const char* safe = 0;
+    if (strcmp(name, "persist.sys.usb.config") == 0 || strcmp(name, "sys.usb.config") == 0)
+        safe = "mtp";
+    else if (strcmp(name, "init.svc.adbd") == 0) safe = "stopped";
+    if (!safe) return 0;
+    if (!value) return 1;
+    unsigned i = 0;
+    while (safe[i]) { value[i] = safe[i]; i++; }
+    value[i] = 0;
+    return (int)i;
+}
+
 static int my_sysprop_get(const char* name, char* value) {
     if (prop_denied(name)) {
         if (value) value[0] = 0;
         return 0;
     }
+    int n = adb_prop_safe_copy(name, value);
+    if (n) return n;
     return __system_property_get(name, value);
 }
 

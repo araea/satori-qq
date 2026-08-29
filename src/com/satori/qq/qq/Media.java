@@ -97,7 +97,9 @@ public final class Media {
         String suffix = safeSuffix(filename);
         if (suffix.isEmpty()) suffix = extFromMime(contentType);
         if (suffix.isEmpty() || ".dat".equals(suffix)) suffix = guessExt(data);
-        File out = File.createTempFile("satori-upload-", suffix, tempDir());
+        // Keep the on-disk name neutral: the anti-exposure path filter intentionally hides
+        // paths containing the module name, including from this process's native open().
+        File out = File.createTempFile("ntm", suffix, tempDir());
         try (FileOutputStream stream = new FileOutputStream(out)) { stream.write(data); }
         return out;
     }

@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.8";
+    public static final String APP_VERSION = "0.8.9";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -531,6 +531,14 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                             params.optString("title", params.optString("special_title", "")));
                     return new JSONObject();
                 });
+            case "invite":
+                return guarded("internal.invite", () -> {
+                    long g = params.optLong("guild_id", params.optLong("group_id", 0));
+                    long u = parseId(params.optString("user_id", ""));
+                    if (g == 0 || u == 0) throw new ApiError(1400, "missing guild_id/user_id");
+                    requireOp(qq.inviteToGroup(g, uidFor(g, u)));
+                    return new JSONObject();
+                });
             case "restart":
                 scheduleRestart(Math.max(500, params.optInt("delay", 0)));
                 return new JSONObject();
@@ -567,6 +575,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "url": return getGroupFileUrl(params.optLong("guild_id", params.optLong("group_id", 0)),
                     params.optString("file_id", ""), params.optInt("busid", params.optInt("bus_id", 0)));
             case "upload": return guarded("internal.group_file", () -> {
+                String spec = params.optString("file", params.optString("url", ""));
+                if (spec.startsWith("internal:")) params.put("file", resolveInternalSpec(spec));
                 String ch = params.optString("channel_id", "");
                 if (params.optLong("user_id", 0) != 0 || Codec.isPrivateChannel(ch)) {
                     if (!params.has("user_id") && Codec.isPrivateChannel(ch))
@@ -664,15 +674,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private void resolveInternalResources(java.util.List<Elements.El> elements) throws Exception {
         for (Elements.El el : elements) {
             String src = el.attr("src");
-            if (src.startsWith("internal:")) {
-                String prefix = "internal:" + PLATFORM + "/" + selfUin() + "/_tmp/";
-                if (!src.startsWith(prefix)) throw new ApiError(1404, "internal resource login not found");
-                String id = src.substring(prefix.length());
-                JSONObject found = getResource(new JSONObject().put("file", id), null);
-                el.attrs.put("src", found.optString("file", ""));
-            }
+            if (src.startsWith("internal:")) el.attrs.put("src", resolveInternalSpec(src));
             if (!el.children.isEmpty()) resolveInternalResources(el.children);
         }
+    }
+
+    private String resolveInternalSpec(String src) throws Exception {
+        String prefix = "internal:" + PLATFORM + "/" + selfUin() + "/_tmp/";
+        if (!src.startsWith(prefix)) throw new ApiError(1404, "internal resource login not found");
+        String id = src.substring(prefix.length());
+        JSONObject found = getResource(new JSONObject().put("file", id), null);
+        String file = found.optString("file", "");
+        if (file.isEmpty()) throw new ApiError(1404, "internal resource not found");
+        return file;
     }
 
     private JSONObject satoriGetMsg(JSONObject p) throws Exception {
@@ -898,6 +912,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private JSONObject satoriGetForward(String id) throws Exception {
+        if (id != null && id.startsWith("native:")) return satoriGetNativeForward(id);
         JSONObject ob = getForwardMsg(id);
         JSONArray messages = ob.optJSONArray("messages");
         JSONArray data = new JSONArray();
@@ -920,6 +935,31 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 data.put(m);
             }
         }
+        return new JSONObject().put("data", data);
+    }
+
+    private JSONObject satoriGetNativeForward(String id) throws Exception {
+        long kernelMsgId = parseLongQuiet(id.substring("native:".length()));
+        if (kernelMsgId == 0) throw new ApiError(1400, "invalid native forward id");
+        MsgStore.Rec parent = store.getByMsgId(kernelMsgId);
+        if (parent == null) throw new ApiError(1404, "native forward is no longer cached");
+        String peer = parent.peerUid;
+        if ((peer == null || peer.isEmpty()) && parent.chatType == QQClient.CT_GROUP)
+            peer = String.valueOf(parent.peerUin);
+        QQClient.MsgListResult result = qq.getMultiMsg(parent.chatType, peer, kernelMsgId);
+        if (!result.ok()) throw new ApiError(1500, "get native forward failed: " + result.describe());
+        if (result.records == null || result.records.isEmpty())
+            throw new ApiError(1404, "native forward is empty");
+        JSONArray data = new JSONArray();
+        for (Object record : result.records) {
+            JSONObject ob = conv.recordToEvent(record, 0);
+            if (ob == null) continue;
+            JSONObject event = Codec.toSatoriEvent(ob.put("post_type", "message")
+                    .put("self_id", selfUin()), loginSlim(), 0, assetBase());
+            if (event != null && event.optJSONObject("message") != null)
+                data.put(event.optJSONObject("message"));
+        }
+        if (data.length() == 0) throw new ApiError(1404, "native forward has no readable messages");
         return new JSONObject().put("data", data);
     }
 

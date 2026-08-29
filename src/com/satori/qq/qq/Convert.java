@@ -501,9 +501,11 @@ public final class Convert {
                         Object ark = ref.get(e, "arkElement");
                         String data = safeStr(ark, "bytesData");
                         String resid = multimsgResId(data);
-                        if (resid != null) {
+                        if (resid != null || multimsgRoot(data) != null) {
                             JSONObject d = new JSONObject();
-                            d.put("id", resid);
+                            // Native multiForwardMsg cards can omit resid after the kernel rewrites
+                            // element 16 to ark element 10. getMultiMsg still resolves them by msgId.
+                            d.put("id", resid != null ? resid : nativeForwardId(msgId));
                             d.put("content", data);
                             d.put("element_type", 10);
                             String fn = multimsgFileName(data);
@@ -537,6 +539,7 @@ public final class Convert {
                             String fromJson = multimsgResId(xml);
                             if (fromJson != null) id = fromJson;
                         }
+                        if (id.isEmpty()) id = nativeForwardId(msgId);
                         d.put("id", id);
                         if (!xml.isEmpty()) d.put("content", xml);
                         String fileName = safeStr(mf, "fileName");
@@ -824,6 +827,10 @@ public final class Convert {
         } catch (Exception ignore) {
             return null;
         }
+    }
+
+    private static String nativeForwardId(long msgId) {
+        return "native:" + msgId;
     }
 
     private void seg(JSONArray arr, String type, String k, String v) {

@@ -59,6 +59,12 @@ public final class ElementsTest {
                 fileImg.getJSONObject(0).getJSONObject("data").optString("file"), "file img src");
         JSONArray onlyAt = Codec.toSegments("<at id=\"1\"/>");
         eq("at", onlyAt.getJSONObject(0).getString("type"), "solo at tag");
+        String nativeForward = Codec.fromSegments(new JSONArray().put(new JSONObject()
+                .put("type", "forward").put("data", new JSONObject()
+                        .put("id", "native:7753807298269865192"))), "");
+        check(nativeForward.contains("forward")
+                        && nativeForward.contains("native:7753807298269865192"),
+                "native forward id survives Satori encoding");
         JSONArray here = Codec.toSegments("<at type=\"here\"/>");
         eq("@在线成员", here.getJSONObject(0).getJSONObject("data").getString("text"),
                 "unsupported here mention falls back to text");

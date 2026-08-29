@@ -73,25 +73,16 @@ Xposed 桩类 `stubs/de/robv/**` 只用于编译，**不能进 dex**（`build.sh
 腾讯 `libfekit.so` 在 native 扫 `/proc/self/maps` 和注入痕迹，把风险信号塞进登录/心跳签名；
 **踢号由服务器签发**。本模块只降低本地可见指纹，不保证不再掉线。
 
-全栈默认开，细节与换机步骤见 [`docs/STACK.md`](docs/STACK.md)。实验记录见 [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md)。
-
-不要 hook `QSec.getSign` / `getFeKitAttach` 的返回值，也不要全局 hook ART / libc。
-
-## QQ 升版本
-
-新版本 APK 必须重新 jadx，核 JNI 字段、回调签名和 `libfekit` 导入，再冷启验证。
-桌面 QQ / NapCat / 鸿蒙包只能当线索。步骤清单在 [`docs/STACK.md`](docs/STACK.md#qq-升版本)。
+全栈默认开，换机与层说明见 [`docs/STACK.md`](docs/STACK.md)。不要 hook `QSec.getSign` / 改 `getFeKitAttach` 返回，也不要全局 hook ART / libc。
 
 ## 文档
 
-| | |
-|---|---|
-| [`docs/STACK.md`](docs/STACK.md) | 换 root / 换机复现，QQ 升版本 |
-| [`docs/ONEBOT11_SUPPORT.md`](docs/ONEBOT11_SUPPORT.md) | 动作与消息段（协议面只信这一份） |
-| [`docs/HANDOFF.md`](docs/HANDOFF.md) | 本机构建、部署、坑 |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 代码结构与 QQNT 映射 |
-| [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md) | 掉线证据（不是操作手册） |
-| [`docs/FUTURE_PLAN.md`](docs/FUTURE_PLAN.md) | 反检测主线 |
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/STACK.md`](docs/STACK.md) | 反检测全栈、换机、QQ 升版本 |
+| [`docs/ONEBOT11_SUPPORT.md`](docs/ONEBOT11_SUPPORT.md) | 动作与消息段 |
+| [`docs/HANDOFF.md`](docs/HANDOFF.md) | 本机构建与坑 |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 代码结构与 JNI |
 
 ## 排错
 

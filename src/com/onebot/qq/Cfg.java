@@ -19,6 +19,7 @@ public final class Cfg {
     public volatile boolean blockQsecTasks = true;    // skip QSec.execTasks native worker
     public volatile boolean blockQsecReports = true;  // neutralise dedicated QSec.reportLog telemetry
     public volatile boolean observeFekitAttach = true; // count-only; never changes signing/attach bytes
+    public volatile boolean blockO3Report = true;      // drop trpc.o3.report / mobile_security (QQNTHookBypass)
     public volatile int outboundMinIntervalMs = 1000; // serialize writes and avoid bursty QQ operations
     public volatile int outboundQueueTimeoutMs = 30000;
     public volatile int outboundMaxQueued = 8;
@@ -58,6 +59,7 @@ public final class Cfg {
                 c.blockQsecTasks = o.optBoolean("block_qsec_tasks", c.blockQsecTasks);
                 c.blockQsecReports = o.optBoolean("block_qsec_reports", c.blockQsecReports);
                 c.observeFekitAttach = o.optBoolean("observe_fekit_attach", c.observeFekitAttach);
+                c.blockO3Report = o.optBoolean("block_o3_report", c.blockO3Report);
                 c.outboundMinIntervalMs = bounded(o.optInt("outbound_min_interval_ms", c.outboundMinIntervalMs), 0, 60000);
                 c.outboundQueueTimeoutMs = bounded(o.optInt("outbound_queue_timeout_ms", c.outboundQueueTimeoutMs), 1000, 120000);
                 c.outboundMaxQueued = bounded(o.optInt("outbound_max_queued", c.outboundMaxQueued), 1, 128);

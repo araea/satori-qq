@@ -15,6 +15,28 @@ public final class AntiDetectStatsTest {
         JSONObject commands = stats.getJSONObject("commands");
         check(commands.getLong("0x810/0x11") >= 1, "known command");
         check(commands.getLong("other/0x11") >= 1, "sensitive command redacted");
+        check(AntiDetect.isEnvReportCmd("trpc.o3.report.Report.SsoReport"), "sso report");
+        check(AntiDetect.isEnvReportCmd("trpc.o3.report.Report.SsoEventReport"), "event report");
+        check(AntiDetect.isEnvReportCmd("trpc.o3.mobile_security.MobileSecurity.SsoCheckSwitch"), "mobile security");
+        check(AntiDetect.isEnvReportCmd("trpc.gc_indust.device_report.SsoHome.SsoHomeReport"), "device report");
+        check(!AntiDetect.isEnvReportCmd("trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess"), "keep ecdh");
+        check(!AntiDetect.isEnvReportCmd("trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey"), "keep sharekey");
+        check(!AntiDetect.isEnvReportCmd("trpc.o3.guard.GuardHello"), "keep other o3");
+        check(!AntiDetect.isEnvReportCmd("CliLogSvc.UploadReq"), "keep clilog");
+        check(!AntiDetect.isEnvReportCmd("MessageSvc.PbSendMsg"), "keep send");
+        check(!AntiDetect.isEnvReportCmd("StatSvc.register"), "keep statsvc");
+        long droppedBefore = AntiDetect.envReportStats(true).getLong("dropped");
+        AntiDetect.recordEnvReportDrop("trpc.o3.report.Report.SsoReport");
+        AntiDetect.recordEnvReportDrop("in:trpc.o3.report.Report.SsoReport");
+        JSONObject env = AntiDetect.envReportStats(true);
+        check(env.getBoolean("enabled"), "env enabled");
+        eq(droppedBefore + 2, env.getLong("dropped"), "dropped");
+        check(env.getJSONObject("commands").getLong("in:trpc.o3.report.Report.SsoReport") >= 1,
+                "inbound drop prefix");
+        JSONObject hooks = env.getJSONObject("hooks");
+        check(hooks.has("channel_send") && hooks.has("channel_in")
+                && hooks.has("msf_send") && hooks.has("msf_in"), "hook counters");
+        check("main".equals(env.getString("process")), "process key");
         System.out.println("AntiDetectStatsTest OK");
     }
 

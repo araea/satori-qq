@@ -1,10 +1,13 @@
 // mapshide.c — detector-lib GOT filter + in-process seccomp for bare svc.
 //
-// v4 (root punch-through): nameless injection RX is renamed to look like ART
-// jit; so loads from memfd:jit-cache; GOT still patches fekit/ckguard libc.
-// Seccomp TRAP of bare openat svc: classic BPF jumps MUST use
-// BPF_JMP|BPF_JEQ|BPF_K (not BPF_JEQ|BPF_K). Missing BPF_JMP → code 0x10 →
-// EINVAL. Filter is in the running APK; JNI install() is the glue.
+// v5.1 (0.5.7): v5 + __system_property_find (turingxq). Helpers for dlsym /
+// getdents / /proc/net/tcp exist but are NOT GOT-patched and tcp is NOT in
+// is_proc_exposure_path — 0.5.4 bundled those with a login timeout.
+// v5: also patch libturingxq (and still fekit/ckguard); resolve openat dirfd
+// so relative "maps" is filtered; cloak /proc/self/status Seccomp_filters;
+// GOT covers opendir/popen/stat/dladdr/dlopen/__system_property_get.
+// v4: nameless RX renamed as ART jit; so from memfd:jit-cache; seccomp TRAP
+// of bare openat. BPF jumps MUST use BPF_JMP|BPF_JEQ|BPF_K.
 // See tests/seccomp-filter-test.c. Instant health ≠ anti-kick.
 //
 // Do NOT hook getSign / getFeKitAttach return values.
@@ -36,6 +39,18 @@ extern size_t strlen(const char* s);
 typedef struct FILE FILE;
 extern FILE* fopen(const char* path, const char* mode);
 extern FILE* fdopen(int fd, const char* mode);
+extern FILE* popen(const char* cmd, const char* mode);
+extern void* opendir(const char* path);
+extern int snprintf(char* buf, size_t n, const char* fmt, ...);
+extern int stat(const char* path, void* st);
+extern int lstat(const char* path, void* st);
+extern int statfs(const char* path, void* st);
+extern int dladdr(const void* addr, void* info);
+extern void* dlopen(const char* filename, int flags);
+extern void* dlsym(void* handle, const char* symbol);
+extern int __system_property_get(const char* name, char* value);
+extern const void* __system_property_find(const char* name);
+extern void* readdir(void* dirp);
 
 #define LOGI(...) __android_log_print(4, "Q.Maps", __VA_ARGS__)
 #define LOGW(...) __android_log_print(5, "Q.Maps", __VA_ARGS__)
@@ -44,6 +59,7 @@ extern FILE* fdopen(int fd, const char* mode);
 #define SYS_read          63
 #define SYS_close         57
 #define SYS_lseek         62
+#define SYS_getdents64    61
 #define SYS_memfd_create  279
 #define SYS_write         64
 #define SYS_prctl         167
@@ -101,9 +117,13 @@ typedef struct {
 #define ELF64_R_SYM(i) ((i) >> 32)
 
 static const char* BLOCK[] = {
-    "vector", "zygisk", "xposed", "lspd", "lsposed", "riru", "magisk",
+    "zygisk", "xposed", "lspd", "lsposed", "riru", "magisk",
     "mapshide", "libmapshide", "onebot", "/data/adb", "EdXposed", "substrate",
-    "debug_ramdisk", "/system/bin/su", "/system/xbin/su", "kernelsu", 0
+    "debug_ramdisk", "/system/bin/su", "/system/xbin/su", "kernelsu", "ksud",
+    "apatch", "shamiko", "com.topjohnwu", "me.weishu.kernelsu",
+    "me.bmax.apatch", "com.noshufou", "eu.chainfire.supersu",
+    "zygisk_vector", "libvector", "JingMatrix", "frida", "gadget",
+    "linjector", "lsplant", 0
 };
 
 static long g_page = 4096;
@@ -152,10 +172,63 @@ static int line_blocked(const char* line, size_t len) {
     return 0;
 }
 
+static int ends_with(const char* p, const char* suf) {
+    if (!p || !suf) return 0;
+    size_t lp = strlen(p), ls = strlen(suf);
+    if (ls == 0 || ls > lp) return 0;
+    return strcmp(p + lp - ls, suf) == 0;
+}
+
+static int starts_with(const char* p, size_t n, const char* pre) {
+    if (!p || !pre) return 0;
+    size_t lp = strlen(pre);
+    if (lp > n) return 0;
+    for (size_t i = 0; i < lp; i++) if (p[i] != pre[i]) return 0;
+    return 1;
+}
+
+static int path_denied(const char* p);
+static int my_getdents64(int fd, void* dirp, unsigned count);
+
 static int is_proc_exposure_path(const char* p) {
     if (!p) return 0;
-    if (!strstr(p, "/proc/")) return 0;
-    return strstr(p, "/maps") || strstr(p, "/smaps") || strstr(p, "/mountinfo");
+    if (!strstr(p, "/proc")) return 0;
+    return ends_with(p, "/maps") || ends_with(p, "/smaps") || ends_with(p, "/smaps_rollup")
+            || ends_with(p, "/mountinfo") || ends_with(p, "/mounts")
+            || ends_with(p, "/status");
+}
+
+static int is_net_stat_path(const char* p) {
+    if (!p || !strstr(p, "/proc")) return 0;
+    return ends_with(p, "/tcp") || ends_with(p, "/tcp6")
+            || ends_with(p, "/udp") || ends_with(p, "/udp6");
+}
+
+/* Drop OneBot's 127.0.0.1:3001 listener (hex 0BB9) from /proc/net/tcp{,6}. */
+static int net_local_port_hidden(const char* line, size_t len) {
+    int colons = 0;
+    for (size_t j = 0; j + 4 < len; j++) {
+        if (line[j] != ':') continue;
+        colons++;
+        if (colons != 2) continue;
+        char a = line[j + 1], b = line[j + 2], c = line[j + 3], d = line[j + 4];
+        if (a == '0' && (b == 'B' || b == 'b') && (c == 'B' || c == 'b') && d == '9')
+            return 1;
+        return 0;
+    }
+    return 0;
+}
+
+static int dent_name_blocked(const char* name) {
+    if (!name || !*name || name[0] == '.') return 0;
+    if (strcmp(name, "su") == 0 || strcmp(name, "ksud") == 0
+            || strcmp(name, "magisk") == 0 || strcmp(name, "apatch") == 0)
+        return 1;
+    return path_denied(name);
+}
+
+static int is_status_path(const char* p) {
+    return p && ends_with(p, "/status") && strstr(p, "/proc");
 }
 
 static int path_denied(const char* p) {
@@ -167,9 +240,70 @@ static int path_denied(const char* p) {
     return 0;
 }
 
+static int cmd_denied(const char* p) {
+    if (!p) return 0;
+    size_t n = strlen(p);
+    if (path_denied(p)) return 1;
+    return contains(p, n, " magisk") || contains(p, n, "grep magisk")
+            || (contains(p, n, "getprop") && contains(p, n, "magisk"));
+}
+
+static int prop_denied(const char* p) {
+    if (!p) return 0;
+    size_t n = strlen(p);
+    return contains(p, n, "magisk") || contains(p, n, "zygisk")
+            || contains(p, n, "lsposed") || contains(p, n, "lspd")
+            || contains(p, n, "riru") || contains(p, n, "kernelsu")
+            || contains(p, n, "ksud") || contains(p, n, "apatch")
+            || contains(p, n, "shamiko");
+}
+
 static int is_detector_path(const char* p) {
     if (!p) return 0;
-    return strstr(p, "fekit") || strstr(p, "ckguard") || strstr(p, "wtecdh");
+    return strstr(p, "fekit") || strstr(p, "ckguard") || strstr(p, "wtecdh")
+            || strstr(p, "turingxq") || strstr(p, "turing")
+            || strstr(p, "libqsec") || strstr(p, "dandelion");
+}
+
+/* openat(dirfd, "maps") bypasses a path-only /proc filter. Resolve dirfd. */
+static int resolve_at_path(int dirfd, const char* path, char* out, unsigned outsz) {
+    if (!path || !out || outsz < 4) return 0;
+    if (path[0] == '/') {
+        unsigned i = 0;
+        while (path[i] && i + 1 < outsz) { out[i] = path[i]; i++; }
+        out[i] = 0;
+        return 1;
+    }
+    char link[64];
+    char base[512];
+    if (dirfd == AT_FDCWD) {
+        const char* cwd = "/proc/self/cwd";
+        unsigned i = 0;
+        while (cwd[i] && i + 1 < sizeof(link)) { link[i] = cwd[i]; i++; }
+        link[i] = 0;
+    } else {
+        if (snprintf(link, sizeof(link), "/proc/self/fd/%d", dirfd) <= 0) return 0;
+    }
+    long n = raw_svc(SYS_readlinkat, (long)AT_FDCWD, (long)link, (long)base,
+            (long)(sizeof(base) - 1), 0, 0);
+    if (n <= 0) return 0;
+    unsigned bi = (unsigned)n;
+    if (bi >= sizeof(base)) bi = sizeof(base) - 1;
+    base[bi] = 0;
+    unsigned oi = 0;
+    while (oi < bi && oi + 1 < outsz) { out[oi] = base[oi]; oi++; }
+    if (oi + 1 < outsz && (oi == 0 || out[oi - 1] != '/')) out[oi++] = '/';
+    unsigned pi = 0;
+    while (path[pi] && oi + 1 < outsz) { out[oi++] = path[pi++]; }
+    out[oi] = 0;
+    return 1;
+}
+
+static const char* effective_path(int dirfd, const char* path, char* buf, unsigned bufsz) {
+    if (!path) return path;
+    if (path[0] == '/') return path;
+    if (resolve_at_path(dirfd, path, buf, bufsz)) return buf;
+    return path;
 }
 
 static int is_mapping_header(const char* line, size_t len) {
@@ -205,19 +339,43 @@ static int filtered_proc_fd(const char* path) {
             char c = buf[i];
             if (ll < sizeof(line) - 1) line[ll++] = c;
             if (c == '\n') {
-                if (is_mapping_header(line, ll)) drop_stanza = line_blocked(line, ll);
-                else if (!strstr(path, "/smaps")) drop_stanza = 0;
-                if (!drop_stanza && !line_blocked(line, ll))
-                    raw_svc(SYS_write, mfd, (long)line, (long)ll, 0, 0, 0);
+                if (is_status_path(path) && starts_with(line, ll, "Seccomp_filters:")) {
+                    const char* r = "Seccomp_filters:\t1\n";
+                    raw_svc(SYS_write, mfd, (long)r, (long)strlen(r), 0, 0, 0);
+                } else if (is_status_path(path) && starts_with(line, ll, "NoNewPrivs:")) {
+                    const char* r = "NoNewPrivs:\t0\n";
+                    raw_svc(SYS_write, mfd, (long)r, (long)strlen(r), 0, 0, 0);
+                } else {
+                    if (is_net_stat_path(path) && net_local_port_hidden(line, ll)) {
+                        ll = 0;
+                        continue;
+                    }
+                    if (is_mapping_header(line, ll)) drop_stanza = line_blocked(line, ll);
+                    else if (!strstr(path, "/smaps")) drop_stanza = 0;
+                    if (!drop_stanza && !line_blocked(line, ll))
+                        raw_svc(SYS_write, mfd, (long)line, (long)ll, 0, 0, 0);
+                }
                 ll = 0;
             }
         }
     }
     if (ll > 0) {
-        if (is_mapping_header(line, ll)) drop_stanza = line_blocked(line, ll);
-        else if (!strstr(path, "/smaps")) drop_stanza = 0;
-        if (!drop_stanza && !line_blocked(line, ll))
-            raw_svc(SYS_write, mfd, (long)line, (long)ll, 0, 0, 0);
+        if (is_status_path(path) && starts_with(line, ll, "Seccomp_filters:")) {
+            const char* r = "Seccomp_filters:\t1\n";
+            raw_svc(SYS_write, mfd, (long)r, (long)strlen(r), 0, 0, 0);
+        } else if (is_status_path(path) && starts_with(line, ll, "NoNewPrivs:")) {
+            const char* r = "NoNewPrivs:\t0\n";
+            raw_svc(SYS_write, mfd, (long)r, (long)strlen(r), 0, 0, 0);
+        } else {
+            if (is_net_stat_path(path) && net_local_port_hidden(line, ll)) {
+                /* drop trailing partial line */
+            } else {
+                if (is_mapping_header(line, ll)) drop_stanza = line_blocked(line, ll);
+                else if (!strstr(path, "/smaps")) drop_stanza = 0;
+                if (!drop_stanza && !line_blocked(line, ll))
+                    raw_svc(SYS_write, mfd, (long)line, (long)ll, 0, 0, 0);
+            }
+        }
     }
     raw_svc(SYS_close, fd, 0, 0, 0, 0, 0);
     raw_svc(SYS_lseek, mfd, 0L, 0L, 0, 0, 0);
@@ -225,11 +383,13 @@ static int filtered_proc_fd(const char* path) {
 }
 
 static int my_openat(int dirfd, const char* path, int flags, int mode) {
-    if (is_proc_exposure_path(path)) {
-        int f = filtered_proc_fd(path);
+    char resolved[768];
+    const char* ep = effective_path(dirfd, path, resolved, sizeof(resolved));
+    if (is_proc_exposure_path(ep)) {
+        int f = filtered_proc_fd(ep);
         if (f >= 0) return f;
     }
-    if (path_denied(path)) return -ENOENT;
+    if (path_denied(ep) || path_denied(path)) return -ENOENT;
     return (int)raw_svc(SYS_openat, (long)dirfd, (long)path, (long)flags, (long)mode, 0, 0);
 }
 
@@ -252,17 +412,19 @@ static FILE* my_fopen(const char* path, const char* mode) {
 
 static long my_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5) {
     if (n == SYS_openat || n == SYS_openat2) {
-        const char* path = (const char*)a1;
+        char resolved[768];
+        const char* path = effective_path((int)a0, (const char*)a1, resolved, sizeof(resolved));
         if (is_proc_exposure_path(path)) {
             int f = filtered_proc_fd(path);
             if (f >= 0) return f;
         }
-        if (path_denied(path)) return -ENOENT;
+        if (path_denied(path) || path_denied((const char*)a1)) return -ENOENT;
     }
     if (n == SYS_faccessat || n == SYS_faccessat2 || n == SYS_newfstatat
             || n == SYS_readlinkat || n == SYS_statx) {
-        const char* path = (const char*)a1;
-        if (path_denied(path)) return -ENOENT;
+        char resolved[768];
+        const char* path = effective_path((int)a0, (const char*)a1, resolved, sizeof(resolved));
+        if (path_denied(path) || path_denied((const char*)a1)) return -ENOENT;
         if (is_proc_exposure_path(path) && (n == SYS_faccessat || n == SYS_faccessat2))
             return 0;
     }
@@ -276,8 +438,10 @@ static int my_access(const char* path, int mode) {
 }
 
 static int my_faccessat(int dirfd, const char* path, int mode, int flags) {
-    if (path_denied(path)) return -ENOENT;
-    if (is_proc_exposure_path(path)) return 0;
+    char resolved[768];
+    const char* ep = effective_path(dirfd, path, resolved, sizeof(resolved));
+    if (path_denied(ep) || path_denied(path)) return -ENOENT;
+    if (is_proc_exposure_path(ep)) return 0;
     return (int)raw_svc(SYS_faccessat, (long)dirfd, (long)path, (long)mode, (long)flags, 0, 0);
 }
 
@@ -286,9 +450,122 @@ static long my_readlink(const char* path, char* buf, unsigned long bufsz) {
     return raw_svc(SYS_readlinkat, (long)AT_FDCWD, (long)path, (long)buf, (long)bufsz, 0, 0);
 }
 
+static int module_name_blocked(const char* name);
+
 static long my_readlinkat(int dirfd, const char* path, char* buf, unsigned long bufsz) {
-    if (path_denied(path)) return -ENOENT;
+    char resolved[768];
+    const char* ep = effective_path(dirfd, path, resolved, sizeof(resolved));
+    if (path_denied(ep) || path_denied(path)) return -ENOENT;
     return raw_svc(SYS_readlinkat, (long)dirfd, (long)path, (long)buf, (long)bufsz, 0, 0);
+}
+
+static int my_stat(const char* path, void* st) {
+    if (path_denied(path)) return -ENOENT;
+    return stat(path, st);
+}
+
+static int my_lstat(const char* path, void* st) {
+    if (path_denied(path)) return -ENOENT;
+    return lstat(path, st);
+}
+
+static int my_statfs(const char* path, void* st) {
+    if (path_denied(path)) return -ENOENT;
+    return statfs(path, st);
+}
+
+static void* my_opendir(const char* path) {
+    if (path_denied(path)) return 0;
+    return opendir(path);
+}
+
+static FILE* my_popen(const char* cmd, const char* mode) {
+    if (cmd_denied(cmd) || path_denied(cmd)) {
+        long mfd = raw_svc(SYS_memfd_create, (long)"m", 0L, 0L, 0L, 0L, 0L);
+        if (mfd < 0) return 0;
+        FILE* fp = fdopen((int)mfd, mode ? mode : "r");
+        if (fp) return fp;
+        raw_svc(SYS_close, mfd, 0, 0, 0, 0, 0);
+        return 0;
+    }
+    return popen(cmd, mode);
+}
+
+typedef struct {
+    const char* dli_fname;
+    void* dli_fbase;
+    const char* dli_sname;
+    void* dli_saddr;
+} Dl_info_min;
+
+static int my_dladdr(const void* addr, void* info_v) {
+    int r = dladdr(addr, info_v);
+    if (r && info_v) {
+        Dl_info_min* info = (Dl_info_min*)info_v;
+        if (module_name_blocked(info->dli_fname)) {
+            info->dli_fname = "[anon:dalvik-jit-code-cache]";
+            info->dli_sname = 0;
+            info->dli_saddr = 0;
+        }
+    }
+    return r;
+}
+
+static void* my_dlopen(const char* filename, int flags) {
+    if (path_denied(filename)) return 0;
+    return dlopen(filename, flags);
+}
+
+static int my_sysprop_get(const char* name, char* value) {
+    if (prop_denied(name)) {
+        if (value) value[0] = 0;
+        return 0;
+    }
+    return __system_property_get(name, value);
+}
+
+static const void* my_sysprop_find(const char* name) {
+    if (prop_denied(name)) return 0;
+    return __system_property_find(name);
+}
+
+typedef struct {
+    uint64_t d_ino;
+    int64_t d_off;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[];
+} linux_dirent64_min;
+
+static int my_getdents64(int fd, void* dirp, unsigned count) {
+    long n = raw_svc(SYS_getdents64, (long)fd, (long)dirp, (long)count, 0, 0, 0);
+    if (n <= 0 || !dirp) return (int)n;
+    char* buf = (char*)dirp;
+    long in = 0, out = 0;
+    while (in < n) {
+        linux_dirent64_min* d = (linux_dirent64_min*)(buf + in);
+        unsigned short reclen = d->d_reclen;
+        if (reclen < 20 || in + reclen > n) break;
+        if (!dent_name_blocked(d->d_name)) {
+            if (in != out) {
+                char* src = buf + in;
+                char* dst = buf + out;
+                for (unsigned i = 0; i < reclen; i++) dst[i] = src[i];
+            }
+            out += reclen;
+        }
+        in += reclen;
+    }
+    return (int)out;
+}
+
+static void* my_readdir(void* dirp) {
+    for (;;) {
+        void* e = readdir(dirp);
+        if (!e) return 0;
+        const char* name = ((const char*)e) + 19;
+        if (!dent_name_blocked(name)) return e;
+    }
 }
 
 typedef int (*dl_iter_cb_t)(void*, size_t, void*);
@@ -321,6 +598,32 @@ static int my_dl_iterate_phdr(dl_iter_cb_t callback, void* data) {
     return dl_iterate_phdr(filtered_iter_cb, &filter);
 }
 
+static void* my_dlsym(void* handle, const char* symbol) {
+    if (!symbol) return dlsym(handle, symbol);
+    if (strcmp(symbol, "open") == 0 || strcmp(symbol, "open64") == 0) return (void*)my_open;
+    if (strcmp(symbol, "openat") == 0 || strcmp(symbol, "openat64") == 0) return (void*)my_openat;
+    if (strcmp(symbol, "fopen") == 0 || strcmp(symbol, "fopen64") == 0) return (void*)my_fopen;
+    if (strcmp(symbol, "syscall") == 0) return (void*)my_syscall;
+    if (strcmp(symbol, "dl_iterate_phdr") == 0) return (void*)my_dl_iterate_phdr;
+    if (strcmp(symbol, "access") == 0) return (void*)my_access;
+    if (strcmp(symbol, "faccessat") == 0) return (void*)my_faccessat;
+    if (strcmp(symbol, "readlink") == 0) return (void*)my_readlink;
+    if (strcmp(symbol, "readlinkat") == 0) return (void*)my_readlinkat;
+    if (strcmp(symbol, "stat") == 0) return (void*)my_stat;
+    if (strcmp(symbol, "lstat") == 0) return (void*)my_lstat;
+    if (strcmp(symbol, "statfs") == 0) return (void*)my_statfs;
+    if (strcmp(symbol, "opendir") == 0) return (void*)my_opendir;
+    if (strcmp(symbol, "popen") == 0) return (void*)my_popen;
+    if (strcmp(symbol, "dladdr") == 0) return (void*)my_dladdr;
+    if (strcmp(symbol, "dlopen") == 0) return (void*)my_dlopen;
+    if (strcmp(symbol, "dlsym") == 0) return (void*)my_dlsym;
+    if (strcmp(symbol, "__system_property_get") == 0) return (void*)my_sysprop_get;
+    if (strcmp(symbol, "__system_property_find") == 0) return (void*)my_sysprop_find;
+    if (strcmp(symbol, "getdents64") == 0) return (void*)my_getdents64;
+    if (strcmp(symbol, "readdir") == 0 || strcmp(symbol, "readdir64") == 0) return (void*)my_readdir;
+    return dlsym(handle, symbol);
+}
+
 typedef struct {
     void* my_openat;
     void* my_open;
@@ -331,6 +634,15 @@ typedef struct {
     void* my_faccessat;
     void* my_readlink;
     void* my_readlinkat;
+    void* my_stat;
+    void* my_lstat;
+    void* my_statfs;
+    void* my_opendir;
+    void* my_popen;
+    void* my_dladdr;
+    void* my_dlopen;
+    void* my_sysprop_get;
+    void* my_sysprop_find;
     int patched;
 } ctx_t;
 
@@ -380,6 +692,15 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
             else if (strcmp(nm, "faccessat") == 0) repl = ctx->my_faccessat;
             else if (strcmp(nm, "readlink") == 0) repl = ctx->my_readlink;
             else if (strcmp(nm, "readlinkat") == 0) repl = ctx->my_readlinkat;
+            else if (strcmp(nm, "stat") == 0) repl = ctx->my_stat;
+            else if (strcmp(nm, "lstat") == 0) repl = ctx->my_lstat;
+            else if (strcmp(nm, "statfs") == 0) repl = ctx->my_statfs;
+            else if (strcmp(nm, "opendir") == 0) repl = ctx->my_opendir;
+            else if (strcmp(nm, "popen") == 0) repl = ctx->my_popen;
+            else if (strcmp(nm, "dladdr") == 0) repl = ctx->my_dladdr;
+            else if (strcmp(nm, "dlopen") == 0) repl = ctx->my_dlopen;
+            else if (strcmp(nm, "__system_property_get") == 0) repl = ctx->my_sysprop_get;
+            else if (strcmp(nm, "__system_property_find") == 0) repl = ctx->my_sysprop_find;
             if (!repl) continue;
             void** got = (void**)(base + rt[i].r_offset);
             uintptr_t pg = (uintptr_t)got & ~(g_page - 1);
@@ -528,11 +849,13 @@ static int iter_cb(void* info_v, size_t size, void* data) {
 }
 
 static long cloak_openat(long dirfd, const char* path, long flags, long mode) {
-    if (is_proc_exposure_path(path)) {
-        int f = filtered_proc_fd(path);
+    char resolved[768];
+    const char* ep = effective_path((int)dirfd, path, resolved, sizeof(resolved));
+    if (is_proc_exposure_path(ep)) {
+        int f = filtered_proc_fd(ep);
         if (f >= 0) return f;
     }
-    if (path_denied(path)) return -ENOENT;
+    if (path_denied(ep) || path_denied(path)) return -ENOENT;
     return raw_svc(SYS_openat, dirfd, (long)path, flags, mode, 0, 0);
 }
 
@@ -546,20 +869,23 @@ static void on_sigsys(int sig, siginfo_t* si, void* uctx) {
     if (nr == SYS_openat) {
         ret = cloak_openat((long)r[0], (const char*)r[1], (long)r[2], (long)r[3]);
     } else if (nr == SYS_openat2) {
-        const char* path = (const char*)r[1];
+        char resolved[768];
+        const char* path = effective_path((int)r[0], (const char*)r[1], resolved, sizeof(resolved));
         if (is_proc_exposure_path(path)) {
             int f = filtered_proc_fd(path);
             ret = f >= 0 ? f : raw_svc(nr, (long)r[0], (long)r[1], (long)r[2], (long)r[3], (long)r[4], (long)r[5]);
-        } else if (path_denied(path)) ret = -ENOENT;
+        } else if (path_denied(path) || path_denied((const char*)r[1])) ret = -ENOENT;
         else ret = raw_svc(nr, (long)r[0], (long)r[1], (long)r[2], (long)r[3], (long)r[4], (long)r[5]);
     } else if (nr == SYS_faccessat || nr == SYS_faccessat2) {
-        const char* path = (const char*)r[1];
-        if (path_denied(path)) ret = -ENOENT;
+        char resolved[768];
+        const char* path = effective_path((int)r[0], (const char*)r[1], resolved, sizeof(resolved));
+        if (path_denied(path) || path_denied((const char*)r[1])) ret = -ENOENT;
         else if (is_proc_exposure_path(path)) ret = 0;
         else ret = raw_svc(nr, (long)r[0], (long)r[1], (long)r[2], (long)r[3], (long)r[4], (long)r[5]);
     } else if (nr == SYS_newfstatat || nr == SYS_statx || nr == SYS_readlinkat) {
-        const char* path = (const char*)r[1];
-        if (path_denied(path)) ret = -ENOENT;
+        char resolved[768];
+        const char* path = effective_path((int)r[0], (const char*)r[1], resolved, sizeof(resolved));
+        if (path_denied(path) || path_denied((const char*)r[1])) ret = -ENOENT;
         else ret = raw_svc(nr, (long)r[0], (long)r[1], (long)r[2], (long)r[3], (long)r[4], (long)r[5]);
     } else {
         ret = raw_svc(nr, (long)r[0], (long)r[1], (long)r[2], (long)r[3], (long)r[4], (long)r[5]);
@@ -663,6 +989,15 @@ int Java_com_onebot_qq_qq_MapsHide_install(void* env, void* clazz) {
     ctx.my_faccessat = (void*)my_faccessat;
     ctx.my_readlink = (void*)my_readlink;
     ctx.my_readlinkat = (void*)my_readlinkat;
+    ctx.my_stat = (void*)my_stat;
+    ctx.my_lstat = (void*)my_lstat;
+    ctx.my_statfs = (void*)my_statfs;
+    ctx.my_opendir = (void*)my_opendir;
+    ctx.my_popen = (void*)my_popen;
+    ctx.my_dladdr = (void*)my_dladdr;
+    ctx.my_dlopen = (void*)my_dlopen;
+    ctx.my_sysprop_get = (void*)my_sysprop_get;
+    ctx.my_sysprop_find = (void*)my_sysprop_find;
     ctx.patched = 0;
     patch_from_maps(&ctx);
     dl_iterate_phdr(iter_cb, &ctx);

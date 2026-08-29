@@ -68,19 +68,32 @@ capture() {
         | sed -n 's/.*com.tencent.mobileqq\/\([^ }]*\).*/\1/p')"
     legacy_logs="$(logcat -d 2>/dev/null | grep -Ec 'OneBotQQ|OneBot-QQ|MapsHide')"
     neutral_errors="$(logcat -d -s Q.Kernel:E 2>/dev/null | wc -l)"
+    qq_start_epoch=0
+    minutes_since_start=-1
+    if [ -n "$qq_pid" ] && [ -d "/proc/$qq_pid" ]; then
+        qq_start_epoch="$(stat -c %Y "/proc/$qq_pid" 2>/dev/null || echo 0)"
+        if [ "${qq_start_epoch:-0}" -gt 0 ] 2>/dev/null; then
+            minutes_since_start=$(( (now_epoch - qq_start_epoch) / 60 ))
+        fi
+    fi
     {
-        echo "format_version=5"
+        echo "format_version=6"
         echo "captured_at_epoch=$now_epoch"
         echo "reason=$reason"
         echo "qq_pid=${qq_pid:-0}"
+        echo "qq_start_epoch=$qq_start_epoch"
+        echo "minutes_since_start=$minutes_since_start"
         echo "module_version=${module_version:-unknown}"
+        echo "apk_version=${module_version:-unknown}"
         echo "port_3001=$port"
         echo "top_activity=${top_activity:-unknown}"
         echo "maps_total=$maps_total"
         # InternalMmapVector is a normal Android runtime mapping found in clean apps too;
         # do not count that generic name as evidence of the Vector framework.
         echo "maps_vector=$(count_maps 'zygisk_vector|JingMatrix|libvector')"
+        # ART GC 'chunk-info vector' is a clean-app false positive; keep generic for A/B.
         echo "maps_vector_generic=$(count_maps vector)"
+        echo "maps_art_vector=$(count_maps 'chunk-info vector|InternalMmapVector')"
         echo "maps_zygisk=$(count_maps zygisk)"
         echo "maps_xposed=$(count_maps xposed)"
         echo "maps_lspd=$(count_maps lspd)"

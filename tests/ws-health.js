@@ -43,6 +43,9 @@ function finishIfReady() {
   if (status?.data?.fekit_attach?.enabled) {
     summary.fekit_attach = status.data.fekit_attach;
   }
+  if (status?.data?.env_report) {
+    summary.env_report = status.data.env_report;
+  }
   if (status?.data?.outbound_guard) {
     summary.outbound_guard = status.data.outbound_guard;
     summary.online_since_epoch_ms = status.data.online_since_epoch_ms || 0;

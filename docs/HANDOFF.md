@@ -38,7 +38,8 @@ ayjx：`ws://127.0.0.1:3001`，`access_token` 必须非空。模块 `token` 为�
 - `File.createTempFile` 前缀 ≥ 3 字符
 - 私聊自己：retcode 0 但不投递
 - `api.*` 混淆，只走 `nativeinterface` + `IQQNTWrapperSession$CppProxy`
-- 不要 hook `getSign` / 改 `getFeKitAttach` 返回
+- 不要 hook `getSign` / 改 `getFeKitAttach` 返回；不要拦 `trpc.o3.ecdh_access.*`
 - 能登录就不卸 scope；踢号只认 `ACCOUNT_KICKED` / `KICK_TO_LOGIN` / `account_kicks`
 - 端口在、WS 无响应 = OEM 冻进程，不是踢号
+- 能登录时 `pm install -r` 后 **不要** `am force-stop`；新代码要等 QQ 自己重启才加载。快照 `module_version` 是已装 APK，进程版本看 `ws-health` / `get_version_info`
 - 参考：NapCat / Lagrange / 本机 `QQ.hap` 只当线索，最终以 9.3.55 jadx 为准

@@ -1,7 +1,7 @@
 # 架构（QQ 9.3.55）
 
 ```
-Main            只在 QQ 主进程：MapsHide → AntiDetect → OneBotHub → QQClient
+Main            QQ 所有进程：MapsHide + AntiDetect；仅主进程再 OneBotHub → QQClient
 Cfg / L         配置；日志 tag Q.Kernel（verbose 才打 XposedBridge）
 net/            手写正向 WS，只绑 127.0.0.1
 core/           动作分发、事件、lifecycle、message_id / file_id 注册表
@@ -28,6 +28,6 @@ native/         libmapshide.so
 - `MsgConstant.KELEMTYPE*`：TEXT1 PIC2 FILE3 PTT4 VIDEO5 FACE6 REPLY7 GRAYTIP8 ARK10 MARKETFACE11 MULTIFORWARD16
 - 图：`genFileMd5Hex` → `getRichMediaFilePathForMobileQQSend` → `copyFile` → `PicElement` → sendMsg 自动上传
 - 语音：`SilkCodecWrapper.encode`（本机 VideoElement **无** fileWidth/fileHeight）
-- QSec：`getSign(String, byte[])` 不动；`detectMethod` / `getXpsInfo` 可中和；`getFeKitAttach` 只计数
+- QSec：`getSign(String, byte[])` 不动；`detectMethod` / `getXpsInfo` 可中和；`getFeKitAttach` 只计数；`trpc.o3.report` 可丢（不要动 `ecdh_access`）
 
 升版本清单：[`STACK.md`](STACK.md#qq-升版本)。

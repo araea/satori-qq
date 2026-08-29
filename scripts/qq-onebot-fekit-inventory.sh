@@ -33,7 +33,7 @@ if [ -n "$FEKIT" ] && [ -r "$FEKIT" ]; then
     llvm-readelf -d "$FEKIT" 2>/dev/null | grep NEEDED || true
     echo
     echo "== libc imports of interest =="
-    llvm-nm -D "$FEKIT" 2>/dev/null | grep -E ' U (open|openat|fopen|read|pread|syscall|dl_iterate_phdr|dlsym|dlopen|access|stat|fstat|readlink|prctl)(@|$)' || true
+    llvm-nm -D "$FEKIT" 2>/dev/null | grep -E ' U (open|openat|fopen|read|pread|syscall|dl_iterate_phdr|dlsym|dlopen|dladdr|access|stat|fstat|readlink|prctl|popen|opendir|__system_property)(@|$)' || true
     echo
     echo "== detection strings =="
     strings "$FEKIT" | grep -E '^/proc|/proc/self/(maps|smaps|mountinfo|cmdline)|lsposed|zygisk|libriru|frida|\.magisk|libart' | sort -u

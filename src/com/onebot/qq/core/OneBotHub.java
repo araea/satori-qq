@@ -1811,7 +1811,8 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 .put("good", online)
                 .put("online_since_epoch_ms", onlineSinceMs)
                 .put("outbound_guard", outboundGuard.stats())
-                .put("fekit_attach", AntiDetect.fekitAttachStats(cfg.observeFekitAttach));
+                .put("fekit_attach", AntiDetect.fekitAttachStats(cfg.observeFekitAttach))
+                .put("env_report", AntiDetect.envReportStats(cfg.blockO3Report));
     }
 
     private JSONObject lifecycle(String subType) throws Exception {
@@ -1837,7 +1838,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         String qqVersion = qq.qqVersion();
         return new JSONObject()
                 .put("app_name", "onebot-qq")
-                .put("app_version", "0.5.3")
+                .put("app_version", "0.5.7.3")
                 .put("protocol_version", "v11")
                 .put("qq_version", qqVersion.isEmpty() ? "unknown" : qqVersion)
                 .put("runtime", "Android QQNT/Xposed");

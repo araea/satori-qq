@@ -14,6 +14,7 @@ CGROUP_APPS_ROOT="${ONEBOT_CGROUP_APPS_ROOT:-/sys/fs/cgroup/apps}"
 QQ_PACKAGE=com.tencent.mobileqq
 ONEBOT_PORT_HEX=0BB9
 CHECK_SECONDS=15
+THAW_SECONDS=1
 START_GRACE_SECONDS=90
 RESTART_BACKOFF_SECONDS=300
 
@@ -133,6 +134,16 @@ capture_account_kick() {
     incident="$INCIDENT_DIR/$incident_name"
     incident_tmp="$incident.$$"
     incident_pid="$(qq_pid)"
+    incident_start_epoch=0
+    incident_minutes=-1
+    if [ -n "$incident_pid" ] && [ -d "/proc/$incident_pid" ]; then
+        incident_start_epoch="$(stat -c %Y "/proc/$incident_pid" 2>/dev/null || echo 0)"
+        if [ "${incident_start_epoch:-0}" -gt 0 ] 2>/dev/null; then
+            incident_minutes=$(( (last_account_kick_epoch - incident_start_epoch) / 60 ))
+        fi
+    fi
+    incident_apk="$(dumpsys package com.onebot.qq 2>/dev/null \
+        | sed -n 's/.*versionName=//p' | head -n 1)"
     incident_activity="$(dumpsys activity activities 2>/dev/null \
         | grep -E 'topResumedActivity=ActivityRecord.*com\.tencent\.mobileqq/|mLastPausedActivity: ActivityRecord.*com\.tencent\.mobileqq/|Hist +#0: ActivityRecord.*com\.tencent\.mobileqq/' \
         | head -n 8 | tr '\n' ' ')"
@@ -148,11 +159,14 @@ capture_account_kick() {
             | tail -n 8 | tr '\n' ' ')"
     fi
     {
-        echo "format_version=1"
+        echo "format_version=2"
         echo "captured_at_epoch=$last_account_kick_epoch"
         echo "transition=$from_state-to-$to_state"
         echo "account_kicks=$account_kicks"
         echo "qq_pid=${incident_pid:-0}"
+        echo "qq_start_epoch=$incident_start_epoch"
+        echo "minutes_since_start=$incident_minutes"
+        echo "apk_version=${incident_apk:-unknown}"
         echo "activity=${incident_activity:-unknown}"
         echo "kick_evidence=${incident_evidence:-intent-observed-but-log-buffer-unavailable}"
         echo "action=human-login-required"
@@ -232,35 +246,73 @@ launch_qq() {
 }
 
 # ColorOS Hans freezes QQ in the background (OplusHansManager F enter).
-# Sticky unfreeze does not stick; call this every tick. Do not rewrite
-# oom_score_adj: fekit can read /proc/self/oom_score_adj.
+# Sticky unfreeze does not stick; a 1s loop writes cgroup.freeze=0 on the UID
+# and every pid_* child. Do not rewrite oom_score_adj: fekit can read it.
 protect_qq() {
     pid="$1"
     [ -n "$pid" ] || return 0
     /system/bin/cmd activity unfreeze "$QQ_PACKAGE" >/dev/null 2>&1
     /system/bin/cmd activity unfreeze "${QQ_PACKAGE}:MSF" >/dev/null 2>&1
+    /system/bin/am set-inactive "$QQ_PACKAGE" false >/dev/null 2>&1
     uid="$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
     thaw_uid_cgroup "$uid"
 }
 
+protect_qq_fast() {
+    pid="$1"
+    [ -n "$pid" ] || return 0
+    /system/bin/cmd activity unfreeze "$QQ_PACKAGE" >/dev/null 2>&1
+    /system/bin/cmd activity unfreeze "${QQ_PACKAGE}:MSF" >/dev/null 2>&1
+    uid="$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
+    thaw_uid_cgroup_write "$uid"
+}
+
 # ColorOS may report cmd activity unfreeze success while the UID-level cgroup v2
-# freezer remains at 1. Thaw that exact QQ UID after the framework command.
+# freezer remains at 1, and it also freezes pid_* children independently.
+thaw_uid_cgroup_write() {
+    uid="$1"
+    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
+    uid_dir="$CGROUP_APPS_ROOT/uid_$uid"
+    [ -d "$uid_dir" ] || return 1
+    thawed=0
+    failed=0
+    for freeze_file in "$uid_dir/cgroup.freeze" "$uid_dir"/pid_*/cgroup.freeze; do
+        [ -f "$freeze_file" ] || continue
+        [ "$(cat "$freeze_file" 2>/dev/null)" = "1" ] || continue
+        if ! echo 0 > "$freeze_file" 2>/dev/null \
+                || [ "$(cat "$freeze_file" 2>/dev/null)" != "0" ]; then
+            failed=1
+        else
+            thawed=1
+            thaw_requests=$((thaw_requests + 1))
+        fi
+    done
+    [ "$failed" -eq 0 ] || return 2
+    [ "$thawed" -eq 1 ]
+}
+
 thaw_uid_cgroup() {
     uid="$1"
-    case "$uid" in ''|*[!0-9]*) return 0 ;; esac
-    freeze_file="$CGROUP_APPS_ROOT/uid_$uid/cgroup.freeze"
-    [ -f "$freeze_file" ] || return 0
-    [ "$(cat "$freeze_file" 2>/dev/null)" = "1" ] || return 0
-    freeze_events=$((freeze_events + 1))
-    thaw_requests=$((thaw_requests + 1))
-    if ! echo 0 > "$freeze_file" 2>/dev/null \
-            || [ "$(cat "$freeze_file" 2>/dev/null)" != "0" ]; then
+    thaw_uid_cgroup_write "$uid"
+    rc=$?
+    [ "$rc" -eq 1 ] && return 0
+    if [ "$rc" -eq 2 ]; then
         thaw_failures=$((thaw_failures + 1))
+        freeze_events=$((freeze_events + 1))
         log_msg "uid=$uid cgroup thaw failed"
-    else
-        log_msg "uid=$uid cgroup thawed"
+        save_counters
+        return 0
     fi
+    freeze_events=$((freeze_events + 1))
+    log_msg "uid=$uid cgroup thawed"
     save_counters
+}
+
+fast_thaw_loop() {
+    while [ -f "$ENABLED" ]; do
+        protect_qq_fast "$(qq_pid)"
+        sleep "$THAW_SECONDS"
+    done
 }
 
 # BPM persist list already has Termux; QQ was missing and 25366 died at ~33 min
@@ -285,7 +337,8 @@ run_loop() {
         return 0
     fi
     echo $$ > "$PID_FILE"
-    trap 'rm -f "$PID_FILE"; log_msg "stopped"; exit 0' TERM INT EXIT
+    thaw_loop_pid=0
+    trap 'kill "$thaw_loop_pid" 2>/dev/null; rm -f "$PID_FILE"; log_msg "stopped"; exit 0' TERM INT EXIT
     load_counters
     watchdog_starts=$((watchdog_starts + 1))
     save_counters
@@ -299,6 +352,11 @@ run_loop() {
     ensure_bpm_persist
 
     while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 5; done
+
+    thaw_loop_pid=0
+    fast_thaw_loop &
+    thaw_loop_pid=$!
+    log_msg "fast thaw loop pid=$thaw_loop_pid"
 
     missing_since=0
     last_restart=0
@@ -350,6 +408,7 @@ run_loop() {
         write_status "$now" "$pid" "$observed_port" "$observed_login"
         sleep "$CHECK_SECONDS"
     done
+    kill "$thaw_loop_pid" 2>/dev/null
     log_msg "disabled"
 }
 

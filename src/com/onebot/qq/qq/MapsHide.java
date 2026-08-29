@@ -7,9 +7,12 @@ import com.onebot.qq.L;
  * Full-stack default ON (config maps_hide). v3 locates libfekit via /proc/self/maps (cross linker
  * namespace) and patches open/openat/fopen/syscall/dl_iterate_phdr GOT slots.
  * v4: memfd load as jit-cache, GOT also covers access/faccessat/readlink,
- * nameless RX renamed to dalvik-jit-code-cache. JNI install() also installs
- * in-process seccomp (BPF_JMP|BPF_JEQ); glue confirmed on PID 18120: main
- * Seccomp_filters=2 / NoNewPrivs=1 vs MSF 1/0. Instant health ≠ anti-kick.
+ * v5: also GOT-patches libturingxq; resolves openat dirfd; cloaks /proc status
+ * Seccomp_filters; covers opendir/popen/stat/dladdr/__system_property_get.
+ * Loaded in every QQ process (main + MSF). Re-patches until ckguard/ZRes appears.
+ * Instant health ≠ anti-kick.
+ * v5.1 (0.5.7): also GOT-patches __system_property_find. Helpers for dlsym /
+ * getdents / /proc/net/tcp exist in native but are NOT patched (stage 2+).
  */
 public final class MapsHide {
     public static native int install();   // returns #GOT slots patched
@@ -31,15 +34,15 @@ public final class MapsHide {
                         loaded = true;
                         L.i("MapsHide: loaded");
                         int lastPatched = -1;
-                        for (int k = 0; k < 20; k++) {
+                        for (int k = 0; ; k++) {
                             int n = install();
                             if (n != lastPatched) {
                                 L.i("MapsHide: patched " + n + " detector GOT slots");
                                 lastPatched = n;
                             }
-                            try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
+                            long waitMs = k < 30 ? 1000L : (k < 90 ? 15000L : 60000L);
+                            try { Thread.sleep(waitMs); } catch (InterruptedException e) { return; }
                         }
-                        return;
                     }
                 } catch (Throwable ex) { L.e("MapsHide load", ex); return; }
                 try { Thread.sleep(300); } catch (InterruptedException e) { return; }

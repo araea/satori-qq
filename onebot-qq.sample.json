@@ -10,6 +10,7 @@
   "block_qsec_tasks": true,
   "block_qsec_reports": true,
   "observe_fekit_attach": true,
+  "block_o3_report": true,
   "outbound_min_interval_ms": 1000,
   "outbound_queue_timeout_ms": 30000,
   "outbound_max_queued": 8,

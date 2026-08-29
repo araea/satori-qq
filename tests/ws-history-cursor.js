@@ -2,9 +2,9 @@
 
 const fs = require('fs');
 
-const groupId = Number(process.env.ONEBOT_TEST_GROUP || '280183116');
-const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/onebot-qq.json';
-let token = 'onebot-qq-token';
+const groupId = Number(process.env.SATORI_TEST_GROUP || '280183116');
+const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-qq.json';
+let token = 'satori-qq-token';
 try {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   if (typeof config.token === 'string') token = config.token;

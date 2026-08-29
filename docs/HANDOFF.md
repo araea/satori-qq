@@ -1,14 +1,14 @@
 # 构建与本机环境
 
-换机、换 root、QQ 升版本见 [`STACK.md`](STACK.md)。协议面见 [`ONEBOT11_SUPPORT.md`](ONEBOT11_SUPPORT.md)。JNI 映射见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+换机、换 root、QQ 升版本见 [`STACK.md`](STACK.md)。协议面见 [`SATORI_SUPPORT.md`](SATORI_SUPPORT.md)。JNI 映射见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
 
-现场 PID / scope 以仓库外 `/storage/emulated/0/Dev/onebot-qq-接手提示词.md` 为准。
+现场 PID / scope 以仓库外 `/storage/emulated/0/Dev/satori-qq-接手提示词.md` 为准。
 
 ## 环境
 
 rooted **ColorOS**，KernelSU + Zygisk Next + **vector**（`zygisk_vector`）。构建在 Termux；PRoot 绑了 `/apex` `/system` `/data`，Android 二进制可直接跑。`su` 在 PRoot 里不可用。
 
-`/sdcard` 是 FUSE：**不能在里面构建**。后端 `/data/media/0`（f2fs）。仓库：`/data/media/0/dev/onebot-qq`。两视图可能不一致，不要交叉读。
+`/sdcard` 是 FUSE：**不能在里面构建**。后端 `/data/media/0`（f2fs）。仓库：`/data/media/0/dev/satori-qq`。两视图可能不一致，不要交叉读。
 
 ## 工具链
 
@@ -21,17 +21,17 @@ rooted **ColorOS**，KernelSU + Zygisk Next + **vector**（`zygisk_vector`）。
 路径：`android.jar` → `~/android/platform/android-35/`；aapt / zipalign → `~/android/android-sdk-tools/build-tools/`。
 
 ```sh
-cd /data/media/0/dev/onebot-qq && bash build.sh
-cp build/OneBotQQ.apk /data/local/tmp/OneBotQQ.apk
-pm install -r -d /data/local/tmp/OneBotQQ.apk
-sh /data/adb/modules/zygisk_vector/cli modules enable com.onebot.qq
-sh /data/adb/modules/zygisk_vector/cli scope add com.onebot.qq com.tencent.mobileqq/0
-am force-stop com.tencent.mobileqq; monkey -p com.tencent.mobileqq 1
+cd /data/media/0/dev/satori-qq && bash build.sh
+cp build/SatoriQQ.apk /data/local/tmp/SatoriQQ.apk
+pm install -r -d /data/local/tmp/SatoriQQ.apk
+sh /data/adb/modules/zygisk_vector/cli modules enable com.satori.qq
+sh /data/adb/modules/zygisk_vector/cli scope add com.satori.qq com.tencent.mobileqq/0
+# 能登录时到此为止，等 QQ 自然重启。只有干净冷启才 force-stop。
 ```
 
 vector cli 改的是运行中 daemon；手改 `modules_config.db` 开机前不生效。
 
-ayjx：`ws://127.0.0.1:3001`，`access_token` 必须非空。模块 `token` 为空则不鉴权。
+协议是 Satori v1。Koishi：`adapter-satori`，`endpoint: http://127.0.0.1:3001`。模块 `token` 为空则不鉴权。
 
 ## 坑
 
@@ -41,5 +41,5 @@ ayjx：`ws://127.0.0.1:3001`，`access_token` 必须非空。模块 `token` 为�
 - 不要 hook `getSign` / 改 `getFeKitAttach` 返回；不要拦 `trpc.o3.ecdh_access.*`
 - 能登录就不卸 scope；踢号只认 `ACCOUNT_KICKED` / `KICK_TO_LOGIN` / `account_kicks`
 - 端口在、WS 无响应 = OEM 冻进程，不是踢号
-- 能登录时 `pm install -r` 后 **不要** `am force-stop`；新代码要等 QQ 自己重启才加载。快照 `module_version` 是已装 APK，进程版本看 `ws-health` / `get_version_info`
+- 能登录时 `pm install -r` 后 **不要** `am force-stop`；新代码要等 QQ 自己重启才加载。快照 `module_version` 是已装 APK，进程版本看 `ws-health` / `login.get`
 - 参考：NapCat / Lagrange / 本机 `QQ.hap` 只当线索，最终以 9.3.55 jadx 为准

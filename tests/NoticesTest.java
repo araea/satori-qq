@@ -1,8 +1,8 @@
-import com.onebot.qq.core.MsgStore;
-import com.onebot.qq.core.Notices;
+import com.satori.qq.core.MsgStore;
+import com.satori.qq.core.Notices;
 import org.json.JSONObject;
 
-/** Offline checks for OneBot notice/request JSON builders. */
+/** Offline checks for notice/request JSON builders. */
 public final class NoticesTest {
     public static void main(String[] args) throws Exception {
         testRecall();

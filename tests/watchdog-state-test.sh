@@ -5,11 +5,11 @@ repo_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 test_state_dir="$(mktemp -d)"
 trap 'rm -rf "$test_state_dir"' EXIT INT TERM
 
-ONEBOT_WATCHDOG_STATE_DIR="$test_state_dir"
-ONEBOT_WATCHDOG_SOURCE_ONLY=1
-ONEBOT_CGROUP_APPS_ROOT="$test_state_dir/cgroup-apps"
-export ONEBOT_WATCHDOG_STATE_DIR ONEBOT_WATCHDOG_SOURCE_ONLY ONEBOT_CGROUP_APPS_ROOT
-. "$repo_dir/scripts/qq-onebot-watchdog.sh"
+SATORI_WATCHDOG_STATE_DIR="$test_state_dir"
+SATORI_WATCHDOG_SOURCE_ONLY=1
+SATORI_CGROUP_APPS_ROOT="$test_state_dir/cgroup-apps"
+export SATORI_WATCHDOG_STATE_DIR SATORI_WATCHDOG_SOURCE_ONLY SATORI_CGROUP_APPS_ROOT
+. "$repo_dir/scripts/qq-satori-watchdog.sh"
 
 assert_login_state() {
     expected="$1"
@@ -69,15 +69,15 @@ last_action_at="$(date +%s)"
 record_state login
 [ "$account_kicks" -eq 1 ]
 
-mkdir -p "$ONEBOT_CGROUP_APPS_ROOT/uid_123/pid_999"
-printf '1\n' > "$ONEBOT_CGROUP_APPS_ROOT/uid_123/cgroup.freeze"
-printf '1\n' > "$ONEBOT_CGROUP_APPS_ROOT/uid_123/pid_999/cgroup.freeze"
+mkdir -p "$SATORI_CGROUP_APPS_ROOT/uid_123/pid_999"
+printf '1\n' > "$SATORI_CGROUP_APPS_ROOT/uid_123/cgroup.freeze"
+printf '1\n' > "$SATORI_CGROUP_APPS_ROOT/uid_123/pid_999/cgroup.freeze"
 freeze_events=0
 thaw_requests=0
 thaw_failures=0
 thaw_uid_cgroup 123
-[ "$(cat "$ONEBOT_CGROUP_APPS_ROOT/uid_123/cgroup.freeze")" = "0" ]
-[ "$(cat "$ONEBOT_CGROUP_APPS_ROOT/uid_123/pid_999/cgroup.freeze")" = "0" ]
+[ "$(cat "$SATORI_CGROUP_APPS_ROOT/uid_123/cgroup.freeze")" = "0" ]
+[ "$(cat "$SATORI_CGROUP_APPS_ROOT/uid_123/pid_999/cgroup.freeze")" = "0" ]
 [ "$freeze_events" -eq 1 ]
 [ "$thaw_requests" -eq 2 ]
 [ "$thaw_failures" -eq 0 ]

@@ -1,22 +1,23 @@
-import com.onebot.qq.core.OutboundGuard;
+import com.satori.qq.core.OutboundGuard;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class OutboundGuardTest {
     public static void main(String[] args) throws Exception {
-        check(OutboundGuard.isMutation("send_msg"), "send_msg is guarded");
-        check(OutboundGuard.isMutation("set_group_ban"), "moderation is guarded");
-        check(!OutboundGuard.isMutation("get_status"), "status stays responsive");
-        check(!OutboundGuard.isMutation("get_group_list"), "lookups stay responsive");
+        check(OutboundGuard.isMutation("message.create"), "message.create is guarded");
+        check(!OutboundGuard.isMutation("upload.create"), "local upload stays available offline");
+        check(OutboundGuard.isMutation("guild.member.mute"), "moderation is guarded");
+        check(!OutboundGuard.isMutation("login.get"), "login stays responsive");
+        check(!OutboundGuard.isMutation("guild.list"), "lookups stay responsive");
 
         OutboundGuard guard = new OutboundGuard(40, 1000, 2, 20, 3, 1000);
         long started = System.currentTimeMillis();
-        try (OutboundGuard.Lease ignored = guard.acquire("send_msg")) {}
-        try (OutboundGuard.Lease ignored = guard.acquire("send_msg")) {}
+        try (OutboundGuard.Lease ignored = guard.acquire("message.create")) {}
+        try (OutboundGuard.Lease ignored = guard.acquire("message.create")) {}
         long elapsed = System.currentTimeMillis() - started;
         check(elapsed >= 35, "minimum interval is enforced");
         check(guard.stats().getLong("admitted") == 2, "admission count");
-        check("send_msg".equals(guard.stats().getString("last_action")), "last action");
+        check("message.create".equals(guard.stats().getString("last_action")), "last action");
 
         OutboundGuard concurrent = new OutboundGuard(0, 1000, 2, 20, 3, 1000);
         AtomicInteger active = new AtomicInteger();
@@ -25,7 +26,7 @@ public final class OutboundGuardTest {
         Runnable work = () -> {
             try {
                 start.await();
-                try (OutboundGuard.Lease ignored = concurrent.acquire("send_msg")) {
+                try (OutboundGuard.Lease ignored = concurrent.acquire("message.create")) {
                     int now = active.incrementAndGet();
                     maxActive.updateAndGet(old -> Math.max(old, now));
                     Thread.sleep(30);
@@ -42,20 +43,20 @@ public final class OutboundGuardTest {
         check(maxActive.get() == 1, "mutations are serialized");
 
         OutboundGuard budget = new OutboundGuard(0, 1000, 2, 2, 3, 1000);
-        try (OutboundGuard.Lease ignored = budget.acquire("send_msg")) {}
-        try (OutboundGuard.Lease ignored = budget.acquire("send_msg")) {}
-        expectBusy(() -> budget.acquire("send_msg"), "rate budget rejects excess");
+        try (OutboundGuard.Lease ignored = budget.acquire("message.create")) {}
+        try (OutboundGuard.Lease ignored = budget.acquire("message.create")) {}
+        expectBusy(() -> budget.acquire("message.create"), "rate budget rejects excess");
         check(budget.stats().getLong("rate_rejected") == 1, "rate rejection count");
 
         OutboundGuard circuit = new OutboundGuard(0, 1000, 2, 20, 2, 20);
-        OutboundGuard.Lease failed = circuit.acquire("send_msg");
+        OutboundGuard.Lease failed = circuit.acquire("message.create");
         failed.complete(false);
-        failed = circuit.acquire("send_msg");
+        failed = circuit.acquire("message.create");
         failed.complete(false);
-        expectBusy(() -> circuit.acquire("send_msg"), "open circuit rejects writes");
+        expectBusy(() -> circuit.acquire("message.create"), "open circuit rejects writes");
         check("open".equals(circuit.stats().getString("circuit_state")), "circuit opens");
         Thread.sleep(30);
-        try (OutboundGuard.Lease ignored = circuit.acquire("send_msg")) {}
+        try (OutboundGuard.Lease ignored = circuit.acquire("message.create")) {}
         check("closed".equals(circuit.stats().getString("circuit_state")), "half-open success closes");
 
         System.out.println("OutboundGuardTest OK");

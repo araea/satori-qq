@@ -1,5 +1,5 @@
-import com.onebot.qq.packet.GroupFiles;
-import com.onebot.qq.packet.Pb;
+import com.satori.qq.packet.GroupFiles;
+import com.satori.qq.packet.Pb;
 
 /** Offline wire-format checks for group-file OIDB codecs. */
 public final class GroupFilesTest {

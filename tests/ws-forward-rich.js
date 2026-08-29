@@ -2,11 +2,11 @@
 
 const fs = require('fs');
 
-const groupId = Number(process.env.ONEBOT_TEST_GROUP || '280183116');
+const groupId = Number(process.env.SATORI_TEST_GROUP || '280183116');
 const stamp = Date.now().toString(36);
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/onebot-qq.json';
-let token = 'onebot-qq-token';
+const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-qq.json';
+let token = 'satori-qq-token';
 try {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   if (typeof config.token === 'string') token = config.token;
@@ -90,7 +90,7 @@ socket.addEventListener('open', async () => {
     const uploaded = requireOk(await call('upload_group_file', {
       group_id: groupId,
       file: 'base64://' + Buffer.from(`forward-rich ${stamp}\n`).toString('base64'),
-      name: `onebot-fwd-${stamp}.txt`,
+      name: `satori-fwd-${stamp}.txt`,
     }, 40000), 'upload_group_file');
     cleanup.fileId = uploaded.file_id || '';
     const chatFileMsg = Number(uploaded.message_id || 0);
@@ -109,7 +109,7 @@ socket.addEventListener('open', async () => {
               { type: 'at', data: { qq: selfId } },
               { type: 'text', data: { text: ' fwd-rich ' + stamp } },
               { type: 'image', data: { file: 'base64://' + png } },
-              { type: 'file', data: { file_id: cleanup.fileId, name: `onebot-fwd-${stamp}.txt` } },
+              { type: 'file', data: { file_id: cleanup.fileId, name: `satori-fwd-${stamp}.txt` } },
             ],
           },
         },

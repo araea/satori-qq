@@ -4,10 +4,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const net = require('net');
 
-const groupId = Number(process.env.ONEBOT_TEST_GROUP || '675983807');
-const desiredType = process.env.ONEBOT_RESOURCE_TYPE || '';
-const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/onebot-qq.json';
-let token = 'onebot-qq-token';
+const groupId = Number(process.env.SATORI_TEST_GROUP || '675983807');
+const desiredType = process.env.SATORI_RESOURCE_TYPE || '';
+const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-qq.json';
+let token = 'satori-qq-token';
 try {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   if (typeof config.token === 'string') token = config.token;

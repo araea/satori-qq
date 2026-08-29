@@ -1,11 +1,11 @@
-import com.onebot.qq.core.MsgStore;
+import com.satori.qq.core.MsgStore;
 
 public final class MsgStoreTest {
     public static void main(String[] args) {
         MsgStore store = new MsgStore();
         String generated = store.putResource("image", "", "/tmp/a.jpg",
                 "https://example.invalid/a.jpg", "a.jpg", 12);
-        check(generated.startsWith("obres:image:"), "generated resource id");
+        check(generated.startsWith("satori-res:image:"), "generated resource id");
 
         MsgStore.Resource image = store.getResource(generated);
         check(image != null && "image".equals(image.type), "resource lookup/type");
@@ -24,10 +24,10 @@ public final class MsgStoreTest {
                 "existing resource refresh");
 
         String unsafe = store.putResource("video", "Eh\u0001not-json", "", "", "a.mp4", 9);
-        check(unsafe.startsWith("obres:video:"), "binary uuid becomes generated id");
+        check(unsafe.startsWith("satori-res:video:"), "binary uuid becomes generated id");
         check(store.getResource(unsafe) != null, "generated video id lookup");
         check(!MsgStore.jsonSafeResourceId("Eh\u0001x"), "control char rejected");
-        check(MsgStore.jsonSafeResourceId("obres:file:2"), "ascii id accepted");
+        check(MsgStore.jsonSafeResourceId("satori-res:file:2"), "ascii id accepted");
 
         System.out.println("MsgStoreTest: ok");
     }

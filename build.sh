@@ -2,17 +2,18 @@
 # NOTE: libs/r8.jar is gitignored. After a fresh clone, download it once:
 #   curl -fsSL -o libs/r8.jar https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar
 set -e
-R=/data/media/0/dev/onebot-qq
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+R=${SATORI_QQ_ROOT:-$SCRIPT_DIR}
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar
 BT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools
 AAPT=$BT/aapt
 ZIPALIGN=$BT/zipalign
 R8=$R/libs/r8.jar
 FRAMEWORK=/system/framework/framework-res.apk
-KS=$R/build/onebot.keystore
-OUT=$R/build
-APK_UNSIGNED=$OUT/onebot-qq.unsigned.apk
-APK=$OUT/OneBotQQ.apk
+KS=$R/build/satori.keystore
+OUT=${SATORI_QQ_OUT:-$R/build}
+APK_UNSIGNED=$OUT/satori-qq.unsigned.apk
+APK=$OUT/SatoriQQ.apk
 
 echo "== 1. javac =="
 rm -rf $OUT/classes && mkdir -p $OUT/classes
@@ -49,15 +50,15 @@ if [ -f $OUT/lib/arm64-v8a/libmapshide.so ]; then ( cd $OUT && $AAPT add $APK_UN
 
 echo "== 4. keystore (generate once) =="
 if [ ! -f $KS ]; then
-  keytool -genkeypair -keystore $KS -alias onebot -storepass onebot123 -keypass onebot123 \
-    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=OneBotQQ" >/dev/null 2>&1
+  keytool -genkeypair -keystore $KS -alias satori -storepass satori123 -keypass satori123 \
+    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SatoriQQ" >/dev/null 2>&1
   echo "   generated keystore"
 fi
 
 echo "== 5. zipalign + sign =="
 rm -f $APK
-$ZIPALIGN -f -p 4 $APK_UNSIGNED $OUT/onebot-qq.aligned.apk
-apksigner sign --ks $KS --ks-pass pass:onebot123 --key-pass pass:onebot123 \
-  --out $APK $OUT/onebot-qq.aligned.apk
+$ZIPALIGN -f -p 4 $APK_UNSIGNED $OUT/satori-qq.aligned.apk
+apksigner sign --ks $KS --ks-pass pass:satori123 --key-pass pass:satori123 \
+  --out $APK $OUT/satori-qq.aligned.apk
 echo "== DONE =="
 ls -la $APK

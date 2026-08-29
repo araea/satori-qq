@@ -1,8 +1,28 @@
 // mapshide.c — detector-lib GOT filter + in-process seccomp for bare svc.
 //
-// v5.1 (0.5.7): v5 + __system_property_find (turingxq). Helpers for dlsym /
-// getdents / /proc/net/tcp exist but are NOT GOT-patched and tcp is NOT in
-// is_proc_exposure_path — 0.5.4 bundled those with a login timeout.
+// v5.10 (0.8.8): collapse /./ /../ before path_denied; case-insensitive
+// BLOCK match; treat trailing /su as denied. Rollback 0.8.7 / 0.8.5.
+// v5.9 (0.8.7): loop_ok treats leak_tcp/env -1 as unverified, not failed.
+// Audit before seccomp; also try /proc/PID/net/tcp. Rollback 0.8.5.
+// v5.8 (0.8.6): after hide, re-read maps/tcp/environ through the same
+// filter and persist leak_* + loop_ok. 0.8.6 false-failed when tcp/env
+// open returned -1. Rollback 0.8.5.
+// v5.7 (0.8.5): GOT mprotect raw svc then libc fallback. 0.8.4 raw-only
+// left main fekit at patched=18. Rollback 0.8.3 (eventual fekit) or 0.8.4.
+// v5.6 (0.8.4): GOT mprotect via raw svc (fekit may hook libc mprotect);
+// scrub environ after GOT patch so fekit cannot win the race. Rollback 0.8.3.
+// v5.5 (0.8.3): detector GOT getenv/freopen/fdopen; /proc/*/environ
+// drops MAGISK/ZYGISK/… keys (and values that hit BLOCK). fopen64 and
+// __openat_2 map to existing wrappers. Isolated: rollback is 0.8.2.
+// v5.4 (0.8.2): /proc/net/tcp{,6} is an exposure path; drop local *and*
+// remote :0BB9 (Satori 127.0.0.1:3001 listen and clients). GOT also maps
+// __open_2 to my_open (turingxq). Isolated from readdir: rollback is 0.8.1.
+// v5.3 (0.8.1): GOT-patch readdir on detector libs (fekit/turingxq both
+// import it). syscall() and seccomp also send getdents64 through the su
+// filter. Persist patched/dlsym/readdir counts to qk_env_maps_*.json.
+// v5.2 (0.8.0): GOT-patch dlsym on detector libs only, so dlsym("open"|
+// "syscall"|…) returns the wrappers already in the GOT.
+// v5.1 (0.5.7): v5 + __system_property_find (turingxq).
 // v5: also patch libturingxq (and still fekit/ckguard); resolve openat dirfd
 // so relative "maps" is filtered; cloak /proc/self/status Seccomp_filters;
 // GOT covers opendir/popen/stat/dladdr/dlopen/__system_property_get.
@@ -39,6 +59,10 @@ extern size_t strlen(const char* s);
 typedef struct FILE FILE;
 extern FILE* fopen(const char* path, const char* mode);
 extern FILE* fdopen(int fd, const char* mode);
+extern FILE* freopen(const char* path, const char* mode, FILE* stream);
+extern int fclose(FILE* stream);
+extern char* getenv(const char* name);
+extern int unsetenv(const char* name);
 extern FILE* popen(const char* cmd, const char* mode);
 extern void* opendir(const char* path);
 extern int snprintf(char* buf, size_t n, const char* fmt, ...);
@@ -70,8 +94,13 @@ extern void* readdir(void* dirp);
 #define SYS_readlinkat    78
 #define SYS_statx         291
 #define SYS_openat2       437
+#define SYS_mprotect      226
+#define SYS_getpid        172
 #define AT_FDCWD          (-100)
 #define O_RDONLY          0
+#define O_WRONLY          1
+#define O_CREAT           64
+#define O_TRUNC           512
 #define PROT_READ  1
 #define PROT_WRITE 2
 #define ENOENT 2
@@ -118,7 +147,7 @@ typedef struct {
 
 static const char* BLOCK[] = {
     "zygisk", "xposed", "lspd", "lsposed", "riru", "magisk",
-    "mapshide", "libmapshide", "onebot", "/data/adb", "EdXposed", "substrate",
+    "mapshide", "libmapshide", "satori", "/data/adb", "EdXposed", "substrate",
     "debug_ramdisk", "/system/bin/su", "/system/xbin/su", "kernelsu", "ksud",
     "apatch", "shamiko", "com.topjohnwu", "me.weishu.kernelsu",
     "me.bmax.apatch", "com.noshufou", "eu.chainfire.supersu",
@@ -158,9 +187,25 @@ static int contains(const char* line, size_t len, const char* b) {
     return 0;
 }
 
+static char ascii_lower(char c) {
+    if (c >= 'A' && c <= 'Z') return (char)(c + 32);
+    return c;
+}
+
+static int contains_ci(const char* line, size_t len, const char* b) {
+    size_t bl = strlen(b);
+    if (bl == 0 || bl > len) return 0;
+    for (size_t j = 0; j + bl <= len; j++) {
+        size_t k = 0;
+        while (k < bl && ascii_lower(line[j + k]) == ascii_lower(b[k])) k++;
+        if (k == bl) return 1;
+    }
+    return 0;
+}
+
 static int line_blocked(const char* line, size_t len) {
     for (int i = 0; BLOCK[i]; i++) {
-        if (contains(line, len, BLOCK[i])) return 1;
+        if (contains_ci(line, len, BLOCK[i])) return 1;
     }
     if (contains(line, len, " r-xp ") || contains(line, len, " r-xp\t")) {
         int has_path = 0;
@@ -179,6 +224,40 @@ static int ends_with(const char* p, const char* suf) {
     return strcmp(p + lp - ls, suf) == 0;
 }
 
+/* Collapse //, /./ and /../ so /data/./adb and /data/adb/../adb still match. */
+static int collapse_path(const char* in, char* out, unsigned outsz) {
+    if (!in || !out || outsz < 2) return 0;
+    unsigned oi = 0;
+    int abs = in[0] == '/';
+    if (abs) out[oi++] = '/';
+    unsigned i = 0;
+    while (in[i]) {
+        while (in[i] == '/') i++;
+        if (!in[i]) break;
+        unsigned start = i;
+        while (in[i] && in[i] != '/') i++;
+        unsigned seglen = i - start;
+        if (seglen == 1 && in[start] == '.') continue;
+        if (seglen == 2 && in[start] == '.' && in[start + 1] == '.') {
+            if (oi > (abs ? 1u : 0u)) {
+                oi--;
+                while (oi > (abs ? 1u : 0u) && out[oi - 1] != '/') oi--;
+            }
+            continue;
+        }
+        if (oi > 0 && out[oi - 1] != '/') {
+            if (oi + 1 >= outsz) return 0;
+            out[oi++] = '/';
+        }
+        if (oi + seglen >= outsz) return 0;
+        for (unsigned k = 0; k < seglen; k++) out[oi++] = in[start + k];
+    }
+    if (oi == 0) out[oi++] = abs ? '/' : '.';
+    if (oi >= outsz) return 0;
+    out[oi] = 0;
+    return 1;
+}
+
 static int starts_with(const char* p, size_t n, const char* pre) {
     if (!p || !pre) return 0;
     size_t lp = strlen(pre);
@@ -195,7 +274,9 @@ static int is_proc_exposure_path(const char* p) {
     if (!strstr(p, "/proc")) return 0;
     return ends_with(p, "/maps") || ends_with(p, "/smaps") || ends_with(p, "/smaps_rollup")
             || ends_with(p, "/mountinfo") || ends_with(p, "/mounts")
-            || ends_with(p, "/status");
+            || ends_with(p, "/status")
+            || ends_with(p, "/environ")
+            || ends_with(p, "/tcp") || ends_with(p, "/tcp6");
 }
 
 static int is_net_stat_path(const char* p) {
@@ -204,17 +285,17 @@ static int is_net_stat_path(const char* p) {
             || ends_with(p, "/udp") || ends_with(p, "/udp6");
 }
 
-/* Drop OneBot's 127.0.0.1:3001 listener (hex 0BB9) from /proc/net/tcp{,6}. */
+/* Drop 127.0.0.1:3001 (hex 0BB9) whether it is the local listen or a peer. */
 static int net_local_port_hidden(const char* line, size_t len) {
     int colons = 0;
     for (size_t j = 0; j + 4 < len; j++) {
         if (line[j] != ':') continue;
         colons++;
-        if (colons != 2) continue;
+        /* sl: (1), local port (2), remote port (3). IPv6 tcp6 still uses this. */
+        if (colons != 2 && colons != 3) continue;
         char a = line[j + 1], b = line[j + 2], c = line[j + 3], d = line[j + 4];
         if (a == '0' && (b == 'B' || b == 'b') && (c == 'B' || c == 'b') && d == '9')
             return 1;
-        return 0;
     }
     return 0;
 }
@@ -233,10 +314,14 @@ static int is_status_path(const char* p) {
 
 static int path_denied(const char* p) {
     if (!p) return 0;
-    size_t n = strlen(p);
+    char norm[768];
+    const char* q = p;
+    if (collapse_path(p, norm, sizeof(norm))) q = norm;
+    size_t n = strlen(q);
     for (int i = 0; BLOCK[i]; i++) {
-        if (contains(p, n, BLOCK[i])) return 1;
+        if (contains_ci(q, n, BLOCK[i])) return 1;
     }
+    if (strcmp(q, "su") == 0 || ends_with(q, "/su")) return 1;
     return 0;
 }
 
@@ -256,6 +341,41 @@ static int prop_denied(const char* p) {
             || contains(p, n, "riru") || contains(p, n, "kernelsu")
             || contains(p, n, "ksud") || contains(p, n, "apatch")
             || contains(p, n, "shamiko");
+}
+
+static int env_name_denied(const char* name) {
+    if (!name) return 0;
+    size_t n = strlen(name);
+    return contains_ci(name, n, "magisk") || contains_ci(name, n, "zygisk")
+            || contains_ci(name, n, "lsposed") || contains_ci(name, n, "lspd")
+            || contains_ci(name, n, "riru") || contains_ci(name, n, "kernelsu")
+            || contains_ci(name, n, "ksud") || contains_ci(name, n, "apatch")
+            || contains_ci(name, n, "shamiko");
+}
+
+static int env_entry_denied(const char* e, size_t n) {
+    if (!e || n == 0) return 0;
+    size_t eq = 0;
+    while (eq < n && e[eq] != '=') eq++;
+    if (eq == 0) return 0;
+    char key[96];
+    size_t klen = eq < sizeof(key) - 1 ? eq : sizeof(key) - 1;
+    for (size_t i = 0; i < klen; i++) key[i] = e[i];
+    key[klen] = 0;
+    if (env_name_denied(key)) return 1;
+    if (eq + 1 < n) {
+        char val[1024];
+        size_t vn = n - eq - 1;
+        if (vn >= sizeof(val)) vn = sizeof(val) - 1;
+        for (size_t i = 0; i < vn; i++) val[i] = e[eq + 1 + i];
+        val[vn] = 0;
+        if (path_denied(val) || line_blocked(val, vn)) return 1;
+    }
+    return 0;
+}
+
+static int is_environ_path(const char* p) {
+    return p && strstr(p, "/proc") && ends_with(p, "/environ");
 }
 
 static int is_detector_path(const char* p) {
@@ -324,7 +444,48 @@ static int is_mapping_header(const char* line, size_t len) {
     return after && i < len && (line[i] == ' ' || line[i] == '\t');
 }
 
+static int filtered_environ_fd(const char* path) {
+    long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)path, (long)O_RDONLY, 0L, 0L, 0L);
+    if (fd < 0) return -1;
+    long mfd = raw_svc(SYS_memfd_create, (long)"m", 0L, 0L, 0L, 0L, 0L);
+    if (mfd < 0) { raw_svc(SYS_close, fd, 0, 0, 0, 0, 0); return -1; }
+    char buf[8192];
+    char ent[4096];
+    size_t el = 0;
+    long r;
+    while ((r = raw_svc(SYS_read, fd, (long)buf, (long)sizeof(buf), 0, 0, 0)) > 0) {
+        for (long i = 0; i < r; i++) {
+            char c = buf[i];
+            if (c == 0) {
+                if (el > 0) {
+                    ent[el] = 0;
+                    if (!env_entry_denied(ent, el)) {
+                        raw_svc(SYS_write, mfd, (long)ent, (long)el, 0, 0, 0);
+                        char z = 0;
+                        raw_svc(SYS_write, mfd, (long)&z, 1, 0, 0, 0);
+                    }
+                }
+                el = 0;
+            } else if (el < sizeof(ent) - 1) {
+                ent[el++] = c;
+            }
+        }
+    }
+    if (el > 0) {
+        ent[el] = 0;
+        if (!env_entry_denied(ent, el)) {
+            raw_svc(SYS_write, mfd, (long)ent, (long)el, 0, 0, 0);
+            char z = 0;
+            raw_svc(SYS_write, mfd, (long)&z, 1, 0, 0, 0);
+        }
+    }
+    raw_svc(SYS_close, fd, 0, 0, 0, 0, 0);
+    raw_svc(SYS_lseek, mfd, 0L, 0L, 0, 0, 0);
+    return (int)mfd;
+}
+
 static int filtered_proc_fd(const char* path) {
+    if (is_environ_path(path)) return filtered_environ_fd(path);
     long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)path, (long)O_RDONLY, 0L, 0L, 0L);
     if (fd < 0) return -1;
     long mfd = raw_svc(SYS_memfd_create, (long)"m", 0L, 0L, 0L, 0L, 0L);
@@ -397,17 +558,59 @@ static int my_open(const char* path, int flags, int mode) {
     return my_openat(AT_FDCWD, path, flags, mode);
 }
 
+static FILE* file_from_filtered(const char* path, const char* mode) {
+    int f = filtered_proc_fd(path);
+    if (f < 0) return 0;
+    FILE* fp = fdopen(f, mode ? mode : "r");
+    if (fp) return fp;
+    raw_svc(SYS_close, (long)f, 0, 0, 0, 0, 0);
+    return 0;
+}
+
 static FILE* my_fopen(const char* path, const char* mode) {
     if (is_proc_exposure_path(path)) {
-        int f = filtered_proc_fd(path);
-        if (f >= 0) {
-            FILE* fp = fdopen(f, mode ? mode : "r");
-            if (fp) return fp;
-            raw_svc(SYS_close, (long)f, 0, 0, 0, 0, 0);
-        }
+        FILE* fp = file_from_filtered(path, mode);
+        if (fp) return fp;
     }
     if (path_denied(path)) return 0;
     return fopen(path, mode);
+}
+
+static FILE* my_freopen(const char* path, const char* mode, FILE* stream) {
+    if (is_proc_exposure_path(path)) {
+        FILE* fp = file_from_filtered(path, mode);
+        if (fp) {
+            if (stream) fclose(stream);
+            return fp;
+        }
+    }
+    if (path_denied(path)) return 0;
+    return freopen(path, mode, stream);
+}
+
+static FILE* my_fdopen(int fd, const char* mode) {
+    char link[64];
+    char base[512];
+    if (fd >= 0 && snprintf(link, sizeof(link), "/proc/self/fd/%d", fd) > 0) {
+        long n = raw_svc(SYS_readlinkat, (long)AT_FDCWD, (long)link, (long)base,
+                (long)(sizeof(base) - 1), 0, 0);
+        if (n > 0) {
+            unsigned bi = (unsigned)n;
+            if (bi >= sizeof(base)) bi = sizeof(base) - 1;
+            base[bi] = 0;
+            if (path_denied(base)) return 0;
+            if (is_proc_exposure_path(base)) {
+                FILE* fp = file_from_filtered(base, mode);
+                if (fp) return fp;
+            }
+        }
+    }
+    return fdopen(fd, mode);
+}
+
+static char* my_getenv(const char* name) {
+    if (env_name_denied(name)) return 0;
+    return getenv(name);
 }
 
 static long my_syscall(long n, long a0, long a1, long a2, long a3, long a4, long a5) {
@@ -428,6 +631,7 @@ static long my_syscall(long n, long a0, long a1, long a2, long a3, long a4, long
         if (is_proc_exposure_path(path) && (n == SYS_faccessat || n == SYS_faccessat2))
             return 0;
     }
+    if (n == SYS_getdents64) return my_getdents64((int)a0, (void*)a1, (unsigned)a2);
     return raw_svc(n, a0, a1, a2, a3, a4, a5);
 }
 
@@ -600,9 +804,14 @@ static int my_dl_iterate_phdr(dl_iter_cb_t callback, void* data) {
 
 static void* my_dlsym(void* handle, const char* symbol) {
     if (!symbol) return dlsym(handle, symbol);
-    if (strcmp(symbol, "open") == 0 || strcmp(symbol, "open64") == 0) return (void*)my_open;
-    if (strcmp(symbol, "openat") == 0 || strcmp(symbol, "openat64") == 0) return (void*)my_openat;
+    if (strcmp(symbol, "open") == 0 || strcmp(symbol, "open64") == 0
+            || strcmp(symbol, "__open_2") == 0) return (void*)my_open;
+    if (strcmp(symbol, "openat") == 0 || strcmp(symbol, "openat64") == 0
+            || strcmp(symbol, "__openat_2") == 0) return (void*)my_openat;
     if (strcmp(symbol, "fopen") == 0 || strcmp(symbol, "fopen64") == 0) return (void*)my_fopen;
+    if (strcmp(symbol, "freopen") == 0 || strcmp(symbol, "freopen64") == 0) return (void*)my_freopen;
+    if (strcmp(symbol, "fdopen") == 0) return (void*)my_fdopen;
+    if (strcmp(symbol, "getenv") == 0) return (void*)my_getenv;
     if (strcmp(symbol, "syscall") == 0) return (void*)my_syscall;
     if (strcmp(symbol, "dl_iterate_phdr") == 0) return (void*)my_dl_iterate_phdr;
     if (strcmp(symbol, "access") == 0) return (void*)my_access;
@@ -628,6 +837,9 @@ typedef struct {
     void* my_openat;
     void* my_open;
     void* my_fopen;
+    void* my_freopen;
+    void* my_fdopen;
+    void* my_getenv;
     void* my_syscall;
     void* my_dl_iterate_phdr;
     void* my_access;
@@ -643,7 +855,13 @@ typedef struct {
     void* my_dlopen;
     void* my_sysprop_get;
     void* my_sysprop_find;
+    void* my_dlsym;
+    void* my_readdir;
     int patched;
+    int dlsym_n;
+    int readdir_n;
+    int getenv_n;
+    int freopen_n;
 } ctx_t;
 
 static uintptr_t norm_ptr(uintptr_t base, uintptr_t p) {
@@ -683,9 +901,15 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
             uint64_t sym = ELF64_R_SYM(rt[i].r_info);
             const char* nm = strtab + symtab[sym].st_name;
             void* repl = 0;
-            if (strcmp(nm, "openat") == 0 || strcmp(nm, "openat64") == 0) repl = ctx->my_openat;
-            else if (strcmp(nm, "open") == 0 || strcmp(nm, "open64") == 0) repl = ctx->my_open;
-            else if (strcmp(nm, "fopen") == 0) repl = ctx->my_fopen;
+            if (strcmp(nm, "openat") == 0 || strcmp(nm, "openat64") == 0
+                    || strcmp(nm, "__openat_2") == 0) repl = ctx->my_openat;
+            else if (strcmp(nm, "open") == 0 || strcmp(nm, "open64") == 0
+                    || strcmp(nm, "__open_2") == 0) repl = ctx->my_open;
+            else if (strcmp(nm, "fopen") == 0 || strcmp(nm, "fopen64") == 0) repl = ctx->my_fopen;
+            else if (strcmp(nm, "freopen") == 0 || strcmp(nm, "freopen64") == 0)
+                repl = ctx->my_freopen;
+            else if (strcmp(nm, "fdopen") == 0) repl = ctx->my_fdopen;
+            else if (strcmp(nm, "getenv") == 0) repl = ctx->my_getenv;
             else if (strcmp(nm, "syscall") == 0) repl = ctx->my_syscall;
             else if (strcmp(nm, "dl_iterate_phdr") == 0) repl = ctx->my_dl_iterate_phdr;
             else if (strcmp(nm, "access") == 0) repl = ctx->my_access;
@@ -701,13 +925,26 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
             else if (strcmp(nm, "dlopen") == 0) repl = ctx->my_dlopen;
             else if (strcmp(nm, "__system_property_get") == 0) repl = ctx->my_sysprop_get;
             else if (strcmp(nm, "__system_property_find") == 0) repl = ctx->my_sysprop_find;
+            else if (strcmp(nm, "dlsym") == 0) repl = ctx->my_dlsym;
+            else if (strcmp(nm, "readdir") == 0 || strcmp(nm, "readdir64") == 0)
+                repl = ctx->my_readdir;
             if (!repl) continue;
             void** got = (void**)(base + rt[i].r_offset);
             uintptr_t pg = (uintptr_t)got & ~(g_page - 1);
-            if (mprotect((void*)pg, (size_t)g_page, PROT_READ | PROT_WRITE) != 0) continue;
+            /* raw svc first (fekit may hook libc); libc fallback for RELRO
+             * pages where bare mprotect returns EACCES on the main process. */
+            if (raw_svc(SYS_mprotect, (long)pg, (long)g_page,
+                    (long)(PROT_READ | PROT_WRITE), 0, 0, 0) != 0
+                    && mprotect((void*)pg, (size_t)g_page, PROT_READ | PROT_WRITE) != 0)
+                continue;
             *got = repl;
-            mprotect((void*)pg, (size_t)g_page, PROT_READ);
+            if (raw_svc(SYS_mprotect, (long)pg, (long)g_page, (long)PROT_READ, 0, 0, 0) != 0)
+                mprotect((void*)pg, (size_t)g_page, PROT_READ);
             ctx->patched++;
+            if (repl == ctx->my_dlsym) ctx->dlsym_n++;
+            if (repl == ctx->my_readdir) ctx->readdir_n++;
+            if (repl == ctx->my_getenv) ctx->getenv_n++;
+            if (repl == ctx->my_freopen) ctx->freopen_n++;
         }
     }
 }
@@ -887,6 +1124,8 @@ static void on_sigsys(int sig, siginfo_t* si, void* uctx) {
         const char* path = effective_path((int)r[0], (const char*)r[1], resolved, sizeof(resolved));
         if (path_denied(path) || path_denied((const char*)r[1])) ret = -ENOENT;
         else ret = raw_svc(nr, (long)r[0], (long)r[1], (long)r[2], (long)r[3], (long)r[4], (long)r[5]);
+    } else if (nr == SYS_getdents64) {
+        ret = my_getdents64((int)r[0], (void*)r[1], (unsigned)r[2]);
     } else {
         ret = raw_svc(nr, (long)r[0], (long)r[1], (long)r[2], (long)r[3], (long)r[4], (long)r[5]);
     }
@@ -909,7 +1148,8 @@ static int install_seccomp(void) {
     uint32_t hi4g = (uint32_t)(g_text_lo >> 32);
     uint32_t nrs[] = {
         SYS_openat, SYS_faccessat, SYS_faccessat2,
-        SYS_newfstatat, SYS_readlinkat, SYS_statx, SYS_openat2
+        SYS_newfstatat, SYS_readlinkat, SYS_statx, SYS_openat2,
+        SYS_getdents64
     };
     struct sock_filter filt[64];
     int n = 0;
@@ -974,7 +1214,168 @@ static int install_seccomp(void) {
     return 1;
 }
 
-int Java_com_onebot_qq_qq_MapsHide_install(void* env, void* clazz) {
+static int cmdline_is_msf(void) {
+    long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)"/proc/self/cmdline",
+            (long)O_RDONLY, 0L, 0L, 0L);
+    if (fd < 0) return 0;
+    char buf[128];
+    long n = raw_svc(SYS_read, fd, (long)buf, 127, 0, 0, 0);
+    raw_svc(SYS_close, fd, 0, 0, 0, 0, 0);
+    if (n <= 0) return 0;
+    buf[n < 127 ? (int)n : 127] = 0;
+    return strstr(buf, ":MSF") != 0;
+}
+
+#define AUDIT_MAPS 0
+#define AUDIT_TCP  1
+#define AUDIT_ENV  2
+
+static int hide_loop_ok(int leak_maps, int leak_tcp, int leak_env, int dlsym_n) {
+    /* -1 = this channel could not be opened for audit; not a leak. */
+    if (dlsym_n < 1) return 0;
+    if (leak_maps != 0) return 0;
+    if (leak_tcp > 0 || leak_env > 0) return 0;
+    return 1;
+}
+
+static int scan_fd_leaks(int fd, int kind) {
+    char buf[8192];
+    char line[1024];
+    size_t ll = 0;
+    int leaks = 0;
+    long r;
+    while ((r = raw_svc(SYS_read, fd, (long)buf, (long)sizeof(buf), 0, 0, 0)) > 0) {
+        for (long i = 0; i < r; i++) {
+            char c = buf[i];
+            if (kind == AUDIT_ENV) {
+                if (c == 0) {
+                    if (ll > 0) {
+                        line[ll] = 0;
+                        if (env_entry_denied(line, ll)) leaks++;
+                    }
+                    ll = 0;
+                } else if (ll < sizeof(line) - 1) {
+                    line[ll++] = c;
+                }
+                continue;
+            }
+            if (ll < sizeof(line) - 1) line[ll++] = c;
+            if (c == '\n') {
+                if (kind == AUDIT_TCP) {
+                    if (net_local_port_hidden(line, ll)) leaks++;
+                } else if (line_blocked(line, ll)) {
+                    leaks++;
+                }
+                ll = 0;
+            }
+        }
+    }
+    if (ll > 0) {
+        line[ll] = 0;
+        if (kind == AUDIT_ENV) {
+            if (env_entry_denied(line, ll)) leaks++;
+        } else if (kind == AUDIT_TCP) {
+            if (net_local_port_hidden(line, ll)) leaks++;
+        } else if (line_blocked(line, ll)) {
+            leaks++;
+        }
+    }
+    return leaks;
+}
+
+static int audit_filtered_path(const char* path, int kind) {
+    int fd = filtered_proc_fd(path);
+    if (fd < 0) return -1;
+    int n = scan_fd_leaks(fd, kind);
+    raw_svc(SYS_close, (long)fd, 0, 0, 0, 0, 0);
+    return n;
+}
+
+static int audit_first_ok(int kind, const char* a, const char* b, const char* c) {
+    int n = -1;
+    if (a) n = audit_filtered_path(a, kind);
+    if (n < 0 && b) n = audit_filtered_path(b, kind);
+    if (n < 0 && c) n = audit_filtered_path(c, kind);
+    return n;
+}
+
+static void run_hide_audit(int* leak_maps, int* leak_tcp, int* leak_env) {
+    char pid_tcp[64], pid_tcp6[64], pid_env[64];
+    int pid = (int)raw_svc(SYS_getpid, 0, 0, 0, 0, 0, 0);
+    if (pid <= 0 || snprintf(pid_tcp, sizeof(pid_tcp), "/proc/%d/net/tcp", pid) <= 0)
+        pid_tcp[0] = 0;
+    if (pid <= 0 || snprintf(pid_tcp6, sizeof(pid_tcp6), "/proc/%d/net/tcp6", pid) <= 0)
+        pid_tcp6[0] = 0;
+    if (pid <= 0 || snprintf(pid_env, sizeof(pid_env), "/proc/%d/environ", pid) <= 0)
+        pid_env[0] = 0;
+    int m = audit_filtered_path("/proc/self/maps", AUDIT_MAPS);
+    int t = audit_first_ok(AUDIT_TCP, "/proc/self/net/tcp", "/proc/net/tcp",
+            pid_tcp[0] ? pid_tcp : 0);
+    int t6 = audit_first_ok(AUDIT_TCP, "/proc/self/net/tcp6", "/proc/net/tcp6",
+            pid_tcp6[0] ? pid_tcp6 : 0);
+    int e = audit_first_ok(AUDIT_ENV, "/proc/self/environ",
+            pid_env[0] ? pid_env : 0, 0);
+    if (t >= 0 && t6 > 0) t += t6;
+    else if (t < 0 && t6 >= 0) t = t6;
+    *leak_maps = m;
+    *leak_tcp = t;
+    *leak_env = e;
+}
+
+static void persist_maps_stats(int patched, int dlsym_n, int readdir_n,
+        int getenv_n, int freopen_n, int leak_maps, int leak_tcp, int leak_env) {
+    const char* key = cmdline_is_msf() ? "msf" : "main";
+    char path[192];
+    if (snprintf(path, sizeof(path),
+            "/storage/emulated/0/Android/data/com.tencent.mobileqq/files/qk_env_maps_%s.json",
+            key) <= 0)
+        return;
+    int ok = hide_loop_ok(leak_maps, leak_tcp, leak_env, dlsym_n);
+    char json[384];
+    int len = snprintf(json, sizeof(json),
+            "{\"patched\":%d,\"dlsym\":%d,\"readdir\":%d,\"seccomp\":%d,"
+            "\"named_rx\":%d,\"tcp\":1,\"getenv\":%d,\"freopen\":%d,\"environ\":1,"
+            "\"leak_maps\":%d,\"leak_tcp\":%d,\"leak_env\":%d,\"loop_ok\":%d}\n",
+            patched, dlsym_n, readdir_n, g_seccomp_on, g_named_rx, getenv_n, freopen_n,
+            leak_maps, leak_tcp, leak_env, ok);
+    if (len <= 0) return;
+    long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)path,
+            (long)(O_WRONLY | O_CREAT | O_TRUNC), 420L, 0L, 0L);
+    if (fd < 0) return;
+    raw_svc(SYS_write, fd, (long)json, (long)len, 0, 0, 0);
+    raw_svc(SYS_close, fd, 0, 0, 0, 0, 0);
+}
+
+static void scrub_environ(void) {
+    long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)"/proc/self/environ",
+            (long)O_RDONLY, 0L, 0L, 0L);
+    if (fd < 0) return;
+    char buf[8192];
+    long n = raw_svc(SYS_read, fd, (long)buf, (long)(sizeof(buf) - 1), 0, 0, 0);
+    raw_svc(SYS_close, fd, 0, 0, 0, 0, 0);
+    if (n <= 0) return;
+    buf[n < (long)sizeof(buf) - 1 ? (int)n : (int)sizeof(buf) - 1] = 0;
+    char names[24][96];
+    int nc = 0;
+    size_t i = 0;
+    while (i < (size_t)n && nc < 24) {
+        size_t start = i;
+        while (i < (size_t)n && buf[i] != 0) i++;
+        size_t el = i - start;
+        if (el > 0 && env_entry_denied(buf + start, el)) {
+            size_t eq = 0;
+            while (eq < el && buf[start + eq] != '=') eq++;
+            size_t klen = eq < 95 ? eq : 95;
+            for (size_t k = 0; k < klen; k++) names[nc][k] = buf[start + k];
+            names[nc][klen] = 0;
+            if (klen > 0) nc++;
+        }
+        if (i < (size_t)n) i++;
+    }
+    for (int j = 0; j < nc; j++) unsetenv(names[j]);
+}
+
+int Java_com_satori_qq_qq_MapsHide_install(void* env, void* clazz) {
     (void)env;
     (void)clazz;
     g_page = sysconf(39);
@@ -983,6 +1384,9 @@ int Java_com_onebot_qq_qq_MapsHide_install(void* env, void* clazz) {
     ctx.my_openat = (void*)my_openat;
     ctx.my_open = (void*)my_open;
     ctx.my_fopen = (void*)my_fopen;
+    ctx.my_freopen = (void*)my_freopen;
+    ctx.my_fdopen = (void*)my_fdopen;
+    ctx.my_getenv = (void*)my_getenv;
     ctx.my_syscall = (void*)my_syscall;
     ctx.my_dl_iterate_phdr = (void*)my_dl_iterate_phdr;
     ctx.my_access = (void*)my_access;
@@ -998,14 +1402,28 @@ int Java_com_onebot_qq_qq_MapsHide_install(void* env, void* clazz) {
     ctx.my_dlopen = (void*)my_dlopen;
     ctx.my_sysprop_get = (void*)my_sysprop_get;
     ctx.my_sysprop_find = (void*)my_sysprop_find;
+    ctx.my_dlsym = (void*)my_dlsym;
+    ctx.my_readdir = (void*)my_readdir;
     ctx.patched = 0;
+    ctx.dlsym_n = 0;
+    ctx.readdir_n = 0;
+    ctx.getenv_n = 0;
+    ctx.freopen_n = 0;
     patch_from_maps(&ctx);
     dl_iterate_phdr(iter_cb, &ctx);
     name_anon_rx();
+    scrub_environ();
+    int leak_maps = -1, leak_tcp = -1, leak_env = -1;
+    run_hide_audit(&leak_maps, &leak_tcp, &leak_env);
     install_seccomp();
+    persist_maps_stats(ctx.patched, ctx.dlsym_n, ctx.readdir_n, ctx.getenv_n, ctx.freopen_n,
+            leak_maps, leak_tcp, leak_env);
     if (ctx.patched != g_last_patched) {
-        LOGI("maps filter installed, patched %d GOT slots seccomp=%d named_rx=%d",
-                ctx.patched, g_seccomp_on, g_named_rx);
+        LOGI("maps filter installed, patched %d GOT slots dlsym=%d readdir=%d getenv=%d freopen=%d seccomp=%d named_rx=%d loop_ok=%d leaks=%d/%d/%d",
+                ctx.patched, ctx.dlsym_n, ctx.readdir_n, ctx.getenv_n, ctx.freopen_n,
+                g_seccomp_on, g_named_rx,
+                hide_loop_ok(leak_maps, leak_tcp, leak_env, ctx.dlsym_n),
+                leak_maps, leak_tcp, leak_env);
         g_last_patched = ctx.patched;
     }
     return ctx.patched;

@@ -1,4 +1,4 @@
-import com.onebot.qq.qq.AntiDetect;
+import com.satori.qq.qq.AntiDetect;
 import org.json.JSONObject;
 
 /** Offline checks for count-only getFeKitAttach observation. */
@@ -25,6 +25,10 @@ public final class AntiDetectStatsTest {
         check(!AntiDetect.isEnvReportCmd("CliLogSvc.UploadReq"), "keep clilog");
         check(!AntiDetect.isEnvReportCmd("MessageSvc.PbSendMsg"), "keep send");
         check(!AntiDetect.isEnvReportCmd("StatSvc.register"), "keep statsvc");
+        check(AntiDetect.envNameDenied("MAGISK_VER"), "magisk env");
+        check(AntiDetect.envNameDenied("ZYGISK_ENABLED"), "zygisk env");
+        check(!AntiDetect.envNameDenied("PATH"), "keep PATH");
+        check(!AntiDetect.envNameDenied(null), "null env");
         long droppedBefore = AntiDetect.envReportStats(true).getLong("dropped");
         AntiDetect.recordEnvReportDrop("trpc.o3.report.Report.SsoReport");
         AntiDetect.recordEnvReportDrop("in:trpc.o3.report.Report.SsoReport");
@@ -37,6 +41,19 @@ public final class AntiDetectStatsTest {
         check(hooks.has("channel_send") && hooks.has("channel_in")
                 && hooks.has("msf_send") && hooks.has("msf_in"), "hook counters");
         check("main".equals(env.getString("process")), "process key");
+        check(AntiDetect.isDeniedPath("/data/adb/magisk"), "adb magisk");
+        check(AntiDetect.isDeniedPath("/data/./adb/modules/foo"), "dot-slash adb");
+        check(AntiDetect.isDeniedPath("/data/adb/../adb/magisk"), "dot-dot adb");
+        check(AntiDetect.isDeniedPath("/system/bin/../xbin/su"), "dot-dot su");
+        check(AntiDetect.isDeniedPath("/data/app/de.robv.android.xposed.installer"), "xposed path");
+        check(!AntiDetect.isDeniedPath("/data/data/com.tencent.mobileqq"), "keep qq data");
+        check(AntiDetect.isDeniedCommand("su"), "bare su");
+        check(AntiDetect.isDeniedCommand("/system/bin/su 0"), "su with args");
+        check(!AntiDetect.isDeniedCommand("id"), "keep id");
+        check(AntiDetect.isHiddenInstalledPackage("com.satori.qq"), "hide module from lists");
+        check(!AntiDetect.isHiddenPointQueryPackage("com.satori.qq"), "keep module point query");
+        check(AntiDetect.isHiddenInstalledPackage("org.lsposed.manager"), "hide lsposed list");
+        check(AntiDetect.isHiddenPointQueryPackage("org.lsposed.manager"), "hide lsposed point");
         System.out.println("AntiDetectStatsTest OK");
     }
 

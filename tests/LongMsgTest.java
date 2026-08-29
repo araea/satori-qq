@@ -1,5 +1,5 @@
-import com.onebot.qq.packet.LongMsg;
-import com.onebot.qq.packet.Pb;
+import com.satori.qq.packet.LongMsg;
+import com.satori.qq.packet.Pb;
 
 import java.util.List;
 

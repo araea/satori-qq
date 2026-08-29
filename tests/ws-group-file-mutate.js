@@ -2,14 +2,14 @@
 
 const fs = require('fs');
 
-const groupId = Number(process.env.ONEBOT_TEST_GROUP || '280183116');
+const groupId = Number(process.env.SATORI_TEST_GROUP || '280183116');
 const stamp = Date.now().toString(36);
-const fileName = `onebot-tmp-${stamp}.txt`;
-const payload = `onebot-qq write test ${stamp}\n`;
+const fileName = `satori-tmp-${stamp}.txt`;
+const payload = `satori-qq write test ${stamp}\n`;
 const fileB64 = Buffer.from(payload).toString('base64');
 
-const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/onebot-qq.json';
-let token = 'onebot-qq-token';
+const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-qq.json';
+let token = 'satori-qq-token';
 try {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   if (typeof config.token === 'string') token = config.token;
@@ -92,7 +92,7 @@ socket.addEventListener('open', async () => {
   try {
     const created = requireOk(await call('create_group_file_folder', {
       group_id: groupId,
-      folder_name: `onebot-dir-${stamp}`,
+      folder_name: `satori-dir-${stamp}`,
     }), 'create_group_file_folder');
     folderId = created.folder_id || '';
 
@@ -115,7 +115,7 @@ socket.addEventListener('open', async () => {
     }
     const busid = found.busid || uploaded.busid || 102;
 
-    const renamedName = `onebot-tmp-${stamp}-r.txt`;
+    const renamedName = `satori-tmp-${stamp}-r.txt`;
     requireOk(await call('rename_group_file', {
       group_id: groupId,
       file_id: fileId,

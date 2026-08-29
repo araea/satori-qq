@@ -11,8 +11,8 @@
 - 不全局 hook ART 或 libc；只打检测库（`libfekit` / `libckguard` / `libturingxq`）的 GOT。
 - `trpc.o3.ecdh_access.*`（`SsoSecureAccess` / `SsoEstablishShareKey`）不要拦，登录会坏。
 - 能登录就不卸 QQ scope。必须卸时：先 `scope rm` → 密码或 PIN 重登 → 再把全栈打回去。
-- 即时健康（WS / `get_login_info`）≠ 防踢有效。对照窗口按注入后 16–31 分钟量级看踢号，不要看进程活了多久。
-- 主线是反检测。旧「maps 干净就停止加隐藏/拦上报」已取消。OneBot 新动作仍冻结。阶段路线见仓库外 `onebot-qq-后续反检测增强方案.md`。
+- 即时健康（WS / `login.get`）≠ 防踢有效。对照窗口按注入后 16–31 分钟量级看踢号，不要看进程活了多久。
+- 主线是反检测（少被服务端踢）。协议是 **Satori v1**（Koishi `adapter-satori` → `http://127.0.0.1:3001`）。不扩新 Satori 动作。阶段路线见仓库外 `satori-qq-后续反检测增强方案.md`。
 
 ## 层（按依赖顺序）
 
@@ -23,9 +23,9 @@
 | 1. Root | KernelSU 系 | Magisk / KernelSU / APatch 均可，要有 Zygisk |
 | 2. Zygisk | Zygisk Next，`memory-type anonymous` | 必须能把框架 so 从 maps **路径**里拿掉。没有 anonymous 就回到 vector/zygisk 路径暴露 |
 | 3. Xposed | vector（`zygisk_vector`），LSPosed API | LSPosed / vector 都行。**QQ scope 里只能有本模块** |
-| 4. 模块表面 | 日志 tag `Q.Kernel` / `Q.Maps`，线程名无 onebot/xposed，WS 只绑 127.0.0.1 | 不要把 verbose / XposedBridge 日志默认打开 |
+| 4. 模块表面 | 日志 tag `Q.Kernel` / `Q.Maps`，线程名无 satori/xposed，WS 只绑 127.0.0.1 | 不要把 verbose / XposedBridge 日志默认打开 |
 | 5. Java | `detectMethod`→false；`getXpsInfo` replacement；`reportLog`/`execTasks` 阻断；`File.exists/canRead/...`（**不** hook `list`）；`pm` 点查 + **拷贝过滤**已装列表；`adb` settings；Runtime.exec。出站拦 `trpc.o3.report.*` / `mobile_security.*` / `gc_indust.device_report.*`。入站只对上述前缀空成功（QQNTHookBypass）。**禁止** `trpc.o3.*` 通配、禁止全局 `SystemProperties`、禁止 `Class.forName` | 不要拦 `ecdh_access`。0.5.4 通配 + 入站清空导致登录「请求超时」 |
-| 6. maps_hide v5.1 | 主进程 **和 MSF**：跨 linker ns 打 fekit/ckguard/**turingxq** GOT；滤 maps/smaps/mountinfo/**mounts**/**status**（`Seccomp_filters` 写成 1）；`openat(dirfd,"maps")` 解析 dirfd；包装 `dl_iterate_phdr`/`opendir`/`popen`/`stat`/`dladdr`/`__system_property_get`/`__system_property_find`；无名 RX 命名为 `[anon:dalvik-jit-code-cache]`；so 从 `/memfd:jit-cache` 加载。**暂不**打 `dlsym`、不滤 `/proc/net/tcp`（0.5.4 登录超时嫌疑） | native 必须随 APK 进 **每个** QQ 进程。审计读的是未过滤 maps，`maps_mapshide=0` 才说明路径藏住了 |
+| 6. maps_hide v5.10 | 主进程 **和 MSF**：v5.9 全部 + 路径 `/.`/`/..` 归一化后再匹配 BLOCK。`loop_ok=1` 当 `dlsym≥1` 且 `leak_maps=0` 且 tcp/env 没有 **正数** 泄漏（`-1` 是打不开，不算漏）。登录超时回 0.8.5 | 0.8.6 把 tcp/env 打不开写成 `loop_ok=0`。0.8.8 只修现有过滤器绕过，不是新藏层 |
 | 7. seccomp | 自身 text 范围外的裸 `openat` / `faccessat` / `stat` / `readlinkat` 等 `SECCOMP_RET_TRAP` | BPF 跳转必须带 `BPF_JMP`（code `0x15`），否则 EINVAL。主进程 `Seccomp_filters` 应比 `:MSF` 多 1，且 `NoNewPrivs=1`。fekit 读 `/proc/self/status` 时会被改写成 filters=1 |
 | 8. watchdog | `/data/adb/service.d` 拉起；**1s** 解冻 QQ+MSF 的 uid **和 pid_*** cgroup；`account_kicks` | OEM 冻结策略不同。ColorOS Hans 的 sticky unfreeze **无效**，必须反复写 `cgroup.freeze=0`。进程卡在 `do_freezer_trap` 时 MSF 心跳发不出去，服务端会当掉线踢 |
 
@@ -40,17 +40,19 @@
 - 拦 `trpc.o3.ecdh_access.*`：登录 / 签名会坏，不要做。
 - 全局 hook `Class.forName`：vector 下递归，QQ 秒崩（`QQCoreBridgeImpl` CNFE）。
 - `trpc.o3.*` 通配（只放过 ecdh）+ 入站清空：0.5.4 登录「请求超时」。登录还走其它 o3 cmd。
-- 全局 `SystemProperties.get`、`File.list`/`listFiles`、PM `iterator.remove()`、detector GOT 打 `dlsym`、把 `/proc/net/tcp` 当暴露路径：与 0.5.4 超时叠在一起，未单独证伪前不要整包重开。
-- 0.5.6 maps 干净仍会在注入后约 20 分钟真踢（#13，13:38:55）。同进程重登后至少 47 分钟无第二票。该 0.5.6 进程整段 `env_report.dropped=0`。
+- 全局 `SystemProperties.get`、`File.list`/`listFiles`、PM `iterator.remove()`、把 `/proc/net/tcp` 当暴露路径、GOT 打 `getdents`/`readdir`：未单独 A/B 前不要开。`dlsym` 已在 0.8.0 单独打；若登录「请求超时」就回退 0.7.0，记入证伪。
+- 0.5.6 maps 干净仍会在注入后约 20 分钟真踢（#13，13:38:55）。同进程重登后约 101 分钟无第二票，直至 15:21 主进程 cached 回收（`am_proc_died`，不是踢号）。该 0.5.6 进程整段 `env_report.dropped=0`。
+- 阶段 1（入站白名单 + property_find）未能挡住真踢：#14 17:39（0.6.2，启动后 6 分钟）、#15 18:17（0.6.4，25 分钟）、#16 20:10（0.7.0，23 分钟）。主进程 `dropped=0`，MSF 在丢 `device_report` / `SsoReport`。maps 仍干净。0.8.0 起单独 A/B `dlsym`。
 - 9.3.55 Channel 路径（jadx 本机 dex）：`ChannelProxyExt.sendMessage(cmd,body,uin,id)` 是抽象的；native/FEKit 打的是 `O3MainProcessChannel$4`（主进程，经 `O3BusinessHandler.P2`，回包 `ChannelManager.onNativeReceive`）和 `msf.core.security.a$a`（MSF，再进 `MsfCore.sendSsoMsg`，回包 `ChannelManager.onReceive`）。Java `ChannelReport` 走 `ChannelManager.sendMessage` → `sendMessageInner`。0.5.7.2 钩这些；拦出站后空成功 ack 仍走 `onNativeReceive`（与 `$4$1$1` 一致）。不要 hook `handleRespMsg`。`trpc.shadow_qq...sso_o3_security_check` 在 dex 里有，未单独 A/B 前不要拦。
 
-主线仍是反检测，旧「本地 maps 干净就停止加隐藏/拦上报」已取消。路线见仓库外 `onebot-qq-后续反检测增强方案.md`。
+主线是反检测（阶段 2：`dlsym`，等自然加载）。协议是 Satori v1，不扩新动作。路线见仓库外 `satori-qq-后续反检测增强方案.md`。
 
 ## 思路来源（仍在维护或可对照）
 
 - [QQNTHookBypass](https://github.com/jhl337/QQNTHookBypass)：出站拦 `trpc.o3.report.*` / `mobile_security.*`，入站伪造空成功。本仓库同样拦 `trpc.gc_indust.device_report.*`。**不要**对 `trpc.o3.*` 通配。
-- fekit 9.3.55 导入 `dlsym`：可绕过 GOT。打 `dlsym` 是下一阶段，0.5.4 与登录超时叠在一起，未单独证伪前不打。
+- fekit 9.3.55 导入 `dlsym`：可绕过 GOT。0.8.0 只在检测库 GOT 上打这一槽；`my_dlsym` 只把已包装的 open/syscall/… 指回来，不带 getdents。
 - turingxq 导入 `__system_property_find`：v5.1 已打，只对 magisk/zygisk 等名字返回空。
+- fekit 导入 `getenv`/`freopen`，turingxq 导入 `getenv`/`fdopen`：0.8.3 打检测库 GOT；`MAGISK_VER` 等键返回空。`/proc/self/environ` 按 NUL 过滤。不要全局 hook libc `getenv`。
 - `:MSF` 进程自己也加载 `libfekit.so`。v4 只打主进程，MSF 的 GOT 是裸的。
 
 ## 换 root / 换机
@@ -67,21 +69,24 @@
 4. 构建并安装模块（见 README）。vector：
 
    ```sh
-   sh /data/adb/modules/zygisk_vector/cli modules enable com.onebot.qq
-   sh /data/adb/modules/zygisk_vector/cli scope add com.onebot.qq com.tencent.mobileqq/0
-   sh /data/adb/modules/zygisk_vector/cli scope ls com.onebot.qq
+   sh /data/adb/modules/zygisk_vector/cli modules enable com.satori.qq
+   sh /data/adb/modules/zygisk_vector/cli scope add com.satori.qq com.tencent.mobileqq/0
+   sh /data/adb/modules/zygisk_vector/cli scope ls com.satori.qq
    ```
 
    经典 LSPosed：在 Manager 里启用模块，作用域只勾 QQ。改 db 而不通知 daemon **不会生效**。
-5. 配置 `onebot-qq.json`（全栈 true）。写 watchdog：
+5. 配置 `satori-qq.json`（全栈 true）。写 watchdog：
 
    ```sh
-   mkdir -p /data/adb/onebot-qq
-   cp scripts/qq-onebot-watchdog.sh scripts/qq-onebot-exposure-audit.sh /data/adb/onebot-qq/
-   cp scripts/99-onebot-qq-watchdog.sh /data/adb/service.d/
-   chmod 755 /data/adb/onebot-qq/*.sh /data/adb/service.d/99-onebot-qq-watchdog.sh
-   touch /data/adb/onebot-qq/watchdog.enabled
-   sh /data/adb/onebot-qq/qq-onebot-watchdog.sh start
+   mkdir -p /data/adb/satori-qq
+   cp scripts/qq-satori-watchdog.sh scripts/qq-satori-exposure-audit.sh \
+      scripts/qq-satori-coldstart-check.sh scripts/qq-satori-observe.sh /data/adb/satori-qq/
+   cp scripts/99-satori-qq-watchdog.sh scripts/98-satori-qq-observe.sh /data/adb/service.d/
+   chmod 755 /data/adb/satori-qq/*.sh /data/adb/service.d/99-satori-qq-watchdog.sh \
+      /data/adb/service.d/98-satori-qq-observe.sh
+   touch /data/adb/satori-qq/watchdog.enabled
+   sh /data/adb/satori-qq/qq-satori-watchdog.sh start
+   sh /data/adb/satori-qq/qq-satori-observe.sh start
    ```
 
 6. 冷启 QQ，确认：
@@ -90,10 +95,13 @@
    logcat -d | grep -E 'Q\.Maps|Q\.Kernel'
    # 期望：MapsHide patched N GOT slots（N>0）；seccomp cloak on 或主进程 Seccomp_filters 比 MSF 多 1
    node tests/ws-health.js          # login/online；看 env_report.dropped / hooks / msf
-   sh /data/adb/onebot-qq/qq-onebot-exposure-audit.sh snapshot
+   sh /data/adb/satori-qq/qq-satori-coldstart-check.sh
+   # result=loaded → 进程已吃上已装 APK；waiting-natural-restart → 仍是旧进程
+   # 自然重登、watchdog 重启、或 QQ pid 在 15s 内被换掉时，会把 ws-health 追加到 /data/adb/satori-qq/online-health.log
+   sh /data/adb/satori-qq/qq-satori-exposure-audit.sh snapshot
    ```
 
-   审计里 `maps_vector=0`、`maps_zygisk=0`、`maps_mapshide=0`、`maps_onebot=0`、`anon_exec_excess=0`、`maps_memfd_jit_rx=1`。`maps_fekit` 有几条是 QQ 自己的。`module_version`/`apk_version` 是已装 APK，不是进程里跑的 `get_version_info.app_version`。`maps_vector_generic` 含 ART `chunk-info vector`（对照 `maps_art_vector`）。
+   审计里 `maps_vector=0`、`maps_zygisk=0`、`maps_mapshide=0`、`maps_satori=0`、`anon_exec_excess=0`、`maps_memfd_jit_rx=1`。`maps_fekit` 有几条是 QQ 自己的。`module_version`/`apk_version` 是已装 APK，不是进程里跑的 `login.get` / `internal/version`。`maps_vector_generic` 含 ART `chunk-info vector`（对照 `maps_art_vector`）。
 7. OEM 冻结：ColorOS 把 QQ 写进 `/data/oplus/os/bpm/bpm.xml` persist，watchdog 已做。其它系统改成对应的「后台保活 / 不解冻名单」，不要改 `oom_score_adj`（fekit 会读）。
 
 ### 健康 ≠ 踢号
@@ -117,7 +125,7 @@
 
 ```sh
 # 只卸注入，QQ 进程变干净
-sh /data/adb/modules/zygisk_vector/cli scope rm com.onebot.qq com.tencent.mobileqq/0
+sh /data/adb/modules/zygisk_vector/cli scope rm com.satori.qq com.tencent.mobileqq/0
 
 # 关 maps_hide：配置改 false 后冷启
 # 关 Zygisk anonymous：

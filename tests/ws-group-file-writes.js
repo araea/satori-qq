@@ -2,12 +2,12 @@
 
 const fs = require('fs');
 
-const groupId = Number(process.env.ONEBOT_TEST_GROUP || '280183116');
+const groupId = Number(process.env.SATORI_TEST_GROUP || '280183116');
 const stamp = Date.now().toString(36);
-const folderName = `onebot-tmp-${stamp}`;
+const folderName = `satori-tmp-${stamp}`;
 const renamedName = `${folderName}-r`;
-const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/onebot-qq.json';
-let token = 'onebot-qq-token';
+const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-qq.json';
+let token = 'satori-qq-token';
 try {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   if (typeof config.token === 'string') token = config.token;

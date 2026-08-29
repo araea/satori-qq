@@ -2,10 +2,10 @@
 
 const fs = require('fs');
 
-const groupId = Number(process.env.ONEBOT_TEST_GROUP || '280183116');
+const groupId = Number(process.env.SATORI_TEST_GROUP || '280183116');
 const stamp = Date.now().toString(36);
-const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/onebot-qq.json';
-let token = 'onebot-qq-token';
+const configPath = '/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-qq.json';
+let token = 'satori-qq-token';
 try {
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   if (typeof config.token === 'string') token = config.token;
@@ -85,7 +85,7 @@ socket.addEventListener('open', async () => {
       }],
     }, 40000), 'send_group_forward_msg');
     const forwardId = Number(forwarded.message_id || 0);
-    const keep = process.env.ONEBOT_KEEP_MSG !== '0';
+    const keep = process.env.SATORI_KEEP_MSG !== '0';
     if (forwardId && !keep) cleanup.push(forwardId);
     let resId = forwarded.res_id || forwarded.forward_id;
     if (!resId) {

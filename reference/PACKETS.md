@@ -59,4 +59,4 @@ body field3=`DownloadReq{1:group,2:appId=7,3:busId(默认102),4:fileId}`；响�
 3. hook `IQQNTWrapperSession$CppProxy.onSendSSOReply`，按自分配 requestId 关联回包，只消费模块自己的请求。
 4. 不要改用 `onSendOidbRequest`：它在本机把 0x8FC 的数值 2300 拼成字符串 `0x2300`，已实测得到
    236 `cmd not found`。改为显式 SSO serviceCmd 后，在内部群主测试群 `675983807` 原值写回空头衔，
-   真机返回 OneBot `status=ok, retcode=0`。
+   真机返回成功（status=ok, retcode=0）。

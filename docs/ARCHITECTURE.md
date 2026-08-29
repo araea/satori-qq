@@ -1,16 +1,17 @@
 # 架构（QQ 9.3.55）
 
 ```
-Main            QQ 所有进程：MapsHide + AntiDetect；仅主进程再 OneBotHub → QQClient
+Main            QQ 所有进程：MapsHide + AntiDetect；仅主进程再 SatoriHub → QQClient
 Cfg / L         配置；日志 tag Q.Kernel（verbose 才打 XposedBridge）
-net/            手写正向 WS，只绑 127.0.0.1
-core/           动作分发、事件、lifecycle、message_id / file_id 注册表
+net/            手写 HTTP + 事件 WS，只绑 127.0.0.1
+core/           Satori 方法分发、事件、message id / file id 注册表
+satori/         元素解析与事件映射
 qq/             NT 桥、段转换、Silk、GOT+seccomp
 packet/         OIDB / 长消息 / 群文件
 native/         libmapshide.so
 ```
 
-**收** `IKernelMsgListener.onRecvMsg` → 事件。**发** `send_msg`：整段 `node` 走合并转发，否则 `sendMsg`。**OIDB** 走 `onSendSSORequest`（不要 `onSendOidbRequest`，会把 0x8FC 拼成 `0x2300`）。QQ 自己做 SSO / QSec 签名。
+**收** `IKernelMsgListener.onRecvMsg` → Satori `message-created`。**发** `message.create`：`<message forward>` 走合并转发，否则 `sendMsg`。**OIDB** 走 `onSendSSORequest`（不要 `onSendOidbRequest`，会把 0x8FC 拼成 `0x2300`）。QQ 自己做 SSO / QSec 签名。
 
 在线：账号 + NT session + MsgService + 当前 listener，且栈顶不是 `LoginActivity`。离线动作 1500。进程被杀只能靠 watchdog 拉起。
 

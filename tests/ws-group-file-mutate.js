@@ -100,22 +100,20 @@ socket.addEventListener('open', async () => {
       group_id: groupId,
       file: 'base64://' + fileB64,
       name: fileName,
-    }), 'upload_group_file');
+    }, 40000), 'upload_group_file');
     messageId = Number(uploaded.message_id || 0);
+    fileId = uploaded.file_id || '';
+    if (!fileId) {
+      throw new Error('upload_group_file did not return file_id');
+    }
 
-    let listed = {};
-    let found = null;
-    for (let i = 0; i < 8 && !found; i++) {
-      await sleep(1500);
-      listed = requireOk(await call('get_group_root_files', { group_id: groupId }),
-        'get_group_root_files poll');
-      found = findFile(listed, fileName);
+    const listed = requireOk(await call('get_group_root_files', { group_id: groupId }),
+      'get_group_root_files after upload');
+    const found = findFile(listed, fileName);
+    if (!found || found.file_id !== fileId) {
+      throw new Error('uploaded file_id was not listed in group file system');
     }
-    if (!found) {
-      throw new Error('uploaded chat file did not appear in group file system');
-    }
-    fileId = found.file_id;
-    const busid = found.busid || 102;
+    const busid = found.busid || uploaded.busid || 102;
 
     const renamedName = `onebot-tmp-${stamp}-r.txt`;
     requireOk(await call('rename_group_file', {
@@ -165,6 +163,7 @@ socket.addEventListener('open', async () => {
       uploaded_name: fileName,
       renamed_name: renamedName,
       chat_message_id: uploaded.message_id || 0,
+      file_id: fileId || uploaded.file_id,
       appeared_in_fs: true,
       renamed: true,
       moved: true,

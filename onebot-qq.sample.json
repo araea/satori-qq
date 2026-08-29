@@ -5,8 +5,9 @@
   "heartbeat": true,
   "heartbeat_ms": 15000,
   "anti_detect": true,
-  "maps_hide": false,
+  "maps_hide": true,
   "verbose_logs": false,
-  "block_qsec_tasks": false,
-  "block_qsec_reports": true
+  "block_qsec_tasks": true,
+  "block_qsec_reports": true,
+  "observe_fekit_attach": true
 }

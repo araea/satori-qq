@@ -97,7 +97,7 @@ record_state() {
     fi
     state_changes=$((state_changes + 1))
     current_state="$observed_state"
-    if [ "$observed_state" = "login" ] && recent_account_kick; then
+    if should_count_account_kick "$previous_state" "$observed_state"; then
         account_kicks=$((account_kicks + 1))
         last_account_kick_epoch="$(date +%s)"
         log_msg "server account kick observed"
@@ -126,23 +126,49 @@ port_ready() {
 }
 
 login_active() {
-    # LoginActivity is usually inside QQ's own background task, so checking only the
-    # globally resumed activity misses server kicks whenever another app is foreground.
-    # A live LoginActivity is destroyed after a successful login, making task presence a
-    # better signal. LoginPublicFragmentActivity covers the verification flow.
-    dumpsys activity activities 2>/dev/null \
-        | grep -Eq 'ActivityRecord.*com\.tencent\.mobileqq/\.activity\.(LoginActivity|LoginPublicFragmentActivity)'
+    # Splash/Chat as the current or last-paused QQ activity means the account is still
+    # in. Matching any LoginActivity in the dump (including recents Hist #1) caused
+    # cold-start false kicks: account_kicks=8 at 19:38 while login stayed true.
+    # When Termux is in front after a real kick, mLastPausedActivity is Login*.
+    dump="$(dumpsys activity activities 2>/dev/null)"
+    echo "$dump" | grep -Eq 'topResumedActivity=ActivityRecord.*com\.tencent\.mobileqq/\.activity\.(SplashActivity|ChatActivity)|mLastPausedActivity: ActivityRecord.*com\.tencent\.mobileqq/\.activity\.(SplashActivity|ChatActivity)' && return 1
+    echo "$dump" | grep -Eq 'topResumedActivity=ActivityRecord.*com\.tencent\.mobileqq/\.activity\.(LoginActivity|LoginPublicFragmentActivity|NotificationActivity|IdentificationFragmentActivity)|mLastPausedActivity: ActivityRecord.*com\.tencent\.mobileqq/\.activity\.(LoginActivity|LoginPublicFragmentActivity|NotificationActivity|IdentificationFragmentActivity)|mResumedActivity: ActivityRecord.*com\.tencent\.mobileqq/\.activity\.(LoginActivity|LoginPublicFragmentActivity|NotificationActivity|IdentificationFragmentActivity)' && return 0
+    echo "$dump" | grep -Eq 'Hist +#0: ActivityRecord.*com\.tencent\.mobileqq/\.activity\.(LoginActivity|LoginPublicFragmentActivity|NotificationActivity|IdentificationFragmentActivity)'
+}
+
+should_count_account_kick() {
+    prev="$1"
+    now_state="$2"
+    [ "$now_state" = "login" ] || return 1
+    [ "$prev" = "online" ] || return 1
+    now="$(date +%s)"
+    last_act="${last_action:-none}"
+    last_at="${last_action_at:-0}"
+    if [ "$last_act" = "launch" ] || [ "$last_act" = "cold_restart" ]; then
+        if [ "$last_at" -gt 0 ] && [ $((now - last_at)) -lt 180 ]; then
+            log_msg "login after launch ignored for kick count"
+            return 1
+        fi
+    fi
+    if [ "${last_account_kick_epoch:-0}" -gt 0 ] && [ $((now - last_account_kick_epoch)) -lt 300 ]; then
+        return 1
+    fi
+    recent_account_kick
 }
 
 recent_account_kick() {
-    # Only classify a login transition as a server kick when Android recorded QQ's
-    # ACCOUNT_KICKED activity in the recent event buffer. Ordinary manual logout remains
-    # a plain login transition.
-    kick_since_epoch=$(( $(date +%s) - 120 ))
+    # Server kicks usually show ACCOUNT_KICKED in the events buffer. kick-7 only had
+    # LoginActivity + KICK_TO_LOGIN in main logcat, so also search that action and the
+    # main buffer. Manual logout still lacks these intents.
+    kick_since_epoch=$(( $(date +%s) - 180 ))
     kick_since="$(date -d "@$kick_since_epoch" '+%m-%d %H:%M:%S.000' 2>/dev/null)"
     [ -n "$kick_since" ] || return 1
-    /system/bin/logcat -b events -d -T "$kick_since" 2>/dev/null \
-        | grep -q 'mqq.intent.action.ACCOUNT_KICKED'
+    if /system/bin/logcat -b events -d -T "$kick_since" 2>/dev/null \
+            | grep -Eq 'mqq\.intent\.action\.(ACCOUNT_KICKED|KICK_TO_LOGIN)'; then
+        return 0
+    fi
+    /system/bin/logcat -d -T "$kick_since" 2>/dev/null \
+        | grep -Eq 'mqq\.intent\.action\.(ACCOUNT_KICKED|KICK_TO_LOGIN)'
 }
 
 launch_qq() {
@@ -152,6 +178,31 @@ launch_qq() {
     last_action_at="$(date +%s)"
     save_counters
     log_msg "launch requested"
+}
+
+# ColorOS Hans freezes QQ in the background (OplusHansManager F enter).
+# Sticky unfreeze does not stick; call this every tick. Do not rewrite
+# oom_score_adj: fekit can read /proc/self/oom_score_adj.
+protect_qq() {
+    pid="$1"
+    [ -n "$pid" ] || return 0
+    /system/bin/cmd activity unfreeze "$QQ_PACKAGE" >/dev/null 2>&1
+    /system/bin/cmd activity unfreeze "${QQ_PACKAGE}:MSF" >/dev/null 2>&1
+}
+
+# BPM persist list already has Termux; QQ was missing and 25366 died at ~33 min
+# with no ACCOUNT_KICKED / LMK. Adding the package is the ColorOS-side keep-alive.
+ensure_bpm_persist() {
+    xml=/data/oplus/os/bpm/bpm.xml
+    [ -f "$xml" ] || return 0
+    grep -q 'att="com.tencent.mobileqq"' "$xml" 2>/dev/null && return 0
+    cp -f "$xml" "$STATE_DIR/bpm.xml.pre-onebot" 2>/dev/null
+    if sed -i 's|</gs>|<p att="com.tencent.mobileqq" /></gs>|' "$xml" 2>/dev/null \
+            && grep -q 'att="com.tencent.mobileqq"' "$xml"; then
+        log_msg "bpm persist added com.tencent.mobileqq"
+    else
+        log_msg "bpm persist add failed"
+    fi
 }
 
 run_loop() {
@@ -171,6 +222,7 @@ run_loop() {
     last_action=none
     last_action_at=0
     log_msg "started pid=$$"
+    ensure_bpm_persist
 
     while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 5; done
 
@@ -179,6 +231,7 @@ run_loop() {
     while [ -f "$ENABLED" ]; do
         now="$(date +%s)"
         pid="$(qq_pid)"
+        protect_qq "$pid"
         observed_port=down
         observed_login=no
         if [ -z "$pid" ]; then
@@ -244,7 +297,11 @@ case "${1:-run}" in
     stop)
         rm -f "$ENABLED"
         old_pid="$(cat "$PID_FILE" 2>/dev/null)"
-        [ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null
+        if [ -n "$old_pid" ]; then
+            kill "$old_pid" 2>/dev/null
+            sleep 1
+            kill -9 "$old_pid" 2>/dev/null
+        fi
         ;;
     status)
         load_counters

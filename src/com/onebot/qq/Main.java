@@ -32,7 +32,8 @@ public final class Main implements IXposedHookLoadPackage {
             }
             if (cfg.antiDetect) {
                 try { new com.onebot.qq.qq.AntiDetect(lp.classLoader,
-                        cfg.blockQsecTasks, cfg.blockQsecReports).install(); }
+                        cfg.blockQsecTasks, cfg.blockQsecReports,
+                        cfg.observeFekitAttach).install(); }
                 catch (Throwable t) { L.e("AntiDetect install failed", t); }
             }
             hub.start();          // set listener + start WS server + heartbeat

@@ -19,49 +19,78 @@ public final class Media {
     static final String PTT_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.PttElement";
     static final String FILE_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.FileElement";
     static final String VIDEO_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.VideoElement";
+    private static final String QROUTE = "com.tencent.mobileqq.qroute.QRoute";
+    private static final String MSG_UTIL_API = "com.tencent.qqnt.msg.api.IMsgUtilApi";
 
     // QQNT MsgConstant.KELEMTYPE*: PIC=2, FILE=3, PTT=4, VIDEO=5. RichMediaFilePathInfo's first
     // ctor arg is the element type (image passes 2), so ptt/file just swap it.
 
-    private static final String TMP_DIR = "/sdcard/Android/data/com.tencent.mobileqq/files/onebot-tmp";
+    private static final String FALLBACK_TMP_DIR =
+            "/sdcard/Android/data/com.tencent.mobileqq/cache/nt-media-tmp";
+
+    /** Resolve through the host application's cache directory instead of a module-named path. */
+    private static File tempDir() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object app = at.getDeclaredMethod("currentApplication").invoke(null);
+            if (app instanceof android.content.Context) {
+                File dir = new File(((android.content.Context) app).getCacheDir(), "nt-media-tmp");
+                if (dir.isDirectory() || dir.mkdirs()) return dir;
+            }
+        } catch (Throwable t) {
+            L.e("resolve media cache", t);
+        }
+        File dir = new File(FALLBACK_TMP_DIR);
+        dir.mkdirs();
+        return dir;
+    }
 
     /** Remove stale module-owned temporary files, never arbitrary QQ cache. */
     public static int cleanTemp() {
         int deleted = 0;
-        File dir = new File(TMP_DIR);
+        File dir = tempDir();
         File[] files = dir.listFiles();
         if (files == null) return 0;
         long cutoff = System.currentTimeMillis() - 60L * 60L * 1000L;
         for (File file : files) {
             String name = file.getName();
-            boolean owned = name.startsWith("onebot") || name.startsWith("obpcm")
-                    || name.startsWith("obamr") || name.startsWith("obget");
+            boolean owned = name.startsWith("ntm") || name.startsWith("onebot") || name.startsWith("obpcm")
+                    || name.startsWith("obamr") || name.startsWith("obsilk") || name.startsWith("obget")
+                    || name.startsWith("obwav") || name.startsWith("obm4a");
             if (owned && file.isFile() && file.lastModified() < cutoff && file.delete()) deleted++;
         }
         return deleted;
     }
 
-    /** Pass through QQ voice codecs; transcode any other Android-decodable audio to AMR-NB. */
-    public static File prepareVoice(File file) {
+    /** Pass through Tencent SILK; everything else (wav/mp3/AMR) is transcoded with QQ's own silk encoder.
+     *  MediaCodec AMR-NB is accepted by sendMsg but the NT client cannot play it (21:34 测试群). */
+    public static File prepareVoice(Ref ref, File file) {
         if (file == null || !file.isFile()) return null;
         try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
             byte[] head = new byte[(int) Math.min(16, raf.length())];
             raf.readFully(head);
             String value = new String(head, "ISO-8859-1");
-            if (value.contains("#!AMR") || value.contains("#!SILK")) return file;
+            if (value.contains("#!SILK")) return file;
         } catch (Throwable t) {
             L.e("prepareVoice header", t);
         }
-        File dir = new File(TMP_DIR);
-        dir.mkdirs();
-        return AudioTranscoder.toAmr(file, dir);
+        File dir = tempDir();
+        File silk = AudioTranscoder.toSilk(ref, file, dir);
+        if (silk != null) return silk;
+        L.w("silk encode failed, not sending unplayable AMR");
+        return null;
+    }
+
+    /** Convert a local record file to OneBot get_record.out_format. */
+    public static File convertRecord(Ref ref, File file, String format) {
+        File dir = tempDir();
+        return AudioTranscoder.convert(ref, file, format, dir);
     }
 
     /** Resolve file / url (path, file://, http(s)://, base64://, or raw base64) to a local file. */
     public static File resolve(String file, String url) {
         try {
-            File dir = new File(TMP_DIR);
-            dir.mkdirs();
+            File dir = tempDir();
             if (file != null && !file.isEmpty()) {
                 if (file.startsWith("base64://")) return writeTmp(dir, Base64.getDecoder().decode(file.substring(9)));
                 if (file.startsWith("file://")) { File f = new File(file.substring(7)); if (f.isFile()) return f; }
@@ -85,9 +114,21 @@ public final class Media {
     }
 
     private static File writeTmp(File dir, byte[] data) throws Exception {
-        File f = File.createTempFile("onebot", ".dat", dir);
+        File f = File.createTempFile("ntm", guessExt(data), dir);
         try (FileOutputStream o = new FileOutputStream(f)) { o.write(data); }
         return f;
+    }
+
+    static String guessExt(byte[] data) {
+        if (data == null || data.length < 4) return ".dat";
+        if (data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F') return ".wav";
+        String head = new String(data, 0, Math.min(16, data.length), java.nio.charset.StandardCharsets.ISO_8859_1);
+        if (head.contains("#!SILK")) return ".silk";
+        if (head.contains("#!AMR")) return ".amr";
+        if (data.length >= 3 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') return ".mp3";
+        if (data.length >= 2 && (data[0] & 0xff) == 0xff && (data[1] & 0xe0) == 0xe0) return ".mp3";
+        if (data.length >= 8 && data[4] == 'f' && data[5] == 't' && data[6] == 'y' && data[7] == 'p') return ".mp4";
+        return ".dat";
     }
 
     private static File download(File dir, String url) throws Exception {
@@ -95,7 +136,7 @@ public final class Media {
         c.setConnectTimeout(15000); c.setReadTimeout(30000);
         c.setRequestProperty("User-Agent", "QQ/9.3.50");
         c.connect();
-        File f = File.createTempFile("onebot", ".dat", dir);
+        File f = File.createTempFile("ntm", ".dat", dir);
         try (InputStream in = c.getInputStream(); FileOutputStream o = new FileOutputStream(f)) {
             byte[] buf = new byte[8192]; int n;
             while ((n = in.read(buf)) > 0) o.write(buf, 0, n);
@@ -174,12 +215,34 @@ public final class Media {
         }
     }
 
-    /** Build a KELEMTYPEPTT(4) voice element. Input is prepared as SILK/AMR by prepareVoice(). */
+    /** Build a KELEMTYPEPTT(4) voice element. Input must already be Tencent SILK (`\x02#!SILK_V3`). */
     public static Object buildPttElement(Ref ref, Object msgService, File file) {
         try {
             String path = file.getAbsolutePath();
-            String md5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", path));
             int[] fmt = pttFormat(path);            // [formatType, durationSec]
+
+            // Use QQ's own public-in-process builder first.  On 9.3.50/9.3.55 this is
+            // IMsgUtilApi.createPttElement(origPath, durationMs), which selects the
+            // correct rich-media path and fills the exact PttElement defaults used by
+            // the native recording UI (voiceType=2, canConvert2Text=false, fileId=0).
+            // NapCat's current native-send path follows the same principle: let NTQQ
+            // build/copy the rich-media element instead of guessing every model field.
+            if (fmt[0] == 1) {
+                try {
+                    Object api = ref.callS(QROUTE, "api", ref.cls(MSG_UTIL_API));
+                    Object elem = api == null ? null
+                            : ref.call(api, "createPttElement", path, fmt[1] * 1000);
+                    if (elem != null && Ref.asInt(ref.get(elem, "elementType")) == 4
+                            && ref.get(elem, "pttElement") != null) {
+                        return elem;
+                    }
+                } catch (Throwable t) {
+                    L.e("official createPttElement", t);
+                }
+            }
+
+            // Compatibility fallback for builds where the QQ message utility is absent.
+            String md5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", path));
             String fileName = md5 + (fmt[0] == 0 ? ".amr" : ".silk");
             String dest = richMediaDest(ref, msgService, 4, md5, fileName);
             copyToDest(ref, path, dest, file.length());
@@ -191,9 +254,10 @@ public final class Media {
             ref.set(ptt, "fileSize", file.length());
             ref.set(ptt, "duration", fmt[1]);
             ref.set(ptt, "formatType", fmt[0]);     // 1=silk, 0=amr
-            ref.set(ptt, "voiceType", 1);
+            ref.set(ptt, "voiceType", 2);          // QQ 9.3.50/9.3.55 native MsgUtil default
             ref.set(ptt, "voiceChangeType", 0);
-            ref.set(ptt, "canConvert2Text", true);
+            ref.set(ptt, "canConvert2Text", false);
+            ref.set(ptt, "fileId", Integer.valueOf(0));
             ref.set(ptt, "fileUuid", "");
             ref.set(ptt, "fileSubId", "");
             ref.set(ptt, "text", "");

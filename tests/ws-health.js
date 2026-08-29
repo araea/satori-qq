@@ -40,6 +40,9 @@ function finishIfReady() {
     version: version?.data?.app_version || '',
     login: login?.status === 'ok' && !!login?.data?.user_id,
   };
+  if (status?.data?.fekit_attach?.enabled) {
+    summary.fekit_attach = status.data.fekit_attach;
+  }
   console.log(JSON.stringify(summary));
   socket.end();
 }

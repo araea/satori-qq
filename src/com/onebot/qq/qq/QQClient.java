@@ -17,9 +17,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Bridge into QQ 9.3.50 NT kernel: capture session, send, register receive-listener, self identity. */
+/** Bridge into the Android QQ NT kernel: capture session, send, register listeners and identity. */
 public final class QQClient {
-    // ---- QQ 9.3.50 class names (verified via decompile) ----
+    // ---- QQ 9.3.50 class names, reverified on 9.3.55 ----
     public static final String SESSION_CPP     = "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
     public static final String MSG_LISTENER    = "com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener";
     public static final String CONTACT         = "com.tencent.qqnt.kernelpublic.nativeinterface.Contact";
@@ -28,6 +28,7 @@ public final class QQClient {
     public static final String IOPERATE_CB     = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
     public static final String MOBILEQQ        = "mqq.app.MobileQQ";
     public static final String GROUP_LISTENER  = "com.tencent.qqnt.kernel.nativeinterface.IKernelGroupListener";
+    public static final String BUDDY_LISTENER  = "com.tencent.qqnt.kernel.nativeinterface.IKernelBuddyListener";
     public static final String MEMBER_LIST_CB  = "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberListCallback";
     public static final String OPERATE_CB      = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
     public static final String KICK_CB         = "com.tencent.qqnt.kernel.nativeinterface.IKickMemberOperateCallback";
@@ -36,6 +37,9 @@ public final class QQClient {
     public static final String BUDDY_REQ_TYPE  = "com.tencent.qqnt.kernel.nativeinterface.BuddyListReqType";
     public static final String MSG_OPERATE_CB  = "com.tencent.qqnt.kernel.nativeinterface.IMsgOperateCallback";
     public static final String RICH_MEDIA_GET_REQ = "com.tencent.qqnt.kernel.nativeinterface.RichMediaElementGetReq";
+    public static final String VIDEO_URL_CB = "com.tencent.qqnt.kernel.nativeinterface.IVideoPlayUrlCallback";
+    public static final String VIDEO_CODEC = "com.tencent.qqnt.kernel.nativeinterface.VideoCodecFormatType";
+    public static final String RM_EX_PARAMS = "com.tencent.qqnt.kernel.nativeinterface.RMReqExParams";
 
     public static final int CT_C2C = 1;
     public static final int CT_GROUP = 2;
@@ -43,6 +47,9 @@ public final class QQClient {
     public interface Listener {
         void onRecvMsgs(List<?> msgRecords);
         void onRecall(int type, String info, long time);
+        void onBuddyReq(Object buddyReqInfo);
+        void onGroupNotifies(List<?> notifies);
+        void onMemberListChange(Object change);
     }
 
     public final Ref ref;
@@ -97,6 +104,8 @@ public final class QQClient {
             listenerSession = null;
             groupListenerRegistered = false;
             groupListenerSession = null;
+            buddyListenerRegistered = false;
+            buddyListenerSession = null;
             groupInfoCache.clear();
         }
         session = s;
@@ -167,6 +176,10 @@ public final class QQClient {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getBuddyService"); } catch (Throwable t) { return null; }
     }
+    public Object getRichMediaService() {
+        Object s = session; if (s == null) return null;
+        try { return ref.call(s, "getRichMediaService"); } catch (Throwable t) { return null; }
+    }
 
     private synchronized void tryRegisterListener() {
         Object targetSession = session;
@@ -183,6 +196,8 @@ public final class QQClient {
             listenerRegistered = true;
             L.i("Registered IKernelMsgListener (receiving messages)");
             tryRegisterGroupListener();
+            tryRegisterBuddyListener();
+            refreshPendingRequestsAsync();
         } catch (Throwable t) {
             L.e("Failed to register msg listener", t);
         }
@@ -202,9 +217,17 @@ public final class QQClient {
                     case "onRecvMsg":
                     case "onRecvActiveMsg":
                     case "onMsgInfoListAdd":
+                    case "onMsgInfoListUpdate":
                     case "onRecvOnlineFileMsg":
                         if (args != null && args.length >= 1 && args[0] instanceof List)
                             l.onRecvMsgs((List<?>) args[0]);
+                        break;
+                    case "onAddSendMsg":
+                        if (args != null && args.length >= 1 && args[0] != null) {
+                            java.util.ArrayList<Object> one = new java.util.ArrayList<>();
+                            one.add(args[0]);
+                            l.onRecvMsgs(one);
+                        }
                         break;
                     case "onMsgRecall":
                         if (args != null && args.length >= 3)
@@ -279,6 +302,21 @@ public final class QQClient {
     }
     public String selfNick() { currentUin(); return selfNick; }
 
+    /** Installed host QQ version, read dynamically so get_version_info survives client upgrades. */
+    public String qqVersion() {
+        try {
+            Object app = ref.callS(MOBILEQQ, "getMobileQQ");
+            if (app instanceof Context) {
+                android.content.pm.PackageInfo info = ((Context) app).getPackageManager()
+                        .getPackageInfo("com.tencent.mobileqq", 0);
+                if (info != null && info.versionName != null) return info.versionName;
+            }
+        } catch (Throwable t) {
+            L.e("qqVersion", t);
+        }
+        return "";
+    }
+
     /** True only when the current account, NT session, message service and receive listener are ready. */
     public boolean isOnline() {
         Object s = session;
@@ -348,41 +386,196 @@ public final class QQClient {
         return r;
     }
 
-    /** Query local/roamed message history around a message sequence; blocks up to 15 seconds. */
-    @SuppressWarnings("unchecked")
-    public List<?> getMsgs(int chatType, String peerUid, long messageSeq, int count) {
+    /**
+     * Ask the kernel to fetch inner merge-forward records for a just-sent card so the QQ client
+     * viewer can open it via getMultiMsg instead of showing 消息加载失败.
+     */
+    public void prefetchForward(int chatType, String peerUid, long msgId) {
+        if (msgId == 0 || peerUid == null || peerUid.isEmpty()) return;
         Object msgService = getMsgService();
-        if (msgService == null) return java.util.Collections.emptyList();
+        if (msgService == null) return;
+        try {
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            try {
+                ref.call(msgService, "fetchLongMsg", contact, msgId);
+            } catch (Throwable t) {
+                L.e("fetchLongMsg", t);
+            }
+            final CountDownLatch latch = new CountDownLatch(1);
+            final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
+            Object cb = Proxy.newProxyInstance(ref.cl,
+                    new Class[]{ref.cls("com.tencent.qqnt.kernel.nativeinterface.IGetMultiMsgCallback")},
+                    (proxy, m, args) -> {
+                        if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
+                            code[0] = Ref.asInt(args[0]);
+                            if (args.length >= 2) wording[0] = Ref.asStr(args[1]);
+                            latch.countDown();
+                        }
+                        return null;
+                    });
+            ref.call(msgService, "getMultiMsg", contact, msgId, msgId, cb);
+            if (latch.await(8, TimeUnit.SECONDS)) {
+                if (code[0] != 0) L.e("getMultiMsg code=" + code[0] + " " + wording[0], null);
+            }
+        } catch (Throwable t) {
+            L.e("prefetchForward", t);
+        }
+    }
+
+    /** Native merge-forward of already-sent messages. src and dest are usually the same contact. */
+    public SendResult multiForward(int chatType, String peerUid, ArrayList<Long> msgIds,
+                                   ArrayList<String> names) {
+        SendResult r = new SendResult();
+        Object msgService = getMsgService();
+        if (msgService == null) { r.msg = "kernel session not ready"; return r; }
+        if (msgIds == null || msgIds.isEmpty()) { r.msg = "empty msg ids"; return r; }
+        try {
+            ArrayList<Object> infos = new ArrayList<>();
+            String infoCls = "com.tencent.qqnt.kernel.nativeinterface.MultiMsgInfo";
+            for (int i = 0; i < msgIds.size(); i++) {
+                long id = msgIds.get(i);
+                String name = (names != null && i < names.size() && names.get(i) != null)
+                        ? names.get(i) : "";
+                infos.add(ref.neu(infoCls, id, name));
+            }
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            final CountDownLatch latch = new CountDownLatch(1);
+            final AtomicInteger code = new AtomicInteger(-1);
+            final String[] wording = new String[]{""};
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(IOPERATE_CB)},
+                    (proxy, m, args) -> {
+                        if (m.getName().equals("onResult") && args != null && args.length >= 1) {
+                            code.set(Ref.asInt(args[0]));
+                            if (args.length >= 2) wording[0] = Ref.asStr(args[1]);
+                            latch.countDown();
+                        }
+                        return null;
+                    });
+            ref.call(msgService, "multiForwardMsg", infos, contact, contact, cb);
+            if (latch.await(20, TimeUnit.SECONDS)) {
+                r.code = code.get();
+                r.msg = wording[0];
+            } else {
+                r.code = -1;
+                r.msg = "multiForwardMsg timeout";
+            }
+        } catch (Throwable t) {
+            L.e("multiForwardMsg", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
+    }
+
+    /** Query local/roamed message history around a message sequence; blocks up to 15 seconds. */
+    public static final class MsgListResult {
+        public int code = -1;
+        public String msg = "";
+        public boolean timedOut;
+        public List<?> records = java.util.Collections.emptyList();
+        public boolean ok() { return !timedOut && code == 0; }
+        public String describe() {
+            if (timedOut) return msg == null || msg.isEmpty() ? "timeout" : msg;
+            if (msg == null || msg.isEmpty()) return "code=" + code;
+            return "code=" + code + " " + msg;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public MsgListResult getMsgs(int chatType, String peerUid, long messageSeq, int count) {
+        MsgListResult r = new MsgListResult();
+        Object msgService = getMsgService();
+        if (msgService == null) {
+            r.msg = "kernel session not ready";
+            return r;
+        }
         count = Math.max(1, Math.min(100, count));
         try {
             Object contact = ref.neu(CONTACT, chatType, peerUid, "");
             final Object[] holder = new Object[1];
             final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
             CountDownLatch latch = new CountDownLatch(1);
             Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MSG_OPERATE_CB)}, (p, m, a) -> {
-                if ("onResult".equals(m.getName()) && a != null && a.length >= 3) {
+                if ("onResult".equals(m.getName()) && a != null && a.length >= 1) {
                     code[0] = Ref.asInt(a[0]);
-                    holder[0] = a[2];
+                    if (a.length >= 2) wording[0] = Ref.asStr(a[1]);
+                    if (a.length >= 3) holder[0] = a[2];
                     latch.countDown();
                 }
                 return null;
             });
             if (messageSeq > 0) {
-                ref.call(msgService, "getMsgsBySeqAndCount", contact, messageSeq, count, true, false, cb);
+                ref.call(msgService, "getMsgsBySeqAndCount", contact, messageSeq, count, true, true, cb);
             } else {
                 ref.call(msgService, "getMsgs", contact, 0L, count, true, cb);
             }
-            latch.await(15, TimeUnit.SECONDS);
-            if (code[0] != 0 || !(holder[0] instanceof List)) return java.util.Collections.emptyList();
-            return (List<?>) holder[0];
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "getMsgs timeout";
+                return r;
+            }
+            r.code = code[0];
+            r.msg = wording[0] == null ? "" : wording[0];
+            if (holder[0] instanceof List) r.records = (List<?>) holder[0];
         } catch (Throwable t) {
             L.e("getMsgs history", t);
-            return java.util.Collections.emptyList();
+            r.msg = String.valueOf(t);
         }
+        return r;
+    }
+
+    public MsgListResult getMsgsByMsgId(int chatType, String peerUid, long msgId) {
+        MsgListResult r = new MsgListResult();
+        Object msgService = getMsgService();
+        if (msgService == null) {
+            r.msg = "kernel session not ready";
+            return r;
+        }
+        if (msgId == 0) {
+            r.msg = "missing msgId";
+            return r;
+        }
+        try {
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            java.util.ArrayList<Long> ids = new java.util.ArrayList<>();
+            ids.add(msgId);
+            final Object[] holder = new Object[1];
+            final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
+            CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MSG_OPERATE_CB)}, (p, m, a) -> {
+                if ("onResult".equals(m.getName()) && a != null && a.length >= 1) {
+                    code[0] = Ref.asInt(a[0]);
+                    if (a.length >= 2) wording[0] = Ref.asStr(a[1]);
+                    if (a.length >= 3) holder[0] = a[2];
+                    latch.countDown();
+                }
+                return null;
+            });
+            ref.call(msgService, "getMsgsByMsgId", contact, ids, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "getMsgsByMsgId timeout";
+                return r;
+            }
+            r.code = code[0];
+            r.msg = wording[0] == null ? "" : wording[0];
+            if (holder[0] instanceof List) r.records = (List<?>) holder[0];
+        } catch (Throwable t) {
+            L.e("getMsgsByMsgId", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
     }
 
     /** Ask QQ NT to materialize a received rich-media element and return its callback path. */
     public String downloadRichMedia(int chatType, String peerUid, long msgId, long elementId) {
+        return downloadRichMedia(chatType, peerUid, msgId, elementId, 0L);
+    }
+
+    public String downloadRichMedia(int chatType, String peerUid, long msgId, long elementId,
+                                    long fileModelId) {
         Object msgService = getMsgService();
         if (msgService == null || chatType == 0 || peerUid == null || peerUid.isEmpty()
                 || msgId == 0) return "";
@@ -394,11 +587,15 @@ public final class QQClient {
                     int.class, int.class, String.class, long.class, int.class, int.class};
             Object req = ref.neuTyped(RICH_MEDIA_GET_REQ, types,
                     new Object[]{msgId, peerUid, chatType, elementId,
-                            1, 0, "", 0L, 0, 1});
+                            1, 0, "", fileModelId, 0, 1});
             ref.call(msgService, "downloadRichMedia", req);
             if (!pending.latch.await(30, TimeUnit.SECONDS)) return "";
             if (pending.errorCode != 0) {
-                L.w("downloadRichMedia code=" + pending.errorCode + " " + pending.errorMessage);
+                L.e("downloadRichMedia code=" + pending.errorCode + " " + pending.errorMessage, null);
+                return "";
+            }
+            if (pending.path == null || pending.path.isEmpty()) {
+                L.e("downloadRichMedia empty path elem=" + elementId, null);
                 return "";
             }
             java.io.File result = new java.io.File(pending.path);
@@ -414,6 +611,60 @@ public final class QQClient {
         }
     }
 
+    /**
+     * Video original file is often missing from {@code downloadRichMedia}; NapCat uses
+     * {@code getVideoPlayUrlV2} (codec H264, downSourceType=1, triggerType=1).
+     */
+    public String getVideoPlayUrl(int chatType, String peerUid, long msgId, long elementId) {
+        Object rms = getRichMediaService();
+        if (rms == null || chatType == 0 || peerUid == null || peerUid.isEmpty() || msgId == 0)
+            return "";
+        try {
+            final CountDownLatch latch = new CountDownLatch(1);
+            final String[] url = {""};
+            final int[] code = {-1};
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(VIDEO_URL_CB)}, (p, m, args) -> {
+                if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
+                    code[0] = Ref.asInt(args[0]);
+                    if (args.length >= 3 && args[2] != null) url[0] = firstVideoUrl(args[2]);
+                    latch.countDown();
+                }
+                return defOf(m.getReturnType());
+            });
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            Object codec = ref.getStatic(VIDEO_CODEC, "KCODECFORMATH264");
+            Object ex = ref.neu(RM_EX_PARAMS, 1, 1);
+            ref.call(rms, "getVideoPlayUrlV2", contact, msgId, elementId, codec, ex, cb);
+            if (!latch.await(20, TimeUnit.SECONDS)) return "";
+            if (code[0] != 0) {
+                L.e("getVideoPlayUrlV2 code=" + code[0], null);
+                return "";
+            }
+            return url[0] == null ? "" : url[0];
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        } catch (Throwable t) {
+            L.e("getVideoPlayUrl", t);
+            return "";
+        }
+    }
+
+    private String firstVideoUrl(Object result) {
+        try {
+            for (String field : new String[]{"domainUrl", "v4IpUrl", "v6IpUrl"}) {
+                Object list = ref.get(result, field);
+                if (!(list instanceof List)) continue;
+                for (Object info : (List<?>) list) {
+                    if (info == null) continue;
+                    String u = Ref.asStr(ref.get(info, "url"));
+                    if (u != null && !u.isEmpty()) return u;
+                }
+            }
+        } catch (Throwable ignore) {}
+        return "";
+    }
+
     /** peerUid for a group is the group code string; for c2c it's the target's uid. */
     public String groupPeer(long groupCode) { return String.valueOf(groupCode); }
 
@@ -421,6 +672,8 @@ public final class QQClient {
     private final java.util.Map<Long, Object> groupInfoCache = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile boolean groupListenerRegistered;
     private volatile Object groupListenerSession;
+    private volatile boolean buddyListenerRegistered;
+    private volatile Object buddyListenerSession;
 
     private synchronized void tryRegisterGroupListener() {
         Object targetSession = session;
@@ -432,23 +685,118 @@ public final class QQClient {
             Class<?> li = ref.cls(GROUP_LISTENER);
             Object proxy = Proxy.newProxyInstance(ref.cl, new Class[]{li}, (p, m, args) -> {
                 try {
-                    if ("onGroupListUpdate".equals(m.getName()) && args != null && args.length >= 2
+                    String name = m.getName();
+                    if ("onGroupListUpdate".equals(name) && args != null && args.length >= 2
                             && args[1] instanceof List) {
                         for (Object gi : (List<?>) args[1]) {
                             long code = Ref.asLong(ref.get(gi, "groupCode"));
                             if (code != 0) groupInfoCache.put(code, gi);
                         }
                     }
-                } catch (Throwable ignore) {}
+                    Listener l = listener;
+                    if (l != null && args != null) {
+                        if ("onMemberListChange".equals(name) && args.length >= 1 && args[0] != null)
+                            l.onMemberListChange(args[0]);
+                        List<?> notifies = extractGroupNotifies(name, args);
+                        if (notifies != null && !notifies.isEmpty()) l.onGroupNotifies(notifies);
+                    }
+                } catch (Throwable t) {
+                    L.e("groupListener." + m.getName(), t);
+                }
                 return defOf(m.getReturnType());
             });
             ref.call(gs, "addKernelGroupListener", proxy);
             if (session != targetSession) return;
             groupListenerSession = targetSession;
             groupListenerRegistered = true;
-            L.i("Registered IKernelGroupListener (group list cache)");
+            L.i("Registered IKernelGroupListener (group list + notifies)");
         } catch (Throwable t) {
             L.e("register group listener", t);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<?> extractGroupNotifies(String name, Object[] args) {
+        Object list = null;
+        if ("onGroupNotifiesUpdated".equals(name) && args.length >= 2) list = args[1];
+        else if ("onGroupNotifiesUpdatedV2".equals(name) && args.length >= 3) list = args[2];
+        else if ("onGroupSingleScreenNotifies".equals(name) && args.length >= 3) list = args[2];
+        else if ("onGroupSingleScreenNotifiesV2".equals(name) && args.length >= 6) list = args[5];
+        return list instanceof List ? (List<?>) list : null;
+    }
+
+    private synchronized void tryRegisterBuddyListener() {
+        Object targetSession = session;
+        if (targetSession == null) return;
+        if (buddyListenerRegistered && buddyListenerSession == targetSession) return;
+        Object buddy = getBuddyService();
+        if (buddy == null) return;
+        try {
+            Class<?> li = ref.cls(BUDDY_LISTENER);
+            Object proxy = Proxy.newProxyInstance(ref.cl, new Class[]{li}, (p, m, args) -> {
+                try {
+                    if ("onBuddyReqChange".equals(m.getName()) && args != null && args.length >= 1
+                            && args[0] != null) {
+                        Listener l = listener;
+                        if (l != null) l.onBuddyReq(args[0]);
+                    }
+                } catch (Throwable t) {
+                    L.e("buddyListener." + m.getName(), t);
+                }
+                return defOf(m.getReturnType());
+            });
+            ref.call(buddy, "addKernelBuddyListener", proxy);
+            if (session != targetSession) return;
+            buddyListenerSession = targetSession;
+            buddyListenerRegistered = true;
+            L.i("Registered IKernelBuddyListener (friend requests)");
+        } catch (Throwable t) {
+            L.e("register buddy listener", t);
+        }
+    }
+
+    /** Pull existing buddy/group requests so set_*_add_request works without a live push. */
+    public void refreshPendingRequestsAsync() {
+        Thread t = new Thread(() -> {
+            try { Thread.sleep(1500); } catch (InterruptedException e) { return; }
+            refreshBuddyReqs();
+            refreshGroupNotifies();
+        }, "pool-6-thread-3");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    public boolean refreshBuddyReqs() {
+        Object buddy = getBuddyService();
+        if (buddy == null) return false;
+        try {
+            final CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, args) -> {
+                if ("onResult".equals(m.getName())) latch.countDown();
+                return defOf(m.getReturnType());
+            });
+            ref.call(buddy, "getBuddyReq", cb);
+            return latch.await(8, TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            L.e("getBuddyReq", t);
+            return false;
+        }
+    }
+
+    public boolean refreshGroupNotifies() {
+        Object gs = getGroupService();
+        if (gs == null) return false;
+        try {
+            final CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, args) -> {
+                if ("onResult".equals(m.getName())) latch.countDown();
+                return defOf(m.getReturnType());
+            });
+            ref.call(gs, "getSingleScreenNotifies", false, 0L, 50, cb);
+            return latch.await(8, TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            L.e("getSingleScreenNotifies", t);
+            return false;
         }
     }
 
@@ -501,47 +849,115 @@ public final class QQClient {
         return groupInfoCache.values();
     }
 
-    // ---------- group management (fire-and-forget via IOperateCallback) ----------
-    public boolean kickMember(long groupCode, String uid, boolean rejectAddReq) {
-        Object gs = getGroupService(); if (gs == null) return false;
-        java.util.ArrayList<String> uids = new java.util.ArrayList<>(); uids.add(uid);
-        ref.call(gs, "kickMember", groupCode, uids, rejectAddReq, "", ref.nullCb(KICK_CB));
-        return true;
+    // ---------- group management (wait on kernel IOperateCallback / IKickMemberOperateCallback) ----------
+    public static final class OpResult {
+        public int code = -1;
+        public String msg = "";
+        public boolean timedOut;
+        public boolean ok() { return !timedOut && code == 0; }
+        public String describe() {
+            if (timedOut) return msg == null || msg.isEmpty() ? "timeout" : msg;
+            if (msg == null || msg.isEmpty()) return "code=" + code;
+            return "code=" + code + " " + msg;
+        }
     }
-    public boolean banMember(long groupCode, String uid, int seconds) {
-        Object gs = getGroupService(); if (gs == null) return false;
-        Object info = ref.neu(SHUTUP_INFO);
-        ref.set(info, "uid", uid);
-        ref.set(info, "timeStamp", seconds);
-        java.util.ArrayList<Object> list = new java.util.ArrayList<>(); list.add(info);
-        ref.call(gs, "setMemberShutUp", groupCode, list, ref.nullCb(OPERATE_CB));
-        return true;
+
+    private interface GroupCall {
+        void run(Object gs, Object cb) throws Exception;
     }
-    public boolean wholeBan(long groupCode, boolean enable) {
-        Object gs = getGroupService(); if (gs == null) return false;
-        ref.call(gs, "setGroupShutUp", groupCode, enable, ref.nullCb(OPERATE_CB));
-        return true;
+
+    private OpResult awaitGroup(String cbClass, String label, GroupCall call) {
+        OpResult r = new OpResult();
+        Object gs = getGroupService();
+        if (gs == null) {
+            r.msg = "group service not ready";
+            return r;
+        }
+        try {
+            final CountDownLatch latch = new CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicInteger code = new java.util.concurrent.atomic.AtomicInteger(-1);
+            final String[] wording = new String[]{""};
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(cbClass)}, (p, m, args) -> {
+                if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
+                    int c = Ref.asInt(args[0]);
+                    if (args.length >= 2) wording[0] = Ref.asStr(args[1]);
+                    if (args.length >= 3 && args[2] instanceof List) {
+                        for (Object kr : (List<?>) args[2]) {
+                            try {
+                                int krCode = Ref.asInt(ref.get(kr, "result"));
+                                if (krCode != 0) {
+                                    c = krCode;
+                                    if (wording[0] == null || wording[0].isEmpty())
+                                        wording[0] = "kick result " + krCode;
+                                }
+                            } catch (Throwable ignore) {}
+                        }
+                    }
+                    code.set(c);
+                    latch.countDown();
+                }
+                return defOf(m.getReturnType());
+            });
+            call.run(gs, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = label + " timeout";
+                return r;
+            }
+            r.code = code.get();
+            r.msg = wording[0] == null ? "" : wording[0];
+        } catch (Throwable t) {
+            L.e(label, t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
     }
-    public boolean setCard(long groupCode, String uid, String card) {
-        Object gs = getGroupService(); if (gs == null) return false;
-        ref.call(gs, "modifyMemberCardName", groupCode, uid, card == null ? "" : card, ref.nullCb(OPERATE_CB));
-        return true;
+
+    public OpResult kickMember(long groupCode, String uid, boolean rejectAddReq) {
+        return awaitGroup(KICK_CB, "kickMember", (gs, cb) -> {
+            java.util.ArrayList<String> uids = new java.util.ArrayList<>();
+            uids.add(uid);
+            ref.call(gs, "kickMember", groupCode, uids, rejectAddReq, "", cb);
+        });
     }
-    public boolean setAdmin(long groupCode, String uid, boolean enable) {
-        Object gs = getGroupService(); if (gs == null) return false;
-        Object role = ref.getStatic(MEMBER_ROLE, enable ? "ADMIN" : "MEMBER");
-        ref.call(gs, "modifyMemberRole", groupCode, uid, role, ref.nullCb(OPERATE_CB));
-        return true;
+    public OpResult inviteToGroup(long groupCode, String uid) {
+        return awaitGroup(OPERATE_CB, "inviteToGroup", (gs, cb) -> {
+            java.util.ArrayList<String> uids = new java.util.ArrayList<>();
+            uids.add(uid);
+            ref.call(gs, "inviteToGroup", groupCode, uids, cb);
+        });
     }
-    public boolean quitGroup(long groupCode) {
-        Object gs = getGroupService(); if (gs == null) return false;
-        ref.call(gs, "quitGroup", groupCode, ref.nullCb(OPERATE_CB));
-        return true;
+    public OpResult banMember(long groupCode, String uid, int seconds) {
+        return awaitGroup(OPERATE_CB, "setMemberShutUp", (gs, cb) -> {
+            Object info = ref.neu(SHUTUP_INFO);
+            ref.set(info, "uid", uid);
+            ref.set(info, "timeStamp", seconds);
+            java.util.ArrayList<Object> list = new java.util.ArrayList<>();
+            list.add(info);
+            ref.call(gs, "setMemberShutUp", groupCode, list, cb);
+        });
     }
-    public boolean setGroupName(long groupCode, String name) {
-        Object gs = getGroupService(); if (gs == null) return false;
-        ref.call(gs, "modifyGroupName", groupCode, name == null ? "" : name, false, ref.nullCb(OPERATE_CB));
-        return true;
+    public OpResult wholeBan(long groupCode, boolean enable) {
+        return awaitGroup(OPERATE_CB, "setGroupShutUp",
+                (gs, cb) -> ref.call(gs, "setGroupShutUp", groupCode, enable, cb));
+    }
+    public OpResult setCard(long groupCode, String uid, String card) {
+        return awaitGroup(OPERATE_CB, "modifyMemberCardName",
+                (gs, cb) -> ref.call(gs, "modifyMemberCardName", groupCode, uid, card == null ? "" : card, cb));
+    }
+    public OpResult setAdmin(long groupCode, String uid, boolean enable) {
+        return awaitGroup(OPERATE_CB, "modifyMemberRole", (gs, cb) -> {
+            Object role = ref.getStatic(MEMBER_ROLE, enable ? "ADMIN" : "MEMBER");
+            ref.call(gs, "modifyMemberRole", groupCode, uid, role, cb);
+        });
+    }
+    public OpResult quitGroup(long groupCode) {
+        return awaitGroup(OPERATE_CB, "quitGroup",
+                (gs, cb) -> ref.call(gs, "quitGroup", groupCode, cb));
+    }
+    public OpResult setGroupName(long groupCode, String name) {
+        return awaitGroup(OPERATE_CB, "modifyGroupName",
+                (gs, cb) -> ref.call(gs, "modifyGroupName", groupCode, name == null ? "" : name, false, cb));
     }
 
     /** Cached GroupSimpleInfo for one group, or null. */
@@ -568,6 +984,84 @@ public final class QQClient {
             L.e("resolveUid " + uin, t);
         }
         return "";
+    }
+
+    /** Resolve a QQNT uid to uin via the profile service (synchronous). 0 on failure. */
+    @SuppressWarnings("unchecked")
+    public long resolveUin(String uid) {
+        if (uid == null || uid.isEmpty()) return 0;
+        try {
+            Object profile = getProfileService();
+            if (profile == null) return 0;
+            ArrayList<String> uids = new ArrayList<>();
+            uids.add(uid);
+            Object res = ref.call(profile, "getUinByUid", "", uids);
+            if (res instanceof java.util.Map) {
+                Object uin = ((java.util.Map<Object, Object>) res).get(uid);
+                return uin == null ? 0 : Ref.asLong(uin);
+            }
+        } catch (Throwable t) {
+            L.e("resolveUin", t);
+        }
+        return 0;
+    }
+
+    /** Approve or refuse a friend request. flag/reqTime is BuddyReq.reqTime. */
+    public OpResult approvalFriendRequest(String friendUid, boolean accept, String refuseMsg, long reqTime) {
+        OpResult r = new OpResult();
+        Object buddy = getBuddyService();
+        if (buddy == null) {
+            r.msg = "buddy service not ready";
+            return r;
+        }
+        try {
+            final CountDownLatch latch = new CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicInteger code = new java.util.concurrent.atomic.AtomicInteger(-1);
+            final String[] wording = new String[]{""};
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, args) -> {
+                if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
+                    code.set(Ref.asInt(args[0]));
+                    if (args.length >= 2) wording[0] = Ref.asStr(args[1]);
+                    latch.countDown();
+                }
+                return defOf(m.getReturnType());
+            });
+            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.ApprovalBuddyRequest",
+                    friendUid == null ? "" : friendUid, accept,
+                    refuseMsg == null ? "" : refuseMsg, reqTime);
+            ref.call(buddy, "approvalFriendRequest", req, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "approvalFriendRequest timeout";
+                return r;
+            }
+            r.code = code.get();
+            r.msg = wording[0] == null ? "" : wording[0];
+        } catch (Throwable t) {
+            L.e("approvalFriendRequest", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
+    }
+
+    /**
+     * Approve or refuse a group join/invite notify.
+     * typeEnum is the original GroupNotifyMsgType instance from the kernel notify.
+     */
+    public OpResult operateGroupNotify(long seq, long groupCode, Object typeEnum, boolean agree, String reason) {
+        return awaitGroup(OPERATE_CB, "operateSysNotify", (gs, cb) -> {
+            Object target = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupNotifyTargetMsg");
+            ref.set(target, "seq", seq);
+            if (typeEnum != null) ref.set(target, "type", typeEnum);
+            ref.set(target, "groupCode", groupCode);
+            ref.set(target, "postscript", reason == null || reason.isEmpty() ? " " : reason);
+            Object op = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupNotifyOperateMsg");
+            String opName = agree ? "KAGREE" : "KREFUSE";
+            ref.set(op, "operateType",
+                    ref.getStatic("com.tencent.qqnt.kernel.nativeinterface.GroupNotifyOperateType", opName));
+            ref.set(op, "targetMsg", target);
+            ref.call(gs, "operateSysNotify", false, op, cb);
+        });
     }
 
     /** Ordered map uid -> CoreInfo for the current account's complete buddy list. */

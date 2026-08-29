@@ -27,12 +27,36 @@ capture() {
         maps_total="$(wc -l < "/proc/$qq_pid/maps" 2>/dev/null)"
         maps_anon_exec="$(awk '$2 ~ /x/ && (NF < 6 || $6 == "") { n++ } END { print n+0 }' "/proc/$qq_pid/maps")"
         maps_anon_rwx="$(awk '$2 ~ /rwx/ && (NF < 6 || $6 == "") { n++ } END { print n+0 }' "/proc/$qq_pid/maps")"
+        # QQ 9.3.50 itself reserves one nameless RWX near-trampoline arena for ShadowHook.
+        # The injected delta is the useful A/B signal, not that clean-app baseline mapping.
+        maps_anon_exec_excess=$((maps_anon_exec > 1 ? maps_anon_exec - 1 : 0))
+        maps_anon_rwx_excess=$((maps_anon_rwx > 1 ? maps_anon_rwx - 1 : 0))
+        maps_memfd_jit_rx="$(awk '$2 ~ /r-xp/ && $0 ~ /\/memfd:jit-cache/ { n++ } END { print n+0 }' "/proc/$qq_pid/maps")"
+        seccomp_mode="$(awk '/^Seccomp:/{print $2}' "/proc/$qq_pid/status" 2>/dev/null)"
+        seccomp_filters="$(awk '/^Seccomp_filters:/{print $2}' "/proc/$qq_pid/status" 2>/dev/null)"
+        nonewprivs="$(awk '/^NoNewPrivs:/{print $2}' "/proc/$qq_pid/status" 2>/dev/null)"
+        msf_pid="$(ps -A 2>/dev/null | awk '/com\.tencent\.mobileqq:MSF/{print $2; exit}')"
+        msf_seccomp_filters=0
+        msf_nonewprivs=0
+        if [ -n "$msf_pid" ] && [ -r "/proc/$msf_pid/status" ]; then
+            msf_seccomp_filters="$(awk '/^Seccomp_filters:/{print $2}' "/proc/$msf_pid/status" 2>/dev/null)"
+            msf_nonewprivs="$(awk '/^NoNewPrivs:/{print $2}' "/proc/$msf_pid/status" 2>/dev/null)"
+        fi
     else
         thread_total=0
         suspicious_threads=0
         maps_total=0
         maps_anon_exec=0
         maps_anon_rwx=0
+        maps_anon_exec_excess=0
+        maps_anon_rwx_excess=0
+        maps_memfd_jit_rx=0
+        seccomp_mode=0
+        seccomp_filters=0
+        nonewprivs=0
+        msf_pid=""
+        msf_seccomp_filters=0
+        msf_nonewprivs=0
     fi
     port=down
     awk -v p=":0BB9" '$2 ~ p && $4 == "0A" { found=1 } END { exit !found }' \
@@ -45,7 +69,7 @@ capture() {
     legacy_logs="$(logcat -d 2>/dev/null | grep -Ec 'OneBotQQ|OneBot-QQ|MapsHide')"
     neutral_errors="$(logcat -d -s Q.Kernel:E 2>/dev/null | wc -l)"
     {
-        echo "format_version=3"
+        echo "format_version=5"
         echo "captured_at_epoch=$now_epoch"
         echo "reason=$reason"
         echo "qq_pid=${qq_pid:-0}"
@@ -65,6 +89,16 @@ capture() {
         echo "maps_fekit=$(count_maps fekit)"
         echo "maps_anon_exec=${maps_anon_exec:-0}"
         echo "maps_anon_rwx=${maps_anon_rwx:-0}"
+        echo "maps_anon_exec_excess=${maps_anon_exec_excess:-0}"
+        echo "maps_anon_rwx_excess=${maps_anon_rwx_excess:-0}"
+        echo "maps_shadowhook=$(count_maps 'shadowhook')"
+        echo "maps_memfd_jit_rx=${maps_memfd_jit_rx:-0}"
+        echo "seccomp_mode=${seccomp_mode:-0}"
+        echo "seccomp_filters=${seccomp_filters:-0}"
+        echo "nonewprivs=${nonewprivs:-0}"
+        echo "msf_pid=${msf_pid:-0}"
+        echo "msf_seccomp_filters=${msf_seccomp_filters:-0}"
+        echo "msf_nonewprivs=${msf_nonewprivs:-0}"
         echo "zygisk_memory_type=$(cat /data/adb/zygisksu/memory_type 2>/dev/null || echo unknown)"
         echo "thread_total=$thread_total"
         echo "suspicious_thread_names=$suspicious_threads"

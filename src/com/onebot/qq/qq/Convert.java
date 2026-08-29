@@ -2,6 +2,7 @@ package com.onebot.qq.qq;
 
 import com.onebot.qq.L;
 import com.onebot.qq.core.MsgStore;
+import com.onebot.qq.core.Notices;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -39,7 +40,7 @@ public final class Convert {
                     case "lightapp": addArk(out, d.optString("content", d.optString("data", ""))); break;
                     case "mface": addMface(out, d); break;
                     case "poke":  addPoke(out, d); break;
-                    case "record":addRecord(out, d); break;
+            case "record":addRecord(out, d); break;
                     case "file":  addFile(out, d); break;
                     case "video": addVideo(out, d); break;
                     default:
@@ -49,6 +50,11 @@ public final class Convert {
                 }
             } catch (Throwable e) {
                 L.e("toElements seg " + type, e);
+                if ("record".equals(type) || "video".equals(type) || "file".equals(type)
+                        || "image".equals(type)) {
+                    throw (e instanceof RuntimeException) ? (RuntimeException) e
+                            : new IllegalStateException(type + " send failed", e);
+                }
             }
         }
         if (out.isEmpty()) addText(out, "");
@@ -110,6 +116,76 @@ public final class Convert {
     private static final String LINK_INFO = "com.tencent.qqnt.kernel.nativeinterface.LinkInfo";
     private static final String MARKET_FACE_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.MarketFaceElement";
     private static final String FACE_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.FaceElement";
+    private static final String MULTI_FORWARD_ELEMENT =
+            "com.tencent.qqnt.kernel.nativeinterface.MultiForwardMsgElement";
+
+    /**
+     * Merge-forward card -> KELEMTYPEMULTIFORWARD(16). Android QQNT opens via getMultiMsg using
+     * resId + fileName; xmlContent on this version is the multimsg JSON (not the old serviceID=35 XML).
+     */
+    public ArrayList<Object> toMultiForward(String xmlContent, String resId, String fileName) {
+        ArrayList<Object> out = new ArrayList<>();
+        addMultiForward(out, xmlContent, resId, fileName);
+        return out;
+    }
+
+    public ArrayList<Object> toStructLongMsg(String xmlContent, String resId) {
+        ArrayList<Object> out = new ArrayList<>();
+        addStructLongMsg(out, xmlContent, resId);
+        return out;
+    }
+
+    private void addMultiForward(ArrayList<Object> out, String xmlContent, String resId, String fileName) {
+        String xml = xmlContent == null ? "" : xmlContent;
+        String id = resId == null ? "" : resId;
+        String name = fileName == null ? "" : fileName;
+        try {
+            Object e = newElement(16);
+            Object mf = ref.neu(MULTI_FORWARD_ELEMENT, xml, id, name);
+            ref.set(e, "multiForwardMsgElement", mf);
+            out.add(e);
+            return;
+        } catch (Throwable t) {
+            L.e("addMultiForward", t);
+        }
+        try {
+            Object e = newElement(16);
+            Object mf = ref.neu(MULTI_FORWARD_ELEMENT);
+            ref.set(mf, "xmlContent", xml);
+            ref.set(mf, "resId", id);
+            ref.set(mf, "fileName", name);
+            ref.set(e, "multiForwardMsgElement", mf);
+            out.add(e);
+        } catch (Throwable t2) {
+            L.e("addMultiForward fallback", t2);
+        }
+    }
+
+    private static final String STRUCT_LONG_ELEMENT =
+            "com.tencent.qqnt.kernel.nativeinterface.StructLongMsgElement";
+
+    private void addStructLongMsg(ArrayList<Object> out, String xmlContent, String resId) {
+        String xml = xmlContent == null ? "" : xmlContent;
+        String id = resId == null ? "" : resId;
+        try {
+            Object e = newElement(13);
+            Object sl = ref.neu(STRUCT_LONG_ELEMENT, xml, id);
+            ref.set(e, "structLongMsgElement", sl);
+            out.add(e);
+        } catch (Throwable t) {
+            L.e("addStructLongMsg", t);
+            try {
+                Object e = newElement(13);
+                Object sl = ref.neu(STRUCT_LONG_ELEMENT);
+                ref.set(sl, "xmlContent", xml);
+                ref.set(sl, "resId", id);
+                ref.set(e, "structLongMsgElement", sl);
+                out.add(e);
+            } catch (Throwable t2) {
+                L.e("addStructLongMsg fallback", t2);
+            }
+        }
+    }
 
     /** JSON / lightapp ark card -> KELEMTYPEARKSTRUCT(10). */
     private void addArk(ArrayList<Object> out, String json) {
@@ -168,15 +244,15 @@ public final class Convert {
         Object msgService = qq.getMsgService();
         Object elem = (f != null && msgService != null) ? Media.buildPicElement(ref, msgService, f) : null;
         if (elem != null) out.add(elem);
-        else { L.w("image send failed, degrade to text"); addText(out, "[图片]"); }
+        else throw new IllegalStateException("image send failed");
     }
 
     private void addRecord(ArrayList<Object> out, org.json.JSONObject d) {
-        java.io.File f = Media.prepareVoice(Media.resolve(d.optString("file", ""), d.optString("url", "")));
+        java.io.File f = Media.prepareVoice(ref, Media.resolve(d.optString("file", ""), d.optString("url", "")));
         Object msgService = qq.getMsgService();
         Object elem = (f != null && msgService != null) ? Media.buildPttElement(ref, msgService, f) : null;
         if (elem != null) out.add(elem);
-        else { L.w("record send failed, degrade to text"); addText(out, "[语音]"); }
+        else throw new IllegalStateException("record transcode/send failed");
     }
 
     private void addFile(ArrayList<Object> out, org.json.JSONObject d) {
@@ -185,7 +261,7 @@ public final class Convert {
         Object elem = (f != null && msgService != null)
                 ? Media.buildFileElement(ref, msgService, f, d.optString("name", "")) : null;
         if (elem != null) out.add(elem);
-        else { L.w("file send failed, degrade to text"); addText(out, "[文件]"); }
+        else throw new IllegalStateException("file send failed");
     }
 
     private void addVideo(ArrayList<Object> out, org.json.JSONObject d) {
@@ -193,7 +269,7 @@ public final class Convert {
         Object msgService = qq.getMsgService();
         Object elem = (f != null && msgService != null) ? Media.buildVideoElement(ref, msgService, f) : null;
         if (elem != null) out.add(elem);
-        else { L.w("video send failed, degrade to text"); addText(out, "[视频]"); }
+        else throw new IllegalStateException("video send failed");
     }
 
     private void addReply(ArrayList<Object> out, String id) {
@@ -226,6 +302,11 @@ public final class Convert {
         long msgTime = Ref.asLong(ref.get(rec, "msgTime"));
 
         store.learnUid(senderUin, senderUid);
+
+        JSONObject notice = noticeFromRecord(rec, selfUin, chatType, peerUin, peerUid,
+                senderUin, senderUid, msgId, msgSeq, msgTime);
+        if (notice != null) return notice;
+
         if (senderUin != 0 && String.valueOf(senderUin).equals(String.valueOf(selfUin))) return null; // skip self
 
         MsgStore.Rec sr = new MsgStore.Rec();
@@ -341,14 +422,17 @@ public final class Convert {
                         String path = safeStr(f, "filePath");
                         String url = firstNonEmpty(safeStr(f, "fileUrl"), safeStr(f, "url"));
                         long size = Ref.asLong(ref.get(f, "fileSize"));
-                        String file = store.putResource("file", safeStr(f, "fileUuid"), path, url, name, size);
+                        String file = firstNonEmpty(safeStr(f, "fileUuid"), safeStr(f, "fileSubId"));
+                        file = store.putResource("file", file, path, url, name, size);
                         attachResource(file, e, f, chatType, peerUid, msgId);
                         JSONObject d = new JSONObject();
                         d.put("file", file);
+                        d.put("file_id", file);
                         d.put("name", name);
                         if (!path.isEmpty()) d.put("path", path);
                         if (!url.isEmpty()) d.put("url", url);
                         d.put("size", size);
+                        if (size > 0) d.put("file_size", size);
                         segObj(segs, "file", d);
                         raw.append("[CQ:file,file=").append(d.optString("file")).append("]");
                         break;
@@ -374,14 +458,16 @@ public final class Convert {
                     case 5: { // video
                         Object v = ref.get(e, "videoElement");
                         JSONObject d = new JSONObject();
-                        String file = safeStr(v, "fileUuid");
-                        if (file.isEmpty()) file = safeStr(v, "fileName");
+                        String file = firstNonEmpty(safeStr(v, "fileUuid"),
+                                firstNonEmpty(safeStr(v, "videoMd5"), safeStr(v, "fileName")));
                         String path = safeStr(v, "filePath");
                         String url = firstNonEmpty(safeStr(v, "fileUrl"), safeStr(v, "videoUrl"));
                         long size = Ref.asLong(ref.get(v, "fileSize"));
-                        file = store.putResource("video", file, path, url, safeStr(v, "fileName"), size);
+                        String name = safeStr(v, "fileName");
+                        file = store.putResource("video", file, path, url, name, size);
                         attachResource(file, e, v, chatType, peerUid, msgId);
                         d.put("file", file);
+                        d.put("file_id", file);
                         if (!path.isEmpty()) d.put("path", path);
                         if (!url.isEmpty()) d.put("url", url);
                         if (size > 0) d.put("file_size", size);
@@ -389,11 +475,54 @@ public final class Convert {
                         raw.append("[CQ:video,file=").append(file).append("]");
                         break;
                     }
-                    case 10: { // ark/json card
+                    case 10: { // ark/json card; multimsg ark is still a merge-forward
                         Object ark = ref.get(e, "arkElement");
                         String data = safeStr(ark, "bytesData");
-                        seg(segs, "json", "data", data);
-                        raw.append("[CQ:json,data=").append(data).append("]");
+                        String resid = multimsgResId(data);
+                        if (resid != null) {
+                            JSONObject d = new JSONObject();
+                            d.put("id", resid);
+                            d.put("content", data);
+                            d.put("element_type", 10);
+                            String fn = multimsgFileName(data);
+                            if (fn != null) d.put("filename", fn);
+                            segObj(segs, "forward", d);
+                            raw.append("[转发消息]");
+                        } else {
+                            seg(segs, "json", "data", data);
+                            raw.append("[CQ:json,data=").append(data).append("]");
+                        }
+                        break;
+                    }
+                    case 13: { // struct long msg
+                        Object sl = ref.get(e, "structLongMsgElement");
+                        String id = safeStr(sl, "resId");
+                        JSONObject d = new JSONObject();
+                        d.put("id", id);
+                        String xml = safeStr(sl, "xmlContent");
+                        if (!xml.isEmpty()) d.put("content", xml);
+                        d.put("element_type", 13);
+                        segObj(segs, "forward", d);
+                        raw.append("[转发消息]");
+                        break;
+                    }
+                    case 16: { // native merge-forward
+                        Object mf = ref.get(e, "multiForwardMsgElement");
+                        String id = safeStr(mf, "resId");
+                        JSONObject d = new JSONObject();
+                        String xml = safeStr(mf, "xmlContent");
+                        if (id.isEmpty()) {
+                            String fromJson = multimsgResId(xml);
+                            if (fromJson != null) id = fromJson;
+                        }
+                        d.put("id", id);
+                        if (!xml.isEmpty()) d.put("content", xml);
+                        String fileName = safeStr(mf, "fileName");
+                        if (fileName.isEmpty()) fileName = multimsgFileName(xml);
+                        if (fileName != null && !fileName.isEmpty()) d.put("filename", fileName);
+                        d.put("element_type", 16);
+                        segObj(segs, "forward", d);
+                        raw.append("[转发消息]");
                         break;
                     }
                     case 11: { // market face
@@ -414,6 +543,192 @@ public final class Convert {
                 L.e("parseElements", ex);
             }
         }
+    }
+
+    /**
+     * Gray-tip MsgRecord → OneBot notice, or null if this is a normal chat message.
+     * elementType 8 = grayTip; sub 1 revoke / 4 group / 17 json (poke busiId 1061).
+     */
+    public JSONObject noticeFromRecord(Object rec, long selfUin, int chatType, long peerUin,
+                                       String peerUid, long senderUin, String senderUid,
+                                       long msgId, long msgSeq, long msgTime) {
+        Object elements = ref.get(rec, "elements");
+        if (!(elements instanceof java.util.List)) return null;
+        for (Object e : (java.util.List<?>) elements) {
+            if (e == null) continue;
+            if (ref.asInt(ref.get(e, "elementType")) != 8) continue;
+            Object gray = ref.get(e, "grayTipElement");
+            if (gray == null) continue;
+            try {
+                JSONObject n = grayToNotice(gray, selfUin, chatType, peerUin, senderUin,
+                        senderUid, msgId, msgSeq, msgTime);
+                if (n != null) return n;
+            } catch (Throwable t) {
+                L.e("grayTip notice", t);
+            }
+        }
+        return null;
+    }
+
+    private JSONObject grayToNotice(Object gray, long selfUin, int chatType, long peerUin,
+                                    long senderUin, String senderUid, long msgId, long msgSeq,
+                                    long msgTime) throws Exception {
+        int sub = ref.asInt(ref.get(gray, "subElementType"));
+        long time = msgTime > 0 ? msgTime : System.currentTimeMillis() / 1000;
+        boolean group = chatType == QQClient.CT_GROUP;
+        String jsonStr = "";
+        String busi = "";
+        String xml = "";
+
+        if (sub == 1 || ref.get(gray, "revokeElement") != null) {
+            Object rev = ref.get(gray, "revokeElement");
+            if (rev == null && sub != 1) return null;
+            String opUid = rev == null ? "" : Ref.asStr(ref.get(rev, "operatorUid"));
+            long operator = store.uinOf(opUid);
+            if (operator == 0) operator = senderUin;
+            if (opUid != null && !opUid.isEmpty() && operator != 0) store.learnUid(operator, opUid);
+            int obId = store.idOfMsgId(msgId);
+            if (obId == 0) {
+                MsgStore.Rec sr = new MsgStore.Rec();
+                sr.chatType = chatType;
+                sr.peerUin = peerUin;
+                sr.msgId = msgId;
+                sr.msgSeq = msgSeq;
+                sr.senderUin = senderUin;
+                sr.senderUid = senderUid;
+                obId = store.put(sr);
+            }
+            return Notices.recall(selfUin, time, group, peerUin, senderUin, operator, obId);
+        }
+
+        Object js = ref.get(gray, "jsonGrayTipElement");
+        if (js != null) {
+            busi = Ref.asStr(ref.get(js, "busiId"));
+            if (busi.isEmpty()) busi = String.valueOf(Ref.asLong(ref.get(js, "busiId")));
+            jsonStr = Ref.asStr(ref.get(js, "jsonStr"));
+            JSONObject poke = Notices.pokeFromJson(jsonStr, selfUin, time, group, peerUin);
+            if (poke != null) {
+                long sender = store.uinOf(poke.optString("sender_uid"));
+                long target = store.uinOf(poke.optString("target_uid"));
+                if (sender != 0) poke.put("user_id", sender);
+                if (target != 0) poke.put("target_id", target);
+                if (!group) poke.put("sender_id", sender);
+                poke.remove("sender_uid");
+                poke.remove("target_uid");
+                return poke;
+            }
+        }
+
+        Object xmlEl = ref.get(gray, "xmlElement");
+        if (xmlEl != null) {
+            xml = Ref.asStr(ref.get(xmlEl, "content"));
+            JSONObject pokeXml = Notices.pokeFromXml(xml, selfUin, time, group, peerUin);
+            if (pokeXml != null) {
+                long sender = store.uinOf(pokeXml.optString("sender_uid"));
+                long target = store.uinOf(pokeXml.optString("target_uid"));
+                if (sender != 0) pokeXml.put("user_id", sender);
+                if (target != 0) pokeXml.put("target_id", target);
+                if (!group) pokeXml.put("sender_id", sender);
+                pokeXml.remove("sender_uid");
+                pokeXml.remove("target_uid");
+                return pokeXml;
+            }
+            if (group) {
+                JSONObject banXml = Notices.banFromXml(xml, selfUin, time, peerUin);
+                if (banXml != null) {
+                    long member = store.uinOf(banXml.optString("member_uid"));
+                    long admin = store.uinOf(banXml.optString("admin_uid"));
+                    if (member == selfUin && admin != 0 && admin != selfUin) {
+                        long tmp = member;
+                        member = admin;
+                        admin = tmp;
+                    }
+                    if (member != 0) banXml.put("user_id", member);
+                    if (admin != 0) banXml.put("operator_id", admin);
+                    banXml.remove("member_uid");
+                    banXml.remove("admin_uid");
+                    return banXml;
+                }
+                JSONObject change = Notices.memberChangeFromXml(xml, selfUin, time, peerUin);
+                if (change != null) {
+                    applyXmlPeople(change, selfUin);
+                    return change;
+                }
+            }
+        }
+
+        Object ge = ref.get(gray, "groupElement");
+        if (ge != null) {
+            int type = ref.asInt(ref.get(ge, "type"));
+            String memberUid = Ref.asStr(ref.get(ge, "memberUid"));
+            String adminUid = Ref.asStr(ref.get(ge, "adminUid"));
+            Object shut = ref.get(ge, "shutUp");
+            if ((type == 8 || shut != null) && group) {
+                if (shut != null) {
+                    Object mem = ref.get(shut, "member");
+                    Object adm = ref.get(shut, "admin");
+                    if (memberUid.isEmpty() && mem != null) memberUid = Ref.asStr(ref.get(mem, "uid"));
+                    if (adminUid.isEmpty() && adm != null) adminUid = Ref.asStr(ref.get(adm, "uid"));
+                }
+                long member = store.uinOf(memberUid);
+                long admin = store.uinOf(adminUid);
+                if (member != 0) {
+                    long duration = 0;
+                    if (shut != null) {
+                        duration = parseLongQuiet(Ref.asStr(ref.get(shut, "duration")));
+                        if (duration == 0) duration = Ref.asLong(ref.get(shut, "duration"));
+                    }
+                    return Notices.groupBan(selfUin, time, peerUin, member, admin, duration);
+                }
+            }
+            long member = store.uinOf(memberUid);
+            long admin = store.uinOf(adminUid);
+            if (!memberUid.isEmpty()) {
+                if (member == 0) member = qq.resolveUin(memberUid);
+                if (admin == 0 && !adminUid.isEmpty()) admin = qq.resolveUin(adminUid);
+                if (member == 0) member = senderUin;
+                if (type == 1) return Notices.groupIncrease(selfUin, time, peerUin, member, admin);
+                if (type == 3) {
+                    return Notices.groupDecrease(selfUin, time, peerUin, member, admin,
+                            admin != 0 && admin != member);
+                }
+            }
+        }
+        String redacted = xml == null ? "" : xml.replaceAll("uin=\"[^\"]*\"", "uin=\"*\"")
+                .replaceAll("nm=\"[^\"]*\"", "nm=\"*\"");
+        L.e("unparsed grayTip sub=" + sub + " busi=" + busi
+                + " xml=" + clip(redacted, 160) + " json_len=" + (jsonStr == null ? 0 : jsonStr.length()), null);
+        return null;
+    }
+
+    private void applyXmlPeople(JSONObject n, long selfUin) throws Exception {
+        String memberUid = n.optString("member_uid");
+        String adminUid = n.optString("admin_uid");
+        long member = store.uinOf(memberUid);
+        if (member == 0 && !memberUid.isEmpty()) member = qq.resolveUin(memberUid);
+        long admin = store.uinOf(adminUid);
+        if (admin == 0 && !adminUid.isEmpty()) admin = qq.resolveUin(adminUid);
+        if (member == selfUin && admin != 0 && admin != selfUin) {
+            long tmp = member;
+            member = admin;
+            admin = tmp;
+        }
+        if (member != 0) n.put("user_id", member);
+        if (admin != 0) n.put("operator_id", admin);
+        else if ("kick".equals(n.optString("sub_type")) && n.optLong("operator_id") == 0)
+            n.put("operator_id", selfUin);
+        n.remove("member_uid");
+        n.remove("admin_uid");
+    }
+
+    private static String clip(String s, int n) {
+        if (s == null) return "";
+        return s.length() <= n ? s : s.substring(0, n);
+    }
+
+    private static long parseLongQuiet(String s) {
+        try { return s == null || s.isEmpty() ? 0 : Long.parseLong(s.trim()); }
+        catch (Exception e) { return 0; }
     }
 
     private String safeStr(Object o, String f) { try { return Ref.asStr(ref.get(o, f)); } catch (Throwable t) { return ""; } }
@@ -438,6 +753,54 @@ public final class Convert {
         if (url == null || url.isEmpty()) return "";
         if (url.startsWith("http://") || url.startsWith("https://")) return url;
         return url.startsWith("/") ? "https://gchat.qpic.cn" + url : url;
+    }
+
+    /** resid inside a com.tencent.multimsg ark JSON, or null if this is some other card. */
+    private static String multimsgResId(String data) {
+        JSONObject detail = multimsgDetail(data);
+        if (detail == null) return null;
+        String id = detail.optString("resid", "");
+        return id.isEmpty() ? null : id;
+    }
+
+    private static String multimsgFileName(String data) {
+        JSONObject j = multimsgRoot(data);
+        if (j == null) return null;
+        JSONObject extraObj = j.optJSONObject("extra");
+        if (extraObj != null) {
+            String fn = extraObj.optString("filename", "");
+            if (!fn.isEmpty()) return fn;
+        } else {
+            String extra = j.optString("extra", "");
+            if (!extra.isEmpty()) {
+                try {
+                    String fn = new JSONObject(extra).optString("filename", "");
+                    if (!fn.isEmpty()) return fn;
+                } catch (Exception ignore) {}
+            }
+        }
+        JSONObject detail = multimsgDetail(data);
+        if (detail == null) return null;
+        String fn = detail.optString("uniseq", "");
+        return fn.isEmpty() ? null : fn;
+    }
+
+    private static JSONObject multimsgDetail(String data) {
+        JSONObject j = multimsgRoot(data);
+        if (j == null) return null;
+        JSONObject meta = j.optJSONObject("meta");
+        return meta == null ? null : meta.optJSONObject("detail");
+    }
+
+    private static JSONObject multimsgRoot(String data) {
+        if (data == null || !data.contains("com.tencent.multimsg")) return null;
+        try {
+            JSONObject j = new JSONObject(data);
+            if (!"com.tencent.multimsg".equals(j.optString("app"))) return null;
+            return j;
+        } catch (Exception ignore) {
+            return null;
+        }
     }
 
     private void seg(JSONArray arr, String type, String k, String v) {

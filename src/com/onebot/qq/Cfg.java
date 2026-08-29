@@ -13,11 +13,12 @@ public final class Cfg {
     public volatile String token = "";        // empty => no auth required
     public volatile boolean heartbeat = true;
     public volatile int heartbeatMs = 15000;
-    public volatile boolean antiDetect = true;   // best-effort Java-level anti-detection (see AntiDetect)
-    public volatile boolean mapsHide = false;    // EXPERIMENTAL native /proc/self/maps filter (default OFF)
+    public volatile boolean antiDetect = true;   // Java-level anti-detection (see AntiDetect)
+    public volatile boolean mapsHide = true;     // native /proc/self/maps filter (v3)
     public volatile boolean verboseLogs = false; // verbose logcat/Xposed logs are observable; opt in for debugging
-    public volatile boolean blockQsecTasks = false;   // EXPERIMENTAL: skip QSec.execTasks native worker
-    public volatile boolean blockQsecReports = true;  // neutralise dedicated QSec.reportLog telemetry; configurable
+    public volatile boolean blockQsecTasks = true;    // skip QSec.execTasks native worker
+    public volatile boolean blockQsecReports = true;  // neutralise dedicated QSec.reportLog telemetry
+    public volatile boolean observeFekitAttach = true; // count-only; never changes signing/attach bytes
 
     private static final String[] PATHS = new String[]{
         // QQ can always read its own external files dir under scoped storage
@@ -49,6 +50,7 @@ public final class Cfg {
                 c.verboseLogs = o.optBoolean("verbose_logs", c.verboseLogs);
                 c.blockQsecTasks = o.optBoolean("block_qsec_tasks", c.blockQsecTasks);
                 c.blockQsecReports = o.optBoolean("block_qsec_reports", c.blockQsecReports);
+                c.observeFekitAttach = o.optBoolean("observe_fekit_attach", c.observeFekitAttach);
                 L.i("Config loaded from " + p + " (port=" + c.port + ", auth=" + (c.token.isEmpty()?"off":"on") + ")");
                 return c;
             } catch (Throwable t) {

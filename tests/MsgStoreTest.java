@@ -23,6 +23,12 @@ public final class MsgStoreTest {
         check(voice != null && voice.size == 4 && "/tmp/voice.amr".equals(voice.path),
                 "existing resource refresh");
 
+        String unsafe = store.putResource("video", "Eh\u0001not-json", "", "", "a.mp4", 9);
+        check(unsafe.startsWith("obres:video:"), "binary uuid becomes generated id");
+        check(store.getResource(unsafe) != null, "generated video id lookup");
+        check(!MsgStore.jsonSafeResourceId("Eh\u0001x"), "control char rejected");
+        check(MsgStore.jsonSafeResourceId("obres:file:2"), "ascii id accepted");
+
         System.out.println("MsgStoreTest: ok");
     }
 

@@ -70,6 +70,29 @@ public final class MsgStore {
 
     public Rec get(int id) { return byId.get(id); }
 
+    public Rec getByMsgId(long msgId) {
+        if (msgId == 0) return null;
+        Integer id = byMsgId.get(msgId);
+        return id == null ? null : byId.get(id);
+    }
+
+    public Rec findByPeerSeq(int chatType, long peerUin, String peerUid, long msgSeq) {
+        if (msgSeq == 0) return null;
+        for (Rec r : byId.values()) {
+            if (r == null || r.msgSeq != msgSeq) continue;
+            if (chatType != 0 && r.chatType != chatType) continue;
+            if (peerUin != 0 && r.peerUin == peerUin) return r;
+            if (peerUid != null && !peerUid.isEmpty() && peerUid.equals(r.peerUid)) return r;
+        }
+        return null;
+    }
+
+    public int idOfMsgId(long msgId) {
+        Rec r = getByMsgId(msgId);
+        if (r != null) return r.id;
+        return 0;
+    }
+
     public void learnUid(long uin, String uid) {
         if (uin > 0 && uid != null && !uid.isEmpty()) {
             uin2uid.put(uin, uid);
@@ -79,10 +102,23 @@ public final class MsgStore {
     public String uidOf(long uin) { return uin2uid.get(uin); }
     public long uinOf(String uid) { Long v = uid2uin.get(uid); return v == null ? 0 : v; }
 
+    /**
+     * OneBot file ids travel through JSON. Binary NT fileUuid values (video protobuf blobs)
+     * must not become the public id or later get_file lookups miss the registry.
+     */
+    public static boolean jsonSafeResourceId(String id) {
+        if (id == null || id.isEmpty() || id.length() > 180) return false;
+        for (int i = 0; i < id.length(); i++) {
+            char c = id.charAt(i);
+            if (c < 0x20 || c > 0x7e) return false;
+        }
+        return true;
+    }
+
     /** Register a resource and return the exact opaque id exposed in the OneBot segment. */
     public synchronized String putResource(String type, String preferredId, String path,
                                            String url, String name, long size) {
-        String id = preferredId == null ? "" : preferredId.trim();
+        String id = jsonSafeResourceId(preferredId) ? preferredId.trim() : "";
         if (id.isEmpty()) id = "obres:" + type + ":" + resourceSeq.getAndIncrement();
         Resource r = resources.get(id);
         if (r == null) {

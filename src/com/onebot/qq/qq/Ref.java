@@ -30,4 +30,9 @@ public final class Ref {
     public static long asLong(Object o) { return o == null ? 0 : ((Number) o).longValue(); }
     public static int asInt(Object o) { return o == null ? 0 : ((Number) o).intValue(); }
     public static String asStr(Object o) { return o == null ? "" : String.valueOf(o); }
+    public static boolean asBool(Object o) {
+        if (o instanceof Boolean) return (Boolean) o;
+        if (o instanceof Number) return ((Number) o).intValue() != 0;
+        return false;
+    }
 }

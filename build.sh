@@ -35,7 +35,7 @@ echo "== 2b. native maps-hider .so =="
 CLANG=/data/data/com.termux/files/usr/bin/clang
 if [ -x "$CLANG" ]; then
   mkdir -p $OUT/lib/arm64-v8a
-  $CLANG --target=aarch64-linux-android24 -fPIC -shared -nostdlib -Os \
+  $CLANG --target=aarch64-linux-android24 -fPIC -shared -Os \
     -o $OUT/lib/arm64-v8a/libmapshide.so $R/native/mapshide.c -L/system/lib64 -lc -llog -ldl \
     && echo "   built libmapshide.so" || echo "   WARN native build failed (module still works, maps_hide off)"
 else

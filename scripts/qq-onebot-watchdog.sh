@@ -9,6 +9,7 @@ LOG_FILE="$STATE_DIR/watchdog.log"
 STATUS_FILE="$STATE_DIR/watchdog.status"
 COUNTERS_FILE="$STATE_DIR/watchdog.counters"
 EXPOSURE_AUDIT="$STATE_DIR/qq-onebot-exposure-audit.sh"
+INCIDENT_DIR="$STATE_DIR/incidents"
 QQ_PACKAGE=com.tencent.mobileqq
 ONEBOT_PORT_HEX=0BB9
 CHECK_SECONDS=15
@@ -16,6 +17,7 @@ START_GRACE_SECONDS=90
 RESTART_BACKOFF_SECONDS=300
 
 mkdir -p "$STATE_DIR"
+mkdir -p "$INCIDENT_DIR"
 
 offline_events=0
 recovery_events=0
@@ -64,7 +66,7 @@ write_status() {
     observed_login="$4"
     status_tmp="$STATUS_FILE.$$"
     {
-        echo "format_version=2"
+        echo "format_version=3"
         echo "checked_at_epoch=$checked_at"
         echo "state=$current_state"
         echo "previous_state=${previous_state:-unknown}"
@@ -81,6 +83,7 @@ write_status() {
         echo "watchdog_starts=$watchdog_starts"
         echo "account_kicks=$account_kicks"
         echo "last_account_kick_epoch=$last_account_kick_epoch"
+        echo "last_account_kick_file=${last_account_kick_file:-}"
     } > "$status_tmp" && mv "$status_tmp" "$STATUS_FILE"
 }
 
@@ -100,6 +103,7 @@ record_state() {
     if should_count_account_kick "$previous_state" "$observed_state"; then
         account_kicks=$((account_kicks + 1))
         last_account_kick_epoch="$(date +%s)"
+        capture_account_kick "$previous_state" "$observed_state"
         log_msg "server account kick observed"
     fi
     save_counters
@@ -107,6 +111,40 @@ record_state() {
     if [ -x "$EXPOSURE_AUDIT" ]; then
         "$EXPOSURE_AUDIT" snapshot --quiet "${previous_state:-unknown}-to-$current_state" >/dev/null 2>&1 &
     fi
+}
+
+capture_account_kick() {
+    from_state="$1"
+    to_state="$2"
+    incident_name="account-kick-$(date '+%Y%m%d-%H%M%S').status"
+    incident="$INCIDENT_DIR/$incident_name"
+    incident_tmp="$incident.$$"
+    incident_pid="$(qq_pid)"
+    incident_activity="$(dumpsys activity activities 2>/dev/null \
+        | grep -E 'topResumedActivity=ActivityRecord.*com\.tencent\.mobileqq/|mLastPausedActivity: ActivityRecord.*com\.tencent\.mobileqq/|Hist +#0: ActivityRecord.*com\.tencent\.mobileqq/' \
+        | head -n 8 | tr '\n' ' ')"
+    kick_since_epoch=$(( $(date +%s) - 240 ))
+    kick_since="$(date -d "@$kick_since_epoch" '+%m-%d %H:%M:%S.000' 2>/dev/null)"
+    incident_evidence=""
+    if [ -n "$kick_since" ]; then
+        incident_evidence="$(/system/bin/logcat -b events -d -T "$kick_since" 2>/dev/null \
+            | grep -E 'mqq\.intent\.action\.(ACCOUNT_KICKED|KICK_TO_LOGIN)' \
+            | tail -n 8 | tr '\n' ' ')"
+        [ -n "$incident_evidence" ] || incident_evidence="$(/system/bin/logcat -d -T "$kick_since" 2>/dev/null \
+            | grep -E 'mqq\.intent\.action\.(ACCOUNT_KICKED|KICK_TO_LOGIN)' \
+            | tail -n 8 | tr '\n' ' ')"
+    fi
+    {
+        echo "format_version=1"
+        echo "captured_at_epoch=$last_account_kick_epoch"
+        echo "transition=$from_state-to-$to_state"
+        echo "account_kicks=$account_kicks"
+        echo "qq_pid=${incident_pid:-0}"
+        echo "activity=${incident_activity:-unknown}"
+        echo "kick_evidence=${incident_evidence:-intent-observed-but-log-buffer-unavailable}"
+        echo "action=human-login-required"
+    } > "$incident_tmp" && chmod 0600 "$incident_tmp" && mv "$incident_tmp" "$incident"
+    last_account_kick_file="$incident"
 }
 
 log_msg() {
@@ -221,6 +259,7 @@ run_loop() {
     previous_state="$current_state"
     last_action=none
     last_action_at=0
+    last_account_kick_file="$(ls -t "$INCIDENT_DIR"/account-kick-*.status 2>/dev/null | head -n 1)"
     log_msg "started pid=$$"
     ensure_bpm_persist
 

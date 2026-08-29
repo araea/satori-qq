@@ -28,6 +28,8 @@ onebot-qq
 
 配置可选，放到 QQ 能读到的 `onebot-qq.json`。`token` 一旦填写，两端必须一致。
 
+为避免多个本地客户端同时向 QQ 内核写入，状态变更类动作默认全局串行，并在两次动作之间至少等待 1 秒。账号恢复在线后的前 30 秒只开放状态和查询动作。可通过 `outbound_min_interval_ms`、`outbound_queue_timeout_ms`、`outbound_max_queued`、`online_stabilize_ms` 调整；这些保护用于降低突发请求和恢复抖动，不能保证账号不受平台限制。
+
 构建与换机细节见 [`docs/HANDOFF.md`](docs/HANDOFF.md)、[`docs/STACK.md`](docs/STACK.md)。
 
 ## 注意事项

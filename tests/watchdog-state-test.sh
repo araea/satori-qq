@@ -49,6 +49,8 @@ record_state login
 [ "$current_state" = login ]
 [ "$account_kicks" -eq 1 ]
 [ "$last_account_kick_epoch" -gt 0 ]
+[ -f "$last_account_kick_file" ]
+grep -q '^action=human-login-required$' "$last_account_kick_file"
 
 # Cold start / process death -> LoginActivity is not a new server kick.
 account_kicks=1

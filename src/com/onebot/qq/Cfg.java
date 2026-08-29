@@ -19,6 +19,10 @@ public final class Cfg {
     public volatile boolean blockQsecTasks = true;    // skip QSec.execTasks native worker
     public volatile boolean blockQsecReports = true;  // neutralise dedicated QSec.reportLog telemetry
     public volatile boolean observeFekitAttach = true; // count-only; never changes signing/attach bytes
+    public volatile int outboundMinIntervalMs = 1000; // serialize writes and avoid bursty QQ operations
+    public volatile int outboundQueueTimeoutMs = 30000;
+    public volatile int outboundMaxQueued = 8;
+    public volatile int onlineStabilizeMs = 30000;     // do not write immediately after session recovery
 
     private static final String[] PATHS = new String[]{
         // QQ can always read its own external files dir under scoped storage
@@ -51,6 +55,10 @@ public final class Cfg {
                 c.blockQsecTasks = o.optBoolean("block_qsec_tasks", c.blockQsecTasks);
                 c.blockQsecReports = o.optBoolean("block_qsec_reports", c.blockQsecReports);
                 c.observeFekitAttach = o.optBoolean("observe_fekit_attach", c.observeFekitAttach);
+                c.outboundMinIntervalMs = bounded(o.optInt("outbound_min_interval_ms", c.outboundMinIntervalMs), 0, 60000);
+                c.outboundQueueTimeoutMs = bounded(o.optInt("outbound_queue_timeout_ms", c.outboundQueueTimeoutMs), 1000, 120000);
+                c.outboundMaxQueued = bounded(o.optInt("outbound_max_queued", c.outboundMaxQueued), 1, 128);
+                c.onlineStabilizeMs = bounded(o.optInt("online_stabilize_ms", c.onlineStabilizeMs), 0, 300000);
                 L.i("Config loaded from " + p + " (port=" + c.port + ", auth=" + (c.token.isEmpty()?"off":"on") + ")");
                 return c;
             } catch (Throwable t) {
@@ -59,5 +67,9 @@ public final class Cfg {
         }
         L.i("No config file found; using defaults (port=" + c.port + ", no auth)");
         return c;
+    }
+
+    private static int bounded(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 }

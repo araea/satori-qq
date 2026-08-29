@@ -24,11 +24,15 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
     private final QQClient qq;
     private final MsgStore store;
     private final Convert conv;
+    private final OutboundGuard outboundGuard;
     private WsServer server;
+    private volatile long onlineSinceMs;
 
     public OneBotHub(Cfg cfg, QQClient qq, MsgStore store) {
         this.cfg = cfg; this.qq = qq; this.store = store;
         this.conv = new Convert(qq, store);
+        this.outboundGuard = new OutboundGuard(cfg.outboundMinIntervalMs,
+                cfg.outboundQueueTimeoutMs, cfg.outboundMaxQueued);
     }
 
     public void start() {
@@ -58,7 +62,18 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         Object echo = req.has("echo") ? req.opt("echo") : null;
         JSONObject params = req.optJSONObject("params");
         if (params == null) params = new JSONObject();
+        OutboundGuard.Lease outboundLease = null;
         try {
+            if (OutboundGuard.isMutation(action)) {
+                ensureOutboundReady();
+                try {
+                    outboundLease = outboundGuard.acquire(action);
+                } catch (OutboundGuard.BusyException busy) {
+                    throw new ApiError(1500, busy.getMessage());
+                }
+                // The session can go offline while this request waits behind a media upload.
+                ensureOutboundReady();
+            }
             Object data = dispatch(action, params);
             conn.send(ok(data, echo).toString());
         } catch (ApiError e) {
@@ -68,11 +83,23 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         } catch (Throwable t) {
             L.e("action " + action, t);
             conn.send(fail(1400, String.valueOf(t), echo).toString());
+        } finally {
+            if (outboundLease != null) outboundLease.close();
         }
     }
 
     private static final class ApiError extends RuntimeException {
         final int code; ApiError(int code, String msg) { super(msg); this.code = code; }
+    }
+
+    private void ensureOutboundReady() {
+        if (!qq.isOnline()) throw new ApiError(1500, "QQ kernel offline or not ready");
+        long since = onlineSinceMs;
+        long remaining = cfg.onlineStabilizeMs - (System.currentTimeMillis() - since);
+        if (since <= 0 || remaining > 0) {
+            long seconds = Math.max(1, (remaining + 999) / 1000);
+            throw new ApiError(1500, "QQ session stabilizing; retry after " + seconds + "s");
+        }
     }
 
     private Object dispatch(String action, JSONObject p) throws Exception {
@@ -1745,6 +1772,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
     private void startStatusMonitor() {
         Thread t = new Thread(() -> {
             boolean previous = qq.isOnline();
+            onlineSinceMs = previous ? System.currentTimeMillis() : 0;
             long interval = Math.max(1000L, cfg.heartbeatMs);
             long nextHeartbeat = System.currentTimeMillis() + interval;
             while (true) {
@@ -1753,6 +1781,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                     boolean online = qq.isOnline();
                     long now = System.currentTimeMillis();
                     if (online != previous) {
+                        onlineSinceMs = online ? now : 0;
                         L.i("QQ kernel state -> " + (online ? "online" : "offline"));
                         if (server.connectionCount() > 0) {
                             server.broadcast(lifecycle(online ? "enable" : "disable").toString());
@@ -1776,6 +1805,8 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         return new JSONObject()
                 .put("online", online)
                 .put("good", online)
+                .put("online_since_epoch_ms", onlineSinceMs)
+                .put("outbound_guard", outboundGuard.stats())
                 .put("fekit_attach", AntiDetect.fekitAttachStats(cfg.observeFekitAttach));
     }
 
@@ -1802,7 +1833,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         String qqVersion = qq.qqVersion();
         return new JSONObject()
                 .put("app_name", "onebot-qq")
-                .put("app_version", "0.5.0")
+                .put("app_version", "0.5.2")
                 .put("protocol_version", "v11")
                 .put("qq_version", qqVersion.isEmpty() ? "unknown" : qqVersion)
                 .put("runtime", "Android QQNT/Xposed");

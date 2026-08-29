@@ -29,6 +29,7 @@ onebot-qq
 配置可选，放到 QQ 能读到的 `onebot-qq.json`。`token` 一旦填写，两端必须一致。
 
 构建与换机细节见 [`docs/HANDOFF.md`](docs/HANDOFF.md)、[`docs/STACK.md`](docs/STACK.md)。
+概念与训练路径见 [`learn/`](learn/README.md)。
 
 ## 注意事项
 

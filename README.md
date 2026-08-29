@@ -2,102 +2,66 @@
 
 [<img alt="github" src="https://img.shields.io/badge/github-araea/onebot--qq-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/araea/onebot-qq)
 
-把本机 **Android QQNT** 做成 **OneBot 11 正向 WebSocket** 实现端。以 vector / LSPosed
-模块跑在 QQ 主进程里，给 [ayjx](https://github.com/araea/ayjx) 用。
+手机上的 QQ，可以变成一个 OneBot 机器人后端。
 
-当前按 **QQ 9.3.55** 核验（JNI 基线来自 9.3.50 反编译）。协议面已按 ayjx 源码冻结。
+不是再写一个假 QQ，而是让**正在运行的那只官方 QQ** 开口说话：本仓库是一个 Xposed 模块，钻进 QQ 进程，在本机打开正向 WebSocket。像 [ayjx](https://github.com/araea/ayjx) 这样的框架连上来，就能收发消息。
 
-- **单轨** — 原生 QQ，不转桌面协议栈。
-- **正向 WS** — 只绑 `127.0.0.1:3001`，Bearer 鉴权，ayjx 主动连上来。
-- **内核直连** — hook `IQQNTWrapperSession$CppProxy`，走稳定 `nativeinterface`，避开混淆的 `api.*`。
-- **反检测** — Java 中和 + maps 过滤 + 进程内 seccomp；服务器踢号无法本地根治。
+我们核过的版本是 **QQ 9.3.55**（NT）。换版本等于换一套考卷，不能抄上一届的答案。
 
-```
-ayjx  --ws://127.0.0.1:3001-->  onebot-qq (QQ 主进程)
-                                 ├─ WsServer    正向 WS
-                                 ├─ OneBotHub   动作 / 事件
-                                 ├─ QQClient    NT 会话
-                                 └─ MapsHide    GOT + seccomp
-```
+## 先认识这些词
 
-## 需要
+读下去之前，请你自己能用一句话解释下面每个词。解释不清的，先去查，再回来。这篇 README 不会替你补课。
 
-- 已 root 的 Android（KernelSU 或 Magisk）
-- Zygisk（建议 Zygisk Next）+ 兼容 LSPosed API 的框架（本机是 **vector**）
-- QQNT，目前为 `com.tencent.mobileqq` **9.3.55**
-- 构建：JDK 21、`android.jar`（API 35）、aapt / zipalign / apksigner、[r8](https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar)
-
-换一台机、换一套 root、QQ 升版本：先读 [`docs/STACK.md`](docs/STACK.md)。
-
-## 构建
-
-必须在 f2fs 后端编（本机 `/data/media/0/dev/onebot-qq`）。`/sdcard` 是 FUSE，不能拿来构建。
-
-```sh
-curl -fsSL -o libs/r8.jar \
-  https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar   # 克隆后一次
-bash build.sh                                                          # -> build/OneBotQQ.apk
-cp build/OneBotQQ.apk /data/local/tmp/OneBotQQ.apk
-pm install -r -d /data/local/tmp/OneBotQQ.apk
-sh /data/adb/modules/zygisk_vector/cli modules enable com.onebot.qq
-sh /data/adb/modules/zygisk_vector/cli scope add com.onebot.qq com.tencent.mobileqq/0
-am force-stop com.tencent.mobileqq; monkey -p com.tencent.mobileqq 1
-```
-
-Xposed 桩类 `stubs/de/robv/**` 只用于编译，**不能进 dex**（`build.sh` 已排除）。
-
-## 配置
-
-可选，QQ 能读到即可，缺省为端口 3001、不鉴权：
-
-`/sdcard/Android/data/com.tencent.mobileqq/files/onebot-qq.json`
-
-```json
-{
-  "port": 3001,
-  "host": "127.0.0.1",
-  "token": "",
-  "anti_detect": true,
-  "maps_hide": true,
-  "block_qsec_tasks": true,
-  "block_qsec_reports": true,
-  "observe_fekit_attach": true,
-  "verbose_logs": false
-}
-```
-
-`token` 非空时，ayjx 的 `access_token` 必须一致。ayjx 空 token 会跳过连接。
-
-## 反检测
-
-腾讯 `libfekit.so` 在 native 扫 `/proc/self/maps` 和注入痕迹，把风险信号塞进登录/心跳签名；
-**踢号由服务器签发**。本模块只降低本地可见指纹，不保证不再掉线。
-
-全栈默认开，换机与层说明见 [`docs/STACK.md`](docs/STACK.md)。不要 hook `QSec.getSign` / 改 `getFeKitAttach` 返回，也不要全局 hook ART / libc。
-
-## 文档
-
-| 文档 | 内容 |
+| 词 | 你要抓住的那一层意思 |
 | --- | --- |
-| [`docs/STACK.md`](docs/STACK.md) | 反检测全栈、换机、QQ 升版本 |
-| [`docs/ONEBOT11_SUPPORT.md`](docs/ONEBOT11_SUPPORT.md) | 动作与消息段 |
-| [`docs/HANDOFF.md`](docs/HANDOFF.md) | 本机构建与坑 |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 代码结构与 JNI |
+| **OneBot 11** | 机器人和 QQ 之间的那份「动作 / 事件」合同 |
+| **正向 WebSocket** | 实现端在本地开端口，机器人当客户端连进来 |
+| **QQNT** | 现在手机 QQ 的内核，不是十年前的协议号 |
+| **root** | 这台安卓已经把最高权限交出来了 |
+| **Zygisk** | 在 App 启动的极早阶段往进程里塞代码 |
+| **Xposed / LSPosed / vector** | 用 Java hook 改正在跑的 App；vector 是本仓库实际用的那一家 |
+| **作用域 (scope)** | 注入进哪一个 App——这里必须是 QQ，而且最好只有本模块 |
+| **冷启动** | 杀掉 QQ 再打开，模块才进得了新进程 |
+| **QSec** | 腾讯在 native 里做的环境检查；踢号往往是**服务器**下的决定 |
 
-## 排错
+如果你已经知道「注入会留下指纹、指纹会被签名带走」，后面的风险不用我再渲染一遍。
 
-```sh
-logcat -d -s Q.Kernel:I Q.Maps:I Q.Kernel:E
-sh /data/adb/onebot-qq/qq-onebot-watchdog.sh status
-grep 0BB9 /proc/net/tcp6                    # 3001
-node tests/ws-health.js
-```
+## 它是什么，不是什么
 
-紧急停注入（QQ 立刻回到无模块进程）：
+它是官方 QQ 的一层外壳。机器人看见的是 OneBot，手机看见的还是那只 QQ。
 
-```sh
-sh /data/adb/modules/zygisk_vector/cli scope rm com.onebot.qq com.tencent.mobileqq/0
-```
+它不是桌面协议栈，不是无 root 方案，也不是「装上就再也不会掉线」。把代码放进 QQ，腾讯可以随时请你重新登录。我们能做的是把痕迹藏得深一点，不能替服务器收回那张罚单。
 
-能登录就不要卸 scope。踢号只认 `ACCOUNT_KICKED` / `KICK_TO_LOGIN` / `account_kicks` 增加。
-端口还在但 WS 无响应，多半是 OEM 冻进程，不是踢号。
+协议面已经按 ayjx 实际会用的动作冻住。想知道能发什么、不能发什么，打开 [支持矩阵](docs/ONEBOT11_SUPPORT.md)——那是合同正文，这里只告诉你合同存在。
+
+## 你的环境够不够
+
+三件事同时成立，再谈安装：
+
+1. 手机已 root，并有 Zygisk。
+2. 有一个兼容 LSPosed API 的框架，QQ 在它的作用域里。
+3. 你愿意用**正在登录的 QQ** 做实验，包括被踢、被验证。
+
+构建机还要能编出 Android 模块（JDK、`android.jar`、aapt、能跑 D8 的 r8）。具体路径因人而异，本仓库的 `build.sh` 是一份参考实现，不是真理。
+
+## 第一条路
+
+自己走通这一遍。卡住的时候再去翻文档，不要一开始就对照着抄。
+
+1. 编出 APK，装到手机上。
+2. 在框架里启用模块，把作用域划给 `com.tencent.mobileqq`。
+3. **冷启动** QQ。模块只在主进程里干活，子进程不用管。
+4. 本机 `127.0.0.1:3001` 应当开始监听。机器人用 Bearer 连上来。
+
+配置文件放在 QQ 自己读得到的地方，例如外部 files 目录里的 `onebot-qq.json`。端口、token、反检测开关都在那里。token 一旦写上，两端必须一致；机器人那边若是空 token，有的框架会直接不连。
+
+想立刻停手：从作用域里拿掉 QQ。进程会变回一只普通 QQ。能登录的时候，不要慌着卸。
+
+## 接下来你自己去问的问题
+
+- 换一台机、换一套 root、QQ 升级了，层要怎么对齐？→ [`docs/STACK.md`](docs/STACK.md)
+- 这份合同覆盖哪些动作和消息段？→ [`docs/ONEBOT11_SUPPORT.md`](docs/ONEBOT11_SUPPORT.md)
+- 在这台设备上怎么编、会踩哪些坑？→ [`docs/HANDOFF.md`](docs/HANDOFF.md)
+- hook 的是 QQ 里哪几扇门？→ [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+
+最后一件事，留给你自己验证：端口开着、机器人却不说话，不一定是被踢了。先分清「进程被系统冻住」和「账号被服务器请出去」——这两个词，值得你在 log 里各找一次。

@@ -1,9 +1,11 @@
-# 后续规划：反检测 × OneBot 11 双主线
+# 后续规划：反检测主线（OneBot 协议面已冻结）
 
 ## 总目标
 
-坚持纯手机与 Android 原生 QQ，把 QQNT 9.3.50 做成可长期运行、协议能力完整的 OneBot 11 实现端。
-反检测、防掉线、恢复韧性和协议完善不再互相排斥，按两条主线并行建设。
+坚持纯手机与 Android 原生 QQ，把 QQNT 9.3.55 做成可长期运行的 OneBot 11 实现端，给 ayjx 用。
+**2026-08-29 起协议面冻结**：对照 ayjx 源码，所用动作/段均已覆盖；默认不再推进新 OneBot 功能，
+只修 ayjx 回归。当前唯一主线是反检测 / 防掉线 / 防设备异常。
+换机 / 换 root / QQ 升版本的可复现步骤见 `STACK.md`。
 
 ## 主线一：反检测与防掉线
 
@@ -22,15 +24,16 @@
 
 ### 下一步
 
-1. anonymous + reportLog-block 在约 33 分钟后再次真实踢号，单变量结果已失败；anonymous 仍保留作
-   maps 收敛，但不再把它视为足够方案。
-2. `block_qsec_tasks=true` 在约 75 分钟后于 14:51 第三次真实踢号，Java `execTasks` 阻断已证伪。
-3. maps_hide v2 已作为下一单变量启用：跨 ns 打 libfekit/ckguard 的 open/fopen/syscall GOT，
-   并过滤匿名 RWX；真机 patched 5–6 slots，登录/WS 正常。观察 `account_kicks`。
-4. exposure audit 含 `maps_anon_exec` / `maps_anon_rwx`；启用 maps_hide 后真实 maps 会出现
-   `libmapshide.so`（过滤目标正是让 fekit 看不到它）。
+1. 历史：anonymous / reportLog / execTasks / maps_hide v2 / 单开 v3 / **v4 到 21:39 第九次踢号** 都没挡住踢号。这些是证据，不是「以后别开」。
+2. **19:06 起全栈默认全开**。20:48 起 maps_hide 为 **v4**（VMA 命名 + memfd；真实 maps 差量为 0）。seccomp 胶水已在 PID 18120 确认（主进程 filters=2/NNP=1 vs MSF 1/0）；BPF 单测通过。本 PID native 随协议包上来，**不能**把存活写成防踢有效。
+3. ColorOS **Hans** 会周期性冻 QQ；sticky unfreeze 无效。watchdog 每轮 `cmd activity unfreeze` QQ+MSF，并把 `com.tencent.mobileqq` 写入 `/data/oplus/os/bpm/bpm.xml` persist（原先只有 Termux 等）。21:21 的 33 min `qq_down` 无踢号/LMK；21:33 是 Coolapk 前台时 `installPackageLI` force-stop。端口 up/WS 无响应仍不计 kick。
+4. 当前：观察 PID 18120 对照注入基线 16–31 min，**不要为看 log 冷启**。踢号则存证。syscall-entry inline 仍有证据再动。不要 hook 签名 JNI / 改 getFeKitAttach 返回。
 
-## 主线二：OneBot 11 完整实现
+## 已冻结：OneBot 11（只修 ayjx 回归）
+
+ayjx 实际调用面见 `ONEBOT11_SUPPORT.md`。插件会调的动作与段均已真机；`send_msg` 的 `node`
+数组改道现有 `sendForward`（ayjx 不用 `send_*_forward_msg`）。未排期项（request live 事件、
+`get_record.out_format`、历史游标）不挡 bot，不要再当下一轮任务。
 
 ### 已完成基线（0.5.0）
 
@@ -38,33 +41,29 @@
 - 新增 `get_image/get_record/get_file`；顺序为本地缓存 → QQNT `downloadRichMedia` → URL 兜底。
 - 按 NapCat 当前源码与本机/QQ.hap 核对：普通消息下载使用 fileModelId=0、downSourceType=0、
   triggerType=1，并通过 `onRichMediaDownloadComplete` 返回真实路径。
-- 真机只读验证：`get_image`、`get_file` 均 retcode 0 且返回真实本地文件；最近历史无 record/video 样本。
+- 真机只读验证：`get_image`、`get_file` 均 retcode 0 且返回真实本地文件。video/`get_file` 与私聊真实 `file_id` 已在 2026-08-29 补齐。
 - 群文件四项查询已完成：0x6D8 文件数/真实上限/空间/分页列表，0x6D6_2 URL；空根目录、已有文件
   HTTPS 与自然子目录均真机通过，未制造写样本。
 
-### 下一步
+### 冻结后不再排期
 
-1. 等自然样本或准备本地样本验证 `get_record` 与 video→`get_file`；为 `get_record.out_format` 增加转码。
-2. 群文件查询已完成；目录创建/重命名/删除与文件重命名/移动/删除已在 `280183116` 真机闭环。
-   下一步补 upload 返回真实 file_id/callback。
-3. 完善历史游标与私聊历史；避免只返回空数组而不区分超时/内核错误。
-4. 合并转发节点从文本扩展到 image/at/reply/file，并解决转发资源 file_id 上下文。
-5. 基于 IKernelMsgListener/GroupListener 补 recall、poke、群成员变化、禁言等 notice；再补 request。
-6. 把群管理 fire-and-forget 改成真实 callback 结果，统一 OneBot retcode/wording。
+下列只作已完成记录，不是下一轮任务：`get_record.out_format` 在树里；video/`get_file` 与私聊真实
+`file_id` 已真机；群文件读写闭环；`get_friend_msg_history` 已真机；合并转发点开已确认；notice 已真机；
+request 动作 1400/1404 已真机，live 事件仍待申请人样本（ayjx 不消费 notice/request）。
 
 ## 参考资料策略
 
 - 优先查仍在维护的 NapCatQQ、Lagrange 等新库，直接复用 action 行为、protobuf、命令号与踩坑结论。
 - `/storage/emulated/0/Dev/QQ.hap` 用于检索腾讯自身的 ArkTS 绑定、libkernel 字符串、proto 与业务结构。
-- 社区桌面类型与鸿蒙 API 都必须由 Android QQ 9.3.50 的反编译类/构造器/真机回调最终校正。
+- 社区桌面类型与鸿蒙 API 都必须由当前 Android QQ 9.3.55 的反编译类/构造器/真机回调最终校正。
 - 已确认事实随代码写入 `ARCHITECTURE.md`、`ANTIDETECT.md`、`ONEBOT11_SUPPORT.md`，避免再次从零猜。
 
 ## 工作节奏
 
-- 每轮尽量同时落一项反检测增量和一项协议增量。
-- 先离线构建/单测，再真机只读验证；需要发送时使用作者控制的目标并清理测试消息。
-- 反检测变量一次只改一个并留快照；协议项明确区分“已实现”“构建通过”“真机验证”“外部限制”。
-- 海阔天空，但结论必须可复现、可回滚、有数据。
+- 每轮只落反检测 / 防掉线增量。协议改动仅限 ayjx 回归。
+- 先离线构建/单测，再真机验证；需要发送时用 `280183116`。测试消息保留，不撤回；群文件和禁言等持久状态仍要清理/恢复。
+- 全栈默认全开并留快照。seccomp 胶水已确认；不要为了再看一眼 log 冷启。协议改动仍不要和反检测冷启混在一起。
+- 结论必须可复现、可回滚、有数据。即时健康 ≠ 防踢有效。
 
 ## 测试授权与目标选择
 
@@ -75,6 +74,8 @@
 
 ## 下一次对话的已确认计划
 
-1. 反检测：maps_hide v2 短窗口，只看 `account_kicks`。失败则关 maps_hide，不要叠新变量。
-2. OneBot 11：群文件目录与文件写已在 `280183116` 真机闭环。
-3. 本轮之后优先级：upload 真实 file_id → 转发 image/at/reply/file → notice/request。
+现场细节以 `/storage/emulated/0/Dev/onebot-qq-接手提示词.md` 的「此刻」为准。
+
+1. **唯一主线：反检测。** seccomp 胶水已在 PID 18120 确认，正在对照 16–31 min 基线观察。不要为 log 冷启。不要 hook `getSign` / 改 `getFeKitAttach` 返回。
+2. 踢号则存证、能登录就不卸 scope；须卸时先卸注入再密码/PIN 重登，再全栈打回。Hans unfreeze 已在 watchdog。
+3. 协议只修 ayjx 回归。request live 事件不挡 bot，不必等申请人。

@@ -11,3 +11,6 @@ libs/*.jar
 .DS_Store
 libs/arm64-v8a/
 lib/
+
+# private protocol dumps / live account traffic
+tests/protocol-full-test.js

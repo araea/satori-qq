@@ -1,6 +1,10 @@
-# onebot-qq — 里程碑 3 设计 (待实现动作的具体打法)
+# onebot-qq — 里程碑 3 设计（协议面已冻结，这里只作历史打法）
 
-> 已实现的见 HANDOFF.md。这里只讲**没做的**，以及每个该怎么下手（附 QQNT 线索）。
+> **2026-08-29：ayjx 用到的 OneBot 11 动作/段已覆盖，默认不再推进新协议功能。**
+> 未做项（request live 事件、`get_record.out_format`、历史游标）不挡 ayjx，不要再当下一轮任务。
+> 当前主线是反检测，见 `FUTURE_PLAN.md` / `ANTIDETECT.md`。已实现的见 `HANDOFF.md` / `ONEBOT11_SUPPORT.md`。
+
+> 已实现的见 HANDOFF.md。下面各节是当时「没做」的打法备忘，大部分已真机闭环。
 
 > **2026-08-27 新增已实现（群管理，现成内核方法，fire-and-forget via IOperateCallback）：**
 > `get_group_info`、`set_group_kick`(kickMember)、`set_group_ban`(setMemberShutUp)、
@@ -14,35 +18,41 @@
 > 一键登录后的 online/enable 与收消息恢复均已通过，WS 未断。此次复用同一 CppProxy，新对象替换分支未触发。
 > 未做进程外自动拉起：模块随 QQ 进程死亡，必须由外部守护或用户重新启动 QQ。
 
-## A. notice 事件（优先，ayjx recall 插件要用）
-OneBot notice：群撤回/戳一戳/进退群/禁言/贴表情通知。来源：
+## A. notice / request 事件
+
+> **2026-08-28 真机**：灰字 XML → poke/禁言；`onMemberListChange` ADD/REMOVE → 进退群；`group_recall` / `friend_recall` 已通过。
+> `send_poke` 走 0xED3_1。`invite_group` 拉回。request 动作 1400/1404 已真机；live 事件仍待申请人样本。
+
+OneBot notice：群撤回/戳一戳/进退群/禁言。来源：
 - **群撤回**：`IKernelMsgListener.onMsgRecall(int,String,long)`；更可靠的是收到的 `MsgRecord` 里
-  带 `grayTipElement`（elementType=8, subType=REVOKE）——解析它拿撤回者/被撤消息。
-  → 发 `notice_type=group_recall`（operator_id/user_id/message_id）。
-- **进退群/禁言/管理员变更**：注册 `IKernelGroupListener`（已注册做群列表缓存），处理
-  `onMemberListChange(GroupMemberListChangeInfo)` / `onMemberInfoChange(long, DataSource, HashMap<uid,MemberInfo>)`
-  / `onGroupDetailInfoChange`。禁言看 MemberInfo.shutUpTime 变化。
-- **戳一戳**：C2C/群里是 `grayTipElement`（poke，JSON/PB 内容）或 `FaceElement.pokeType`。解析 grayTip。
-- 落点：`OneBotHub` 已有 `onRecall(...)` 空实现 + `onGroupNotice` 可扩展；把 group 监听回调接进来建 notice JSON。
+  带 `grayTipElement`（elementType=8, subType=REVOKE）。
+- **进退群/禁言**：灰字 `groupElement` type 1/3/8；GroupListener 成员变化仍可作补充。
+- **戳一戳**：`jsonGrayTipElement` busiId 1061。
+- **好友/加群请求**：Buddy `onBuddyReqChange`；Group `onGroupNotifiesUpdated` / V2 / SingleScreen。
 
 ## B. 富媒体发送：语音/文件/视频 —— 全部已实现(2026-08-27 真机 retcode 0)
-> **2026-08-27 已实现（真机 retcode 0）**：**语音 record**（`Media.buildPttElement`，silk/amr passthrough，不转码）+ **文件 upload_group_file/upload_private_file/`file` 段**（`Media.buildFileElement`）。都走图片同款 richmedia auto-upload：`RichMediaFilePathInfo(elementType, subType, md5, fileName, downloadType=1, thumbSize=0, null, "", true)`，首参 elementType=PIC2/FILE3/PTT4/VIDEO5，copyFile 到返回路径后 sendMsg，QQ 自动 highway 上传。**视频也已实现**：`Media.buildVideoElement` 用 Android `MediaMetadataRetriever` 提取封面(getFrameAtTime→JPEG)/时长/分辨率,双 richmedia 路径 视频(elemType5,subType2,dl1)+缩略图(elemType5,subType1,dl2),copyFile+存封面后 sendMsg 自动上传。实测 VideoElement.fileSize=long 且**无 fileWidth/fileHeight 字段**(NapCat TS 有,9.3.50 无)。
+> **2026-08-29 已实现并在 9.3.55 再次真机闭环**：**语音 record** 优先调用官方
+> `IMsgUtilApi.createPttElement`；非 SILK 输入经 MediaCodec 解码和 QQ `SilkCodecWrapper` 编码。
+> 测试群发送、同 ID 历史 `record`、下载和原生播放器气泡均通过。文件/视频仍走对应 richmedia
+> 路径；实测 VideoElement.fileSize=long 且**无 fileWidth/fileHeight 字段**。
 和图片同套路（copy 到 `getRichMediaFilePathForMobileQQSend` 路径 → 建对应 Element → sendMsg 自动上传）：
 - **语音 record**：`PttElement`。要把音频转 **silk/amr**（QQ 语音格式）。elementType=KELEMTYPEPTT(4)。
   字段：filePath/fileName/md5HexStr/fileSize/duration；RichMediaFilePathInfo 的 elemType 用 ptt 对应值。
-  **已完成**：非 SILK/AMR 输入经 Android MediaExtractor/MediaCodec 解码、8k mono 重采样并编码 AMR-NB；
-  1 秒 MP3 真机发送+撤回通过，无需外部 silk 服务。
+  **已完成**：非 SILK 输入经 Android MediaExtractor/MediaCodec 解码、8k mono 重采样，再由 QQ
+  `SilkCodecWrapper` 以正确的码率参数编码 Tencent SILK；无需外部 silk 服务。媒体暂存走 QQ cache，
+  避免模块名路径在宿主进程内不可见。
 - **视频 video**：`VideoElement`（elementType=5）。要生成缩略图 + 时长/分辨率。
 - **文件 file / upload_group_file / upload_private_file**：群文件走 `IKernelRichMediaService` 或
   `IKernelMsgService` 的文件发送；或建 `FileElement`(elementType=3) sendMsg。群文件上传可能要
   `IKernelGroupService`/`RichMediaService` 的 upload 接口 + 进度回调。先解 `FileElement` 字段。
 
 ## C. get_forward_msg / 合并转发
+> **2026-08-28**：Android QQNT 点开靠内核 `multiForwardMsg` 从本地真实消息做的卡片，`getMultiMsg(msgId)` 才能解析。假 SsoSendLongMsg ark/16 打不开。用户已确认点开。回查必须 `recordToEvent(rec, 0)` 否则 skip-self 丢掉自己的卡片。
 > **2026-08-27 已实现「发」合并转发（真机 retcode 0）**：见 `packet/LongMsg.java` + `OneBotHub.sendForward`。
-> 不走内核 `multiForwardMsgElement`（只能转已存在消息，办不了伪造节点），而是拼 im_msg_body 假节点
+> 不走内核 `multiForwardMsg`（只能转已存在消息，办不了伪造节点），而是拼 im_msg_body 假节点
 > → gzip → `PacketSvc.sendSso("trpc.group.long_msg_interface.MsgService.SsoSendLongMsg", req)` 拿 resId
-> → 组 `com.tencent.multimsg` LightApp 卡片 → 复用现有 json/ark 发送。字段号抄自 LagrangeDev/LagrangeGo
-> message proto。v1 仅文本节点。**取回** `get_forward_msg`（`SsoRecvLongMsg` + gunzip payload）**已实现并真机往返验证**：见 `LongMsg.buildDownloadReq/parseDownload` + `OneBotHub.getForwardMsg`；send_forward 响应带 `res_id`。伪造节点非本人 uin 被服务器归一(反伪造)。
+> → 组 type-16 卡片发出。字段号抄自 LagrangeDev/LagrangeGo
+> message proto。节点已支持 text/at/face/reply/image/file。**取回** `get_forward_msg`（`SsoRecvLongMsg` + gunzip payload）**已实现并真机往返验证**：见 `LongMsg.buildDownloadReq/parseDownload` + `OneBotHub.getForwardMsg`；send_forward 响应带 `res_id`。伪造节点非本人 uin 被服务器归一(反伪造)。
 
 - **发**合并转发：QQNT 用 `multiForwardMsgElement`（elementType=16）+ 先把子消息用
   `msgService` 造成 fake record 再打包；较绕。参考 OpenShamrock 的 `MsgSvc.uploadMultiMsg`。

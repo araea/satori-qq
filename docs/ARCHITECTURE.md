@@ -3,9 +3,9 @@
 ## 代码结构 (src/com/onebot/qq/)
 ```
 Main.java            Xposed 入口 (IXposedHookLoadPackage)；只在 QQ 主进程跑；
-                     装 AntiDetect → 起 OneBotHub → QQClient.installHooks()
-Cfg.java             配置 (port/host/token/heartbeat/anti_detect)，从 QQ 可读路径的 json 读，有默认值
-L.java               日志 (logcat tag=OneBotQQ + XposedBridge.log)
+                     MapsHide.tryLoad → AntiDetect → OneBotHub → QQClient.installHooks()
+Cfg.java             配置 (port/host/token/anti_detect/maps_hide/…)，QQ 可读 json，有默认值
+L.java               日志 (tag=Q.Kernel；verbose 才打 XposedBridge)
 net/WsServer.java    手写 RFC6455 正向 WS 服务端 (握手/鉴权/分帧/掩码/连接生命周期)，无第三方依赖
 net/WsConn.java      单连接，服务端→客户端不掩码，同步写帧 (含 64-bit 长度)
 core/OneBotHub.java  OneBot 协议中枢：动作分发 + 事件下发 + 生命周期/真实在线心跳 + 响应封包
@@ -14,8 +14,10 @@ core/MsgStore.java   OneBot int32 message_id ↔ QQ NT (chatType/peer/msgId/msgS
 qq/QQClient.java     QQ 桥：捕获会话、收发、监听、身份、群查询、uid 解析
 qq/Convert.java      段↔MsgElement 转换；MsgRecord→OneBot 事件
 qq/Media.java        file 解析(路径/file://http/base64) + 构建 PicElement (富媒体自动上传)
-qq/AudioTranscoder.java Android MediaCodec 解码/重采样/AMR-NB 编码
-qq/AntiDetect.java   best-effort 反检测 (hook QSec.detectMethod/getXpsInfo)
+qq/AudioTranscoder.java MediaCodec 解码 + QQ SilkCodecWrapper 编码 Tencent SILK
+qq/AntiDetect.java   Java 层反检测（detectMethod / getXpsInfo / reportLog / execTasks / 只计数 getFeKitAttach）
+qq/MapsHide.java     加载 libmapshide.so（memfd jit-cache）并 install GOT + seccomp
+native/mapshide.c    跨 ns 打 fekit/ckguard GOT；VMA 命名；进程内 seccomp
 qq/Ref.java          反射门面 (绑定 QQ classloader；new/call/get/set/neuTyped)
 packet/Pb.java       零依赖 protobuf wire 编解码器 + OIDB 辅助方法
 packet/PacketSvc.java QQNT 原始 OIDB 传输：IDependsAdapter 发包 + requestId 回包关联
@@ -28,8 +30,7 @@ scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
 ## 数据流
 - **收**：`IKernelMsgService.addKernelMsgListener(动态Proxy实现IKernelMsgListener)` →
   `onRecvMsg(ArrayList<MsgRecord>)` → `Convert.recordToEvent` → `WsServer.broadcast(事件JSON)` → ayjx。
-- **发**：ayjx 发 `send_msg` → `OneBotHub.dispatch` → `Convert.toElements` → `QQClient.sendMsg`
-  → `IKernelMsgService.sendMsg(...)` → 回执经 `IOperateCallback` → 返回 `{message_id}`。
+- **发**：ayjx 发 `send_msg` → 若 `message` 是纯 `node` 数组则走 `sendForward`（内核 `multiForwardMsg`，ayjx 的 ping/gif/image_split/ai_news 走这条），否则 `Convert.toElements` → `QQClient.sendMsg` → `IKernelMsgService.sendMsg(...)` → 回执经 `IOperateCallback` → 返回 `{message_id}`。
 - **OIDB**：OneBot 动作组 raw protobuf body → `PacketSvc` 加 OIDB 外层 →
   `KernelServiceImpl.getIDependsAdapter().onSendSSORequest(...)` → QQ 的 `KernelSendObserver`/
   `KernelServlet`/MSF（由 QQ 做 SSO framing/QSec 签名）→ `CppProxy.onSendSSOReply(...)` 按自分配 requestId 收回包。
@@ -59,11 +60,13 @@ scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
 ## 富媒体取回（0.5.0）
 
 - `Convert` 收到 PIC/PTT/VIDEO/FILE 时，用消息上下文和 elementId 注册 opaque file_id。
+  非 ASCII / 过长的 NT `fileUuid` 改为 `obres:` 生成 id，避免 JSON 往返后注册表 miss。
 - `get_image/get_record/get_file` 先复用本地路径；缺失时构造 Android 9.3.50
-  `RichMediaElementGetReq(msgId,peerUid,chatType,elementId,1,0,"",0,0,1)`。
+  `RichMediaElementGetReq(msgId,peerUid,chatType,elementId,1,0,"",fileModelId,0,1)`。
 - `QQClient` 调 `IKernelMsgService.downloadRichMedia(req)`，以 msgId+elementId 等待
-  `IKernelMsgListener.onRichMediaDownloadComplete`，校验 fileErrCode 后返回 QQ 生成的 filePath；最后才用 URL。
-- 字段由本机 jadx + NapCat 当前源码 + QQ.hap/libkernel 三方核对。图片/文件已真机只读通过。
+  `IKernelMsgListener.onRichMediaDownloadComplete`，校验 fileErrCode 后返回 QQ 生成的 filePath。
+  视频若内核下载失败，再走 `IKernelRichMediaService.getVideoPlayUrlV2`（H264，downSourceType=1，triggerType=1）取 URL。
+- 字段由本机 jadx + NapCat 当前源码 + QQ.hap/libkernel 三方核对。图片/群文件/record/新发视频/私聊 file_id 已真机通过。
 
 ## 群文件查询（2026-08-28，主号真机验证）
 
@@ -155,8 +158,14 @@ scripts/*audit*      maps/线程/日志指纹快照，供反检测 24h/72h A/B
 `IKernelMsgService.setMsgEmojiLikes(Contact, long msgSeq, String emojiId, long emojiType, boolean set, cb)`
 （emojiType：QQ 表情=1，unicode emoji=2）
 
-### 安全 SDK（反检测相关，见 ANTIDETECT.md）
-`com.tencent.mobileqq.qsec.qsecurity.QSec`：本机 9.3.50 的签名是 `getSign(String, byte[])`/
+### 安全 SDK（反检测相关，见 STACK.md / ANTIDETECT.md）
+`com.tencent.mobileqq.qsec.qsecurity.QSec`：本机 9.3.50/9.3.55 的签名是 `getSign(String, byte[])`/
 `getSignEntry(String, byte[])`，核心 native（以及 `doSomething/getEstInfo`）**别 hook**（登录要用）；
 可安全中和的：`detectMethod(String,String)→false`、`getXpsInfo()→空`。
-native 库 `libfekit.so`。`Dandelion.energy`、`QsecEst.d` 也是 native 采集。
+`getFeKitAttach` 只计数、不改返回。native 库 `libfekit.so`。`Dandelion.energy`、`QsecEst.d` 也是 native 采集。
+
+## QQ 升版本
+
+新版本必须 jadx 重核上表字段、`IKernelMsgListener` 回调签名、`RichMediaElementGetReq` 构造、
+QSec 方法签名，以及 `libfekit.so` 是否仍导入 `open`/`fopen`/`syscall`/`dl_iterate_phdr`。
+桌面 QQ / NapCat / QQ.hap 只作线索。完整步骤：[`STACK.md`](STACK.md#qq-升版本)。

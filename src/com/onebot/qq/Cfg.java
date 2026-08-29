@@ -23,6 +23,9 @@ public final class Cfg {
     public volatile int outboundQueueTimeoutMs = 30000;
     public volatile int outboundMaxQueued = 8;
     public volatile int onlineStabilizeMs = 30000;     // do not write immediately after session recovery
+    public volatile int outboundMaxPerMinute = 20;
+    public volatile int outboundFailureThreshold = 3;
+    public volatile int outboundCircuitOpenMs = 120000;
 
     private static final String[] PATHS = new String[]{
         // QQ can always read its own external files dir under scoped storage
@@ -59,6 +62,9 @@ public final class Cfg {
                 c.outboundQueueTimeoutMs = bounded(o.optInt("outbound_queue_timeout_ms", c.outboundQueueTimeoutMs), 1000, 120000);
                 c.outboundMaxQueued = bounded(o.optInt("outbound_max_queued", c.outboundMaxQueued), 1, 128);
                 c.onlineStabilizeMs = bounded(o.optInt("online_stabilize_ms", c.onlineStabilizeMs), 0, 300000);
+                c.outboundMaxPerMinute = bounded(o.optInt("outbound_max_per_minute", c.outboundMaxPerMinute), 1, 600);
+                c.outboundFailureThreshold = bounded(o.optInt("outbound_failure_threshold", c.outboundFailureThreshold), 1, 20);
+                c.outboundCircuitOpenMs = bounded(o.optInt("outbound_circuit_open_ms", c.outboundCircuitOpenMs), 1000, 1800000);
                 L.i("Config loaded from " + p + " (port=" + c.port + ", auth=" + (c.token.isEmpty()?"off":"on") + ")");
                 return c;
             } catch (Throwable t) {

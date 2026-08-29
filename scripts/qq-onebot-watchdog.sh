@@ -10,6 +10,7 @@ STATUS_FILE="$STATE_DIR/watchdog.status"
 COUNTERS_FILE="$STATE_DIR/watchdog.counters"
 EXPOSURE_AUDIT="$STATE_DIR/qq-onebot-exposure-audit.sh"
 INCIDENT_DIR="$STATE_DIR/incidents"
+CGROUP_APPS_ROOT="${ONEBOT_CGROUP_APPS_ROOT:-/sys/fs/cgroup/apps}"
 QQ_PACKAGE=com.tencent.mobileqq
 ONEBOT_PORT_HEX=0BB9
 CHECK_SECONDS=15
@@ -27,6 +28,9 @@ state_changes=0
 watchdog_starts=0
 account_kicks=0
 last_account_kick_epoch=0
+freeze_events=0
+thaw_requests=0
+thaw_failures=0
 
 load_counters() {
     [ -f "$COUNTERS_FILE" ] || return 0
@@ -41,6 +45,9 @@ load_counters() {
             watchdog_starts) watchdog_starts="$counter_value" ;;
             account_kicks) account_kicks="$counter_value" ;;
             last_account_kick_epoch) last_account_kick_epoch="$counter_value" ;;
+            freeze_events) freeze_events="$counter_value" ;;
+            thaw_requests) thaw_requests="$counter_value" ;;
+            thaw_failures) thaw_failures="$counter_value" ;;
         esac
     done < "$COUNTERS_FILE"
 }
@@ -56,6 +63,9 @@ save_counters() {
         echo "watchdog_starts=$watchdog_starts"
         echo "account_kicks=$account_kicks"
         echo "last_account_kick_epoch=$last_account_kick_epoch"
+        echo "freeze_events=$freeze_events"
+        echo "thaw_requests=$thaw_requests"
+        echo "thaw_failures=$thaw_failures"
     } > "$counters_tmp" && mv "$counters_tmp" "$COUNTERS_FILE"
 }
 
@@ -84,6 +94,9 @@ write_status() {
         echo "account_kicks=$account_kicks"
         echo "last_account_kick_epoch=$last_account_kick_epoch"
         echo "last_account_kick_file=${last_account_kick_file:-}"
+        echo "freeze_events=$freeze_events"
+        echo "thaw_requests=$thaw_requests"
+        echo "thaw_failures=$thaw_failures"
     } > "$status_tmp" && mv "$status_tmp" "$STATUS_FILE"
 }
 
@@ -226,6 +239,28 @@ protect_qq() {
     [ -n "$pid" ] || return 0
     /system/bin/cmd activity unfreeze "$QQ_PACKAGE" >/dev/null 2>&1
     /system/bin/cmd activity unfreeze "${QQ_PACKAGE}:MSF" >/dev/null 2>&1
+    uid="$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
+    thaw_uid_cgroup "$uid"
+}
+
+# ColorOS may report cmd activity unfreeze success while the UID-level cgroup v2
+# freezer remains at 1. Thaw that exact QQ UID after the framework command.
+thaw_uid_cgroup() {
+    uid="$1"
+    case "$uid" in ''|*[!0-9]*) return 0 ;; esac
+    freeze_file="$CGROUP_APPS_ROOT/uid_$uid/cgroup.freeze"
+    [ -f "$freeze_file" ] || return 0
+    [ "$(cat "$freeze_file" 2>/dev/null)" = "1" ] || return 0
+    freeze_events=$((freeze_events + 1))
+    thaw_requests=$((thaw_requests + 1))
+    if ! echo 0 > "$freeze_file" 2>/dev/null \
+            || [ "$(cat "$freeze_file" 2>/dev/null)" != "0" ]; then
+        thaw_failures=$((thaw_failures + 1))
+        log_msg "uid=$uid cgroup thaw failed"
+    else
+        log_msg "uid=$uid cgroup thawed"
+    fi
+    save_counters
 }
 
 # BPM persist list already has Termux; QQ was missing and 25366 died at ~33 min

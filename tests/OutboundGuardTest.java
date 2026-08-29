@@ -9,7 +9,7 @@ public final class OutboundGuardTest {
         check(!OutboundGuard.isMutation("get_status"), "status stays responsive");
         check(!OutboundGuard.isMutation("get_group_list"), "lookups stay responsive");
 
-        OutboundGuard guard = new OutboundGuard(40, 1000, 2);
+        OutboundGuard guard = new OutboundGuard(40, 1000, 2, 20, 3, 1000);
         long started = System.currentTimeMillis();
         try (OutboundGuard.Lease ignored = guard.acquire("send_msg")) {}
         try (OutboundGuard.Lease ignored = guard.acquire("send_msg")) {}
@@ -18,7 +18,7 @@ public final class OutboundGuardTest {
         check(guard.stats().getLong("admitted") == 2, "admission count");
         check("send_msg".equals(guard.stats().getString("last_action")), "last action");
 
-        OutboundGuard concurrent = new OutboundGuard(0, 1000, 2);
+        OutboundGuard concurrent = new OutboundGuard(0, 1000, 2, 20, 3, 1000);
         AtomicInteger active = new AtomicInteger();
         AtomicInteger maxActive = new AtomicInteger();
         CountDownLatch start = new CountDownLatch(1);
@@ -41,10 +41,41 @@ public final class OutboundGuardTest {
         first.join(); second.join();
         check(maxActive.get() == 1, "mutations are serialized");
 
+        OutboundGuard budget = new OutboundGuard(0, 1000, 2, 2, 3, 1000);
+        try (OutboundGuard.Lease ignored = budget.acquire("send_msg")) {}
+        try (OutboundGuard.Lease ignored = budget.acquire("send_msg")) {}
+        expectBusy(() -> budget.acquire("send_msg"), "rate budget rejects excess");
+        check(budget.stats().getLong("rate_rejected") == 1, "rate rejection count");
+
+        OutboundGuard circuit = new OutboundGuard(0, 1000, 2, 20, 2, 20);
+        OutboundGuard.Lease failed = circuit.acquire("send_msg");
+        failed.complete(false);
+        failed = circuit.acquire("send_msg");
+        failed.complete(false);
+        expectBusy(() -> circuit.acquire("send_msg"), "open circuit rejects writes");
+        check("open".equals(circuit.stats().getString("circuit_state")), "circuit opens");
+        Thread.sleep(30);
+        try (OutboundGuard.Lease ignored = circuit.acquire("send_msg")) {}
+        check("closed".equals(circuit.stats().getString("circuit_state")), "half-open success closes");
+
         System.out.println("OutboundGuardTest OK");
     }
 
     private static void check(boolean value, String label) {
         if (!value) throw new AssertionError(label);
+    }
+
+    private static void expectBusy(ThrowingCall call, String label) throws Exception {
+        try {
+            OutboundGuard.Lease lease = call.run();
+            lease.close();
+            throw new AssertionError(label);
+        } catch (OutboundGuard.BusyException expected) {
+            // expected
+        }
+    }
+
+    private interface ThrowingCall {
+        OutboundGuard.Lease run() throws Exception;
     }
 }

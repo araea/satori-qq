@@ -7,7 +7,8 @@ trap 'rm -rf "$test_state_dir"' EXIT INT TERM
 
 ONEBOT_WATCHDOG_STATE_DIR="$test_state_dir"
 ONEBOT_WATCHDOG_SOURCE_ONLY=1
-export ONEBOT_WATCHDOG_STATE_DIR ONEBOT_WATCHDOG_SOURCE_ONLY
+ONEBOT_CGROUP_APPS_ROOT="$test_state_dir/cgroup-apps"
+export ONEBOT_WATCHDOG_STATE_DIR ONEBOT_WATCHDOG_SOURCE_ONLY ONEBOT_CGROUP_APPS_ROOT
 . "$repo_dir/scripts/qq-onebot-watchdog.sh"
 
 assert_login_state() {
@@ -67,5 +68,16 @@ last_action=launch
 last_action_at="$(date +%s)"
 record_state login
 [ "$account_kicks" -eq 1 ]
+
+mkdir -p "$ONEBOT_CGROUP_APPS_ROOT/uid_123"
+printf '1\n' > "$ONEBOT_CGROUP_APPS_ROOT/uid_123/cgroup.freeze"
+freeze_events=0
+thaw_requests=0
+thaw_failures=0
+thaw_uid_cgroup 123
+[ "$(cat "$ONEBOT_CGROUP_APPS_ROOT/uid_123/cgroup.freeze")" = "0" ]
+[ "$freeze_events" -eq 1 ]
+[ "$thaw_requests" -eq 1 ]
+[ "$thaw_failures" -eq 0 ]
 
 echo watchdog-state-tests=ok

@@ -32,7 +32,9 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         this.cfg = cfg; this.qq = qq; this.store = store;
         this.conv = new Convert(qq, store);
         this.outboundGuard = new OutboundGuard(cfg.outboundMinIntervalMs,
-                cfg.outboundQueueTimeoutMs, cfg.outboundMaxQueued);
+                cfg.outboundQueueTimeoutMs, cfg.outboundMaxQueued,
+                cfg.outboundMaxPerMinute, cfg.outboundFailureThreshold,
+                cfg.outboundCircuitOpenMs);
     }
 
     public void start() {
@@ -63,6 +65,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         JSONObject params = req.optJSONObject("params");
         if (params == null) params = new JSONObject();
         OutboundGuard.Lease outboundLease = null;
+        boolean outboundSucceeded = false;
         try {
             if (OutboundGuard.isMutation(action)) {
                 ensureOutboundReady();
@@ -75,6 +78,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
                 ensureOutboundReady();
             }
             Object data = dispatch(action, params);
+            outboundSucceeded = true;
             conn.send(ok(data, echo).toString());
         } catch (ApiError e) {
             conn.send(fail(e.code, e.getMessage(), echo).toString());
@@ -84,7 +88,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
             L.e("action " + action, t);
             conn.send(fail(1400, String.valueOf(t), echo).toString());
         } finally {
-            if (outboundLease != null) outboundLease.close();
+            if (outboundLease != null) outboundLease.complete(outboundSucceeded);
         }
     }
 
@@ -1833,7 +1837,7 @@ public final class OneBotHub implements WsServer.Handler, QQClient.Listener {
         String qqVersion = qq.qqVersion();
         return new JSONObject()
                 .put("app_name", "onebot-qq")
-                .put("app_version", "0.5.2")
+                .put("app_version", "0.5.3")
                 .put("protocol_version", "v11")
                 .put("qq_version", qqVersion.isEmpty() ? "unknown" : qqVersion)
                 .put("runtime", "Android QQNT/Xposed");

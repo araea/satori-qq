@@ -14,6 +14,20 @@
 - 即时健康（WS / `login.get`）≠ 防踢有效。对照窗口按注入后 16–31 分钟量级看踢号，不要看进程活了多久。
 - 主线是反检测（少被服务端踢）。协议是 **Satori v1**（Koishi `adapter-satori` → `http://127.0.0.1:3001`）。不扩新 Satori 动作。阶段路线见仓库外 `satori-qq-后续反检测增强方案.md`。
 
+## 定稿（0.8.9）
+
+本地 I/O 闭环再次收口。**不要开 0.8.10 来「再藏一点」。** 现场以 `ws-health` 的进程 `version=0.8.9` 为准（已装 APK 的 `versionName` 可能比进程新）。
+
+已覆盖、不再加层：检测库 GOT + seccomp、maps/environ/tcp 过滤、路径 `/.` `/..` / ZWSP、Java 探针、已装列表 + xposed meta、ADB settings/属性、o3 白名单上报。主/MSF `loop_ok=1` `leak_maps=0` `patched≈48/28`。
+
+刻意留下、不要当下一阶段：
+
+- Duck Detector 整机红灯（TEE / PI / SELinux / KSU 管理器 / 它自己进程里的无名 RX）。模块只进 QQ。
+- `libart` smaps Shared_Dirty、`File.list`、`IPackageManager` 直连、`qk_env_*.json` 文件名。扩这些会回到 0.5.4 登录超时。
+- maps 干净仍可能 16–31 分钟真踢（#13–#16 已证伪「再藏 I/O」）。下一件事只观察 `account_kicks`。
+
+登录超时回 `SatoriQQ-0.8.5.apk`。0.8.6 不要当回滚点。
+
 ## 层（按依赖顺序）
 
 换一套 root 时，每一层都要对上等价物。缺一层就回到那一层失败时的暴露面。

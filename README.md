@@ -7,6 +7,16 @@ satori-qq
 
 当前按 QQ 9.3.55（NT）核验。
 
+## 能力
+
+- Satori v1：登录、消息收发/历史/撤回、群与成员、好友、表态、文件上传和 WebSocket 事件。
+- QQ 消息：文本、图片、语音、视频、文件、回复、@、表情、合并转发；消息 ID 使用可跨进程引用的 QQ `msgId`。
+- QQ 扩展：戳一戳、资料卡点赞、群签到、精华、名片、头衔、群荣誉、群文件管理、邀请/退群、骰子/猜拳和 QZone 说说。
+- 实用查询：群概览、成员/联系人搜索、消息前后文、资源下载和实现端健康状态。
+- 稳定性：写操作串行、限频和熔断；发送回声去重；短暂断线按事件序号恢复。
+
+标准方法、事件、消息元素与全部内部接口见 [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)。
+
 ## 使用
 
 1. 构建并安装模块（见「构建」），在 vector 启用 `com.satori.qq`，把 QQ（`com.tencent.mobileqq`）加入作用域。
@@ -23,17 +33,36 @@ am startservice -n com.tencent.mobileqq/.msf.service.MsfService
 
 ```yaml
 plugins:
+  server:
+    port: 5140
+    selfUrl: 'http://127.0.0.1:5140'
+  assets-local: {}
   adapter-satori:
     endpoint: 'http://127.0.0.1:3001'
     token: ''   # 与 satori-qq.json 一致；空则不鉴权
 ```
 
+`selfUrl` 让 Koishi 本地资产使用 QQ 进程可访问的 HTTP 地址；请确保它与 `server.port` 一致。
+
 - HTTP：`POST http://127.0.0.1:3001/v1/{resource}.{method}`
 - 事件：`ws://127.0.0.1:3001/v1/events`（`IDENTIFY` → `READY` → `EVENT`）
+- 恢复：省略 `IDENTIFY.sn` 表示新会话；显式传入最后收到的 `sn` 才回放断线事件
 
 `platform` 为 `red`，`adapter` 为 `satori-qq`。可选配置见 `satori-qq.sample.json`。
 
-方法与内部接口见 [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)。
+Koishi 可直接通过官方适配器调用 QQ 内部接口：
+
+```js
+const overview = await bot.internal.groupOverview({ guild_id: '123456' })
+const members = await bot.internal.group.member.search({
+  guild_id: '123456', query: '群名片', limit: 20,
+})
+const context = await bot.internal.messageContext({
+  channel_id: '123456', message_id: '7000000000000000000', before: 5, after: 5,
+})
+```
+
+可用动作及群文件子操作可从 `POST /v1/internal/capabilities` 动态获取。
 
 ## 构建
 

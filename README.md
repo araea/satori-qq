@@ -1,7 +1,7 @@
 satori-qq
 =========
 
-[<img alt="github" src="https://img.shields.io/badge/github-araea/onebot--qq-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/araea/onebot-qq)
+[<img alt="github" src="https://img.shields.io/badge/github-araea/satori--qq-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/araea/satori-qq)
 
 把本机 QQ 做成 [Satori](https://satori.js.org/zh-CN/protocol/api.html) v1 实现端，供 [Koishi](https://koishi.chat/) 的 `adapter-satori` 连接。
 

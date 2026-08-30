@@ -11,6 +11,7 @@ public final class OutboundGuardTest {
         check(OutboundGuard.isMutation("internal.group_leave"), "group leave is guarded");
         check(OutboundGuard.isMutation("internal.group_file"), "group file writes are guarded");
         check(OutboundGuard.isMutation("internal.dice"), "special face sends are guarded");
+        check(OutboundGuard.isMutation("internal.honor_display"), "honor switch is guarded");
         check(OutboundGuard.isMutation("internal.qzone.publish"), "qzone writes are guarded");
         check(!OutboundGuard.isMutation("message.update"), "unsupported message.update is not guarded");
         check(!OutboundGuard.isMutation("reaction.clear"), "unsupported reaction.clear is not guarded");

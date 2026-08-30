@@ -3,7 +3,7 @@
 本模块是 Satori **实现端**（SDK）：Koishi 的 `adapter-satori` 连 `http://127.0.0.1:3001`。
 
 - HTTP：`POST /v1/{resource}.{method}`，JSON 请求体，成功 200；`upload.create` 使用 multipart。
-- 事件：`GET /v1/events` 升级为 WebSocket；10s 内 `IDENTIFY`，回复 `READY`，之后推 `EVENT`。`IDENTIFY` 的 `sn=0` 会回放缓冲区内 `sn > 0` 的事件。
+- 事件：`GET /v1/events` 升级为 WebSocket；10s 内 `IDENTIFY`，回复 `READY`，之后推 `EVENT`。省略 `sn` 表示新会话、不回放；显式 `sn=0` 会回放缓冲区内 `sn > 0` 的事件。
 - 消息 `id` 为 QQ NT `msgId` 字符串（可跨进程引用/撤回/get）；历史游标仍是 `message_seq`。
 - 元信息：`POST /v1/meta`；内部资源代理：`GET /v1/proxy/{url}`。
 - `platform`：`red`；`adapter`：`satori-qq`。
@@ -57,16 +57,21 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 | `invite` | 邀请用户入群。`guild_id` + `user_id` |
 | `special_title` | 群头衔；可带 `show=true` 同时打开群管理「展示成员群头衔」 |
 | `title_display` | 开/关群管理「成员群头衔」（`userShowFlag` / `0x8FC_0`，不是群标识）。`guild_id` + `show` |
+| `honor_display` | 开/关群聊资料中的「群荣誉 / 群标识」（`groupFlagExt3`），与成员群头衔分离。`guild_id` + `show` |
 | `card` | 改群名片。`guild_id` + 可选 `user_id` + `card` |
 | `sign` | 群打卡（`0xEB7_1`）。`guild_id` |
 | `essence` | 设/取消精华。`message_id` + 可选 `op=add\|remove` |
 | `group_remark` | 自己对这个群的备注。`guild_id` + `remark` |
 | `group_extra` | 读群扩展标志，含 `honor_open` |
+| `group_overview` | 群仪表盘：群/频道、成员角色与活跃统计、自己的成员信息、展示开关；可选 `include_members` / `include_files` |
+| `group_member_search` | 按 UIN、昵称、群名片、头衔和角色搜索群成员，支持 `offset` / `limit` |
+| `contact_search` | 按号码、昵称、备注或群名搜索好友与群；`type=all|friend|guild` |
 | `group_refresh` | 强制刷新 QQ 内核群列表并返回最新群列表 |
 | `group_leave` | 退出群；`guild_id` + 必须显式 `confirm=true` |
 | `group_file` | 完整群文件管理：`op=info\|list\|url\|upload\|create_folder\|rename_folder\|delete_folder\|rename_file\|move_file\|delete_file` |
 | `get_forward` | 按 resid 取合并转发 |
 | `get_resource` | 下载已登记的图/语音/文件 |
+| `message_context` | 按 `channel_id` + `message_id` 返回消息及其前后文；`before` / `after` 各最多 50 条 |
 | `dice` / `rps` | 向 `channel_id`、`guild_id` 或 `user_id` 发送 QQ 原生随机骰子 / 猜拳 |
 | `capabilities` / `help` | 返回内部动作、群文件操作和特殊表情 ID 的机器可读清单 |
 | `status` / `version` | 实现端健康与版本 |
@@ -79,6 +84,21 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 
 所有内部写操作也经过与标准消息发送相同的串行、最小间隔、每分钟预算和失败熔断保护；
 `qzone.publish/delete/clear` 同样纳入保护，避免多个本地调用方并发制造突发请求。
+
+Koishi 可直接使用官方适配器的 internal 代理；camelCase、snake_case 和分层点号均会归一化：
+
+```js
+const overview = await bot.internal.groupOverview({ guild_id: '123456' })
+const members = await bot.internal.group.member.search({
+  guild_id: '123456', query: '群名片', limit: 20,
+})
+const context = await bot.internal.messageContext({
+  channel_id: '123456', message_id: '7000000000000000000', before: 5, after: 5,
+})
+```
+
+`group_member_search.next` 是下一次 internal 调用所需的参数数组，可直接被适配器的异步迭代器消费；
+同时提供数值型 `next_offset` 方便直接 HTTP 客户端。
 
 ## 事件
 
@@ -121,5 +141,6 @@ plugins:
 ```
 
 `selfUrl` 缺失时 assets 会变成 `file:///data/data/com.termux/...`，QQ 进程读不到，表现为发图失败。
+如果 `server.maxPort` 允许端口漂移，应确保 5140 未被占用；否则 `selfUrl` 必须与实际监听端口同步。
 
 私聊自己不投递。测发送用真实群或好友。

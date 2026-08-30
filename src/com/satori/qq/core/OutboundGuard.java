@@ -32,7 +32,7 @@ public final class OutboundGuard {
                 "friend.approve", "friend.delete",
                 "guild.approve", "guild.member.approve",
                 "internal.poke", "internal.like", "internal.special_title", "internal.title_display",
-                "internal.card", "internal.sign", "internal.essence", "internal.group_remark",
+                "internal.honor_display", "internal.card", "internal.sign", "internal.essence", "internal.group_remark",
                 "internal.group_file", "internal.group_leave",
                 "internal.dice", "internal.rps",
                 "internal.qzone.publish", "internal.qzone.delete", "internal.qzone.clear",

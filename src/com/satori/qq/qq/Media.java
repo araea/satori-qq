@@ -598,8 +598,7 @@ public final class Media {
         if (destPath == null || destPath.isEmpty()) return false;
         try {
             File destFile = new File(destPath);
-            File parent = destFile.getParentFile();
-            if (parent != null && !parent.isDirectory()) parent.mkdirs();
+            if (!ensureParentWritable(destFile)) return false;
             boolean exist = false;
             long dsize = 0;
             try {
@@ -621,6 +620,25 @@ public final class Media {
             L.e("copyToDest " + new File(destPath).getName(), t);
             return false;
         }
+    }
+
+    /**
+     * QQ returns paths under chatpic/chatraw/{shard}/Cache_*. If those dirs were created as
+     * root (mode without app write), mkdirs/open fails with ENOENT and image send dies.
+     */
+    private static boolean ensureParentWritable(File destFile) {
+        File parent = destFile.getParentFile();
+        if (parent == null) return true;
+        if (parent.isDirectory()) return true;
+        if (parent.mkdirs() && parent.isDirectory()) return true;
+        // Walk up: often chatraw/chatimg themselves are root-owned empty stubs.
+        File cursor = parent;
+        while (cursor != null && !cursor.exists()) cursor = cursor.getParentFile();
+        L.e("copyToDest mkdirs failed destParent=" + parent.getAbsolutePath()
+                + " nearest=" + (cursor == null ? "?" : cursor.getAbsolutePath())
+                + " canWrite=" + (cursor != null && cursor.canWrite())
+                + " modeHint=check chatpic/chatraw+chatimg ownership", null);
+        return false;
     }
 
     /**

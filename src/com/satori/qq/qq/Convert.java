@@ -353,7 +353,7 @@ public final class Convert {
         if (grayOnly) return null;
 
         // Include messages typed in this QQ client. Bot-originated echoes are
-        // suppressed in SatoriHub (outboundEcho / seen), not here.
+        // 手打自消息会进 Koishi；message.create 回声由 SatoriHub.outboundMsgIds 拦截。
 
         MsgStore.Rec sr = new MsgStore.Rec();
         sr.chatType = chatType; sr.peerUin = peerUin; sr.peerUid = peerUid;

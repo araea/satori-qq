@@ -1837,7 +1837,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         outboundEcho.incrementAndGet();
         try {
             QQClient.SendResult r = qq.sendMsg(chatType, peer, els);
-            if (r != null && r.msgId != 0) seen.add(r.msgId);
+            if (r != null && r.msgId != 0) outboundMsgIds.add(r.msgId);
             return r;
         } finally {
             outboundEcho.decrementAndGet();
@@ -3010,8 +3010,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     // ============ QQ inbound: events ============
-    private final java.util.Set<Long> seen = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    /** >0 while message.create is inside kernel sendMsg; drops that echo so it does not re-enter Koishi. */
+    /** message.create 回声的 msgId；recv 见到就丢，不再进 Koishi。 */
+    private final java.util.Set<Long> outboundMsgIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** 已成功投递的 msgId，防内核重复推送。 */
+    private final java.util.Set<Long> emittedMsgIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** >0 表示正在 kernel sendMsg；仅配合 msgId==0 的自消息回声兜底。 */
     private final java.util.concurrent.atomic.AtomicInteger outboundEcho =
             new java.util.concurrent.atomic.AtomicInteger();
     private final java.util.Map<String, FriendReq> pendingFriends = new java.util.concurrent.ConcurrentHashMap<>();
@@ -3042,6 +3045,26 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }
     }
 
+    /** 内核有时会先推空壳再推正文；空壳不占位，避免正文被 dedupe 掉。 */
+    private static boolean isDeliverableMessage(JSONObject ev) {
+        if (ev == null || !"message".equals(ev.optString("post_type"))) return true;
+        String raw = ev.optString("raw_message", "");
+        if (raw != null && !raw.trim().isEmpty()) return true;
+        JSONArray segs = ev.optJSONArray("message");
+        if (segs == null) return false;
+        for (int i = 0; i < segs.length(); i++) {
+            JSONObject seg = segs.optJSONObject(i);
+            if (seg == null) continue;
+            if ("text".equals(seg.optString("type"))) {
+                JSONObject data = seg.optJSONObject("data");
+                if (data != null && !data.optString("text", "").trim().isEmpty()) return true;
+            } else if (!seg.optString("type", "").isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override public void onRecvMsgs(List<?> records) {
         long self = selfUin();
         for (Object rec : records) {
@@ -3049,23 +3072,34 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 rememberReactionState(rec);
                 long msgId = Ref.asLong(qq.ref.get(rec, "msgId"));
                 long senderUin = Ref.asLong(qq.ref.get(rec, "senderUin"));
-                if (msgId != 0 && !seen.add(msgId)) continue; // dedupe
-                if (seen.size() > 8000) seen.clear();
-                // Echo of message.create — do not feed it back into Koishi as a new session.
+
+                // 机器人 API 发出的回声：sendTracked 已登记 msgId。
+                if (msgId != 0 && outboundMsgIds.remove(msgId)) continue;
+
+                // sendMsg 窗口内的自消息回声（含 msgId 比登记更早到达的竞态）。
                 if (self != 0 && senderUin == self && outboundEcho.get() > 0) continue;
+
+                // 已完整投递过（内核重复推送同一条）。
+                if (msgId != 0 && emittedMsgIds.contains(msgId)) continue;
+
                 JSONObject ev = conv.recordToEvent(rec, self);
-                if (ev != null) {
-                    String nt = ev.optString("notice_type", "");
-                    if ("group_recall".equals(nt) || "friend_recall".equals(nt)) {
-                        long mid = ev.optLong("qq_msg_id", 0);
-                        if (mid == 0) mid = ev.optLong("message_id", 0);
-                        if (mid != 0 && !seenRecalls.add(mid)) continue;
-                    }
-                    emitObEvent(ev);
-                    L.d("event -> " + ev.optString("post_type") + "/"
-                            + ev.optString("message_type", ev.optString("notice_type"))
-                            + " from " + ev.optLong("user_id"));
+                if (ev == null || !isDeliverableMessage(ev)) continue;
+
+                String nt = ev.optString("notice_type", "");
+                if ("group_recall".equals(nt) || "friend_recall".equals(nt)) {
+                    long mid = ev.optLong("qq_msg_id", 0);
+                    if (mid == 0) mid = ev.optLong("message_id", 0);
+                    if (mid != 0 && !seenRecalls.add(mid)) continue;
                 }
+
+                if (msgId != 0) {
+                    emittedMsgIds.add(msgId);
+                    if (emittedMsgIds.size() > 8000) emittedMsgIds.clear();
+                }
+                emitObEvent(ev);
+                L.d("event -> " + ev.optString("post_type") + "/"
+                        + ev.optString("message_type", ev.optString("notice_type"))
+                        + " from " + ev.optLong("user_id"));
             } catch (Throwable t) {
                 L.e("onRecvMsgs", t);
             }

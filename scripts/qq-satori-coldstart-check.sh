@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Compare installed APK vs the running satori-qq process. Does not stop QQ or touch scope.
 # Exit 0 = running version matches APK (hooks may still be zero if intercepts missed).
-# Exit 2 = still on an older process (wait for natural restart).
+# Exit 2 = still on an older process (install flow should have force-stopped already).
 # Exit 1 = WS/login unhealthy.
 
 export PATH=/data/data/com.termux/files/usr/bin:/system/bin:$PATH

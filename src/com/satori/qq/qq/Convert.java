@@ -16,6 +16,7 @@ public final class Convert {
     private final MsgStore store;
 
     public Convert(QQClient qq, MsgStore store) { this.qq = qq; this.ref = qq.ref; this.store = store; }
+    public volatile String lastParseDebug = "";
 
     // ---------------- internal segments -> QQ elements (for sending) ----------------
 
@@ -294,7 +295,7 @@ public final class Convert {
     }
 
     private void addReply(ArrayList<Object> out, String id) {
-        MsgStore.Rec r = store.get((int) parseLong(id));
+        MsgStore.Rec r = store.resolve(id);
         if (r == null) return;
         Object e = newElement(7);
         Object rp = ref.neu("com.tencent.qqnt.kernel.nativeinterface.ReplyElement");
@@ -307,33 +308,57 @@ public final class Convert {
 
     // ---------------- QQ MsgRecord -> Satori/internal event ----------------
 
+    /** queryMsgs returns QueriedMsgInfo { msgRecord, msgAbstract }; unwrap before field reads. */
+    public static Object unwrapRecord(Object rec) {
+        if (rec == null) return null;
+        String name = rec.getClass().getSimpleName();
+        if (name == null || (!name.contains("Queried") && !name.contains("Query"))) return rec;
+        try {
+            java.lang.reflect.Field f = rec.getClass().getDeclaredField("msgRecord");
+            f.setAccessible(true);
+            Object inner = f.get(rec);
+            if (inner != null) return inner;
+        } catch (Throwable ignore) {}
+        return rec;
+    }
+
     /** Returns a message event JSONObject, or null if it should be skipped. */
     public JSONObject recordToEvent(Object rec, long selfUin) {
+        rec = unwrapRecord(rec);
+        if (rec == null) return null;
         int chatType = ref.asInt(ref.get(rec, "chatType"));
         if (chatType != QQClient.CT_C2C && chatType != QQClient.CT_GROUP) return null;
 
-        long msgId = Ref.asLong(ref.get(rec, "msgId"));
-        long msgSeq = Ref.asLong(ref.get(rec, "msgSeq"));
-        long peerUin = Ref.asLong(ref.get(rec, "peerUin"));
-        long senderUin = Ref.asLong(ref.get(rec, "senderUin"));
+        long msgId = ref.getLong(rec, "msgId");
+        long msgSeq = ref.getLong(rec, "msgSeq");
+        long peerUin = ref.getLong(rec, "peerUin");
+        long senderUin = ref.getLong(rec, "senderUin");
         String senderUid = Ref.asStr(ref.get(rec, "senderUid"));
         String peerUid = Ref.asStr(ref.get(rec, "peerUid"));
         String nick = Ref.asStr(ref.get(rec, "sendNickName"));
         String card = Ref.asStr(ref.get(rec, "sendMemberName"));
-        long msgTime = Ref.asLong(ref.get(rec, "msgTime"));
+        long msgTime = ref.getLong(rec, "msgTime");
+        if (msgTime > 10_000_000_000L) msgTime /= 1000L;
 
         store.learnUid(senderUin, senderUid);
 
+        boolean grayOnly = grayTipOnly(rec);
         JSONObject notice = noticeFromRecord(rec, selfUin, chatType, peerUin, peerUid,
                 senderUin, senderUid, msgId, msgSeq, msgTime);
-        if (notice != null) return notice;
+        if (notice != null) {
+            if (msgId != 0) try { notice.put("qq_msg_id", msgId); } catch (Exception ignore) {}
+            return notice;
+        }
+        // Unparsed gray tip / empty system record must not become message-created.
+        if (grayOnly) return null;
 
         // Include messages typed in this QQ client. Bot-originated echoes are
         // suppressed in SatoriHub (outboundEcho / seen), not here.
 
         MsgStore.Rec sr = new MsgStore.Rec();
         sr.chatType = chatType; sr.peerUin = peerUin; sr.peerUid = peerUid;
-        sr.msgId = msgId; sr.msgSeq = msgSeq; sr.senderUin = senderUin; sr.senderUid = senderUid;
+        sr.msgId = msgId; sr.msgSeq = msgSeq; sr.msgTime = msgTime;
+        sr.senderUin = senderUin; sr.senderUid = senderUid;
         sr.msgRecord = rec;
         int obId = store.put(sr);
 
@@ -342,13 +367,41 @@ public final class Convert {
         StringBuilder raw = new StringBuilder();
         String resourcePeer = chatType == QQClient.CT_GROUP ? String.valueOf(peerUin) : peerUid;
         parseElements(elements, segs, raw, chatType, resourcePeer, msgId);
+        if (segs.length() == 0) {
+            String peek = peekPlainText(elements);
+            if (!peek.isEmpty()) {
+                seg(segs, "text", "text", peek);
+                raw.append(peek);
+            }
+        }
+        lastParseDebug = "elsIsList=" + (elements instanceof java.util.List)
+                + " n=" + (elements instanceof java.util.List ? ((java.util.List<?>) elements).size() : -1)
+                + " segs=" + segs.length() + " rawLen=" + raw.length()
+                + " peek=" + peekPlainText(elements)
+                + " cls=" + rec.getClass().getSimpleName()
+                + " time=" + msgTime
+                + " seq=" + msgSeq
+                + " rawT=" + String.valueOf(ref.get(rec, "msgTime"));
+        if (raw.length() == 0) {
+            String peek = peekPlainText(elements);
+            if (!peek.isEmpty()) raw.append(peek);
+        }
+        if (raw.length() > 0) {
+            sr.content = raw.toString();
+            store.put(sr);
+        }
+        if (segs.length() == 0 && senderUin == 0) return null;
 
         try {
             JSONObject ev = new JSONObject();
-            ev.put("time", msgTime > 0 ? msgTime : System.currentTimeMillis() / 1000);
+            long when = msgTime > 0 ? msgTime : System.currentTimeMillis() / 1000;
+            ev.put("time", when);
+            ev.put("msg_time", String.valueOf(when));
             ev.put("self_id", selfUin);
             ev.put("post_type", "message");
-            ev.put("message_id", obId);
+            ev.put("message_id", msgId != 0 ? String.valueOf(msgId) : String.valueOf(obId));
+            ev.put("store_id", obId);
+            if (msgId != 0) ev.put("qq_msg_id", msgId);
             ev.put("user_id", senderUin);
             ev.put("message", segs);
             ev.put("raw_message", raw.toString());
@@ -356,13 +409,13 @@ public final class Convert {
             ev.put("message_seq", msgSeq);
             JSONObject sender = new JSONObject();
             sender.put("user_id", senderUin);
-            sender.put("nickname", nick);
+            sender.put("nickname", nick == null ? "" : nick);
             if (chatType == QQClient.CT_GROUP) {
                 ev.put("message_type", "group");
                 ev.put("sub_type", "normal");
                 ev.put("group_id", peerUin);
                 sender.put("card", card == null ? "" : card);
-                sender.put("role", "member");
+                sender.put("role", senderRole(rec, peerUin, senderUin));
             } else {
                 ev.put("message_type", "private");
                 ev.put("sub_type", "friend");
@@ -375,6 +428,63 @@ public final class Convert {
         }
     }
 
+    private boolean grayTipOnly(Object rec) {
+        Object elements = ref.get(rec, "elements");
+        if (!(elements instanceof java.util.List)) return false;
+        boolean gray = false;
+        for (Object e : (java.util.List<?>) elements) {
+            if (e == null) continue;
+            int et = ref.asInt(ref.get(e, "elementType"));
+            if (et == 8) gray = true;
+            else return false;
+        }
+        return gray;
+    }
+
+    private String senderRole(Object rec, long groupId, long senderUin) {
+        String cached = store.roleOf(groupId, senderUin);
+        if (!cached.isEmpty()) return cached;
+        for (String field : new String[]{"senderRoleType", "senderRole", "roleType", "roleId"}) {
+            Object v = ref.get(rec, field);
+            if (v == null) continue;
+            String mapped = mapRole(v);
+            if (!mapped.isEmpty()) {
+                store.learnRole(groupId, senderUin, mapped);
+                return mapped;
+            }
+        }
+        return "member";
+    }
+
+    private String mapRole(Object v) {
+        String name = "";
+        try {
+            if (v.getClass().isEnum()) name = String.valueOf(qq.ref.call(v, "name"));
+        } catch (Throwable ignore) {}
+        if (name.isEmpty()) name = String.valueOf(v);
+        String n = name.toUpperCase(java.util.Locale.ROOT);
+        if (n.contains("OWNER")) return "owner";
+        if (n.contains("ADMIN")) return "admin";
+        if (n.contains("MEMBER")) return "member";
+        return "";
+    }
+
+    /** Same field reads as QQClient.sampleRecord; used when parseElements yields nothing. */
+    private String peekPlainText(Object elements) {
+        if (!(elements instanceof java.util.List)) return "";
+        StringBuilder sb = new StringBuilder();
+        for (Object e : (java.util.List<?>) elements) {
+            if (e == null) continue;
+            try {
+                if (Ref.asInt(ref.get(e, "elementType")) != 1) continue;
+                Object t = ref.get(e, "textElement");
+                String c = t == null ? "" : Ref.asStr(ref.get(t, "content"));
+                if (c != null && !c.isEmpty()) sb.append(c);
+            } catch (Throwable ignore) {}
+        }
+        return sb.toString();
+    }
+
     private void parseElements(Object elements, JSONArray segs, StringBuilder raw,
                                int chatType, String peerUid, long msgId) {
         if (!(elements instanceof java.util.List)) return;
@@ -385,11 +495,17 @@ public final class Convert {
                 int et = ref.asInt(ref.get(e, "elementType"));
                 switch (et) {
                     case 1: { // text / at
-                        Object t = ref.get(e, "textElement");
-                        String content = Ref.asStr(ref.get(t, "content"));
-                        int atType = ref.asInt(ref.get(t, "atType"));
+                        Object t = null;
+                        try { t = ref.get(e, "textElement"); } catch (Throwable ignore) {}
+                        String content = "";
+                        int atType = 0;
+                        long atUin = 0;
+                        if (t != null) {
+                            try { content = Ref.asStr(ref.get(t, "content")); } catch (Throwable ignore) {}
+                            try { atType = Ref.asInt(ref.get(t, "atType")); } catch (Throwable ignore) {}
+                            try { atUin = Ref.asLong(ref.get(t, "atUid")); } catch (Throwable ignore) {}
+                        }
                         if (atType != 0) {
-                            long atUin = Ref.asLong(ref.get(t, "atUid"));
                             if (atType == 1 || atUin == 0) {
                                 seg(segs, "at", "qq", "all");
                                 raw.append("[CQ:at,qq=all]");
@@ -397,7 +513,8 @@ public final class Convert {
                                 seg(segs, "at", "qq", String.valueOf(atUin));
                                 raw.append("[CQ:at,qq=").append(atUin).append("]");
                             }
-                        } else {
+                        }
+                        if (content != null && !content.isEmpty()) {
                             seg(segs, "text", "text", content);
                             raw.append(content);
                         }
@@ -610,21 +727,47 @@ public final class Convert {
             Object rev = ref.get(gray, "revokeElement");
             if (rev == null && sub != 1) return null;
             String opUid = rev == null ? "" : Ref.asStr(ref.get(rev, "operatorUid"));
-            long operator = store.uinOf(opUid);
+            long operator = resolvePerson(opUid);
             if (operator == 0) operator = senderUin;
             if (opUid != null && !opUid.isEmpty() && operator != 0) store.learnUid(operator, opUid);
-            int obId = store.idOfMsgId(msgId);
+            if (rev != null) {
+                String origSender = firstNonEmpty(
+                        Ref.asStr(ref.get(rev, "origMsgSenderUid")),
+                        Ref.asStr(ref.get(rev, "senderUid")));
+                long su = resolvePerson(origSender);
+                if (su != 0) senderUin = su;
+            }
+            long recalled = 0;
+            long revSeq = msgSeq;
+            if (rev != null) {
+                for (String f : new String[]{"msgId", "origMsgId", "recallMsgId", "recalledMsgId",
+                        "referencedMsgId"}) {
+                    recalled = Ref.asLong(ref.get(rev, f));
+                    if (recalled != 0) break;
+                }
+                long s = Ref.asLong(ref.get(rev, "msgSeq"));
+                if (s != 0) revSeq = s;
+            }
+            long pubId = recalled != 0 ? recalled : msgId;
+            MsgStore.Rec known = pubId != 0 ? store.getByMsgId(pubId) : null;
+            if (known == null && revSeq != 0)
+                known = store.findByPeerSeq(chatType, peerUin, null, revSeq);
+            if (known != null) {
+                if (known.msgId != 0) pubId = known.msgId;
+                if (known.senderUin != 0) senderUin = known.senderUin;
+            }
+            int obId = store.idOfMsgId(pubId);
             if (obId == 0) {
                 MsgStore.Rec sr = new MsgStore.Rec();
                 sr.chatType = chatType;
                 sr.peerUin = peerUin;
-                sr.msgId = msgId;
-                sr.msgSeq = msgSeq;
+                sr.msgId = pubId;
+                sr.msgSeq = revSeq;
                 sr.senderUin = senderUin;
                 sr.senderUid = senderUid;
                 obId = store.put(sr);
             }
-            return Notices.recall(selfUin, time, group, peerUin, senderUin, operator, obId);
+            return Notices.recall(selfUin, time, group, peerUin, senderUin, operator, obId, pubId);
         }
 
         Object js = ref.get(gray, "jsonGrayTipElement");
@@ -634,13 +777,7 @@ public final class Convert {
             jsonStr = Ref.asStr(ref.get(js, "jsonStr"));
             JSONObject poke = Notices.pokeFromJson(jsonStr, selfUin, time, group, peerUin);
             if (poke != null) {
-                long sender = store.uinOf(poke.optString("sender_uid"));
-                long target = store.uinOf(poke.optString("target_uid"));
-                if (sender != 0) poke.put("user_id", sender);
-                if (target != 0) poke.put("target_id", target);
-                if (!group) poke.put("sender_id", sender);
-                poke.remove("sender_uid");
-                poke.remove("target_uid");
+                fillPokePeople(poke, group);
                 return poke;
             }
         }
@@ -650,20 +787,14 @@ public final class Convert {
             xml = Ref.asStr(ref.get(xmlEl, "content"));
             JSONObject pokeXml = Notices.pokeFromXml(xml, selfUin, time, group, peerUin);
             if (pokeXml != null) {
-                long sender = store.uinOf(pokeXml.optString("sender_uid"));
-                long target = store.uinOf(pokeXml.optString("target_uid"));
-                if (sender != 0) pokeXml.put("user_id", sender);
-                if (target != 0) pokeXml.put("target_id", target);
-                if (!group) pokeXml.put("sender_id", sender);
-                pokeXml.remove("sender_uid");
-                pokeXml.remove("target_uid");
+                fillPokePeople(pokeXml, group);
                 return pokeXml;
             }
             if (group) {
                 JSONObject banXml = Notices.banFromXml(xml, selfUin, time, peerUin);
                 if (banXml != null) {
-                    long member = store.uinOf(banXml.optString("member_uid"));
-                    long admin = store.uinOf(banXml.optString("admin_uid"));
+                    long member = resolvePerson(banXml.optString("member_uid"));
+                    long admin = resolvePerson(banXml.optString("admin_uid"));
                     if (member == selfUin && admin != 0 && admin != selfUin) {
                         long tmp = member;
                         member = admin;
@@ -727,13 +858,33 @@ public final class Convert {
         return null;
     }
 
+    private void fillPokePeople(JSONObject poke, boolean group) throws Exception {
+        long sender = resolvePerson(poke.optString("sender_uid"));
+        long target = resolvePerson(poke.optString("target_uid"));
+        if (sender == 0) sender = poke.optLong("user_id", 0);
+        if (target == 0) target = poke.optLong("target_id", 0);
+        if (sender != 0) poke.put("user_id", sender);
+        if (target != 0) poke.put("target_id", target);
+        if (!group && sender != 0) poke.put("sender_id", sender);
+        poke.remove("sender_uid");
+        poke.remove("target_uid");
+    }
+
+    private long resolvePerson(String raw) {
+        if (raw == null || raw.isEmpty()) return 0;
+        String s = raw.trim();
+        long n = parseLongQuiet(s);
+        if (n != 0) return n;
+        long cached = store.uinOf(s);
+        if (cached != 0) return cached;
+        try { return qq.resolveUin(s); } catch (Throwable t) { return 0; }
+    }
+
     private void applyXmlPeople(JSONObject n, long selfUin) throws Exception {
         String memberUid = n.optString("member_uid");
         String adminUid = n.optString("admin_uid");
-        long member = store.uinOf(memberUid);
-        if (member == 0 && !memberUid.isEmpty()) member = qq.resolveUin(memberUid);
-        long admin = store.uinOf(adminUid);
-        if (admin == 0 && !adminUid.isEmpty()) admin = qq.resolveUin(adminUid);
+        long member = resolvePerson(memberUid);
+        long admin = resolvePerson(adminUid);
         if (member == selfUin && admin != 0 && admin != selfUin) {
             long tmp = member;
             member = admin;

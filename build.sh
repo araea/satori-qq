@@ -44,6 +44,7 @@ else
 fi
 
 echo "== 3. aapt package =="
+rm -f $APK_UNSIGNED $OUT/satori-qq.aligned.apk
 $AAPT package -f -M $R/AndroidManifest.xml -I $FRAMEWORK -A $R/assets -F $APK_UNSIGNED
 ( cd $OUT/dex && $AAPT add $APK_UNSIGNED classes.dex >/dev/null )
 if [ -f $OUT/lib/arm64-v8a/libmapshide.so ]; then ( cd $OUT && $AAPT add $APK_UNSIGNED lib/arm64-v8a/libmapshide.so >/dev/null ) && echo "   packaged libmapshide.so"; fi

@@ -31,7 +31,9 @@ public final class OutboundGuard {
                 "channel.mute", "channel.update",
                 "friend.approve", "friend.delete",
                 "guild.approve", "guild.member.approve",
-                "internal.poke", "internal.like", "internal.special_title", "internal.group_file",
+                "internal.poke", "internal.like", "internal.special_title", "internal.title_display",
+                "internal.card", "internal.sign", "internal.essence", "internal.group_remark",
+                "internal.group_file",
                 "internal.invite");
         MUTATIONS = Collections.unmodifiableSet(actions);
     }

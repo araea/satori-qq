@@ -169,10 +169,16 @@ public final class AudioTranscoder {
         Object codec = silkCodec(ref, app, true);
         if (codec == null) throw new IllegalStateException("SilkCodecWrapper missing");
         long handle = 0;
+        boolean initialized = false;
         FileInputStream input = null;
         FileOutputStream output = null;
         try {
-            handle = Ref.asLong(ref.call(codec, "SilkEncoderNew", TARGET_RATE, SILK_BITRATE));
+            // Match QQ's own audio-processor lifecycle. b() initializes the pipe/buffers and
+            // creates the native codec handle; calling SilkEncoderNew directly skips state that
+            // libcodecsilk expects on recent builds.
+            ref.call(codec, "b", TARGET_RATE, SILK_BITRATE, TARGET_CHANNELS);
+            initialized = true;
+            handle = ref.getLong(codec, "r");
             if (handle == 0) throw new IllegalStateException("SilkEncoderNew returned 0");
             input = new FileInputStream(pcm);
             output = new FileOutputStream(silk);
@@ -194,9 +200,7 @@ public final class AudioTranscoder {
         } finally {
             if (input != null) try { input.close(); } catch (Throwable ignore) {}
             if (output != null) try { output.close(); } catch (Throwable ignore) {}
-            if (handle != 0) {
-                try { ref.call(codec, "deleteCodec", handle); } catch (Throwable ignore) {}
-            }
+            if (initialized) try { ref.call(codec, "d"); } catch (Throwable ignore) {}
         }
     }
 
@@ -299,12 +303,15 @@ public final class AudioTranscoder {
         if (app == null) throw new IllegalStateException("no MobileQQ context");
         Object codec = silkCodec(ref, app, false);
         if (codec == null) throw new IllegalStateException("SilkCodecWrapper missing");
-        long handle = 0;
+        boolean initialized = false;
         java.io.RandomAccessFile raf = null;
         FileOutputStream out = null;
         try {
-            handle = Ref.asLong(ref.call(codec, "SilkDecoderNew", TARGET_RATE, TARGET_CHANNELS));
-            if (handle == 0) throw new IllegalStateException("SilkDecoderNew returned 0");
+            // Exactly mirror SilkPlayerThread: b(sampleRate, 0, 1), then c() for each frame.
+            // Direct SilkDecoderNew calls bypass wrapper initialization and assert in libcodecsilk.
+            ref.call(codec, "b", TARGET_RATE, 0, TARGET_CHANNELS);
+            initialized = true;
+            if (ref.getLong(codec, "r") == 0) throw new IllegalStateException("Silk decoder not initialized");
             raf = new java.io.RandomAccessFile(silk, "r");
             byte[] head = new byte[(int) Math.min(16, raf.length())];
             raf.readFully(head);
@@ -323,16 +330,14 @@ public final class AudioTranscoder {
                 int blk = lo | (hi << 8);
                 if (blk <= 0 || blk == 0xFFFF || blk > silkBuf.length) break;
                 raf.readFully(silkBuf, 0, blk);
-                int n = Ref.asInt(ref.call(codec, "decode", handle, silkBuf, pcmBuf, blk, pcmBuf.length));
+                int n = Ref.asInt(ref.call(codec, "c", silkBuf, pcmBuf, blk, pcmBuf.length));
                 if (n > 0) out.write(pcmBuf, 0, Math.min(n, pcmBuf.length));
                 else out.write(new byte[PCM_FRAME]);
             }
         } finally {
             if (raf != null) try { raf.close(); } catch (Throwable ignore) {}
             if (out != null) try { out.close(); } catch (Throwable ignore) {}
-            if (handle != 0) {
-                try { ref.call(codec, "deleteCodec", handle); } catch (Throwable ignore) {}
-            }
+            if (initialized) try { ref.call(codec, "d"); } catch (Throwable ignore) {}
         }
     }
 

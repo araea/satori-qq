@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.charset.StandardCharsets;
 
 /** Bridge into the Android QQ NT kernel: capture session, send, register listeners and identity. */
 public final class QQClient {
@@ -30,12 +31,14 @@ public final class QQClient {
     public static final String GROUP_LISTENER  = "com.tencent.qqnt.kernel.nativeinterface.IKernelGroupListener";
     public static final String BUDDY_LISTENER  = "com.tencent.qqnt.kernel.nativeinterface.IKernelBuddyListener";
     public static final String MEMBER_LIST_CB  = "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberListCallback";
+    public static final String MEMBER_EXT_CB   = "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberExtCallback";
     public static final String OPERATE_CB      = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
     public static final String KICK_CB         = "com.tencent.qqnt.kernel.nativeinterface.IKickMemberOperateCallback";
     public static final String SHUTUP_INFO     = "com.tencent.qqnt.kernel.nativeinterface.GroupMemberShutUpInfo";
     public static final String MEMBER_ROLE     = "com.tencent.qqnt.kernelpublic.nativeinterface.MemberRole";
     public static final String BUDDY_REQ_TYPE  = "com.tencent.qqnt.kernel.nativeinterface.BuddyListReqType";
     public static final String MSG_OPERATE_CB  = "com.tencent.qqnt.kernel.nativeinterface.IMsgOperateCallback";
+    public static final String AIO_FIRST_CB    = "com.tencent.qqnt.kernel.nativeinterface.IGetAioFirstViewLatestMsgCallback";
     public static final String RICH_MEDIA_GET_REQ = "com.tencent.qqnt.kernel.nativeinterface.RichMediaElementGetReq";
     public static final String VIDEO_URL_CB = "com.tencent.qqnt.kernel.nativeinterface.IVideoPlayUrlCallback";
     public static final String VIDEO_CODEC = "com.tencent.qqnt.kernel.nativeinterface.VideoCodecFormatType";
@@ -181,6 +184,10 @@ public final class QQClient {
     public Object getRichMediaService() {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getRichMediaService"); } catch (Throwable t) { return null; }
+    }
+    public Object getRecentContactService() {
+        Object s = session; if (s == null) return null;
+        try { return ref.call(s, "getRecentContactService"); } catch (Throwable t) { return null; }
     }
 
     private synchronized void tryRegisterListener() {
@@ -353,6 +360,218 @@ public final class QQClient {
     }
     private String tryStr(Object o, String m) { try { return Ref.asStr(ref.call(o, m)); } catch (Throwable t) { return null; } }
 
+    // ---------- VAS bubble / font on outbound send ----------
+    private static final String MSG_ATTR_INFO = "com.tencent.qqnt.kernel.nativeinterface.MsgAttributeInfo";
+    private static final String VAS_MSG_ELEMENT = "com.tencent.qqnt.kernel.nativeinterface.VASMsgElement";
+    private static final String VAS_MSG_BUBBLE = "com.tencent.qqnt.kernel.nativeinterface.VASMsgBubble";
+    private static final String VAS_MSG_FONT = "com.tencent.qqnt.kernel.nativeinterface.VASMsgFont";
+
+    private static final class VasStyle {
+        int bubbleId, bubbleDiyTextId, subBubbleId, fontId, magicFontType;
+        boolean any() { return bubbleId > 0 || bubbleDiyTextId > 0 || subBubbleId > 0 || fontId != 0; }
+    }
+
+    /** Read the logged-in account's current AIO bubble + font selection. */
+    public VasStyle currentVasStyle() {
+        VasStyle s = new VasStyle();
+        String uin = selfUin;
+        if (uin == null || uin.isEmpty()) return s;
+        try {
+            Object vasApi = qrouteApi("com.tencent.mobileqq.vas.api.IVasAioData");
+            if (vasApi != null) {
+                Object data = ref.call(vasApi, "getAioVasMsgData", uin);
+                if (data != null) {
+                    s.bubbleId = Ref.asInt(ref.call(data, "getBubbleId"));
+                    s.bubbleDiyTextId = Ref.asInt(ref.call(data, "getBubbleDiyTextId"));
+                    s.subBubbleId = Ref.asInt(ref.call(data, "getSubBubbleId"));
+                    s.fontId = Ref.asInt(ref.call(data, "getFontId"));
+                    s.magicFontType = Ref.asInt(ref.call(data, "getMagicFontType"));
+                    if (s.any()) return s;
+                }
+            }
+        } catch (Throwable t) {
+            L.e("currentVasStyle aio", t);
+        }
+        try {
+            Object handler = svipHandler();
+            if (handler == null) return s;
+            s.bubbleId = Ref.asInt(ref.call(handler, "getSelfBubbleId"));
+            s.bubbleDiyTextId = Ref.asInt(ref.call(handler, "getSelfBubbleDiyTextId"));
+            s.subBubbleId = Ref.asInt(ref.call(handler, "getSubBubbleId"));
+            Object fontInfo = ref.call(handler, "getSelfFontInfo");
+            if (fontInfo != null) {
+                long vipFont = ref.getLong(fontInfo, "H");
+                int fontType = Ref.asInt(ref.get(fontInfo, "I"));
+                int magicFont = Ref.asInt(ref.get(fontInfo, "J"));
+                s.magicFontType = Ref.asInt(ref.get(fontInfo, "K"));
+                s.fontId = packNtFontId(vipFont, fontType, magicFont);
+            } else {
+                s.fontId = Ref.asInt(ref.call(handler, "getSelfFontId"));
+            }
+        } catch (Throwable t) {
+            L.e("currentVasStyle svip", t);
+        }
+        return s;
+    }
+
+    private Object qrouteApi(String apiClass) {
+        try {
+            return ref.callS("com.tencent.mobileqq.qroute.QRoute", "api", ref.cls(apiClass));
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private Object svipHandler() {
+        try {
+            Object runtime = appRuntime();
+            if (runtime == null) return null;
+            Object proxy = qrouteApi("com.tencent.mobileqq.vas.svip.api.ISVIPHandlerProxy");
+            String name = proxy == null ? "com.tencent.mobileqq.app.SVIPHandler"
+                    : Ref.asStr(ref.call(proxy, "getImplClassName"));
+            if (name == null || name.isEmpty()) name = "com.tencent.mobileqq.app.SVIPHandler";
+            return ref.call(runtime, "getBusinessHandler", name);
+        } catch (Throwable t) {
+            L.e("svipHandler", t);
+            return null;
+        }
+    }
+
+    /** Same packing QQ NT uses when translating profile font fields into msg attrs. */
+    private static int packNtFontId(long vipFont, int fontType, int magicFont) {
+        long lo = vipFont & 255L;
+        long hi = (vipFont >> 8) & 255L;
+        return (int) (((lo << 8) + hi) + ((long) fontType << 16) + ((long) magicFont << 24));
+    }
+
+    private static Integer intBox(int v) { return v > 0 ? v : null; }
+
+    private Object buildVasMsgAttr(VasStyle style) {
+        if (style == null || !style.any()) return null;
+        try {
+            Object bubble = ref.neu(VAS_MSG_BUBBLE);
+            ref.set(bubble, "bubbleId", intBox(style.bubbleId));
+            ref.set(bubble, "bubbleDiyTextId", intBox(style.bubbleDiyTextId));
+            ref.set(bubble, "subBubbleId", intBox(style.subBubbleId));
+            if (style.bubbleId > 0) ref.set(bubble, "canConvertToText", 1);
+
+            Object font = ref.neu(VAS_MSG_FONT);
+            if (style.fontId != 0) ref.set(font, "fontId", style.fontId);
+            if (style.magicFontType > 0) ref.set(font, "magicFontType", style.magicFontType);
+
+            Object vas = ref.neu(VAS_MSG_ELEMENT);
+            ref.set(vas, "bubbleInfo", bubble);
+            ref.set(vas, "vasFont", font);
+
+            Object info = ref.neu(MSG_ATTR_INFO);
+            ref.set(info, "attrType", 0);
+            ref.set(info, "attrId", 0L);
+            ref.set(info, "vasMsgInfo", vas);
+            return info;
+        } catch (Throwable t) {
+            L.e("buildVasMsgAttr", t);
+            return null;
+        }
+    }
+
+    /** Fallback: clone msgAttrs[0] from a recent manual send in this chat. */
+    private Object findRecentSelfVasAttr(int chatType, String peerUid) {
+        long self = parseLong(selfUin);
+        if (self == 0) return null;
+        MsgListResult list = getMsgs(chatType, peerUid, 0, 40);
+        if (list.records == null) return null;
+        for (Object rec : list.records) {
+            if (ref.getLong(rec, "senderUin") != self) continue;
+            Object cloned = cloneVasAttrFromRecord(rec);
+            if (cloned != null) return cloned;
+        }
+        return null;
+    }
+
+    private Object cloneVasAttrFromRecord(Object rec) {
+        try {
+            Object mapObj = ref.get(rec, "msgAttrs");
+            if (!(mapObj instanceof java.util.Map)) return null;
+            Object src = ((java.util.Map<?, ?>) mapObj).get(0);
+            if (src == null) return null;
+            Object vas = ref.get(src, "vasMsgInfo");
+            if (vas == null) return null;
+            Object bubble = ref.get(vas, "bubbleInfo");
+            Object font = ref.get(vas, "vasFont");
+            Integer bid = bubble == null ? null : (Integer) ref.get(bubble, "bubbleId");
+            Integer fid = font == null ? null : (Integer) ref.get(font, "fontId");
+            int bubbleId = bid == null ? 0 : bid;
+            int fontId = fid == null ? 0 : fid;
+            if (bubbleId <= 0 && fontId == 0) return null;
+
+            Object dstVas = ref.neu(VAS_MSG_ELEMENT);
+            ref.set(dstVas, "bubbleInfo", cloneVasBubble(bubble));
+            ref.set(dstVas, "vasFont", cloneVasFont(font));
+
+            Object dst = ref.neu(MSG_ATTR_INFO);
+            int attrType = Ref.asInt(ref.get(src, "attrType"));
+            ref.set(dst, "attrType", attrType);
+            ref.set(dst, "attrId", ref.getLong(src, "attrId"));
+            ref.set(dst, "vasMsgInfo", dstVas);
+            return dst;
+        } catch (Throwable t) {
+            L.e("cloneVasAttrFromRecord", t);
+            return null;
+        }
+    }
+
+    private Object cloneVasBubble(Object src) throws Exception {
+        Object dst = ref.neu(VAS_MSG_BUBBLE);
+        if (src == null) return dst;
+        copyIntegerField(src, dst, "bubbleId");
+        copyIntegerField(src, dst, "bubbleDiyTextId");
+        copyIntegerField(src, dst, "subBubbleId");
+        copyIntegerField(src, dst, "canConvertToText");
+        return dst;
+    }
+
+    private Object cloneVasFont(Object src) throws Exception {
+        Object dst = ref.neu(VAS_MSG_FONT);
+        if (src == null) return dst;
+        copyIntegerField(src, dst, "fontId");
+        copyIntegerField(src, dst, "magicFontType");
+        copyIntegerField(src, dst, "diyFontCfgUpdateTime");
+        copyIntegerField(src, dst, "diyFontImageId");
+        Object sub = ref.get(src, "subFontId");
+        if (sub instanceof Long) ref.set(dst, "subFontId", sub);
+        else if (sub instanceof Integer) ref.set(dst, "subFontId", ((Integer) sub).longValue());
+        return dst;
+    }
+
+    private void copyIntegerField(Object src, Object dst, String field) {
+        Object v = ref.get(src, field);
+        if (v != null) ref.set(dst, field, v);
+    }
+
+    /** QQ AIO stores bubble/font on msgAttrs key 0 via IVasAIOSendDataUtilApi (msgType 4 = text). */
+    private HashMap<Integer, Object> buildSendMsgAttrs(int chatType, String peerUid) {
+        HashMap<Integer, Object> attrs = new HashMap<>();
+        try {
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            Object vasSend = qrouteApi("com.tencent.qqnt.kernel.api.IVasAIOSendDataUtilApi");
+            if (vasSend != null) {
+                ref.call(vasSend, "detailVasMsgDataAttrs", attrs, contact, 4);
+                if (!attrs.isEmpty()) return attrs;
+            }
+        } catch (Throwable t) {
+            L.e("buildSendMsgAttrs vasApi", t);
+        }
+        Object vasAttr = findRecentSelfVasAttr(chatType, peerUid);
+        if (vasAttr == null) vasAttr = buildVasMsgAttr(currentVasStyle());
+        if (vasAttr != null) attrs.put(0, vasAttr);
+        return attrs;
+    }
+
+    private static long parseLong(String s) {
+        if (s == null || s.isEmpty()) return 0;
+        try { return Long.parseLong(s); } catch (NumberFormatException e) { return 0; }
+    }
+
     // ---------- sending ----------
     public static final class SendResult { public int code = -1; public String msg = ""; public long msgId; }
 
@@ -385,15 +604,7 @@ public final class QQClient {
             } catch (Throwable t0) {
                 L.e("sendMsg pre dump", t0);
             }
-            HashMap<Integer, Object> attrs = new HashMap<>();
-            try {
-                Object info = ref.neu("com.tencent.qqnt.kernel.nativeinterface.MsgAttributeInfo");
-                ref.set(info, "attrType", 0);
-                ref.set(info, "attrId", 0L);
-                attrs.put(0, info);
-            } catch (Throwable t) {
-                L.e("msgAttributeInfo", t);
-            }
+            HashMap<Integer, Object> attrs = buildSendMsgAttrs(chatType, peerUid);
             ref.call(msgService, "sendMsg", msgId, contact, elements, attrs, cb);
             if (latch.await(20, TimeUnit.SECONDS)) {
                 r.code = code.get();
@@ -431,8 +642,10 @@ public final class QQClient {
                 break;
             }
         }
-        if (rec != null) sb.append(describeRecord(rec));
-        else sb.append("no record\n");
+        if (rec != null) {
+            try { Media.repairSentPtt(ref, rec); } catch (Throwable t) { L.e("repairSentPtt", t); }
+            sb.append(describeRecord(rec));
+        } else sb.append("no record\n");
         L.e("dumpSent " + sb.toString().replace("\n", " | "), null);
         try {
             String pre = "";
@@ -476,6 +689,8 @@ public final class QQClient {
                 sb.append(" srcExists=").append(srcF != null && srcF.isFile());
                 sb.append(" srcLen=").append(srcF == null ? -1 : srcF.length());
                 sb.append(" thumb=").append(ref.get(pic, "thumbPath"));
+            } else if (et == 4) {
+                appendPtt(sb, ref.get(e, "pttElement"));
             } else if (et == 1) {
                 Object te = ref.get(e, "textElement");
                 String c = Ref.asStr(ref.get(te, "content"));
@@ -520,6 +735,8 @@ public final class QQClient {
                 sb.append(" srcLen=").append(srcF == null ? -1 : srcF.length());
                 sb.append(" thumb=").append(ref.get(pic, "thumbPath"));
                 sb.append(" uuidEmpty=").append(Ref.asStr(ref.get(pic, "fileUuid")).isEmpty());
+            } else if (et == 4) {
+                appendPtt(sb, ref.get(e, "pttElement"));
             } else if (et == 1) {
                 Object te = ref.get(e, "textElement");
                 String c = Ref.asStr(ref.get(te, "content"));
@@ -528,6 +745,26 @@ public final class QQClient {
             sb.append('\n');
         }
         return sb.toString();
+    }
+
+    private void appendPtt(StringBuilder sb, Object ptt) {
+        if (ptt == null) { sb.append(" ptt=null"); return; }
+        String path = Ref.asStr(ref.get(ptt, "filePath"));
+        java.io.File local = path.isEmpty() ? null : new java.io.File(path);
+        Object waves = ref.get(ptt, "waveAmplitudes");
+        sb.append(" duration=").append(ref.get(ptt, "duration"));
+        sb.append(" format=").append(ref.get(ptt, "formatType"));
+        sb.append(" voiceType=").append(ref.get(ptt, "voiceType"));
+        sb.append(" size=").append(ref.get(ptt, "fileSize"));
+        sb.append(" path=").append(local == null ? "" : local.getName());
+        sb.append(" pathExists=").append(local != null && local.isFile());
+        sb.append(" pathLen=").append(local == null ? -1 : local.length());
+        sb.append(" transfer=").append(ref.get(ptt, "transferStatus"));
+        sb.append(" progress=").append(ref.get(ptt, "progress"));
+        sb.append(" play=").append(ref.get(ptt, "playState"));
+        sb.append(" invalid=").append(ref.get(ptt, "invalidState"));
+        sb.append(" uuidEmpty=").append(Ref.asStr(ref.get(ptt, "fileUuid")).isEmpty());
+        sb.append(" waves=").append(waves instanceof java.util.List ? ((java.util.List<?>) waves).size() : -1);
     }
 
     /**
@@ -640,12 +877,109 @@ public final class QQClient {
         public String msg = "";
         public boolean timedOut;
         public List<?> records = java.util.Collections.emptyList();
+        public String trace = "";
+        public final java.util.Map<String, String> texts = new java.util.HashMap<>();
         public boolean ok() { return !timedOut && code == 0; }
         public String describe() {
             if (timedOut) return msg == null || msg.isEmpty() ? "timeout" : msg;
             if (msg == null || msg.isEmpty()) return "code=" + code;
             return "code=" + code + " " + msg;
         }
+    }
+
+    public static final class Anchor {
+        public long msgId;
+        public long msgSeq;
+        public long msgTime;
+    }
+
+    private static String describeList(MsgListResult r) {
+        if (r == null) return "null";
+        int n = r.records == null ? -1 : r.records.size();
+        return r.describe() + " n=" + n;
+    }
+
+    private static boolean hasRecords(MsgListResult r) {
+        return r != null && r.records != null && !r.records.isEmpty();
+    }
+
+    private boolean hasElements(MsgListResult r) {
+        if (!hasRecords(r)) return false;
+        for (Object rec : r.records) {
+            if (recordHasElements(rec)) return true;
+        }
+        return false;
+    }
+
+    private boolean recordHasElements(Object rec) {
+        if (rec == null) return false;
+        try {
+            Object els = ref.get(rec, "elements");
+            if (!(els instanceof List)) return false;
+            for (Object e : (List<?>) els) {
+                if (e == null) continue;
+                int et = Ref.asInt(ref.get(e, "elementType"));
+                if (et == 1) {
+                    Object t = ref.get(e, "textElement");
+                    String c = t == null ? "" : Ref.asStr(ref.get(t, "content"));
+                    if (c != null && !c.isEmpty()) return true;
+                    continue;
+                }
+                if (et != 0) return true;
+            }
+            return false;
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
+    private void fillAnchor(Anchor a, MsgListResult r) {
+        if (a.msgId != 0 || !hasRecords(r)) return;
+        Object rec = r.records.get(r.records.size() - 1);
+        try {
+            a.msgId = Ref.asLong(ref.get(rec, "msgId"));
+            a.msgSeq = Ref.asLong(ref.get(rec, "msgSeq"));
+            a.msgTime = Ref.asLong(ref.get(rec, "msgTime"));
+        } catch (Throwable ignore) {}
+    }
+
+    private MsgListResult hydrate(int chatType, String peerUid, MsgListResult src) {
+        if (!hasRecords(src)) return src;
+        java.util.ArrayList<Object> full = new java.util.ArrayList<>();
+        boolean changed = false;
+        for (Object rec : src.records) {
+            if (recordHasElements(rec)) {
+                full.add(rec);
+                continue;
+            }
+            long id = 0;
+            try { id = Ref.asLong(ref.get(rec, "msgId")); } catch (Throwable ignore) {}
+            if (id == 0) {
+                full.add(rec);
+                continue;
+            }
+            MsgListResult got = getMsgsByMsgId(chatType, peerUid, id);
+            if (hasRecords(got)) {
+                full.add(got.records.get(0));
+                changed = true;
+            } else {
+                full.add(rec);
+            }
+        }
+        if (changed) src.records = full;
+        return src;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<?> takeRecords(Object holder) {
+        if (!(holder instanceof List)) return java.util.Collections.emptyList();
+        List<?> raw = (List<?>) holder;
+        java.util.ArrayList<Object> out = new java.util.ArrayList<>(raw.size());
+        for (Object o : raw) {
+            if (o == null) continue;
+            out.add(com.satori.qq.qq.Convert.unwrapRecord(o));
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")
@@ -691,12 +1025,421 @@ public final class QQClient {
             }
             r.code = code[0];
             r.msg = wording[0] == null ? "" : wording[0];
-            if (holder[0] instanceof List) r.records = (List<?>) holder[0];
+            r.records = takeRecords(holder[0]);
         } catch (Throwable t) {
             L.e("getMsgs history", t);
             r.msg = String.valueOf(t);
         }
         return r;
+    }
+
+    /** NapCat getMsgHistory: include own messages; msgId=0 means latest. */
+    public MsgListResult getMsgsIncludeSelf(int chatType, String peerUid, long msgId, int count,
+                                            boolean queryOrder) {
+        MsgListResult r = new MsgListResult();
+        Object msgService = getMsgService();
+        if (msgService == null) {
+            r.msg = "kernel session not ready";
+            return r;
+        }
+        count = Math.max(1, Math.min(100, count));
+        try {
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            final Object[] holder = new Object[1];
+            final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
+            CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MSG_OPERATE_CB)}, (p, m, a) -> {
+                if ("onResult".equals(m.getName()) && a != null && a.length >= 1) {
+                    code[0] = Ref.asInt(a[0]);
+                    if (a.length >= 2) wording[0] = Ref.asStr(a[1]);
+                    if (a.length >= 3) holder[0] = a[2];
+                    latch.countDown();
+                }
+                return null;
+            });
+            ref.call(msgService, "getMsgsIncludeSelf", contact, msgId, count, queryOrder, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "getMsgsIncludeSelf timeout";
+                return r;
+            }
+            r.code = code[0];
+            r.msg = wording[0] == null ? "" : wording[0];
+            r.records = takeRecords(holder[0]);
+        } catch (Throwable t) {
+            L.e("getMsgsIncludeSelf", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
+    }
+
+    public MsgListResult getAioFirstViewLatestMsgs(int chatType, String peerUid, int count) {
+        MsgListResult r = new MsgListResult();
+        Object msgService = getMsgService();
+        if (msgService == null) {
+            r.msg = "kernel session not ready";
+            return r;
+        }
+        count = Math.max(1, Math.min(100, count));
+        try {
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            final Object[] holder = new Object[1];
+            final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
+            CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(AIO_FIRST_CB)}, (p, m, a) -> {
+                if ("onResult".equals(m.getName()) && a != null && a.length >= 1) {
+                    code[0] = Ref.asInt(a[0]);
+                    if (a.length >= 2) wording[0] = Ref.asStr(a[1]);
+                    if (a.length >= 3) holder[0] = a[2];
+                    latch.countDown();
+                }
+                return null;
+            });
+            ref.call(msgService, "getAioFirstViewLatestMsgs", contact, count, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "getAioFirstViewLatestMsgs timeout";
+                return r;
+            }
+            r.code = code[0];
+            r.msg = wording[0] == null ? "" : wording[0];
+            r.records = takeRecords(holder[0]);
+        } catch (Throwable t) {
+            L.e("getAioFirstViewLatestMsgs", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
+    }
+
+    /** Local NT DB latest messages; does not depend on the in-memory AIO window. */
+    public MsgListResult getLatestDbMsgs(int chatType, String peerUid, int count) {
+        MsgListResult r = new MsgListResult();
+        Object msgService = getMsgService();
+        if (msgService == null) {
+            r.msg = "kernel session not ready";
+            return r;
+        }
+        count = Math.max(1, Math.min(100, count));
+        try {
+            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            final Object[] holder = new Object[1];
+            final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
+            CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MSG_OPERATE_CB)}, (p, m, a) -> {
+                if ("onResult".equals(m.getName()) && a != null && a.length >= 1) {
+                    code[0] = Ref.asInt(a[0]);
+                    if (a.length >= 2) wording[0] = Ref.asStr(a[1]);
+                    if (a.length >= 3) holder[0] = a[2];
+                    latch.countDown();
+                }
+                return null;
+            });
+            ref.call(msgService, "getLatestDbMsgs", contact, count, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "getLatestDbMsgs timeout";
+                return r;
+            }
+            r.code = code[0];
+            r.msg = wording[0] == null ? "" : wording[0];
+            r.records = takeRecords(holder[0]);
+        } catch (Throwable t) {
+            L.e("getLatestDbMsgs", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
+    }
+
+    public MsgListResult getLastMessageList(int chatType, String peerUid) {
+        MsgListResult r = new MsgListResult();
+        Object msgService = getMsgService();
+        if (msgService == null) {
+            r.msg = "kernel session not ready";
+            return r;
+        }
+        try {
+            java.util.ArrayList<Object> contacts = new java.util.ArrayList<>();
+            contacts.add(ref.neu(CONTACT, chatType, peerUid, ""));
+            final Object[] holder = new Object[1];
+            final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
+            CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MSG_OPERATE_CB)}, (p, m, a) -> {
+                if ("onResult".equals(m.getName()) && a != null && a.length >= 1) {
+                    code[0] = Ref.asInt(a[0]);
+                    if (a.length >= 2) wording[0] = Ref.asStr(a[1]);
+                    if (a.length >= 3) holder[0] = a[2];
+                    latch.countDown();
+                }
+                return null;
+            });
+            ref.call(msgService, "getLastMessageList", contacts, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "getLastMessageList timeout";
+                return r;
+            }
+            r.code = code[0];
+            r.msg = wording[0] == null ? "" : wording[0];
+            r.records = takeRecords(holder[0]);
+        } catch (Throwable t) {
+            L.e("getLastMessageList", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
+    }
+
+    public Anchor recentAnchor(int chatType, String peerUid) {
+        Anchor a = new Anchor();
+        try {
+            Object svc = getRecentContactService();
+            if (svc == null) return a;
+            Object info;
+            try { info = ref.call(svc, "getRecentContactListSyncLimit", 400); }
+            catch (Throwable ignore) { info = ref.call(svc, "getRecentContactListSync"); }
+            if (info == null) return a;
+            Object list = ref.get(info, "changedList");
+            if (!(list instanceof List)) return a;
+            long wantUin = 0;
+            try { wantUin = Long.parseLong(peerUid); } catch (Exception ignore) {}
+            for (Object c : (List<?>) list) {
+                if (c == null) continue;
+                if (Ref.asInt(ref.get(c, "chatType")) != chatType) continue;
+                String uid = Ref.asStr(ref.get(c, "peerUid"));
+                long uin = Ref.asLong(ref.get(c, "peerUin"));
+                boolean match = (peerUid != null && peerUid.equals(uid))
+                        || (wantUin != 0 && uin == wantUin)
+                        || (wantUin != 0 && String.valueOf(wantUin).equals(uid));
+                if (!match) continue;
+                a.msgId = Ref.asLong(ref.get(c, "msgId"));
+                a.msgSeq = Ref.asLong(ref.get(c, "msgSeq"));
+                a.msgTime = Ref.asLong(ref.get(c, "msgTime"));
+                return a;
+            }
+        } catch (Throwable t) {
+            L.e("recentAnchor", t);
+        }
+        return a;
+    }
+
+    /** Latest / paged history. Prefers the local NT DB over the in-memory AIO window. */
+    public MsgListResult getHistory(int chatType, String peerUid, long messageSeq, int count,
+                                    boolean queryOrder) {
+        StringBuilder trace = new StringBuilder("hist3 peer=").append(peerUid)
+                .append(" seq=").append(messageSeq);
+        if (messageSeq > 0) {
+            MsgListResult bySeq = hydrate(chatType, peerUid,
+                    getMsgs(chatType, peerUid, messageSeq, count, queryOrder));
+            trace.append(" bySeq=").append(describeList(bySeq)).append(hasElements(bySeq) ? "+el" : "");
+            if (hasElements(bySeq)) return finishHistory(bySeq, trace);
+        }
+        MsgListResult db = getLatestDbMsgs(chatType, peerUid, count);
+        trace.append(" db=").append(describeList(db)).append(hasElements(db) ? "+el" : "");
+        if (hasElements(db)) return finishHistory(hydrate(chatType, peerUid, db), trace);
+        MsgListResult include = hydrate(chatType, peerUid,
+                getMsgsIncludeSelf(chatType, peerUid, 0, count, queryOrder));
+        trace.append(" inc0=").append(describeList(include)).append(hasElements(include) ? "+el" : "");
+        if (hasElements(include)) return finishHistory(include, trace);
+        MsgListResult aio = hydrate(chatType, peerUid, getAioFirstViewLatestMsgs(chatType, peerUid, count));
+        trace.append(" aio=").append(describeList(aio)).append(hasElements(aio) ? "+el" : "");
+        if (hasElements(aio)) return finishHistory(aio, trace);
+        MsgListResult last = getLastMessageList(chatType, peerUid);
+        trace.append(" last=").append(describeList(last));
+        Anchor a = recentAnchor(chatType, peerUid);
+        fillAnchor(a, db);
+        fillAnchor(a, last);
+        fillAnchor(a, include);
+        trace.append(" anchor=").append(a.msgId).append('/').append(a.msgSeq);
+        if (a.msgId != 0) {
+            MsgListResult fromId = hydrate(chatType, peerUid,
+                    getMsgsIncludeSelf(chatType, peerUid, a.msgId, count, queryOrder));
+            trace.append(" incId=").append(describeList(fromId)).append(hasElements(fromId) ? "+el" : "");
+            if (hasElements(fromId)) return finishHistory(fromId, trace);
+        }
+        if (a.msgSeq != 0) {
+            MsgListResult bySeqA = hydrate(chatType, peerUid,
+                    getMsgs(chatType, peerUid, a.msgSeq, count, queryOrder));
+            trace.append(" bySeqA=").append(describeList(bySeqA)).append(hasElements(bySeqA) ? "+el" : "");
+            if (hasElements(bySeqA)) return finishHistory(bySeqA, trace);
+        }
+        MsgListResult queried = hydrate(chatType, peerUid,
+                queryMsgs(chatType, peerUid, a.msgId, a.msgTime,
+                        a.msgSeq != 0 ? a.msgSeq : messageSeq, count, queryOrder));
+        trace.append(" query=").append(describeList(queried)).append(hasElements(queried) ? "+el" : "");
+        if (hasElements(queried)) return finishHistory(queried, trace);
+        if (hasRecords(db)) return finishHistory(hydrate(chatType, peerUid, db), trace);
+        if (hasRecords(last)) return finishHistory(hydrate(chatType, peerUid, last), trace);
+        MsgListResult fallback = hydrate(chatType, peerUid, messageSeq > 0
+                ? getMsgs(chatType, peerUid, messageSeq, count, queryOrder)
+                : getMsgs(chatType, peerUid, 0, count, queryOrder));
+        trace.append(" get0=").append(describeList(fallback));
+        return finishHistory(fallback, trace);
+    }
+
+    /** Plain text from a MsgRecord, using the same field reads as history sampling. */
+    public String peekRecordText(Object rec) {
+        if (rec == null) return "";
+        try {
+            Object els = ref.get(rec, "elements");
+            if (!(els instanceof List)) return "";
+            StringBuilder sb = new StringBuilder();
+            for (Object e : (List<?>) els) {
+                if (e == null) continue;
+                if (Ref.asInt(ref.get(e, "elementType")) != 1) continue;
+                Object t = ref.get(e, "textElement");
+                String c = t == null ? "" : Ref.asStr(ref.get(t, "content"));
+                if (c != null && !c.isEmpty()) sb.append(c);
+            }
+            return sb.toString();
+        } catch (Throwable ignore) {
+            return "";
+        }
+    }
+
+    private String sampleRecord(MsgListResult r) {
+        if (!hasRecords(r)) return "none";
+        Object rec = r.records.get(0);
+        try {
+            Object els = ref.get(rec, "elements");
+            int n = els instanceof List ? ((List<?>) els).size() : -1;
+            int et = -1;
+            int textLen = -1;
+            String textHead = "";
+            if (els instanceof List && n > 0) {
+                Object e0 = ((List<?>) els).get(0);
+                et = e0 == null ? -2 : Ref.asInt(ref.get(e0, "elementType"));
+                if (et == 1 && e0 != null) {
+                    Object t = ref.get(e0, "textElement");
+                    String c = t == null ? "" : Ref.asStr(ref.get(t, "content"));
+                    textLen = c.length();
+                    textHead = c.length() <= 24 ? c : c.substring(0, 24);
+                    textHead = textHead.replace('\n', ' ').replace('\r', ' ');
+                }
+            }
+            return rec.getClass().getSimpleName()
+                    + " ct=" + ref.get(rec, "chatType")
+                    + " mt=" + ref.get(rec, "msgType")
+                    + " sub=" + ref.get(rec, "subMsgType")
+                    + " time=" + ref.get(rec, "msgTime")
+                    + " seq=" + ref.get(rec, "msgSeq")
+                    + " id=" + ref.get(rec, "msgId")
+                    + " suin=" + ref.get(rec, "senderUin")
+                    + " peer=" + ref.get(rec, "peerUid")
+                    + " puin=" + ref.get(rec, "peerUin")
+                    + " els=" + n + " et0=" + et + " textLen=" + textLen
+                    + " text=\"" + textHead + "\""
+                    + " recall=" + ref.get(rec, "recallTime");
+        } catch (Throwable t) {
+            return "err:" + t;
+        }
+    }
+
+    private MsgListResult finishHistory(MsgListResult r, StringBuilder trace) {
+        if (r == null) r = new MsgListResult();
+        if (r.records != null) {
+            for (Object rec : r.records) {
+                if (rec == null) continue;
+                try {
+                    long id = Ref.asLong(ref.get(rec, "msgId"));
+                    String text = peekRecordText(rec);
+                    if (id != 0 && text != null && !text.isEmpty())
+                        r.texts.put(String.valueOf(id), text);
+                } catch (Throwable ignore) {}
+            }
+        }
+        trace.append(" sample=").append(sampleRecord(r));
+        if (!r.texts.isEmpty()) trace.append(" texts=").append(r.texts.size());
+        r.trace = trace.toString();
+        L.e(r.trace, null);
+        try {
+            java.io.File f = new java.io.File(
+                    "/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-history.txt");
+            try (java.io.FileWriter w = new java.io.FileWriter(f, false)) { w.write(r.trace); }
+        } catch (Throwable ignore) {}
+        return r;
+    }
+
+    /** Local NT DB query; works when the in-memory AIO list is still empty after a cold start. */
+    public MsgListResult queryMsgs(int chatType, String peerUid, long messageSeq, int count,
+                                   boolean queryOrder) {
+        return queryMsgs(chatType, peerUid, 0L, 0L, messageSeq, count, queryOrder);
+    }
+
+    public MsgListResult queryMsgs(int chatType, String peerUid, long msgId, long msgTime,
+                                   long messageSeq, int count, boolean queryOrder) {
+        MsgListResult r = new MsgListResult();
+        Object msgService = getMsgService();
+        if (msgService == null) {
+            r.msg = "kernel session not ready";
+            return r;
+        }
+        count = Math.max(1, Math.min(100, count));
+        try {
+            Object chat = ref.neu("com.tencent.qqnt.kernel.nativeinterface.ChatInfo",
+                    chatType, peerUid == null ? "" : peerUid);
+            Object params = ref.neu("com.tencent.qqnt.kernel.nativeinterface.QueryMsgsParams");
+            ref.set(params, "chatInfo", chat);
+            ref.set(params, "pageLimit", count);
+            ref.set(params, "isReverseOrder", queryOrder);
+            ref.set(params, "isIncludeCurrent", Boolean.TRUE);
+            ref.set(params, "filterMsgFromTime", 0L);
+            ref.set(params, "filterMsgToTime", System.currentTimeMillis() / 1000);
+            ref.set(params, "filterMsgType", new java.util.ArrayList<>());
+            ref.set(params, "filterSendersUid", new java.util.ArrayList<String>());
+            final Object[] holder = new Object[1];
+            final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
+            CountDownLatch latch = new CountDownLatch(1);
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MSG_OPERATE_CB)}, (p, m, a) -> {
+                if ("onResult".equals(m.getName()) && a != null && a.length >= 1) {
+                    code[0] = Ref.asInt(a[0]);
+                    if (a.length >= 2) wording[0] = Ref.asStr(a[1]);
+                    if (a.length >= 3) holder[0] = a[2];
+                    latch.countDown();
+                }
+                return null;
+            });
+            try {
+                ref.call(msgService, "queryMsgsWithFilterEx", msgId, msgTime, messageSeq, params, cb);
+            } catch (Throwable first) {
+                ref.call(msgService, "queryMsgsWithFilter", msgId, msgTime, params, cb);
+            }
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "queryMsgs timeout";
+                return r;
+            }
+            r.code = code[0];
+            r.msg = wording[0] == null ? "" : wording[0];
+            r.records = takeRecords(holder[0]);
+        } catch (Throwable t) {
+            L.e("queryMsgs", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
+    }
+
+    /** Retry getMsgsByMsgId; just-sent records are often not indexed on the first tick. */
+    public Object fetchRecord(int chatType, String peerUid, long msgId) {
+        if (msgId == 0) return null;
+        for (int i = 0; i < 6; i++) {
+            if (i > 0) {
+                try { Thread.sleep(250); } catch (InterruptedException ignore) {}
+            }
+            MsgListResult got = getMsgsByMsgId(chatType, peerUid, msgId);
+            if (got.ok() && got.records != null && !got.records.isEmpty())
+                return got.records.get(0);
+        }
+        MsgListResult hist = getMsgsIncludeSelf(chatType, peerUid, 0, 20, true);
+        if (hist.ok() && hist.records != null) {
+            for (Object rec : hist.records) {
+                if (Ref.asLong(ref.get(rec, "msgId")) == msgId) return rec;
+            }
+        }
+        return null;
     }
 
     public MsgListResult getMsgsByMsgId(int chatType, String peerUid, long msgId) {
@@ -735,7 +1478,7 @@ public final class QQClient {
             }
             r.code = code[0];
             r.msg = wording[0] == null ? "" : wording[0];
-            if (holder[0] instanceof List) r.records = (List<?>) holder[0];
+            r.records = takeRecords(holder[0]);
         } catch (Throwable t) {
             L.e("getMsgsByMsgId", t);
             r.msg = String.valueOf(t);
@@ -994,8 +1737,12 @@ public final class QQClient {
     }
 
     /** All members of a group: HashMap<uid, MemberInfo>. Blocks up to 15s. Null on failure. */
-    @SuppressWarnings("unchecked")
     public java.util.Map<String, Object> getAllMembers(long groupCode) {
+        return getAllMembers(groupCode, false);
+    }
+
+    @SuppressWarnings("unchecked")
+    public java.util.Map<String, Object> getAllMembers(long groupCode, boolean force) {
         Object gs = getGroupService();
         if (gs == null) return null;
         try {
@@ -1008,7 +1755,7 @@ public final class QQClient {
                 }
                 return null;
             });
-            ref.call(gs, "getAllMemberList", groupCode, false, cb);
+            ref.call(gs, "getAllMemberList", groupCode, force, cb);
             latch.await(15, TimeUnit.SECONDS);
             return (java.util.Map<String, Object>) holder[0];
         } catch (Throwable t) {
@@ -1141,6 +1888,395 @@ public final class QQClient {
     public OpResult setGroupName(long groupCode, String name) {
         return awaitGroup(OPERATE_CB, "modifyGroupName",
                 (gs, cb) -> ref.call(gs, "modifyGroupName", groupCode, name == null ? "" : name, false, cb));
+    }
+
+    /** NT IKernelGroupService.setHeader(groupCode, localPath). Owner/admin only. */
+    public OpResult setGroupHeader(long groupCode, String path) {
+        return awaitGroup(OPERATE_CB, "setHeader",
+                (gs, cb) -> ref.call(gs, "setHeader", groupCode, path == null ? "" : path, cb));
+    }
+
+    /**
+     * groupFlagExt3 bit 0x2000000 = 群标识 / 群荣誉 AIO.
+     * The bit SET means the honor badge switch is OFF. This is NOT 成员群头衔.
+     */
+    public static final int HONOR_AIO_FLAG = 33554432;
+
+    /** Result of getMemberExtInfo: group-level title display flags. */
+    public static final class MemberExtFlags {
+        public int code = -1;
+        public String msg = "";
+        public int userShowFlag;
+        public int userShowFlagNew;
+        public int sysShowFlag;
+        public final java.util.List<int[]> levelIds = new ArrayList<>();
+        public final java.util.List<String> levelNames = new ArrayList<>();
+        public final java.util.List<int[]> levelIdsNew = new ArrayList<>();
+        public final java.util.List<String> levelNamesNew = new ArrayList<>();
+        public boolean ok() { return code == 0; }
+        /** AIO 专属/成员群头衔: cGroupRankUserFlag == 1. */
+        public boolean titleOpen() { return userShowFlag == 1; }
+    }
+
+    private void copyLevelNames(Object result, String field,
+                                java.util.List<int[]> ids, java.util.List<String> names) {
+        try {
+            Object list = ref.get(result, field);
+            if (!(list instanceof java.util.Collection)) return;
+            for (Object item : (java.util.Collection<?>) list) {
+                ids.add(new int[]{Ref.asInt(ref.get(item, "level"))});
+                names.add(Ref.asStr(ref.get(item, "strName")));
+            }
+        } catch (Throwable ignore) {}
+    }
+
+    /** Runtime methods of a QQ type whose name mentions title/rank/show/level/switch. */
+            public java.util.List<String> dumpServiceMethods(String className) {
+        java.util.List<String> out = new ArrayList<>();
+        try {
+            Class<?> c = ref.clsOrNull(className);
+            if (c == null) {
+                out.add("missing:" + className);
+                return out;
+            }
+            for (java.lang.reflect.Method m : c.getDeclaredMethods())
+                out.add(m.getName() + java.util.Arrays.toString(m.getParameterTypes()));
+        } catch (Throwable t) {
+            out.add("error:" + t);
+        }
+        return out;
+    }
+
+    public OpResult setHonorAioSwitch(long groupCode, boolean open) {
+        return awaitGroup(OPERATE_CB, "modifyGroupDetailInfo", (gs, cb) -> {
+            Object info = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupModifyInfo");
+            ref.put(info, "groupFlagExt3", open ? 0 : HONOR_AIO_FLAG);
+            ref.put(info, "groupFlagExt3Mask", HONOR_AIO_FLAG);
+            ref.call(gs, "modifyGroupDetailInfo", groupCode, info, cb);
+        });
+    }
+
+    public OpResult setGroupRemark(long groupCode, String remark) {
+        return awaitGroup(OPERATE_CB, "modifyGroupRemark",
+                (gs, cb) -> ref.call(gs, "modifyGroupRemark", groupCode, remark == null ? "" : remark, cb));
+    }
+
+    public boolean callHonorAioService(long groupCode, boolean open) {
+        try {
+            Object runtime = appRuntime();
+            if (runtime == null) return false;
+            Class<?> svc = ref.cls("com.tencent.mobileqq.troop.honor.api.ITroopHonorService");
+            Object honor = ref.call(runtime, "getRuntimeService", svc, "");
+            if (honor == null) return false;
+            ref.call(honor, "updateTroopHonorAIOSwitch", String.valueOf(groupCode), open);
+            return true;
+        } catch (Throwable t) {
+            L.e("callHonorAioService", t);
+            return false;
+        }
+    }
+
+    public int groupFlagExt3(long groupCode) {
+        Object gi = groupInfo(groupCode);
+        return gi == null ? 0 : Ref.asInt(ref.get(gi, "groupFlagExt3"));
+    }
+
+    public boolean honorAioOpen(long groupCode) {
+        return (groupFlagExt3(groupCode) & HONOR_AIO_FLAG) == 0;
+    }
+
+    /**
+     * Force-read group title-display flags via IKernelGroupService.getMemberExtInfo.
+     * userShowFlag=1 means 成员群头衔 / 专属头衔 is on (cGroupRankUserFlag).
+     * userShowFlagNew=0 means 等级头衔 is on (inverted).
+     */
+    public MemberExtFlags getMemberExtInfo(long groupCode) {
+        MemberExtFlags out = new MemberExtFlags();
+        Object gs = getGroupService();
+        if (gs == null) {
+            out.msg = "group service not ready";
+            return out;
+        }
+        try {
+            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupMemberExtReq");
+            Object titleType = ref.getStatic(
+                    "com.tencent.qqnt.kernel.nativeinterface.MemberExtSourceType", "TITLETYPE");
+            ref.put(req, "sourceType", ref.call(titleType, "ordinal"));
+            ref.put(req, "groupCode", groupCode);
+            ref.set(req, "beginUin", "0");
+            ref.set(req, "dataTime", "0");
+            ArrayList<Long> uins = new ArrayList<>();
+            try { uins.add(Long.parseLong(selfUin())); } catch (Exception ignore) { uins.add(0L); }
+            ref.set(req, "uinList", uins);
+            Object filter = ref.neu("com.tencent.qqnt.kernel.nativeinterface.MemberExtInfoFilter");
+            ref.put(filter, "userShowFlag", 1);
+            ref.put(filter, "userShowFlagNew", 1);
+            ref.put(filter, "sysShowFlag", 1);
+            ref.put(filter, "levelName", 1);
+            ref.put(filter, "levelNameNew", 1);
+            ref.put(filter, "dataTime", 1);
+            ref.put(filter, "specialTitle", 1);
+            ref.set(req, "memberExtFilter", filter);
+            final CountDownLatch latch = new CountDownLatch(1);
+            final Object[] holder = new Object[1];
+            final int[] code = new int[]{-1};
+            final String[] msg = new String[]{""};
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(MEMBER_EXT_CB)}, (p, m, args) -> {
+                if ("onResult".equals(m.getName()) && args != null && args.length >= 2) {
+                    code[0] = Ref.asInt(args[0]);
+                    msg[0] = Ref.asStr(args[1]);
+                    if (args.length >= 3) holder[0] = args[2];
+                    latch.countDown();
+                }
+                return null;
+            });
+            ref.call(gs, "getMemberExtInfo", req, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                out.msg = "getMemberExtInfo timeout";
+                return out;
+            }
+            out.code = code[0];
+            out.msg = msg[0] == null ? "" : msg[0];
+            if (holder[0] != null) {
+                out.userShowFlag = Ref.asInt(ref.get(holder[0], "userShowFlag"));
+                out.userShowFlagNew = Ref.asInt(ref.get(holder[0], "userShowFlagNew"));
+                out.sysShowFlag = Ref.asInt(ref.get(holder[0], "sysShowFlag"));
+                copyLevelNames(holder[0], "msgLevelName", out.levelIds, out.levelNames);
+                copyLevelNames(holder[0], "msgLevelNameNew", out.levelIdsNew, out.levelNamesNew);
+            }
+        } catch (Throwable t) {
+            L.e("getMemberExtInfo " + groupCode, t);
+            out.msg = String.valueOf(t);
+        }
+        return out;
+    }
+
+    /**
+     * NT write for member-title display: SetGroupMemberNewExtInfo.
+     * Class fields vary by QQ build; set whatever title-flag names exist.
+     */
+    public OpResult setMemberExtShowFlag(long groupCode, boolean show) {
+        String reqName = "com.tencent.qqnt.kernel.nativeinterface.SetGroupMemberExtInfoReq";
+        if (ref.clsOrNull(reqName) == null) {
+            OpResult missing = new OpResult();
+            missing.msg = "SetGroupMemberExtInfoReq missing";
+            return missing;
+        }
+        return awaitGroup(OPERATE_CB, "SetGroupMemberNewExtInfo", (gs, cb) -> {
+            Object req = ref.neu(reqName);
+            try { ref.put(req, "groupCode", groupCode); } catch (Throwable ignore) {}
+            int flag = show ? 1 : 0;
+            for (String name : new String[]{
+                    "userShowFlag", "user_show_flag", "showFlag", "show_flag",
+                    "cGroupRankUserFlag", "rankUserFlag"}) {
+                try { ref.put(req, name, flag); } catch (Throwable ignore) {}
+            }
+            ref.call(gs, "SetGroupMemberNewExtInfo", req, cb);
+        });
+    }
+
+    /** Local DB write so AIO reads cGroupRankUserFlag without waiting for a push. */
+    public java.util.List<String> dumpClassFields(String className) {
+        java.util.List<String> out = new ArrayList<>();
+        try {
+            Class<?> c = ref.clsOrNull(className);
+            if (c == null) {
+                out.add("missing");
+                return out;
+            }
+            for (java.lang.reflect.Field f : c.getDeclaredFields())
+                out.add(f.getName() + ":" + f.getType().getSimpleName());
+        } catch (Throwable t) {
+            out.add("error:" + t);
+        }
+        return out;
+    }
+
+    public OpResult setIdentityTitleInfo(long groupCode, boolean show) {
+        String reqName = "com.tencent.qqnt.kernel.nativeinterface.SetIdentityTitleInfoReq";
+        if (ref.clsOrNull(reqName) == null) {
+            OpResult missing = new OpResult();
+            missing.msg = "SetIdentityTitleInfoReq missing";
+            return missing;
+        }
+        return awaitGroup(OPERATE_CB, "setIdentityTitleInfo", (gs, cb) -> {
+            Object req = ref.neu(reqName);
+            int flag = show ? 1 : 0;
+            for (java.lang.reflect.Field f : req.getClass().getDeclaredFields()) {
+                String n = f.getName();
+                Class<?> t = f.getType();
+                try {
+                    if (n.toLowerCase().contains("group") && (t == long.class || t == Long.class))
+                        ref.put(req, n, groupCode);
+                    else if ((n.toLowerCase().contains("show") || n.toLowerCase().contains("flag")
+                            || n.toLowerCase().contains("switch") || n.toLowerCase().contains("title")
+                            || n.toLowerCase().contains("rank") || n.toLowerCase().contains("open"))
+                            && (t == int.class || t == Integer.class || t == byte.class || t == Byte.class))
+                        ref.put(req, n, flag);
+                    else if (n.equals("groupCode") || n.equals("group_code"))
+                        ref.put(req, n, groupCode);
+                } catch (Throwable ignore) {}
+            }
+            ref.call(gs, "setIdentityTitleInfo", req, cb);
+        });
+    }
+
+    public OpResult setGroupIdentityLevelInfo(long groupCode, boolean show) {
+        OpResult r = new OpResult();
+        String reqName = "com.tencent.qqnt.kernel.nativeinterface.GIMSetGroupLevelInfoReq";
+        String cbName = "com.tencent.qqnt.kernel.nativeinterface.ISetGroupIdentityLevelInfoCallback";
+        if (ref.clsOrNull(reqName) == null) {
+            r.msg = "GIMSetGroupLevelInfoReq missing";
+            return r;
+        }
+        if (ref.clsOrNull(cbName) == null) cbName = OPERATE_CB;
+        Object gs = getGroupService();
+        if (gs == null) {
+            r.msg = "group service not ready";
+            return r;
+        }
+        try {
+            final CountDownLatch latch = new CountDownLatch(1);
+            final int[] code = new int[]{-1};
+            final String[] wording = new String[]{""};
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(cbName)}, (p, m, args) -> {
+                if (args != null && args.length >= 1) {
+                    code[0] = Ref.asInt(args[0]);
+                    if (args.length >= 2) wording[0] = Ref.asStr(args[1]);
+                    if (args.length >= 3 && args[2] != null) {
+                        wording[0] = wording[0] + " rsp=" + args[2];
+                        try {
+                            for (java.lang.reflect.Field f : args[2].getClass().getDeclaredFields()) {
+                                f.setAccessible(true);
+                                wording[0] = wording[0] + " " + f.getName() + "=" + f.get(args[2]);
+                            }
+                        } catch (Throwable ignore) {}
+                    }
+                    latch.countDown();
+                }
+                return defOf(m.getReturnType());
+            });
+            Object req = ref.neu(reqName);
+            ref.put(req, "groupCode", groupCode);
+            ref.put(req, "levelFlag", show ? 1 : 0);
+            ref.put(req, "levelNewFlag", show ? 0 : 1);
+            ref.put(req, "useNewLevel", 1);
+            ref.call(gs, "setGroupIdentityLevelInfo", req, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                r.timedOut = true;
+                r.msg = "setGroupIdentityLevelInfo timeout";
+                return r;
+            }
+            r.code = code[0];
+            r.msg = wording[0] == null ? "" : wording[0];
+        } catch (Throwable t) {
+            L.e("setGroupIdentityLevelInfo", t);
+            r.msg = String.valueOf(t);
+        }
+        return r;
+    }
+
+    public MemberExtFlags getGroupMemberLevelInfo(long groupCode) {
+        MemberExtFlags out = new MemberExtFlags();
+        Object gs = getGroupService();
+        if (gs == null) {
+            out.msg = "group service not ready";
+            return out;
+        }
+        try {
+            final CountDownLatch latch = new CountDownLatch(1);
+            final int[] code = new int[]{-1};
+            final String[] msg = new String[]{""};
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, args) -> {
+                if (args != null && args.length >= 1) {
+                    Object a0 = args[0];
+                    if (a0 instanceof Boolean) code[0] = ((Boolean) a0) ? 0 : 1;
+                    else code[0] = Ref.asInt(a0);
+                    if (args.length >= 2) msg[0] = Ref.asStr(args[1]);
+                    latch.countDown();
+                }
+                return null;
+            });
+            ref.call(gs, "getGroupMemberLevelInfo", groupCode, cb);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
+                out.msg = "getGroupMemberLevelInfo timeout";
+                return out;
+            }
+            out.code = code[0];
+            out.msg = msg[0];
+        } catch (Throwable t) {
+            L.e("getGroupMemberLevelInfo", t);
+            out.msg = String.valueOf(t);
+        }
+        return out;
+    }
+
+    /** TroopInfo.extDBInfo title flags as AIO/群管理 actually read them. */
+    public int[] troopExtRankFlags(long groupCode) {
+        int[] out = new int[]{-1, -1};
+        try {
+            Object runtime = appRuntime();
+            if (runtime == null) return out;
+            Class<?> svc = ref.cls("com.tencent.mobileqq.troop.api.ITroopInfoService");
+            Object infoSvc = ref.call(runtime, "getRuntimeService", svc, "");
+            if (infoSvc == null) return out;
+            Object troop = ref.call(infoSvc, "findTroopInfo", String.valueOf(groupCode));
+            if (troop == null) return out;
+            Object ext = ref.get(troop, "extDBInfo");
+            if (ext == null) return out;
+            out[0] = Ref.asInt(ref.get(ext, "cGroupRankUserFlag"));
+            out[1] = Ref.asInt(ref.get(ext, "cNewGroupRankUserFlag"));
+        } catch (Throwable t) {
+            L.e("troopExtRankFlags", t);
+        }
+        return out;
+    }
+
+    public boolean updateLocalRankSwitch(long groupCode, boolean show) {
+        try {
+            Class<?> apiCls = ref.cls("com.tencent.qqnt.troop.ITroopExtInfoDBApi");
+            Object api = ref.callS("com.tencent.mobileqq.qroute.QRoute", "api", apiCls);
+            if (api == null) return false;
+            Byte rank = show ? (byte) 1 : (byte) 0;
+            ref.call(api, "updateTroopLevelSwitch", String.valueOf(groupCode), rank, null);
+            return true;
+        } catch (Throwable t) {
+            L.e("updateLocalRankSwitch", t);
+            return false;
+        }
+    }
+
+    public void refreshGroupList() {
+        Object gs = getGroupService();
+        if (gs == null) return;
+        try {
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, a) -> null);
+            ref.call(gs, "getGroupList", true, cb);
+            for (int i = 0; i < 20; i++) Thread.sleep(100);
+        } catch (Throwable t) {
+            L.e("refreshGroupList", t);
+        }
+    }
+
+    public OpResult setGroupEssence(long groupCode, long msgSeq, long msgRandom, boolean add) {
+        String digestReq = "com.tencent.qqnt.kernel.nativeinterface.DigestReq";
+        String digestCb = "com.tencent.qqnt.kernel.nativeinterface.IDigestCallback";
+        if (ref.clsOrNull(digestReq) == null)
+            digestReq = "com.tencent.qqnt.kernelpublic.nativeinterface.DigestReq";
+        if (ref.clsOrNull(digestCb) == null)
+            digestCb = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
+        String cbClass = digestCb;
+        String reqName = digestReq;
+        return awaitGroup(cbClass, add ? "addGroupEssence" : "removeGroupEssence", (gs, cb) -> {
+            Object req = ref.neu(reqName);
+            try { ref.put(req, "groupCode", String.valueOf(groupCode)); }
+            catch (Throwable ignore) { ref.put(req, "groupCode", groupCode); }
+            try { ref.put(req, "msgSeq", (int) msgSeq); }
+            catch (Throwable ignore) { ref.put(req, "msgSeq", msgSeq); }
+            try { ref.put(req, "msgRandom", (int) msgRandom); }
+            catch (Throwable ignore) { ref.put(req, "msgRandom", msgRandom); }
+            ref.call(gs, add ? "addGroupEssence" : "removeGroupEssence", req, cb);
+        });
     }
 
     /** Cached GroupSimpleInfo for one group, or null. */
@@ -1347,5 +2483,243 @@ public final class QQClient {
             L.e("getCoreInfo " + uin, t);
             return null;
         }
+    }
+
+    public Object getTicketService() {
+        Object s = session;
+        if (s == null) return null;
+        try { return ref.call(s, "getTicketService"); } catch (Throwable t) { return null; }
+    }
+
+    public Object getTipOffService() {
+        Object s = session;
+        if (s == null) return null;
+        try { return ref.call(s, "getTipOffService"); } catch (Throwable t) { return null; }
+    }
+
+    public Object getTicketManager() {
+        Object runtime = appRuntime();
+        if (runtime == null) return null;
+        try { return ref.call(runtime, "getManager", 2); } catch (Throwable t) { return null; }
+    }
+
+    /** NT ticket service → clientKey for ptlogin jump (Android: async callback). */
+    public String fetchClientKey() throws Exception {
+        Object ticket = getTicketService();
+        if (ticket == null) throw new IllegalStateException("ticket service not ready");
+        final CountDownLatch latch = new CountDownLatch(1);
+        final int[] code = new int[]{-1};
+        final String[] key = new String[]{""};
+        final String[] msg = new String[]{""};
+        Object cb = Proxy.newProxyInstance(ref.cl,
+                new Class[]{ref.cls("com.tencent.qqnt.kernel.nativeinterface.IClientKeyCallback")},
+                (proxy, m, a) -> {
+                    if ("onResult".equals(m.getName()) && a != null && a.length >= 2) {
+                        code[0] = Ref.asInt(a[0]);
+                        if (a.length >= 2) msg[0] = Ref.asStr(a[1]);
+                        if (a.length >= 5) key[0] = Ref.asStr(a[4]);
+                        if (key[0].isEmpty() && a.length >= 3) key[0] = Ref.asStr(a[2]);
+                        if (key[0].isEmpty() && a.length >= 2) key[0] = Ref.asStr(a[1]);
+                        latch.countDown();
+                    }
+                    return null;
+                });
+        ref.call(ticket, "forceFetchClientKey", "", cb);
+        if (!latch.await(20, TimeUnit.SECONDS))
+            throw new IllegalStateException("forceFetchClientKey timeout");
+        if (code[0] != 0 || key[0].isEmpty())
+            throw new IllegalStateException("forceFetchClientKey failed: code=" + code[0] + " " + msg[0]);
+        return key[0];
+    }
+
+    @SuppressWarnings("unchecked")
+    public String fetchPskeyViaManager(String domain) throws Exception {
+        Object runtime = appRuntime();
+        if (runtime == null) throw new IllegalStateException("runtime not ready");
+        Object mgr = ref.call(runtime, "getRuntimeService",
+                ref.cls("com.tencent.mobileqq.pskey.api.IPskeyManager"), "");
+        if (mgr == null) throw new IllegalStateException("IPskeyManager not ready");
+        final CountDownLatch latch = new CountDownLatch(1);
+        final String[] out = new String[]{""};
+        final String[] err = new String[]{""};
+        Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls("s92.a")}, (proxy, m, a) -> {
+            if ("onSuccess".equals(m.getName()) && a != null && a.length >= 1) {
+                Object map = a[0];
+                if (map instanceof java.util.Map) {
+                    Object v = ((java.util.Map<?, ?>) map).get(domain);
+                    if (v != null) out[0] = Ref.asStr(v);
+                    else for (Object val : ((java.util.Map<?, ?>) map).values())
+                        if (val != null) { out[0] = Ref.asStr(val); break; }
+                }
+                latch.countDown();
+            } else if ("onFail".equals(m.getName())) {
+                if (a != null && a.length >= 1) err[0] = Ref.asStr(a[0]);
+                latch.countDown();
+            }
+            return null;
+        });
+        ref.call(mgr, "getPskey", new String[]{domain}, cb);
+        if (!latch.await(30, TimeUnit.SECONDS))
+            throw new IllegalStateException("pskey manager timeout");
+        if (!out[0].isEmpty()) return out[0];
+        throw new IllegalStateException("pskey manager failed: " + err[0]);
+    }
+
+    private void absorbWtTicket(Object ticket, String domain, String[] skey, String[] pskey) {
+        if (ticket == null) return;
+        try {
+            Object sig = ref.get(ticket, "_sig");
+            if (sig instanceof byte[]) {
+                byte[] bytes = (byte[]) sig;
+                if (bytes.length > 0 && (skey[0] == null || skey[0].isEmpty()))
+                    skey[0] = new String(bytes, StandardCharsets.UTF_8);
+            }
+        } catch (Throwable ignore) {}
+        try {
+            String ps = Ref.asStr(ref.call(ticket, "getPskey", domain));
+            if (!ps.isEmpty()) pskey[0] = ps;
+        } catch (Throwable ignore) {}
+    }
+
+    /** WtLogin async ticket fetch (skey + pskey), safe on Android. */
+    public void fetchWtLoginTicket(String account, String domain, String[] skey, String[] pskey)
+            throws Exception {
+        Object ticketMgr = getTicketManager();
+        if (ticketMgr == null) throw new IllegalStateException("ticket manager not ready");
+        final CountDownLatch latch = new CountDownLatch(1);
+        final String[] sk = new String[]{skey[0] == null ? "" : skey[0]};
+        final String[] ps = new String[]{pskey[0] == null ? "" : pskey[0]};
+        Object cb = Proxy.newProxyInstance(ref.cl,
+                new Class[]{ref.cls("oicq.wlogin_sdk.request.WtTicketPromise")},
+                (proxy, m, a) -> {
+                    if ("Done".equals(m.getName()) && a != null && a.length >= 1) {
+                        absorbWtTicket(a[0], domain, sk, ps);
+                        latch.countDown();
+                    } else if ("Failed".equals(m.getName()) || "Timeout".equals(m.getName())) {
+                        latch.countDown();
+                    }
+                    return null;
+                });
+        Object ticket = ref.call(ticketMgr, "getPskey", account, 16L, new String[]{domain}, cb);
+        absorbWtTicket(ticket, domain, sk, ps);
+        if (sk[0].isEmpty() || ps[0].isEmpty()) {
+            if (!latch.await(30, TimeUnit.SECONDS))
+                throw new IllegalStateException("wtlogin ticket timeout");
+        }
+        if (!sk[0].isEmpty()) skey[0] = sk[0];
+        if (!ps[0].isEmpty()) pskey[0] = ps[0];
+    }
+
+    /** TipOff NT callback — avoid on Android (process crash). Kept for reference. */
+    @SuppressWarnings("unchecked")
+    public String fetchPskey(String domain) throws Exception {
+        Object tipOff = getTipOffService();
+        if (tipOff == null) throw new IllegalStateException("tipoff service not ready");
+        java.util.ArrayList<String> domains = new java.util.ArrayList<>();
+        domains.add(domain);
+        final CountDownLatch latch = new CountDownLatch(1);
+        final int[] code = new int[]{-1};
+        final String[] msg = new String[]{""};
+        final java.util.Map<String, String>[] mapHolder = new java.util.Map[1];
+        Object cb = Proxy.newProxyInstance(ref.cl,
+                new Class[]{ref.cls("com.tencent.qqnt.kernel.nativeinterface.IGetPskeyCallback")},
+                (proxy, m, a) -> {
+                    if ("onFetchPskey".equals(m.getName()) && a != null && a.length >= 1) {
+                        code[0] = Ref.asInt(a[0]);
+                        if (a.length >= 2) msg[0] = Ref.asStr(a[1]);
+                        if (a.length >= 3 && a[2] instanceof java.util.Map)
+                            mapHolder[0] = (java.util.Map<String, String>) a[2];
+                        latch.countDown();
+                    }
+                    return null;
+                });
+        ref.call(tipOff, "getPskey", domains, true, cb);
+        if (!latch.await(20, TimeUnit.SECONDS))
+            throw new IllegalStateException("getPskey timeout");
+        if (mapHolder[0] != null) {
+            String v = mapHolder[0].get(domain);
+            if (v != null && !v.isEmpty()) return v;
+            for (String val : mapHolder[0].values())
+                if (val != null && !val.isEmpty()) return val;
+        }
+        if (code[0] != 0)
+            throw new IllegalStateException("getPskey failed: code=" + code[0] + " " + msg[0]);
+        throw new IllegalStateException("getPskey empty for " + domain);
+    }
+
+    /** skey + p_skey(qzone.qq.com) via local TicketManager + ptlogin jump + TipOff pskey fallback. */
+    public QzoneSvc.Auth fetchQzoneAuth() throws Exception {
+        String uin = selfUin();
+        if (uin == null || uin.isEmpty()) throw new IllegalStateException("self uin not ready");
+        String account = uin;
+        Object runtime = appRuntime();
+        if (runtime != null) {
+            try {
+                String acc = Ref.asStr(ref.call(runtime, "getAccount"));
+                if (!acc.isEmpty()) account = acc;
+            } catch (Throwable ignore) {}
+        }
+        QzoneSvc.Auth a = new QzoneSvc.Auth();
+        a.uin = uin;
+        Object ticketMgr = getTicketManager();
+        if (ticketMgr != null) {
+            try { a.skey = Ref.asStr(ref.call(ticketMgr, "getRealSkey", account)); } catch (Throwable ignore) {}
+            if (a.skey == null || a.skey.isEmpty())
+                try { a.skey = Ref.asStr(ref.call(ticketMgr, "getSkey", account)); } catch (Throwable t) { L.e("getSkey", t); }
+            try { a.pskey = Ref.asStr(ref.call(ticketMgr, "getPskey", account, "qzone.qq.com")); } catch (Throwable t) { L.e("getPskey", t); }
+        }
+        if (a.skey == null) a.skey = "";
+        if (a.pskey == null) a.pskey = "";
+        if (!a.skey.isEmpty() && !a.pskey.isEmpty()) return a;
+        String clientKey = "";
+        if (ticketMgr != null) {
+            try { clientKey = Ref.asStr(ref.call(ticketMgr, "getStweb", account)); } catch (Throwable ignore) {}
+        }
+        if (a.pskey.isEmpty()) {
+            try { a.pskey = fetchPskeyViaManager("qzone.qq.com"); } catch (Throwable t) { L.e("fetchPskeyViaManager", t); }
+        }
+        if (a.skey.isEmpty() || a.pskey.isEmpty()) {
+            try {
+                String[] sk = new String[]{a.skey};
+                String[] ps = new String[]{a.pskey};
+                fetchWtLoginTicket(account, "qzone.qq.com", sk, ps);
+                if (!sk[0].isEmpty()) a.skey = sk[0];
+                if (!ps[0].isEmpty()) a.pskey = ps[0];
+            } catch (Throwable t) {
+                L.e("fetchWtLoginTicket", t);
+            }
+        }
+        if (ticketMgr != null) {
+            if (a.skey.isEmpty())
+                try { a.skey = Ref.asStr(ref.call(ticketMgr, "getRealSkey", account)); } catch (Throwable ignore) {}
+            if (a.skey.isEmpty())
+                try { a.skey = Ref.asStr(ref.call(ticketMgr, "getSkey", account)); } catch (Throwable ignore) {}
+            if (clientKey.isEmpty())
+                try { clientKey = Ref.asStr(ref.call(ticketMgr, "getStweb", account)); } catch (Throwable ignore) {}
+            if (a.pskey.isEmpty())
+                try { a.pskey = Ref.asStr(ref.call(ticketMgr, "getPskey", account, "qzone.qq.com")); } catch (Throwable ignore) {}
+        }
+        if (!a.skey.isEmpty() && !a.pskey.isEmpty()) return a;
+        if (!a.pskey.isEmpty()) return a;
+        if (clientKey.isEmpty()) throw new IllegalStateException("qzone auth: missing p_skey/stweb");
+        if (a.skey.isEmpty()) {
+            java.util.Map<String, String> skeyJar = QzoneSvc.cookiesFromJump(
+                    "https://ssl.ptlogin2.qq.com/jump?ptlang=1033&clientuin=" + uin
+                            + "&clientkey=" + clientKey
+                            + "&u1=https%3A%2F%2Fh5.qzone.qq.com%2Fqqnt%2Fqzoneinpcqq%2Ffriend%3Frefresh%3D0%26clientuin%3D0%26darkMode%3D0"
+                            + "&keyindex=19");
+            String skey = skeyJar.get("skey");
+            if (skey != null) a.skey = skey;
+        }
+        if (a.pskey.isEmpty()) {
+            java.util.Map<String, String> psJar = QzoneSvc.cookiesFromJump(
+                    "https://ssl.ptlogin2.qq.com/jump?ptlang=1033&clientuin=" + uin
+                            + "&clientkey=" + clientKey
+                            + "&u1=https%3A%2F%2Fuser.qzone.qq.com%2F" + uin + "%2Finfocenter&keyindex=19");
+            String ps = psJar.get("p_skey");
+            if (ps == null) ps = psJar.get("skey");
+            if (ps != null) a.pskey = ps;
+        }
+        return a;
     }
 }

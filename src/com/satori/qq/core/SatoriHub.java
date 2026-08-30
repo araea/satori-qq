@@ -12,6 +12,7 @@ import com.satori.qq.qq.Convert;
 import com.satori.qq.qq.AntiDetect;
 import com.satori.qq.qq.Media;
 import com.satori.qq.qq.QQClient;
+import com.satori.qq.qq.QzoneSvc;
 import com.satori.qq.qq.Ref;
 import com.satori.qq.satori.Codec;
 import com.satori.qq.satori.Elements;
@@ -36,6 +37,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private final Cfg cfg;
     private final QQClient qq;
+    private final QzoneSvc qzone;
     private final MsgStore store;
     private final Convert conv;
     private final OutboundGuard outboundGuard;
@@ -48,10 +50,28 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final ConcurrentHashMap<Long, java.util.Map<String, Long>> reactionCounts =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> recentGroupEvents = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, String> groupNames = new ConcurrentHashMap<>();
+    private final java.util.Map<String, String> lastListTexts = new java.util.HashMap<>();
+    private static final class HistRow {
+        final JSONObject item;
+        final long msgId;
+        final long time;
+        final long seq;
+        final String text;
+        HistRow(JSONObject item, long msgId, long time, long seq, String text) {
+            this.item = item;
+            this.msgId = msgId;
+            this.time = time;
+            this.seq = seq;
+            this.text = text == null ? "" : text;
+        }
+    }
+    private final java.util.ArrayList<HistRow> lastHistRows = new java.util.ArrayList<>();
     private static final int EVENT_BUFFER = 200;
 
     public SatoriHub(Cfg cfg, QQClient qq, MsgStore store) {
         this.cfg = cfg; this.qq = qq; this.store = store;
+        this.qzone = new QzoneSvc(qq);
         this.conv = new Convert(qq, store);
         this.outboundGuard = new OutboundGuard(cfg.outboundMinIntervalMs,
                 cfg.outboundQueueTimeoutMs, cfg.outboundMaxQueued,
@@ -118,7 +138,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private JSONObject loginSlim() throws Exception {
         return new JSONObject()
                 .put("sn", 0)
+                .put("adapter", ADAPTER)
                 .put("platform", PLATFORM)
+                .put("status", qq.isOnline() ? 1 : 0)
                 .put("user", Codec.user(selfUin(), qq.selfNick(), ""));
     }
 
@@ -410,9 +432,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "message.get": return satoriGetMsg(p);
             case "message.list": return satoriMsgList(p);
             case "message.delete": {
-                int messageId = parseMsgId(p.optString("message_id", ""));
-                validateMessageChannel(p, messageId);
-                recall(messageId);
+                String rawId = p.optString("message_id", "");
+                MsgStore.Rec rec = requireMessage(rawId, p);
+                validateMessageChannel(p, rec.id);
+                long pub = parseLongQuiet(rawId);
+                if (rec.msgId == 0 && pub != 0 && String.valueOf(pub).length() >= 16)
+                    rec.msgId = pub;
+                recall(rec.id);
                 return new JSONObject();
             }
             case "channel.get": return satoriChannelGet(p);
@@ -462,24 +488,27 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put(new JSONObject().put("id", "admin").put("name", "admin"))
                         .put(new JSONObject().put("id", "member").put("name", "member")));
             case "reaction.create": {
-                int messageId = parseMsgId(p.optString("message_id", ""));
+                String emojiRaw = p.optString("emoji_id", "");
+                int messageId = requireMessage(p.optString("message_id", ""), p).id;
                 validateMessageChannel(p, messageId);
-                setEmojiLike(messageId, parseEmoji(p.optString("emoji_id", "")), true);
+                setEmojiLike(messageId, parseEmoji(emojiRaw), emojiRaw, true);
                 return new JSONObject();
             }
             case "reaction.delete": {
                 String target = p.optString("user_id", "");
                 if (!target.isEmpty() && !String.valueOf(selfUin()).equals(target))
                     throw new ApiError(1400, "QQ can only remove the current login's reaction");
-                int messageId = parseMsgId(p.optString("message_id", ""));
+                String emojiRaw = p.optString("emoji_id", "");
+                int messageId = requireMessage(p.optString("message_id", ""), p).id;
                 validateMessageChannel(p, messageId);
-                setEmojiLike(messageId, parseEmoji(p.optString("emoji_id", "")), false);
+                setEmojiLike(messageId, parseEmoji(emojiRaw), emojiRaw, false);
                 return new JSONObject();
             }
             case "reaction.list": {
-                int messageId = parseMsgId(p.optString("message_id", ""));
+                String emojiRaw = p.optString("emoji_id", "");
+                int messageId = requireMessage(p.optString("message_id", ""), p).id;
                 validateMessageChannel(p, messageId);
-                return reactionList(messageId, parseEmoji(p.optString("emoji_id", "")),
+                return reactionList(messageId, parseEmoji(emojiRaw), emojiRaw,
                         p.optString("next", ""));
             }
             case "user.get": return satoriUser(p);
@@ -527,10 +556,55 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 return guarded("internal.special_title", () -> {
                     long g = params.optLong("guild_id", params.optLong("group_id", 0));
                     long u = parseId(params.optString("user_id", ""));
+                    if (params.has("show") && u == 0)
+                        return setGroupTitleDisplay(g, params.optBoolean("show", true));
+                    if (params.has("show")) setGroupTitleDisplay(g, params.optBoolean("show", true));
                     setGroupSpecialTitle(g, uidFor(g, u),
                             params.optString("title", params.optString("special_title", "")));
                     return new JSONObject();
                 });
+            case "title-display":
+            case "title_display":
+                return guarded("internal.title_display", () -> {
+                    long g = params.optLong("guild_id", params.optLong("group_id", 0));
+                    return setGroupTitleDisplay(g, params.optBoolean("show", params.optBoolean("enable", true)));
+                });
+            case "card":
+            case "set-card":
+            case "set_card":
+                return guarded("internal.card", () -> {
+                    long g = params.optLong("guild_id", params.optLong("group_id", 0));
+                    long u = parseId(params.optString("user_id", ""));
+                    if (g == 0) throw new ApiError(1400, "missing guild_id");
+                    if (u == 0) u = selfUin();
+                    requireOp(qq.setCard(g, uidFor(g, u), params.optString("card", "")));
+                    return new JSONObject();
+                });
+            case "sign":
+            case "clock-in":
+            case "clock_in":
+            case "group_sign":
+                return guarded("internal.sign", () -> groupSign(params.optLong("guild_id", params.optLong("group_id", 0))));
+            case "essence":
+            case "set-essence":
+            case "set_essence":
+                return guarded("internal.essence", () -> {
+                    boolean add = !"remove".equals(params.optString("op", "add"))
+                            && !params.optBoolean("remove", false);
+                    setGroupEssence(params, add);
+                    return new JSONObject();
+                });
+            case "group-remark":
+            case "group_remark":
+                return guarded("internal.group_remark", () -> {
+                    long g = params.optLong("guild_id", params.optLong("group_id", 0));
+                    if (g == 0) throw new ApiError(1400, "missing guild_id");
+                    requireOp(qq.setGroupRemark(g, params.optString("remark", params.optString("name", ""))));
+                    return new JSONObject();
+                });
+            case "group-extra":
+            case "group_extra":
+                return groupExtra(params.optLong("guild_id", params.optLong("group_id", 0)));
             case "invite":
                 return guarded("internal.invite", () -> {
                     long g = params.optLong("guild_id", params.optLong("group_id", 0));
@@ -560,6 +634,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "get-forward":
             case "get_forward":
                 return satoriGetForward(params.optString("id", params.optString("message_id", "")));
+            case "qzone.create":
+            case "qzone.publish":
+                return qzonePublish(params);
+            case "qzone.delete":
+                return qzoneDelete(params);
+            case "qzone.list":
+                return qzoneList(params);
+            case "qzone.auth":
+                return qzoneAuthDebug();
+            case "qzone.delete-all":
+            case "qzone.delete_all":
+            case "qzone.clear":
+                return qzone.deleteAll();
             default:
                 throw new NotImplemented("internal/" + name);
         }
@@ -611,10 +698,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             if (looksLikeForward(segs)) {
                 sent = group ? sendForward(peer, 0, segs) : sendForward(0, peer, segs);
             } else {
-                sent = group ? sendGroup(peer, segs) : sendPrivate(peer, segs);
+                sent = group ? sendGroup(peer, segs, sentContent) : sendPrivate(peer, segs, sentContent);
             }
             JSONObject msg = new JSONObject();
-            msg.put("id", String.valueOf(sent.optInt("message_id")));
+            String mid = Codec.publicMessageId(sent);
+            msg.put("id", mid.isEmpty() ? String.valueOf(sent.opt("message_id")) : mid);
             msg.put("content", sentContent);
             msg.put("channel", Codec.channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, ""));
             if (group) msg.put("guild", Codec.guild(peer, ""));
@@ -663,7 +751,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             Elements.El el = batch.get(0);
             if ("message".equals(el.type) && el.attrs.optBoolean("forward", false)
                     && el.children.isEmpty() && !el.attr("id").isEmpty()) {
-                JSONObject source = getMsg(parseMsgId(el.attr("id")));
+                JSONObject source = getMsg(requireMessage(el.attr("id")).id);
                 JSONArray segments = source.optJSONArray("message");
                 return segments == null ? new JSONArray() : segments;
             }
@@ -690,12 +778,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private JSONObject satoriGetMsg(JSONObject p) throws Exception {
-        int messageId = parseMsgId(p.optString("message_id", ""));
-        validateMessageChannel(p, messageId);
-        JSONObject ob = getMsg(messageId);
+        MsgStore.Rec rec = requireMessage(p.optString("message_id", ""), p);
+        validateMessageChannel(p, rec.id);
+        JSONObject ob = getMsg(rec.id);
         JSONObject ev = Codec.toSatoriEvent(ob.put("post_type", "message")
                 .put("self_id", selfUin()), loginSlim(), 0, assetBase());
-        return ev == null ? new JSONObject() : ev.optJSONObject("message");
+        JSONObject msg = ev == null ? null : ev.optJSONObject("message");
+        if (msg == null) return new JSONObject();
+        if (msg.optString("content", "").isEmpty()) {
+            String text = snapshotText(msg.optString("id", ""), rec);
+            if (!text.isEmpty()) msg.put("content", text);
+        }
+        if (rec.msgTime > 0) msg.put("created_at", rec.msgTime * 1000L);
+        return msg;
     }
 
     private JSONObject satoriMsgList(JSONObject p) throws Exception {
@@ -713,39 +808,52 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             throw new ApiError(1400, "direction requires next cursor");
         boolean group = !Codec.isPrivateChannel(channelId);
         long peer = Codec.channelPeer(channelId);
-        JSONArray messages;
+        lastListTexts.clear();
+        lastHistRows.clear();
         if ("around".equals(direction)) {
             int olderCount = Math.max(1, limit / 2);
             int newerCount = Math.max(1, limit - olderCount);
-            JSONArray older = getMsgHistory(group, peer, next, olderCount, true, "before")
-                    .optJSONArray("messages");
-            JSONArray newer = getMsgHistory(group, peer, next, newerCount, false, "after")
-                    .optJSONArray("messages");
-            messages = mergeMessages(older, newer, limit);
+            getMsgHistory(group, peer, next, olderCount, true, "before");
+            getMsgHistory(group, peer, next, newerCount, false, "after");
         } else {
-            messages = getMsgHistory(group, peer, next, limit, "before".equals(direction), direction)
-                    .optJSONArray("messages");
+            getMsgHistory(group, peer, next, limit, "before".equals(direction), direction);
         }
-        java.util.ArrayList<JSONObject> sorted = new java.util.ArrayList<>();
-        if (messages != null) for (int i = 0; i < messages.length(); i++) {
-            JSONObject item = messages.optJSONObject(i);
-            if (item != null) sorted.add(item);
+        java.util.ArrayList<HistRow> sorted = new java.util.ArrayList<>(lastHistRows);
+        java.util.Collections.sort(sorted, (a, b) -> Long.compare(a.seq, b.seq));
+        if (sorted.size() > limit) {
+            int from = "after".equals(direction) ? 0 : sorted.size() - limit;
+            sorted = new java.util.ArrayList<>(sorted.subList(from, from + limit));
         }
-        java.util.Collections.sort(sorted, (a, b) -> Long.compare(
-                a.optLong("message_seq"), b.optLong("message_seq")));
         if ("desc".equals(order)) java.util.Collections.reverse(sorted);
         JSONArray data = new JSONArray();
         long minSeq = Long.MAX_VALUE, maxSeq = 0;
-        for (JSONObject item : sorted) {
+        for (HistRow row : sorted) {
+                JSONObject item = row.item;
                 item.put("post_type", "message");
                 item.put("self_id", selfUin());
-                if (group) item.put("group_id", peer);
-                else item.put("user_id", peer);
+                if (group) {
+                    item.put("group_id", peer);
+                    attachGroupName(item);
+                    if (item.optLong("user_id", 0) == 0) {
+                        JSONObject sender = item.optJSONObject("sender");
+                        if (sender != null) item.put("user_id", sender.optLong("user_id", 0));
+                    }
+                } else if (item.optLong("user_id", 0) == 0) {
+                    item.put("user_id", peer);
+                }
                 JSONObject ev = Codec.toSatoriEvent(item, loginSlim(), 0, assetBase());
-                if (ev != null && ev.optJSONObject("message") != null)
-                    data.put(ev.optJSONObject("message"));
-                long seq = item.optLong("message_seq", 0);
-                if (seq > 0) { minSeq = Math.min(minSeq, seq); maxSeq = Math.max(maxSeq, seq); }
+                JSONObject src = ev == null ? null : ev.optJSONObject("message");
+                if (src == null) continue;
+                JSONObject msg = copyJson(src);
+                if (msg.optString("content", "").isEmpty() && !row.text.isEmpty())
+                    msg.put("content", row.text);
+                if (msg.optString("content", "").isEmpty()) {
+                    String t = snapshotText(String.valueOf(row.msgId), store.getByMsgId(row.msgId));
+                    if (!t.isEmpty()) msg.put("content", t);
+                }
+                if (row.time > 0) msg.put("created_at", row.time * 1000L);
+                data.put(msg);
+                if (row.seq > 0) { minSeq = Math.min(minSeq, row.seq); maxSeq = Math.max(maxSeq, row.seq); }
         }
         JSONObject out = new JSONObject().put("data", data);
         if (maxSeq > 0) {
@@ -803,14 +911,40 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private JSONObject satoriChannelUpdate(JSONObject p) throws Exception {
-        long gid = Codec.channelPeer(p.optString("channel_id", ""));
+        String channelId = p.optString("channel_id", "");
+        if (Codec.isPrivateChannel(channelId))
+            throw new ApiError(1400, "private channel name/avatar cannot be updated");
+        long gid = Codec.channelPeer(channelId);
         JSONObject data = p.optJSONObject("data");
         if (data == null) data = new JSONObject();
-        String name = data.optString("name", "");
-        if (gid == 0 || name.isEmpty()) throw new ApiError(1400, "missing channel name");
-        requireOp(qq.setGroupName(gid, name));
+        String name = data.optString("name", "").trim();
+        String avatar = data.optString("avatar", "").trim();
+        if (gid == 0) throw new ApiError(1400, "missing channel_id");
+        if (name.isEmpty() && avatar.isEmpty())
+            throw new ApiError(1400, "missing channel name or avatar");
+        if (!name.isEmpty()) requireOp(qq.setGroupName(gid, name));
+        if (!avatar.isEmpty()) {
+            java.io.File file = resolveAvatarFile(avatar);
+            requireOp(qq.setGroupHeader(gid, file.getAbsolutePath()));
+        }
+        if (name.isEmpty()) {
+            try { name = groupInfoJson(gid).optString("group_name"); }
+            catch (Exception ignore) { name = ""; }
+        }
         emitGuildChannelChange("updated", gid, name);
         return new JSONObject();
+    }
+
+    /** Local path / file: / data: / http(s) / base64 / internal: upload spec. */
+    private java.io.File resolveAvatarFile(String spec) throws Exception {
+        if (spec == null) spec = "";
+        spec = spec.trim();
+        if (spec.isEmpty()) throw new ApiError(1400, "missing avatar");
+        if (spec.startsWith("internal:")) spec = resolveInternalSpec(spec);
+        java.io.File local = Media.resolve(spec, spec);
+        if (local == null || !local.isFile())
+            throw new ApiError(1400, "cannot resolve avatar");
+        return local;
     }
 
     private void muteChannel(long guildId, long durationMs) {
@@ -885,7 +1019,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String card = m.optString("card", "");
         if (!card.isEmpty()) out.put("nick", card);
         String title = m.optString("title", "");
-        if (!title.isEmpty()) out.put("title", title);
+        if (!title.isEmpty()) {
+            out.put("title", title);
+            out.put("special_title", title);
+        }
+        long titleExpire = m.optLong("title_expire_time", 0);
+        if (titleExpire != 0) out.put("title_expire_time", titleExpire);
+        if (!card.isEmpty()) out.put("name", card);
         String role = m.optString("role", "member");
         JSONArray roles = new JSONArray().put(new JSONObject().put("id", role).put("name", role));
         out.put("roles", roles);
@@ -974,10 +1114,38 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return g;
     }
 
-    private static int parseMsgId(String raw) {
-        int id = (int) parseLongQuiet(raw);
-        if (id == 0) throw new ApiError(1400, "missing message_id");
-        return id;
+    private MsgStore.Rec requireMessage(String raw) {
+        return requireMessage(raw, null);
+    }
+
+    private MsgStore.Rec requireMessage(String raw, JSONObject p) {
+        MsgStore.Rec rec = store.resolve(raw);
+        if (rec == null) rec = fetchMessage(raw, p);
+        if (rec == null) {
+            boolean missing = raw == null || raw.trim().isEmpty() || parseLongQuiet(raw) == 0;
+            throw new ApiError(missing ? 1400 : 1404,
+                    missing ? "missing message_id" : "message not found: " + raw);
+        }
+        return rec;
+    }
+
+    private MsgStore.Rec fetchMessage(String raw, JSONObject p) {
+        if (p == null) return null;
+        long msgId = parseLongQuiet(raw);
+        String channelId = p.optString("channel_id", "");
+        if (msgId == 0 || channelId.isEmpty()) return null;
+        boolean group = !Codec.isPrivateChannel(channelId);
+        long peer = Codec.channelPeer(channelId);
+        if (peer == 0) return null;
+        try {
+            String peerUid = group ? String.valueOf(peer) : uidFor(0, peer);
+            Object rec = qq.fetchRecord(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peerUid, msgId);
+            if (rec == null) return null;
+            conv.recordToEvent(rec, 0);
+            return store.getByMsgId(msgId);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void validateMessageChannel(JSONObject p, int messageId) {
@@ -1150,7 +1318,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             ids.add(sr.msgId);
             String name = d.optString("nickname", d.optString("name", ""));
             names.add(name);
-            afterSend(sr, chatType, groupId != 0 ? groupId : userId, groupId != 0 ? "" : peer);
+            afterSend(sr, chatType, groupId != 0 ? groupId : userId,
+                    groupId != 0 ? String.valueOf(groupId) : peer);
         }
         if (ids.isEmpty()) return null;
         QQClient.SendResult fw = qq.multiForward(chatType, peer, ids, names);
@@ -1605,14 +1774,22 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private JSONObject sendGroup(long groupId, Object message) throws Exception {
+        return sendGroup(groupId, message, "");
+    }
+
+    private JSONObject sendGroup(long groupId, Object message, String content) throws Exception {
         if (groupId == 0) throw new ApiError(1400, "missing group_id");
         if (looksLikeForward(message)) return sendForward(groupId, 0, message);
         java.util.ArrayList<Object> els = conv.toElements(message, QQClient.CT_GROUP);
         QQClient.SendResult r = sendTracked(QQClient.CT_GROUP, String.valueOf(groupId), els);
-        return afterSend(r, QQClient.CT_GROUP, groupId, "");
+        return afterSend(r, QQClient.CT_GROUP, groupId, String.valueOf(groupId), content);
     }
 
     private JSONObject sendPrivate(long userId, Object message) throws Exception {
+        return sendPrivate(userId, message, "");
+    }
+
+    private JSONObject sendPrivate(long userId, Object message, String content) throws Exception {
         if (userId == 0) throw new ApiError(1400, "missing user_id");
         if (looksLikeForward(message)) return sendForward(0, userId, message);
         String uid = store.uidOf(userId);
@@ -1624,7 +1801,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             throw new ApiError(1404, "cannot resolve uid for user " + userId);
         java.util.ArrayList<Object> els = conv.toElements(message, QQClient.CT_C2C);
         QQClient.SendResult r = sendTracked(QQClient.CT_C2C, uid, els);
-        return afterSend(r, QQClient.CT_C2C, userId, uid);
+        return afterSend(r, QQClient.CT_C2C, userId, uid, content);
     }
 
     /**
@@ -1667,19 +1844,38 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }
     }
 
-    private JSONObject afterSend(QQClient.SendResult r, int chatType, long peerUin, String peerUid) throws Exception {
+    private JSONObject afterSend(QQClient.SendResult r, int chatType, long peerUin, String peerUid)
+            throws Exception {
+        return afterSend(r, chatType, peerUin, peerUid, "");
+    }
+
+    private JSONObject afterSend(QQClient.SendResult r, int chatType, long peerUin, String peerUid,
+                                 String content) throws Exception {
         if (r.code != 0) throw new ApiError(1500, "send failed (code=" + r.code + "): " + r.msg);
+        String peer = (peerUid != null && !peerUid.isEmpty()) ? peerUid : String.valueOf(peerUin);
+        Object fetched = null;
         try {
-            String peer = (peerUid != null && !peerUid.isEmpty()) ? peerUid : String.valueOf(peerUin);
+            fetched = qq.fetchRecord(chatType, peer, r.msgId);
             qq.dumpSent(chatType, peer, r.msgId);
         } catch (Throwable t) {
             L.e("dumpSent", t);
         }
         MsgStore.Rec rec = new MsgStore.Rec();
-        rec.chatType = chatType; rec.peerUin = peerUin; rec.peerUid = peerUid;
+        rec.chatType = chatType; rec.peerUin = peerUin; rec.peerUid = peer;
         rec.msgId = r.msgId; rec.senderUin = selfUin();
+        rec.msgRecord = fetched;
+        if (fetched != null)
+            rec.msgSeq = qq.ref.getLong(Convert.unwrapRecord(fetched), "msgSeq");
+        rec.content = content == null ? "" : content;
         int id = store.put(rec);
-        return new JSONObject().put("message_id", id);
+        JSONObject out = new JSONObject().put("store_id", id);
+        if (r.msgId != 0) {
+            out.put("message_id", String.valueOf(r.msgId));
+            out.put("qq_msg_id", r.msgId);
+        } else {
+            out.put("message_id", id);
+        }
+        return out;
     }
 
     private void recall(int messageId) throws Exception {
@@ -1707,15 +1903,24 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (!latch.await(15, java.util.concurrent.TimeUnit.SECONDS))
             throw new ApiError(1500, "recall timeout");
         if (code[0] != 0) throw new ApiError(1500, "recall failed: code=" + code[0] + " " + wording[0]);
-        emitRecall(r.chatType == QQClient.CT_GROUP, r.peerUin, r.senderUin, selfUin(), r.id);
+        emitRecall(r.chatType == QQClient.CT_GROUP, r.peerUin, r.senderUin, selfUin(), r.id, r.msgId);
     }
 
-    private void emitRecall(boolean group, long peer, long user, long operator, int messageId) {
-        if (messageId != 0 && !seenRecalls.add(messageId)) return;
+    private void emitRecall(boolean group, long peer, long user, long operator, int storeId) {
+        emitRecall(group, peer, user, operator, storeId, 0);
+    }
+
+    private void emitRecall(boolean group, long peer, long user, long operator, int storeId, long qqMsgId) {
+        if (qqMsgId == 0 && storeId != 0) {
+            MsgStore.Rec rec = store.get(storeId);
+            if (rec != null) qqMsgId = rec.msgId;
+        }
+        long key = qqMsgId != 0 ? qqMsgId : storeId;
+        if (key != 0 && !seenRecalls.add(key)) return;
         if (seenRecalls.size() > 8000) seenRecalls.clear();
         try {
             JSONObject n = Notices.recall(selfUin(), System.currentTimeMillis() / 1000,
-                    group, peer, user, operator, messageId);
+                    group, peer, user, operator, storeId, qqMsgId);
             emitObEvent(n);
         } catch (Throwable t) {
             L.e("emitRecall", t);
@@ -1725,67 +1930,364 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private JSONObject getMsg(int messageId) throws Exception {
         MsgStore.Rec r = store.get(messageId);
         if (r == null) throw new ApiError(1404, "message not found: " + messageId);
-        if (r.msgRecord == null && r.msgId != 0) {
-            String peer = r.peerUid == null || r.peerUid.isEmpty()
-                    ? String.valueOf(r.peerUin) : r.peerUid;
-            QQClient.MsgListResult fetched = qq.getMsgsByMsgId(r.chatType, peer, r.msgId);
-            if (fetched.ok() && fetched.records != null && !fetched.records.isEmpty())
-                r.msgRecord = fetched.records.get(0);
+        String peer = r.peerUid == null || r.peerUid.isEmpty()
+                ? String.valueOf(r.peerUin) : r.peerUid;
+        String liveText = qq.peekRecordText(r.msgRecord);
+        if (r.msgId != 0 && (r.msgRecord == null || !msgRecordHasElements(r.msgRecord))) {
+            Object fetched = qq.fetchRecord(r.chatType, peer, r.msgId);
+            String fetchedText = qq.peekRecordText(fetched);
+            if (fetched != null && (r.msgRecord == null || !fetchedText.isEmpty())) {
+                r.msgRecord = fetched;
+                if (!fetchedText.isEmpty()) liveText = fetchedText;
+            }
         }
-        if (r.msgRecord == null) throw new ApiError(1404, "message not found: " + messageId);
-        JSONObject ev = conv.recordToEvent(r.msgRecord, 0);
+        if ((liveText == null || liveText.isEmpty()) && r.msgId != 0
+                && (r.content == null || r.content.isEmpty())) {
+            Object dbRec = findDbRecord(r.chatType, peer, r.msgId);
+            if (dbRec != null) {
+                r.msgRecord = dbRec;
+                liveText = qq.peekRecordText(dbRec);
+            }
+        }
+        if (!liveText.isEmpty() && (r.content == null || r.content.isEmpty())) r.content = liveText;
+        JSONObject ev = r.msgRecord == null ? null : conv.recordToEvent(r.msgRecord, 0);
+        if (ev != null) fillEmptyText(ev, r.msgRecord);
+        if (ev == null || "notice".equals(ev.optString("post_type")))
+            ev = synthesizeFromRec(r);
         if (ev == null) throw new ApiError(1500, "cannot render message");
         JSONObject d = new JSONObject();
-        d.put("time", ev.optLong("time"));
+        String mid = Codec.publicMessageId(ev);
+        if (mid.isEmpty() && r.msgId != 0) mid = String.valueOf(r.msgId);
+        if (mid.isEmpty()) mid = String.valueOf(messageId);
+        long when = r.msgTime > 0 ? r.msgTime : Codec.eventTime(ev);
+        if (when <= 0 && r.msgRecord != null) {
+            when = qq.ref.getLong(Convert.unwrapRecord(r.msgRecord), "msgTime");
+            if (when > 10_000_000_000L) when /= 1000L;
+        }
+        if (when > 0) r.msgTime = when;
+        d.put("time", when);
+        if (when > 0) d.put("msg_time", String.valueOf(when));
         d.put("message_type", ev.optString("message_type"));
-        d.put("message_id", messageId);
-        d.put("real_id", messageId);
-        d.put("user_id", ev.optLong("user_id"));
-        if (ev.has("group_id")) d.put("group_id", ev.optLong("group_id"));
+        d.put("message_id", mid);
+        d.put("real_id", mid);
+        if (ev.has("qq_msg_id")) d.put("qq_msg_id", ev.opt("qq_msg_id"));
+        else if (r.msgId != 0) d.put("qq_msg_id", r.msgId);
+        d.put("user_id", ev.optLong("user_id", r.senderUin));
+        if (ev.has("group_id") || r.chatType == QQClient.CT_GROUP) {
+            d.put("group_id", ev.optLong("group_id", r.peerUin));
+            attachGroupName(d);
+        }
         d.put("sender", ev.optJSONObject("sender"));
         d.put("message", ev.optJSONArray("message"));
+        String text = ev.optString("raw_message", "");
+        if (text.isEmpty()) text = snapshotText(mid, r);
+        if (!text.isEmpty()) {
+            d.put("raw_message", text);
+            if (d.optJSONArray("message") == null || d.optJSONArray("message").length() == 0) {
+                try { d.put("message", Codec.toSegments(text)); } catch (Exception ignore) {}
+            }
+            if (r.content == null || r.content.isEmpty()) r.content = text;
+        }
         return d;
+    }
+
+    private Object findDbRecord(int chatType, String peer, long msgId) {
+        if (msgId == 0 || peer == null || peer.isEmpty()) return null;
+        try {
+            QQClient.MsgListResult db = qq.getLatestDbMsgs(chatType, peer, 40);
+            if (db == null || db.records == null) return null;
+            for (Object rec : db.records) {
+                if (rec == null) continue;
+                Object inner = Convert.unwrapRecord(rec);
+                if (Ref.asLong(qq.ref.get(inner, "msgId")) == msgId) return inner;
+            }
+        } catch (Throwable ignore) {}
+        return null;
+    }
+
+    private boolean msgRecordHasElements(Object rec) {
+        if (rec == null) return false;
+        try {
+            Object els = qq.ref.get(rec, "elements");
+            if (!(els instanceof java.util.List)) return false;
+            for (Object e : (java.util.List<?>) els) {
+                if (e == null) continue;
+                int et = Ref.asInt(qq.ref.get(e, "elementType"));
+                if (et == 1) {
+                    Object t = qq.ref.get(e, "textElement");
+                    String c = t == null ? "" : Ref.asStr(qq.ref.get(t, "content"));
+                    if (c != null && !c.isEmpty()) return true;
+                    continue;
+                }
+                if (et != 0) return true;
+            }
+            return false;
+        } catch (Throwable ignore) {
+            return false;
+        }
+    }
+
+    private JSONObject synthesizeFromRec(MsgStore.Rec r) throws Exception {
+        if (r == null || (r.msgId == 0 && r.senderUin == 0)) return null;
+        boolean group = r.chatType == QQClient.CT_GROUP;
+        JSONObject sender = new JSONObject()
+                .put("user_id", r.senderUin)
+                .put("nickname", r.senderUin == selfUin() ? qq.selfNick() : "");
+        JSONObject ev = new JSONObject()
+                .put("post_type", "message")
+                .put("message_type", group ? "group" : "private")
+                .put("message_id", r.msgId != 0 ? String.valueOf(r.msgId) : String.valueOf(r.id))
+                .put("qq_msg_id", r.msgId)
+                .put("user_id", r.senderUin)
+                .put("sender", sender)
+                .put("time", System.currentTimeMillis() / 1000)
+                .put("message_seq", r.msgSeq);
+        if (group) ev.put("group_id", r.peerUin);
+        JSONArray segs = new JSONArray();
+        if (r.content != null && !r.content.isEmpty()) {
+            try { segs = Codec.toSegments(r.content); } catch (Exception ignore) {}
+        }
+        ev.put("message", segs);
+        return ev;
     }
 
     private JSONObject getGroupMsgHistory(long groupId, long messageSeq, int count,
                                           boolean queryOrder, String direction) throws Exception {
         if (groupId == 0) throw new ApiError(1400, "missing group_id");
-        return historyToArray(qq.getMsgs(QQClient.CT_GROUP, String.valueOf(groupId),
-                messageSeq, count, queryOrder), messageSeq, direction);
+        return historyToArray(qq.getHistory(QQClient.CT_GROUP, String.valueOf(groupId),
+                messageSeq, count, queryOrder), messageSeq, direction,
+                QQClient.CT_GROUP, groupId, String.valueOf(groupId));
     }
 
     private JSONObject getFriendMsgHistory(long userId, long messageSeq, int count,
                                            boolean queryOrder, String direction) throws Exception {
         if (userId == 0) throw new ApiError(1400, "missing user_id");
-        return historyToArray(qq.getMsgs(QQClient.CT_C2C, uidFor(0, userId),
-                messageSeq, count, queryOrder), messageSeq, direction);
+        String uid = uidFor(0, userId);
+        return historyToArray(qq.getHistory(QQClient.CT_C2C, uid,
+                messageSeq, count, queryOrder), messageSeq, direction,
+                QQClient.CT_C2C, userId, uid);
     }
 
     private JSONObject historyToArray(QQClient.MsgListResult hist, long cursorSeq,
-                                      String direction) throws Exception {
+                                      String direction, int chatType, long peerUin,
+                                      String peerUid) throws Exception {
         if (hist.timedOut) throw new ApiError(1500, hist.describe());
-        if (!hist.ok()) throw new ApiError(1500, "history failed: " + hist.describe());
         JSONArray messages = new JSONArray();
-        for (Object rec : hist.records) {
-            JSONObject ev = conv.recordToEvent(rec, 0); // self=0 keeps messages sent by this account
-            if (ev == null) continue;
-            if ("notice".equals(ev.optString("post_type"))) continue;
-            long seq = ev.optLong("message_seq");
-            if (cursorSeq > 0 && "before".equals(direction) && seq >= cursorSeq) continue;
-            if (cursorSeq > 0 && "after".equals(direction) && seq <= cursorSeq) continue;
-            ev.put("self_id", selfUin());
-            JSONObject item = new JSONObject()
-                    .put("time", ev.optLong("time"))
-                    .put("message_type", ev.optString("message_type"))
-                    .put("message_id", ev.optInt("message_id"))
-                    .put("real_id", ev.optInt("message_id"))
-                    .put("message_seq", seq)
-                    .put("sender", ev.optJSONObject("sender"))
-                    .put("message", ev.optJSONArray("message"))
-                    .put("raw_message", ev.optString("raw_message"));
-            messages.put(item);
+        int skipped = 0;
+        if (hist.records != null) {
+            for (Object rec : hist.records) {
+                Object inner = Convert.unwrapRecord(rec);
+                long recId = inner == null ? 0 : qq.ref.getLong(inner, "msgId");
+                long recTime = inner == null ? 0 : qq.ref.getLong(inner, "msgTime");
+                if (recTime > 10_000_000_000L) recTime /= 1000L;
+                long recSeq = inner == null ? 0 : qq.ref.getLong(inner, "msgSeq");
+                JSONObject ev = conv.recordToEvent(rec, 0);
+                if (ev == null) {
+                    skipped++;
+                    if (skipped == 1 && rec != null)
+                        L.e("recordToEvent skip class=" + rec.getClass().getName(), null);
+                    continue;
+                }
+                fillEmptyText(ev, rec);
+                fillEmptyTextFromMap(ev, hist);
+                JSONObject item = historyItem(ev, cursorSeq, direction);
+                if (item != null) {
+                    applyTextMap(item, hist);
+                    String tid = recId != 0 ? String.valueOf(recId) : String.valueOf(item.opt("message_id"));
+                    String t = hist.texts.get(tid);
+                    if (t == null) t = hist.texts.get(item.optString("message_id", ""));
+                    try {
+                        item.put("raw_message", t == null ? "" : t);
+                        if (t != null) {
+                            JSONArray arr = new JSONArray();
+                            arr.put(new JSONObject().put("type", "text").put("data", new JSONObject().put("text", t)));
+                            item.put("message", arr);
+                        }
+                    } catch (Exception ignore) {}
+                    lastHistRows.add(new HistRow(item, recId, recTime, recSeq, t));
+                    messages.put(item);
+                }
+            }
         }
-        return new JSONObject().put("messages", messages);
+        if (messages.length() == 0) {
+            for (MsgStore.Rec rec : store.listPeer(chatType, peerUin, peerUid, 20)) {
+                JSONObject ev = rec.msgRecord == null ? null : conv.recordToEvent(rec.msgRecord, 0);
+                if (ev == null || "notice".equals(ev.optString("post_type")))
+                    ev = synthesizeFromRec(rec);
+                if (ev == null) continue;
+                JSONObject item = historyItem(ev, cursorSeq, direction);
+                if (item != null) {
+                    lastHistRows.add(new HistRow(item, rec.msgId, rec.msgTime, rec.msgSeq, rec.content));
+                    messages.put(item);
+                }
+            }
+        }
+        if (messages.length() == 0 && !hist.ok())
+            throw new ApiError(1500, "history failed: " + hist.describe());
+        lastListTexts.putAll(hist.texts);
+        persistHistoryTexts(hist, chatType, peerUin, peerUid);
+        JSONObject out = new JSONObject().put("messages", messages);
+        if (hist.trace != null && !hist.trace.isEmpty()) out.put("_hist", hist.trace);
+        out.put("_keys", String.valueOf(hist.texts.keySet()));
+        out.put("_textN", hist.texts.size());
+        if (messages.length() > 0)
+            out.put("_mid0", messages.optJSONObject(0).optString("message_id"));
+        if (conv.lastParseDebug != null && !conv.lastParseDebug.isEmpty())
+            out.put("_parse", conv.lastParseDebug);
+        if (messages.length() > 0) {
+            JSONObject first = messages.optJSONObject(0);
+            if (first != null) {
+                out.put("_raw0", first.optString("raw_message"));
+                out.put("_seg0", first.optJSONArray("message") == null
+                        ? -1 : first.optJSONArray("message").length());
+            }
+        }
+        return out;
+    }
+
+    private static JSONObject copyJson(JSONObject src) throws Exception {
+        JSONObject out = new JSONObject();
+        if (src == null) return out;
+        java.util.Iterator<?> keys = src.keys();
+        while (keys.hasNext()) {
+            String k = String.valueOf(keys.next());
+            out.put(k, src.get(k));
+        }
+        return out;
+    }
+
+    private String snapshotText(String msgId, MsgStore.Rec rec) {
+        if (msgId != null && !msgId.isEmpty()) {
+            String t = lastListTexts.get(msgId);
+            if (t != null && !t.isEmpty()) return t;
+        }
+        if (rec == null && msgId != null && !msgId.isEmpty())
+            rec = store.getByMsgId(parseLongQuiet(msgId));
+        if (rec != null) {
+            if (rec.content != null && !rec.content.isEmpty()) return rec.content;
+            String peek = qq.peekRecordText(rec.msgRecord);
+            if (peek != null && !peek.isEmpty()) {
+                rec.content = peek;
+                return peek;
+            }
+        }
+        return "";
+    }
+
+    private void persistHistoryTexts(QQClient.MsgListResult hist, int chatType, long peerUin,
+                                     String peerUid) {
+        if (hist == null || hist.texts == null || hist.texts.isEmpty()) return;
+        for (java.util.Map.Entry<String, String> e : hist.texts.entrySet()) {
+            String text = e.getValue();
+            if (text == null || text.isEmpty()) continue;
+            long id = parseLongQuiet(e.getKey());
+            if (id == 0) continue;
+            MsgStore.Rec r = store.getByMsgId(id);
+            if (r == null) {
+                r = new MsgStore.Rec();
+                r.chatType = chatType;
+                r.peerUin = peerUin;
+                r.peerUid = peerUid;
+                r.msgId = id;
+                r.content = text;
+                store.put(r);
+            } else if (r.content == null || r.content.isEmpty()) {
+                r.content = text;
+            }
+        }
+    }
+
+    private void applyTextMap(JSONObject item, QQClient.MsgListResult hist) {
+        if (item == null || hist == null || hist.texts == null || hist.texts.isEmpty()) return;
+        String id = item.optString("message_id", "");
+        String text = hist.texts.get(id);
+        if ((text == null || text.isEmpty()) && !hist.texts.isEmpty()) {
+            // last resort: any recorded text for this page (ids should match; keep for diagnosis)
+            text = null;
+        }
+        if (text == null || text.isEmpty()) return;
+        try {
+            JSONArray arr = new JSONArray();
+            arr.put(new JSONObject().put("type", "text").put("data", new JSONObject().put("text", text)));
+            item.put("message", arr);
+            item.put("raw_message", text);
+        } catch (Exception ignore) {}
+    }
+
+    private void fillEmptyTextFromMap(JSONObject ev, QQClient.MsgListResult hist) {
+        if (ev == null || hist == null || hist.texts == null || hist.texts.isEmpty()) return;
+        if (eventHasText(ev)) return;
+        String id = ev.optString("message_id", "");
+        if (id.isEmpty() && ev.has("qq_msg_id")) id = String.valueOf(ev.opt("qq_msg_id"));
+        String text = hist.texts.get(id);
+        if (text == null || text.isEmpty()) return;
+        try {
+            JSONArray arr = new JSONArray();
+            arr.put(new JSONObject().put("type", "text").put("data", new JSONObject().put("text", text)));
+            ev.put("message", arr);
+            ev.put("raw_message", text);
+        } catch (Exception ignore) {}
+    }
+
+    private void fillEmptyText(JSONObject ev, Object rec) {
+        if (ev == null) return;
+        if (eventHasText(ev)) return;
+        String text = qq.peekRecordText(rec);
+        if (text == null || text.isEmpty()) return;
+        try {
+            JSONArray arr = new JSONArray();
+            arr.put(new JSONObject().put("type", "text").put("data", new JSONObject().put("text", text)));
+            ev.put("message", arr);
+            ev.put("raw_message", text);
+        } catch (Exception ignore) {}
+    }
+
+    private static boolean eventHasText(JSONObject ev) {
+        if (ev == null) return false;
+        if (ev.optString("raw_message", "").length() > 0) return true;
+        JSONArray segs = ev.optJSONArray("message");
+        if (segs == null) return false;
+        for (int i = 0; i < segs.length(); i++) {
+            JSONObject s = segs.optJSONObject(i);
+            if (s == null) continue;
+            JSONObject d = s.optJSONObject("data");
+            if (d == null) continue;
+            if (d.optString("text", "").length() > 0) return true;
+            if (d.optString("file", "").length() > 0) return true;
+        }
+        return false;
+    }
+
+    private JSONObject historyItem(JSONObject ev, long cursorSeq, String direction) throws Exception {
+        if (ev == null || "notice".equals(ev.optString("post_type"))) return null;
+        long seq = ev.optLong("message_seq");
+        if (cursorSeq > 0 && "before".equals(direction) && seq >= cursorSeq) return null;
+        if (cursorSeq > 0 && "after".equals(direction) && seq <= cursorSeq) return null;
+        ev.put("self_id", selfUin());
+        long uid = ev.optLong("user_id", 0);
+        if (uid == 0) {
+            JSONObject sender = ev.optJSONObject("sender");
+            if (sender != null) uid = sender.optLong("user_id", 0);
+        }
+        String mid = Codec.publicMessageId(ev);
+        if (mid.isEmpty()) mid = String.valueOf(ev.opt("message_id"));
+        JSONObject item = new JSONObject()
+                .put("time", ev.optLong("time"))
+                .put("msg_time", ev.optString("msg_time", ev.optString("time", "")))
+                .put("message_type", ev.optString("message_type"))
+                .put("message_id", mid)
+                .put("real_id", mid)
+                .put("message_seq", seq)
+                .put("user_id", uid)
+                .put("sender", ev.optJSONObject("sender"))
+                .put("message", ev.optJSONArray("message"))
+                .put("raw_message", ev.optString("raw_message"));
+        if (ev.has("qq_msg_id")) item.put("qq_msg_id", ev.opt("qq_msg_id"));
+        if (ev.has("group_id")) {
+            item.put("group_id", ev.optLong("group_id"));
+            attachGroupName(item);
+        }
+        return item;
     }
 
     private static void requireOp(QQClient.OpResult r) {
@@ -1799,8 +2301,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         for (Object gi : qq.getGroupList()) {
             try {
                 JSONObject o = new JSONObject();
-                o.put("group_id", Ref.asLong(qq.ref.get(gi, "groupCode")));
-                o.put("group_name", Ref.asStr(qq.ref.get(gi, "groupName")));
+                long gid = Ref.asLong(qq.ref.get(gi, "groupCode"));
+                String name = Ref.asStr(qq.ref.get(gi, "groupName"));
+                rememberGroup(gid, name);
+                o.put("group_id", gid);
+                o.put("group_name", name);
                 o.put("member_count", Ref.asInt(qq.ref.get(gi, "memberCount")));
                 o.put("max_member_count", Ref.asInt(qq.ref.get(gi, "maxMember")));
                 arr.put(o);
@@ -1843,7 +2348,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private JSONObject getGroupMemberInfo(long groupId, long userId) throws Exception {
         if (groupId == 0 || userId == 0) throw new ApiError(1400, "missing group_id/user_id");
-        java.util.Map<String, Object> members = qq.getAllMembers(groupId);
+        java.util.Map<String, Object> members = qq.getAllMembers(groupId, true);
         if (members == null) throw new ApiError(1500, "cannot fetch group members");
         for (Object mi : members.values()) {
             if (Ref.asLong(qq.ref.get(mi, "uin")) == userId) return memberJson(groupId, mi);
@@ -1900,6 +2405,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         o.put("group_name", Ref.asStr(qq.ref.get(gi, "groupName")));
         o.put("member_count", Ref.asInt(qq.ref.get(gi, "memberCount")));
         o.put("max_member_count", Ref.asInt(qq.ref.get(gi, "maxMember")));
+        int flag3 = Ref.asInt(qq.ref.get(gi, "groupFlagExt3"));
+        o.put("group_flag_ext3", flag3);
+        o.put("honor_open", (flag3 & QQClient.HONOR_AIO_FLAG) == 0);
         return o;
     }
 
@@ -2134,14 +2642,51 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         throw new ApiError(1404, "cannot resolve uid for user " + uin);
     }
 
-    private void setEmojiLike(int messageId, long emojiId, boolean set) throws Exception {
+    /** QQ NT needs msgSeq; sent messages often land in MsgStore before seq is filled. */
+    private long ensureMsgSeq(MsgStore.Rec r) throws Exception {
+        if (r.msgSeq != 0) return r.msgSeq;
+        if (r.msgRecord != null) {
+            long seq = qq.ref.getLong(Convert.unwrapRecord(r.msgRecord), "msgSeq");
+            if (seq != 0) {
+                r.msgSeq = seq;
+                return seq;
+            }
+        }
+        if (r.msgId == 0) throw new ApiError(1400, "message missing seq");
+        String peer = r.peerUid == null || r.peerUid.isEmpty()
+                ? String.valueOf(r.peerUin) : r.peerUid;
+        Object fetched = qq.fetchRecord(r.chatType, peer, r.msgId);
+        if (fetched != null) {
+            r.msgRecord = fetched;
+            long seq = qq.ref.getLong(Convert.unwrapRecord(fetched), "msgSeq");
+            if (seq != 0) {
+                r.msgSeq = seq;
+                return seq;
+            }
+        }
+        throw new ApiError(1400, "message missing seq");
+    }
+
+    /** 1=QQ face, 2=unicode — id string length > 3 (NapCat/QQNT convention). */
+    private static long emojiTypeOf(String raw, long emojiId) {
+        String id = raw != null && !raw.trim().isEmpty() ? raw.trim() : String.valueOf(emojiId);
+        return id.length() > 3 ? 2L : 1L;
+    }
+
+    private static String emojiKeyOf(String raw, long emojiId) {
+        return raw != null && !raw.trim().isEmpty() ? raw.trim() : String.valueOf(emojiId);
+    }
+
+    private void setEmojiLike(int messageId, long emojiId, String emojiRaw, boolean set) throws Exception {
         MsgStore.Rec r = store.get(messageId);
         if (r == null) throw new ApiError(1404, "message not found: " + messageId);
         Object msgService = qq.getMsgService();
         if (msgService == null) throw new ApiError(1500, "kernel not ready");
         Object contact = qq.ref.neu(QQClient.CONTACT, r.chatType,
                 r.peerUid == null || r.peerUid.isEmpty() ? String.valueOf(r.peerUin) : r.peerUid, "");
-        long emojiType = emojiId < 9000 ? 1L : 2L;   // 1=QQ face, 2=unicode emoji
+        long msgSeq = ensureMsgSeq(r);
+        long emojiType = emojiTypeOf(emojiRaw, emojiId);
+        String emojiKey = emojiKeyOf(emojiRaw, emojiId);
         final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
         final int[] code = new int[]{-1};
         final String[] message = new String[]{""};
@@ -2155,76 +2700,277 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     }
                     return null;
                 });
-        // setMsgEmojiLikes(Contact, long msgSeq, String emojiId, long emojiType, boolean set, cb)
-        qq.ref.call(msgService, "setMsgEmojiLikes", contact, r.msgSeq, String.valueOf(emojiId), emojiType, set, cb);
+        qq.ref.call(msgService, "setMsgEmojiLikes", contact, msgSeq, emojiKey, emojiType, set, cb);
         if (!latch.await(15, java.util.concurrent.TimeUnit.SECONDS))
             throw new ApiError(1500, "reaction operation timeout");
         if (code[0] != 0)
             throw new ApiError(1500, "reaction operation failed: code=" + code[0] + " " + message[0]);
+        String peer = r.peerUid == null || r.peerUid.isEmpty()
+                ? String.valueOf(r.peerUin) : r.peerUid;
+        if (r.msgId != 0) {
+            Object fetched = qq.fetchRecord(r.chatType, peer, r.msgId);
+            if (fetched != null) r.msgRecord = fetched;
+        }
     }
 
-    private JSONObject reactionList(int messageId, long emojiId, String cursor) throws Exception {
+    private JSONObject reactionList(int messageId, long emojiId, String emojiRaw, String cursor)
+            throws Exception {
         MsgStore.Rec r = store.get(messageId);
         if (r == null) throw new ApiError(1404, "message not found: " + messageId);
         Object msgService = qq.getMsgService();
         if (msgService == null) throw new ApiError(1500, "kernel not ready");
         Object contact = qq.ref.neu(QQClient.CONTACT, r.chatType,
                 r.peerUid == null || r.peerUid.isEmpty() ? String.valueOf(r.peerUin) : r.peerUid, "");
-        long emojiType = emojiId < 9000 ? 1L : 2L;
+        long msgSeq = ensureMsgSeq(r);
+        long emojiType = emojiTypeOf(emojiRaw, emojiId);
+        String emojiKey = emojiKeyOf(emojiRaw, emojiId);
+        String cookie = cursor == null ? "" : cursor;
         final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
         final int[] code = new int[]{-1};
         final String[] message = new String[]{""};
         final String[] next = new String[]{""};
         final java.util.List<?>[] users = new java.util.List<?>[1];
-        final boolean[] flags = new boolean[2];
         Object cb = java.lang.reflect.Proxy.newProxyInstance(qq.ref.cl,
                 new Class[]{qq.ref.cls("com.tencent.qqnt.kernel.nativeinterface.IGetMsgEmojiLikesListCallback")},
                 (proxy, m, a) -> {
-                    if ("onGetMsgEmojiLikesList".equals(m.getName()) && a != null && a.length >= 3) {
-                        code[0] = Ref.asInt(a[0]);
-                        message[0] = a.length >= 2 ? Ref.asStr(a[1]) : "";
-                        if (a[2] instanceof java.util.List) users[0] = (java.util.List<?>) a[2];
-                        if (a.length >= 4) next[0] = Ref.asStr(a[3]);
-                        if (a.length >= 5) flags[0] = Ref.asBool(a[4]);
-                        if (a.length >= 6) flags[1] = Ref.asBool(a[5]);
-                        latch.countDown();
+                    try {
+                        if (a != null) for (Object arg : a)
+                            absorbReactionListArg(arg, code, message, next, users);
+                    } catch (Throwable t) {
+                        L.e("reactionList cb " + m.getName(), t);
                     }
+                    latch.countDown();
                     return null;
                 });
-        qq.ref.call(msgService, "getMsgEmojiLikesList", contact, r.msgSeq,
-                String.valueOf(emojiId), emojiType, cursor == null ? "" : cursor, true, 50, cb);
+        qq.ref.call(msgService, "getMsgEmojiLikesList", contact, msgSeq,
+                emojiKey, emojiType, cookie, true, 50, cb);
         if (!latch.await(15, java.util.concurrent.TimeUnit.SECONDS))
             throw new ApiError(1500, "reaction list timeout");
+        if (code[0] == -1 && users[0] != null) code[0] = 0;
+        JSONArray data = reactionUsersToJson(users[0]);
+        if (data.length() == 0) data = reactionListFromRecord(r, emojiKey);
+        if (code[0] == -1 && data.length() > 0) code[0] = 0;
         if (code[0] != 0)
             throw new ApiError(1500, "reaction list failed: code=" + code[0] + " " + message[0]);
+        JSONObject out = new JSONObject().put("data", data);
+        if (next[0] != null && !next[0].isEmpty() && !next[0].equals(cursor)) out.put("next", next[0]);
+        return out;
+    }
+
+    private void absorbReactionListArg(Object arg, int[] code, String[] message,
+                                       String[] next, java.util.List<?>[] users) {
+        try {
+            if (arg == null) return;
+            if (arg instanceof Number) {
+                if (code[0] == -1) code[0] = Ref.asInt(arg);
+                return;
+            }
+            if (arg instanceof java.util.List) {
+                users[0] = (java.util.List<?>) arg;
+                return;
+            }
+            if (arg instanceof String) {
+                String s = Ref.asStr(arg);
+                if (!s.isEmpty() && (next[0] == null || next[0].isEmpty())) next[0] = s;
+                return;
+            }
+            String cn = arg.getClass().getName();
+            if (cn.contains("Callback") || cn.startsWith("java.") || cn.startsWith("android."))
+                return;
+            int parsed = Ref.asInt(qq.ref.get(arg, "result"));
+            if (code[0] == -1 || parsed != 0) code[0] = parsed;
+            String err = Ref.asStr(qq.ref.get(arg, "errMsg"));
+            if (!err.isEmpty()) message[0] = err;
+            String ck = Ref.asStr(qq.ref.get(arg, "cookie"));
+            if (!ck.isEmpty()) next[0] = ck;
+            Object list = qq.ref.get(arg, "emojiLikesList");
+            if (!(list instanceof java.util.List)) list = qq.ref.get(arg, "emojiLikeList");
+            if (list instanceof java.util.List) users[0] = (java.util.List<?>) list;
+        } catch (Throwable ignore) {}
+    }
+
+    private JSONArray reactionUsersToJson(java.util.List<?> users) throws Exception {
         JSONArray data = new JSONArray();
-        if (users[0] != null) for (Object info : users[0]) {
-            long id = Ref.asLong(qq.ref.get(info, "tinyId"));
+        if (users == null) return data;
+        for (Object info : users) {
+            long id = qq.ref.getLong(info, "tinyId");
             String nick = Ref.asStr(qq.ref.get(info, "nickName"));
             String avatar = Ref.asStr(qq.ref.get(info, "headUrl"));
             JSONObject user = Codec.user(id, nick, "");
             if (!avatar.isEmpty()) user.put("avatar", avatar);
             data.put(user);
         }
-        JSONObject out = new JSONObject().put("data", data);
-        // QQ returns an opaque continuation cookie. An empty cookie is the reliable end marker;
-        // the two booleans have changed meaning between QQNT releases.
-        if (next[0] != null && !next[0].isEmpty() && !next[0].equals(cursor)) out.put("next", next[0]);
-        return out;
+        return data;
+    }
+
+    /** When getMsgEmojiLikesList returns no rows, msgRecord still tracks our own click. */
+    private JSONArray reactionListFromRecord(MsgStore.Rec r, String emojiKey) throws Exception {
+        JSONArray data = new JSONArray();
+        Object rec = r.msgRecord;
+        if (rec == null && r.msgId != 0) {
+            String peer = r.peerUid == null || r.peerUid.isEmpty()
+                    ? String.valueOf(r.peerUin) : r.peerUid;
+            rec = qq.fetchRecord(r.chatType, peer, r.msgId);
+            if (rec != null) r.msgRecord = rec;
+        }
+        rec = rec == null ? null : Convert.unwrapRecord(rec);
+        Object likes = rec == null ? null : qq.ref.get(rec, "emojiLikesList");
+        if (!(likes instanceof java.util.List)) return data;
+        for (Object like : (java.util.List<?>) likes) {
+            if (!emojiKey.equals(Ref.asStr(qq.ref.get(like, "emojiId")))) continue;
+            if (qq.ref.getLong(like, "likesCnt") <= 0) continue;
+            Object clicked = qq.ref.get(like, "isClicked");
+            boolean mine = clicked instanceof Boolean ? (Boolean) clicked
+                    : Ref.asInt(clicked) != 0;
+            if (!mine) continue;
+            JSONObject user = Codec.user(selfUin(), qq.selfNick(), "");
+            JSONObject login = loginSlim().optJSONObject("user");
+            if (login != null) {
+                String avatar = login.optString("avatar", "");
+                if (!avatar.isEmpty()) user.put("avatar", avatar);
+            }
+            data.put(user);
+            break;
+        }
+        return data;
+    }
+
+    /**
+     * 群管理「成员群头衔」= userShowFlag / cGroupRankUserFlag (1=开).
+     * Not 群标识: that is groupFlagExt3 0x2000000 / isTroopHonorOpen.
+     * Server write is OIDB 0x8FC sub 0 (show_flag). Sub 2 only sets one member's title.
+     */
+    private JSONObject setGroupTitleDisplay(long groupId, boolean show) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        JSONArray paths = new JSONArray();
+        int want = show ? 1 : 0;
+        QQClient.MemberExtFlags before = qq.getMemberExtInfo(groupId);
+        Pb.Writer body = Pb.w().varint(1, groupId).varint(2, want).varint(6, want);
+        for (int i = 0; i < before.levelIds.size(); i++) {
+            body.message(4, Pb.w().varint(1, before.levelIds.get(i)[0])
+                    .string(2, before.levelNames.get(i)).toByteArray());
+        }
+        for (int i = 0; i < before.levelIdsNew.size(); i++) {
+            body.message(10, Pb.w().varint(1, before.levelIdsNew.get(i)[0])
+                    .string(2, before.levelNamesNew.get(i)).toByteArray());
+        }
+        byte[] body8fc = body.toByteArray();
+        PacketSvc.Result r0 = qq.packets().sendOidb(0x8FC, 0, body8fc);
+        paths.put("oidb_0x8fc_0:" + (r0.ok() ? "ok" : r0.describe()));
+        PacketSvc.Result r0b = qq.packets().sendOidb(0x8FC, 0, body8fc, false);
+        paths.put("oidb_0x8fc_0_nr:" + (r0b.ok() ? "ok" : r0b.describe()));
+        PacketSvc.Result legacy = qq.packets().sendSso("OidbSvc.0x8fc_0",
+                Pb.oidb(0x8FC, 0, body8fc, false));
+        paths.put("oidb_svc_0x8fc_0:" + (legacy.ok() ? "ok" : legacy.describe()));
+        JSONArray dumps = new JSONArray();
+        for (String n : new String[]{
+                "com.tencent.qqnt.kernel.nativeinterface.SetIdentityTitleInfoReq",
+                "com.tencent.qqnt.kernel.nativeinterface.GIMSetGroupLevelInfoReq",
+                "com.tencent.qqnt.kernel.nativeinterface.GIMSetGroupLevelInfoRsp"}) {
+            JSONArray fs = new JSONArray();
+            for (String f : qq.dumpClassFields(n)) fs.put(f);
+            dumps.put(new JSONObject().put("cls", n).put("f", fs));
+        }
+        try {
+            QQClient.OpResult id = qq.setIdentityTitleInfo(groupId, show);
+            paths.put("setIdentityTitleInfo:" + (id.ok() ? "ok" : id.describe()));
+        } catch (Throwable t) {
+            paths.put("setIdentityTitleInfo:err:" + t);
+        }
+        try {
+            QQClient.OpResult lv = qq.setGroupIdentityLevelInfo(groupId, show);
+            paths.put("setGroupIdentityLevelInfo:" + lv.describe());
+        } catch (Throwable t) {
+            paths.put("setGroupIdentityLevelInfo:err:" + t);
+        }
+        JSONArray cbDump = new JSONArray();
+        for (String m : qq.dumpServiceMethods(
+                "com.tencent.qqnt.kernel.nativeinterface.ISetGroupIdentityLevelInfoCallback"))
+            cbDump.put(m);
+        dumps.put(new JSONObject().put("cls", "ISetGroupIdentityLevelInfoCallback").put("f", cbDump));
+        if (qq.updateLocalRankSwitch(groupId, show)) paths.put("local_rank_switch");
+        QQClient.MemberExtFlags lvl = qq.getGroupMemberLevelInfo(groupId);
+        paths.put("getGroupMemberLevelInfo:" + lvl.code + ":" + lvl.msg);
+        try { Thread.sleep(400); } catch (InterruptedException ignore) {}
+        QQClient.MemberExtFlags ext = qq.getMemberExtInfo(groupId);
+        int[] local = qq.troopExtRankFlags(groupId);
+        boolean open = local[0] == 1 || ext.titleOpen();
+        return new JSONObject()
+                .put("title_open", open)
+                .put("user_show_flag", ext.userShowFlag)
+                .put("user_show_flag_new", ext.userShowFlagNew)
+                .put("sys_show_flag", ext.sysShowFlag)
+                .put("local_rank_flag", local[0])
+                .put("local_rank_flag_new", local[1])
+                .put("wanted", show)
+                .put("before_flag", before.userShowFlag)
+                .put("level_n", before.levelNames.size())
+                .put("level_new_n", before.levelNamesNew.size())
+                .put("paths", paths)
+                .put("dump", dumps);
+    }
+
+    private JSONObject groupExtra(long groupId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        qq.refreshGroupList();
+        int flag = qq.groupFlagExt3(groupId);
+        JSONObject g = groupInfoJson(groupId);
+        QQClient.MemberExtFlags ext = qq.getMemberExtInfo(groupId);
+        return new JSONObject()
+                .put("guild_id", String.valueOf(groupId))
+                .put("name", g.optString("group_name"))
+                .put("group_flag_ext3", flag)
+                .put("honor_open", (flag & QQClient.HONOR_AIO_FLAG) == 0)
+                .put("title_open", ext.titleOpen())
+                .put("user_show_flag", ext.userShowFlag)
+                .put("user_show_flag_new", ext.userShowFlagNew)
+                .put("sys_show_flag", ext.sysShowFlag);
+    }
+
+    private JSONObject groupSign(long groupId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
+        String ver = qq.qqVersion();
+        if (ver == null || ver.isEmpty()) ver = "9.3.55";
+        byte[] inner = Pb.w()
+                .string(1, String.valueOf(selfUin()))
+                .string(2, String.valueOf(groupId))
+                .string(3, ver)
+                .toByteArray();
+        PacketSvc.Result result = qq.packets().sendOidb(0xEB7, 1,
+                Pb.w().message(2, inner).toByteArray(), false);
+        if (!result.ok()) throw new ApiError(1500, "group sign failed: " + result.describe());
+        return new JSONObject().put("ok", true);
+    }
+
+    private void setGroupEssence(JSONObject p, boolean add) throws Exception {
+        long g = p.optLong("guild_id", p.optLong("group_id", 0));
+        if (g == 0) g = Codec.channelPeer(p.optString("channel_id", ""));
+        MsgStore.Rec rec = requireMessage(p.optString("message_id", ""), p);
+        if (g == 0) g = rec.peerUin;
+        long seq = rec.msgSeq;
+        long random = 0;
+        if (rec.msgRecord != null) {
+            random = qq.ref.getLong(rec.msgRecord, "msgRandom");
+            if (seq == 0) seq = qq.ref.getLong(rec.msgRecord, "msgSeq");
+        }
+        if (seq == 0 || random == 0)
+            throw new ApiError(1400, "message missing seq/random");
+        requireOp(qq.setGroupEssence(g, seq, random, add));
     }
 
     /** OidbSvcTrpcTcp.0x8FC_2: set (or clear) one member's special title. */
     private void setGroupSpecialTitle(long groupId, String targetUid, String title) {
         if (groupId == 0) throw new ApiError(1400, "missing group_id");
-        // D8FCReqBody: 1=groupCode, repeated 3=MemberInfo; MemberInfo: 1=uid, 5=title bytes.
-        // Match current Lagrange.Core behavior: optional duration is not sent.
-        byte[] member = Pb.w().string(1, targetUid).string(5, title == null ? "" : title)
+        // D8FCReqBody: 1=groupCode, 2=showFlag, 3=MemberInfo{1=uid, 5=title, 6=expire(-1=永久), 7=uinName}.
+        String t = title == null ? "" : title;
+        byte[] member = Pb.w().string(1, targetUid).string(5, t).varint(6, -1L).string(7, t)
                 .toByteArray();
-        byte[] body = Pb.w().varint(1, groupId).message(3, member).toByteArray();
+        byte[] body = Pb.w().varint(1, groupId).varint(2, 1).message(3, member).toByteArray();
         PacketSvc.Result result = qq.packets().sendOidb(0x8FC, 2, body);
         if (!result.ok()) {
             throw new ApiError(1500, "set special title failed: " + result.describe());
         }
+        qq.getAllMembers(groupId, true);
     }
 
     /** OidbSvcTrpcTcp.0x7E5_104: like a user's profile card `times` times (server caps daily total). */
@@ -2271,7 +3017,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final java.util.Map<String, FriendReq> pendingFriends = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Map<String, GroupReq> pendingGroups = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Set<String> seenRequests = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    private final java.util.Set<Integer> seenRecalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final java.util.Set<Long> seenRecalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> seenMemberChanges = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static final class FriendReq {
@@ -2311,7 +3057,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 if (ev != null) {
                     String nt = ev.optString("notice_type", "");
                     if ("group_recall".equals(nt) || "friend_recall".equals(nt)) {
-                        int mid = ev.optInt("message_id", 0);
+                        long mid = ev.optLong("qq_msg_id", 0);
+                        if (mid == 0) mid = ev.optLong("message_id", 0);
                         if (mid != 0 && !seenRecalls.add(mid)) continue;
                     }
                     emitObEvent(ev);
@@ -2373,7 +3120,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     .put("timestamp", System.currentTimeMillis())
                     .put("login", loginSlim())
                     .put("emoji", new JSONObject().put("id", emojiId))
-                    .put("message", new JSONObject().put("id", String.valueOf(ob.optInt("message_id"))))
+                    .put("message", new JSONObject().put("id", Codec.publicMessageId(ob)))
                     .put("channel", Codec.channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, ""));
             if (group) body.put("guild", Codec.guild(peer, ""));
             emitSatoriEvent(body);
@@ -2446,15 +3193,26 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     @Override public void onGroupListUpdate(Object updateType, List<?> groups) {
-        if (groups == null || groups.isEmpty()) return;
+        if (groups == null) return;
+        for (Object info : groups) {
+            try {
+                rememberGroup(Ref.asLong(qq.ref.get(info, "groupCode")),
+                        Ref.asStr(qq.ref.get(info, "groupName")));
+            } catch (Throwable ignore) {}
+        }
+        if (groups.isEmpty()) return;
         String update = enumName(updateType).toUpperCase(java.util.Locale.ROOT);
-        if (update.contains("INIT") || update.contains("SYNC")) return;
+        if (update.contains("INIT") || update.contains("SYNC")
+                || update.contains("REFRESH") || update.contains("RELOAD")
+                || update.contains("LOAD") || update.contains("ALL")
+                || update.contains("FULL")) return;
         String suffix;
         if (update.contains("DELETE") || update.contains("REMOVE") || update.contains("DEL")
                 || update.contains("QUIT") || update.contains("EXIT")) suffix = "removed";
         else if (update.contains("ADD") || update.contains("INSERT") || update.contains("JOIN"))
             suffix = "added";
         else suffix = "updated";
+        if ("updated".equals(suffix) && groups.size() > 3) return;
         for (Object info : groups) {
             try {
                 long groupId = Ref.asLong(qq.ref.get(info, "groupCode"));
@@ -2537,7 +3295,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             sr.senderUin = user;
             obId = store.put(sr);
         }
-        emitRecall(group, peer, user, operator == 0 ? user : operator, obId);
+        emitRecall(group, peer, user, operator == 0 ? user : operator, obId, msgId);
     }
 
     private JSONObject friendRequestEvent(Object req) throws Exception {
@@ -2610,8 +3368,20 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         } catch (Throwable ignore) {}
     }
 
+    private void rememberGroup(long groupId, String name) {
+        if (groupId != 0 && name != null && !name.isEmpty()) groupNames.put(groupId, name);
+    }
+
+    private void attachGroupName(JSONObject ob) {
+        if (ob == null || !ob.has("group_id") || !ob.optString("group_name", "").isEmpty()) return;
+        String name = groupNames.get(ob.optLong("group_id"));
+        if (name == null || name.isEmpty()) return;
+        try { ob.put("group_name", name); } catch (Exception ignore) {}
+    }
+
     private void emitObEvent(JSONObject obEvent) {
         try {
+            attachGroupName(obEvent);
             long sn = eventSn.incrementAndGet();
             JSONObject body = Codec.toSatoriEvent(obEvent, loginSlim(), sn, assetBase());
             if (body == null) return;
@@ -2635,7 +3405,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private void replayEvents(WsConn conn, long afterSn) {
-        if (afterSn <= 0) return;
         for (JSONObject body : recentEvents) {
             if (body.optLong("sn") <= afterSn) continue;
             try { conn.send(opJson(OP_EVENT, body).toString()); } catch (Throwable ignore) {}
@@ -2798,7 +3567,82 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("platform", PLATFORM)
                 .put("adapter", ADAPTER)
                 .put("qq_version", qqVersion.isEmpty() ? "unknown" : qqVersion)
-                .put("runtime", "Android QQNT/Xposed");
+                .put("runtime", "Android QQNT/Xposed")
+                .put("hist", "60");
+    }
+
+    private JSONObject qzonePublish(JSONObject p) throws Exception {
+        String content = p.optString("content", p.optString("text", ""));
+        if (content.isEmpty()) throw new ApiError(1400, "missing content");
+        int ugcRight = p.optInt("ugc_right", p.optInt("visibility", 1));
+        return qzone.publish(content, ugcRight);
+    }
+
+    private JSONObject qzoneDelete(JSONObject p) throws Exception {
+        String tid = p.optString("tid", p.optString("id", ""));
+        if (tid.isEmpty()) throw new ApiError(1400, "missing tid");
+        return qzone.delete(tid);
+    }
+
+    private JSONObject qzoneAuthDebug() throws Exception {
+        JSONObject out = new JSONObject();
+        String uin = qq.selfUin();
+        out.put("uin", uin == null ? "" : uin);
+        Object runtime = qq.appRuntime();
+        String account = uin;
+        if (runtime != null) {
+            try {
+                String acc = Ref.asStr(qq.ref.call(runtime, "getAccount"));
+                if (!acc.isEmpty()) {
+                    account = acc;
+                    out.put("account", acc);
+                }
+            } catch (Throwable ignore) {}
+        }
+        Object ticketMgr = qq.getTicketManager();
+        out.put("ticket_mgr", ticketMgr != null);
+        if (ticketMgr != null && account != null && !account.isEmpty()) {
+            for (String label : new String[]{"skey", "real_skey", "pskey", "stweb"}) {
+                try {
+                    Object v = null;
+                    if ("skey".equals(label)) v = qq.ref.call(ticketMgr, "getSkey", account);
+                    else if ("real_skey".equals(label)) v = qq.ref.call(ticketMgr, "getRealSkey", account);
+                    else if ("pskey".equals(label)) v = qq.ref.call(ticketMgr, "getPskey", account, "qzone.qq.com");
+                    else if ("stweb".equals(label)) v = qq.ref.call(ticketMgr, "getStweb", account);
+                    out.put(label + "_len", Ref.asStr(v).length());
+                } catch (Throwable t) {
+                    out.put(label + "_err", String.valueOf(t.getMessage()));
+                }
+            }
+        }
+        try {
+            String ps = qq.fetchPskeyViaManager("qzone.qq.com");
+            out.put("mgr_pskey_len", ps == null ? 0 : ps.length());
+        } catch (Throwable t) {
+            out.put("mgr_pskey_err", String.valueOf(t.getMessage()));
+        }
+        try {
+            QzoneSvc.Auth a = qq.fetchQzoneAuth();
+            out.put("auth_skey_len", a.skey == null ? 0 : a.skey.length());
+            out.put("auth_pskey_len", a.pskey == null ? 0 : a.pskey.length());
+        } catch (Throwable t) {
+            out.put("auth_err", String.valueOf(t.getMessage()));
+        }
+        return out;
+    }
+
+    private JSONObject qzoneList(JSONObject p) throws Exception {
+        int limit = Math.max(1, Math.min(100, p.optInt("limit", 50)));
+        java.util.List<QzoneSvc.Mood> moods = qzone.listAll(limit);
+        JSONArray data = new JSONArray();
+        for (QzoneSvc.Mood m : moods) {
+            data.put(new JSONObject()
+                    .put("tid", m.tid)
+                    .put("content", m.content == null ? "" : m.content)
+                    .put("created_at", m.createdTime)
+                    .put("ugc_right", m.ugcRight));
+        }
+        return new JSONObject().put("data", data);
     }
 
     private void scheduleRestart(int delayMs) {

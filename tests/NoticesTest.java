@@ -21,6 +21,9 @@ public final class NoticesTest {
         eq(2, g.getLong("user_id"), "recall user");
         eq(3, g.getLong("operator_id"), "recall operator");
         eq(42, g.getInt("message_id"), "recall mid");
+        JSONObject pub = Notices.recall(1, 100, true, 280183116L, 2, 3, 42, 7753807298269865192L);
+        eq("7753807298269865192", pub.getString("message_id"), "recall public id");
+        eq(7753807298269865192L, pub.getLong("qq_msg_id"), "recall qq_msg_id");
 
         JSONObject f = Notices.recall(1, 100, false, 0, 9, 9, 7);
         eq("friend_recall", f.getString("notice_type"), "friend recall");
@@ -36,6 +39,13 @@ public final class NoticesTest {
         eq("u_a", p.getString("sender_uid"), "poke sender uid");
         eq("u_b", p.getString("target_uid"), "poke target uid");
         eq(280183116L, p.getLong("group_id"), "poke group");
+        eq(0, p.optLong("user_id", 0), "uid poke user stays 0 until Convert");
+
+        String numeric = "{\"items\":[{\"uid\":\"123\"},{\"txt\":\"poke\"},{\"uid\":\"456\"}]}";
+        JSONObject n = Notices.pokeFromJson(numeric, 1, 50, true, 280183116L);
+        check(n != null, "numeric poke parsed");
+        eq(123, n.getLong("user_id"), "numeric poke sender");
+        eq(456, n.getLong("target_id"), "numeric poke target");
 
         String xml = "<gtip align=\"center\"> <qq uin=\"u_a\" col=\"1\" nm=\"\" />"
                 + " <img src=\"http://tianquan.gtimg.cn/nudgeaction/item/0/action.png\" />"

@@ -623,61 +623,183 @@ public final class Media {
         }
     }
 
-    /** Build a KELEMTYPEPTT(4) voice element. Input must already be Tencent SILK (`\x02#!SILK_V3`). */
+    /**
+     * Build a KELEMTYPEPTT(4) voice element. Input must already be Tencent SILK (`\x02#!SILK_V3`).
+     *
+     * Official {@code createPttElement} copies through an NT dest named after the temp
+     * {@code obsilk*} file. After {@code sendMsg} the kernel drops that path
+     * ({@code filePath=""}, {@code pathExists=false}), so AIO's click handler sees no
+     * local file and never starts playback. Stage the same {@code {md5}.silk} into the
+     * native recording directory first, then point {@code filePath} at a file that
+     * actually exists.
+     */
     public static Object buildPttElement(Ref ref, Object msgService, File file) {
         try {
             String path = file.getAbsolutePath();
             int[] fmt = pttFormat(path);            // [formatType, durationSec]
+            String md5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", path));
+            String fileName = (md5 == null || md5.isEmpty())
+                    ? file.getName()
+                    : md5 + (fmt[0] == 0 ? ".amr" : ".silk");
+            java.util.ArrayList<Byte> waves = pttWaves(fmt[1]);
+            String classic = classicPttPath(ref, fileName);
+            String ntDest = "";
+            if (msgService != null && md5 != null && !md5.isEmpty()) {
+                ntDest = richMediaDest(ref, msgService, 4, 3, md5, fileName, 1);
+            }
+            String staged = firstExistingCopy(ref, path, file.length(), ntDest, classic);
+            if (staged == null || staged.isEmpty()) staged = path;
 
-            // Use QQ's own public-in-process builder first.  On 9.3.50/9.3.55 this is
-            // IMsgUtilApi.createPttElement(origPath, durationMs), which selects the
-            // correct rich-media path and fills the exact PttElement defaults used by
-            // the native recording UI (voiceType=2, canConvert2Text=false, fileId=0).
-            // NapCat's current native-send path follows the same principle: let NTQQ
-            // build/copy the rich-media element instead of guessing every model field.
+            Object elem = null;
             if (fmt[0] == 1) {
                 try {
                     Object api = ref.callS(QROUTE, "api", ref.cls(MSG_UTIL_API));
-                    Object elem = api == null ? null
-                            : ref.call(api, "createPttElement", path, fmt[1] * 1000);
-                    if (elem != null && Ref.asInt(ref.get(elem, "elementType")) == 4
-                            && ref.get(elem, "pttElement") != null) {
-                        return elem;
+                    // 3-arg overload is the native recording path (subtype 3 + waveform).
+                    elem = api == null ? null
+                            : ref.call(api, "createPttElement", staged, fmt[1] * 1000, waves);
+                    if (elem != null && (Ref.asInt(ref.get(elem, "elementType")) != 4
+                            || ref.get(elem, "pttElement") == null)) {
+                        elem = null;
                     }
                 } catch (Throwable t) {
                     L.e("official createPttElement", t);
+                    elem = null;
                 }
             }
 
-            // Compatibility fallback for builds where the QQ message utility is absent.
-            String md5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", path));
-            String fileName = md5 + (fmt[0] == 0 ? ".amr" : ".silk");
-            String dest = richMediaDest(ref, msgService, 4, md5, fileName);
-            copyToDest(ref, path, dest, file.length());
+            Object ptt;
+            if (elem != null) {
+                ptt = ref.get(elem, "pttElement");
+            } else {
+                ptt = ref.neu(PTT_ELEMENT);
+                elem = ref.neu(QQClient.MSG_ELEMENT);
+                ref.set(elem, "elementType", 4);
+                ref.set(elem, "pttElement", ptt);
+                ref.set(ptt, "fileId", Integer.valueOf(0));
+                ref.set(ptt, "fileUuid", "");
+                ref.set(ptt, "fileSubId", "");
+                ref.set(ptt, "text", "");
+            }
 
-            Object ptt = ref.neu(PTT_ELEMENT);
-            ref.set(ptt, "md5HexStr", md5);
-            ref.set(ptt, "filePath", dest);
-            ref.set(ptt, "fileName", fileName);
-            ref.set(ptt, "fileSize", file.length());
+            String keep = playablePttPath(ref, ptt, staged, classic, ntDest);
+            if (md5 != null && !md5.isEmpty()) ref.set(ptt, "md5HexStr", md5);
+            if (keep != null && !keep.isEmpty()) {
+                ref.set(ptt, "filePath", keep);
+                ref.set(ptt, "fileName", new File(keep).getName());
+                long size = new File(keep).length();
+                if (size > 0) ref.set(ptt, "fileSize", size);
+            }
             ref.set(ptt, "duration", fmt[1]);
-            ref.set(ptt, "formatType", fmt[0]);     // 1=silk, 0=amr
-            ref.set(ptt, "voiceType", 2);          // QQ 9.3.50/9.3.55 native MsgUtil default
+            ref.set(ptt, "formatType", Integer.valueOf(fmt[0] == 0 ? 0 : 1));
+            ref.set(ptt, "voiceType", 2);
             ref.set(ptt, "voiceChangeType", 0);
             ref.set(ptt, "canConvert2Text", false);
-            ref.set(ptt, "fileId", Integer.valueOf(0));
-            ref.set(ptt, "fileUuid", "");
-            ref.set(ptt, "fileSubId", "");
-            ref.set(ptt, "text", "");
-
-            Object elem = ref.neu(QQClient.MSG_ELEMENT);
-            ref.set(elem, "elementType", 4);
-            ref.set(elem, "pttElement", ptt);
+            ref.set(ptt, "waveAmplitudes", waves);
+            ref.set(ptt, "playState", Integer.valueOf(1));
             return elem;
         } catch (Throwable t) {
             L.e("buildPttElement", t);
             return null;
         }
+    }
+
+    /** After sendMsg the kernel may blank filePath. Put the silk back where AIO looks. */
+    public static void repairSentPtt(Ref ref, Object rec) {
+        if (ref == null || rec == null) return;
+        Object els = ref.get(rec, "elements");
+        if (!(els instanceof java.util.List)) return;
+        for (Object e : (java.util.List<?>) els) {
+            if (e == null || Ref.asInt(ref.get(e, "elementType")) != 4) continue;
+            Object ptt = ref.get(e, "pttElement");
+            if (ptt == null) continue;
+            String path = Ref.asStr(ref.get(ptt, "filePath"));
+            if (new File(path).isFile()) continue;
+            String md5 = Ref.asStr(ref.get(ptt, "md5HexStr"));
+            String name = Ref.asStr(ref.get(ptt, "fileName"));
+            if (name.isEmpty() && !md5.isEmpty()) name = md5 + ".silk";
+            String classic = classicPttPath(ref, name);
+            File src = new File(classic);
+            if (!src.isFile() && !md5.isEmpty()) {
+                String alt = classicPttPath(ref, md5 + ".silk");
+                if (new File(alt).isFile()) {
+                    classic = alt;
+                    src = new File(classic);
+                }
+            }
+            if (!src.isFile()) continue;
+            if (path == null || path.isEmpty()) {
+                ref.set(ptt, "filePath", classic);
+                if (Ref.asStr(ref.get(ptt, "fileName")).isEmpty())
+                    ref.set(ptt, "fileName", src.getName());
+            } else {
+                copyToDest(ref, classic, path, src.length());
+            }
+        }
+    }
+
+    private static String firstExistingCopy(Ref ref, String src, long size, String... dests) {
+        String kept = null;
+        for (String dest : dests) {
+            if (dest == null || dest.isEmpty()) continue;
+            if (copyToDest(ref, src, dest, size) && kept == null) kept = dest;
+        }
+        return kept;
+    }
+
+    /** Prefer a path AIO can still open after sendMsg rewrites the NT dest. */
+    private static String playablePttPath(Ref ref, Object ptt, String staged, String classic, String ntDest) {
+        String official = ptt == null ? "" : Ref.asStr(ref.get(ptt, "filePath"));
+        if (isFile(classic)) return classic;
+        if (isFile(official)) return official;
+        if (isFile(staged)) return staged;
+        if (isFile(ntDest)) return ntDest;
+        return official != null && !official.isEmpty() ? official : staged;
+    }
+
+    private static boolean isFile(String path) {
+        return path != null && !path.isEmpty() && new File(path).isFile();
+    }
+
+    /** Native recording store: {@code .../Tencent/MobileQQ/{uin}/ptt/{md5}.silk}. */
+    private static String classicPttPath(Ref ref, String fileName) {
+        if (fileName == null || fileName.isEmpty()) return "";
+        String uin = currentUin(ref);
+        if (uin.isEmpty()) return "";
+        File dir = new File("/sdcard/Android/data/com.tencent.mobileqq/Tencent/MobileQQ/" + uin + "/ptt");
+        if (!dir.isDirectory() && !dir.mkdirs()) return "";
+        return new File(dir, fileName).getAbsolutePath();
+    }
+
+    private static String currentUin(Ref ref) {
+        if (ref == null) return "";
+        try {
+            Object app = ref.callS("mqq.app.MobileQQ", "getMobileQQ");
+            if (app == null) return "";
+            Object runtime = null;
+            try { runtime = ref.call(app, "peekAppRuntime"); } catch (Throwable ignore) {}
+            if (runtime == null) {
+                try { runtime = ref.call(app, "waitAppRuntime", new Object[]{null}); }
+                catch (Throwable ignore) {}
+            }
+            if (runtime == null) return "";
+            String uin = Ref.asStr(ref.call(runtime, "getCurrentUin"));
+            if (uin.isEmpty()) uin = Ref.asStr(ref.call(runtime, "getAccount"));
+            uin = uin == null ? "" : uin.trim();
+            return (uin.isEmpty() || "0".equals(uin)) ? "" : uin;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** AIO hides the voice duration/wave controls when the outgoing PTT waveform is empty. */
+    private static java.util.ArrayList<Byte> pttWaves(int durationSec) {
+        int count = Math.max(12, Math.min(300, Math.max(1, durationSec) * 10));
+        java.util.ArrayList<Byte> waves = new java.util.ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            int amplitude = 18 + ((i * 17 + i * i * 3) % 45);
+            waves.add(Byte.valueOf((byte) amplitude));
+        }
+        return waves;
     }
 
     /** Build a KELEMTYPEFILE(3) file element (QQ uploads on sendMsg). Returns null on failure. */

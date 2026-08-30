@@ -3,7 +3,8 @@
 本模块是 Satori **实现端**（SDK）：Koishi 的 `adapter-satori` 连 `http://127.0.0.1:3001`。
 
 - HTTP：`POST /v1/{resource}.{method}`，JSON 请求体，成功 200；`upload.create` 使用 multipart。
-- 事件：`GET /v1/events` 升级为 WebSocket；10s 内 `IDENTIFY`，回复 `READY`，之后推 `EVENT`。
+- 事件：`GET /v1/events` 升级为 WebSocket；10s 内 `IDENTIFY`，回复 `READY`，之后推 `EVENT`。`IDENTIFY` 的 `sn=0` 会回放缓冲区内 `sn > 0` 的事件。
+- 消息 `id` 为 QQ NT `msgId` 字符串（可跨进程引用/撤回/get）；历史游标仍是 `message_seq`。
 - 元信息：`POST /v1/meta`；内部资源代理：`GET /v1/proxy/{url}`。
 - `platform`：`red`；`adapter`：`satori-qq`。
 - 群频道：`channel.id = 群号`，`type = 0`（TEXT），`guild.id` 同群号（`guild.plain`）。
@@ -22,11 +23,11 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 | --- | --- | --- |
 | `login.get` | ok | 登录号、在线状态、`features` |
 | `message.create` | ok | 发送；标准 `<message>` 可拆成多条，`<message forward>` 走合并转发 |
-| `message.get` | ok | 按消息 id 取一条 |
-| `message.list` | ok | 双向分页；`before` / `after` / `around`、`asc` / `desc`，游标用消息 seq |
-| `message.delete` | ok | 撤回 |
+| `message.get` | ok | 按 QQ `msgId` 字符串取一条；也认旧进程内 store id |
+| `message.list` | ok | 双向分页；`before` / `after` / `around`、`asc` / `desc`，游标用 `message_seq`；`message.id` / `user.id` 与实时事件一致 |
+| `message.delete` | ok | 撤回；`message_id` 为 QQ `msgId` |
 | `channel.get` / `channel.list` | ok | 群即单一文字频道 |
-| `channel.update` | ok | 改群名（`data.name`） |
+| `channel.update` | ok | 群主/管理改群名（`data.name`）和/或群头像（`data.avatar`：本地路径 / `file:` / `http(s)` / `data:` / `internal:`） |
 | `channel.mute` | ok | 全员禁言；`duration=0` 解除，正值到时自动解除（进程重启会丢失计时） |
 | `user.channel.create` | ok | 得到 `private:{uin}` |
 | `guild.get` / `guild.list` | ok | 群 |
@@ -54,11 +55,22 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 | `poke` | 戳一戳。`user_id` + 可选 `guild_id` |
 | `like` | 资料卡点赞（服务器常 319） |
 | `invite` | 邀请用户入群。`guild_id` + `user_id` |
-| `special_title` | 群头衔 |
+| `special_title` | 群头衔；可带 `show=true` 同时打开群管理「展示成员群头衔」 |
+| `title_display` | 开/关群管理「成员群头衔」（`userShowFlag` / `0x8FC_0`，不是群标识）。`guild_id` + `show` |
+| `card` | 改群名片。`guild_id` + 可选 `user_id` + `card` |
+| `sign` | 群打卡（`0xEB7_1`）。`guild_id` |
+| `essence` | 设/取消精华。`message_id` + 可选 `op=add\|remove` |
+| `group_remark` | 自己对这个群的备注。`guild_id` + `remark` |
+| `group_extra` | 读群扩展标志，含 `honor_open` |
 | `group_file` | `op=info\|list\|url\|upload` |
 | `get_forward` | 按 resid 取合并转发 |
 | `get_resource` | 下载已登记的图/语音/文件 |
 | `status` / `version` | 实现端健康与版本 |
+| `qzone.publish` / `qzone.create` | 发说说。`content` + 可选 `ugc_right` |
+| `qzone.delete` | 删一条说说。`tid` |
+| `qzone.list` | 列说说（含仅自己可见）。`limit?` |
+| `qzone.clear` / `qzone.delete_all` / `qzone.delete-all` | 清空全部说说 |
+| `qzone.auth` | 调试 QZone 鉴权（pskey 等） |
 | `restart` / `clean_cache` | 退出 QQ 等 watchdog 拉起；清临时文件 |
 
 ## 事件
@@ -67,7 +79,7 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 | --- | --- |
 | `message-created` | 收消息（含自己在 QQ 客户端发出的；机器人 API 发出的回声会去重） |
 | `message-deleted` | 撤回 |
-| `guild-added` / `updated` / `removed` | QQ 群列表变化 |
+| `guild-added` / `updated` / `removed` | 加群 / 退群 / 少量真实改名；登录拉全表（INIT/SYNC/REFRESH）不刷 |
 | `channel-added` / `updated` / `removed` | 同一群变化的 `guild.plain` 单频道映射 |
 | `guild-member-added` / `removed` | 进群 / 退群或踢人 |
 | `guild-member-updated` | 禁言（`_type=satori-qq/mute`） |

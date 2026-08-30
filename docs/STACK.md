@@ -110,8 +110,8 @@
    # 期望：MapsHide patched N GOT slots（N>0）；seccomp cloak on 或主进程 Seccomp_filters 比 MSF 多 1
    node tests/ws-health.js          # login/online；看 env_report.dropped / hooks / msf
    sh /data/adb/satori-qq/qq-satori-coldstart-check.sh
-   # result=loaded → 进程已吃上已装 APK；waiting-natural-restart → 仍是旧进程
-   # 自然重登、watchdog 重启、或 QQ pid 在 15s 内被换掉时，会把 ws-health 追加到 /data/adb/satori-qq/online-health.log
+   # result=loaded → 进程已吃上已装 APK。装完应已 force-stop 重启，不要卡在 waiting-natural-restart
+   # 重登、watchdog 拉起、或 QQ pid 在 15s 内被换掉时，会把 ws-health 追加到 /data/adb/satori-qq/online-health.log
    sh /data/adb/satori-qq/qq-satori-exposure-audit.sh snapshot
    ```
 

@@ -11,6 +11,7 @@ public final class ElementsTest {
         standardFallbacks();
         forwardNodes();
         channelIds();
+        eventMapping();
         System.out.println("ElementsTest OK");
     }
 
@@ -104,6 +105,59 @@ public final class ElementsTest {
         check(!Codec.isPrivateChannel("280183116"), "group id");
         eq(1001L, Codec.channelPeer("private:1001"), "private peer");
         eq(280183116L, Codec.channelPeer("280183116"), "group peer");
+    }
+
+    private static void eventMapping() throws Exception {
+        JSONObject login = new JSONObject().put("platform", "red").put("adapter", "satori-qq");
+        JSONObject history = new JSONObject()
+                .put("post_type", "message")
+                .put("message_type", "group")
+                .put("group_id", 928613831L)
+                .put("group_name", "BOT测试群")
+                .put("message_id", "7753807298269865192")
+                .put("qq_msg_id", 7753807298269865192L)
+                .put("time", 1000)
+                .put("sender", new JSONObject()
+                        .put("user_id", 3373167460L)
+                        .put("nickname", "nawyjx")
+                        .put("card", "群名片")
+                        .put("role", "admin"))
+                .put("message", new JSONArray().put(new JSONObject()
+                        .put("type", "text")
+                        .put("data", new JSONObject().put("text", "hi"))));
+        JSONObject ev = Codec.toSatoriEvent(history, login, 1, "");
+        check(ev != null, "history event");
+        eq("3373167460", ev.getJSONObject("user").getString("id"), "user from sender");
+        eq("nawyjx", ev.getJSONObject("user").getString("name"), "user.name is QQ nick");
+        eq("群名片", ev.getJSONObject("member").getString("name"), "member.name is card");
+        eq("群名片", ev.getJSONObject("member").getString("nick"), "member.nick is card");
+        eq("admin", ev.getJSONObject("member").getJSONArray("roles")
+                .getJSONObject(0).getString("id"), "role from sender");
+        eq("7753807298269865192", ev.getJSONObject("message").getString("id"),
+                "public qq msgId");
+        eq("BOT测试群", ev.getJSONObject("channel").getString("name"), "channel name");
+        eq("BOT测试群", ev.getJSONObject("guild").getString("name"), "guild name");
+
+        JSONObject empty = new JSONObject()
+                .put("post_type", "message")
+                .put("message_type", "group")
+                .put("group_id", 1)
+                .put("user_id", 0)
+                .put("message", new JSONArray());
+        check(Codec.toSatoriEvent(empty, login, 2, "") == null, "skip empty user 0");
+
+        JSONObject recall = new JSONObject()
+                .put("post_type", "notice")
+                .put("notice_type", "group_recall")
+                .put("group_id", 1)
+                .put("user_id", 2)
+                .put("operator_id", 3)
+                .put("message_id", 42)
+                .put("qq_msg_id", 7753807298269865192L);
+        JSONObject del = Codec.toSatoriEvent(recall, login, 3, "");
+        eq("7753807298269865192", del.getJSONObject("message").getString("id"),
+                "recall prefers qq_msg_id");
+        eq("2", del.getJSONObject("user").getString("id"), "recall user");
     }
 
     private static void check(boolean v, String label) {

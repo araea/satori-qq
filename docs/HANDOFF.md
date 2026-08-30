@@ -26,7 +26,11 @@ cp build/SatoriQQ.apk /data/local/tmp/SatoriQQ.apk
 pm install -r -d /data/local/tmp/SatoriQQ.apk
 sh /data/adb/modules/zygisk_vector/cli modules enable com.satori.qq
 sh /data/adb/modules/zygisk_vector/cli scope add com.satori.qq com.tencent.mobileqq/0
-# 能登录时到此为止，等 QQ 自然重启。只有干净冷启才 force-stop。
+# 装完立刻重启。不要等自然重启。
+am force-stop com.tencent.mobileqq
+am start -n com.tencent.mobileqq/com.tencent.mobileqq.activity.SplashActivity
+am startservice -n com.tencent.mobileqq/.app.CoreService
+am startservice -n com.tencent.mobileqq/.msf.service.MsfService
 ```
 
 vector cli 改的是运行中 daemon；手改 `modules_config.db` 开机前不生效。
@@ -41,5 +45,5 @@ vector cli 改的是运行中 daemon；手改 `modules_config.db` 开机前不�
 - 不要 hook `getSign` / 改 `getFeKitAttach` 返回；不要拦 `trpc.o3.ecdh_access.*`
 - 能登录就不卸 scope；踢号只认 `ACCOUNT_KICKED` / `KICK_TO_LOGIN` / `account_kicks`
 - 端口在、WS 无响应 = OEM 冻进程，不是踢号
-- 能登录时 `pm install -r` 后 **不要** `am force-stop`；新代码要等 QQ 自己重启才加载。快照 `module_version` 是已装 APK，进程版本看 `ws-health` / `login.get`
+- `pm install -r` 后立刻 `am force-stop` 再拉起 QQ。不要等自然重启，不要问。`force-stop` 不是踢号。快照 `module_version` 是已装 APK，进程版本看 `ws-health` / `login.get`
 - 参考：NapCat / Lagrange / 本机 `QQ.hap` 只当线索，最终以 9.3.55 jadx 为准

@@ -9,11 +9,23 @@ public final class Notices {
 
     public static JSONObject recall(long self, long time, boolean group, long peer,
                                     long userId, long operatorId, int messageId) throws Exception {
+        return recall(self, time, group, peer, userId, operatorId, messageId, 0);
+    }
+
+    public static JSONObject recall(long self, long time, boolean group, long peer,
+                                    long userId, long operatorId, int storeId, long qqMsgId)
+            throws Exception {
         JSONObject n = base(self, time);
         n.put("notice_type", group ? "group_recall" : "friend_recall");
         n.put("user_id", userId);
         n.put("operator_id", operatorId == 0 ? userId : operatorId);
-        n.put("message_id", messageId);
+        if (qqMsgId != 0) {
+            n.put("message_id", String.valueOf(qqMsgId));
+            n.put("qq_msg_id", qqMsgId);
+            if (storeId != 0) n.put("store_id", storeId);
+        } else {
+            n.put("message_id", storeId);
+        }
         if (group) n.put("group_id", peer);
         return n;
     }
@@ -35,12 +47,12 @@ public final class Notices {
         JSONObject n = base(self, time);
         n.put("notice_type", "notify");
         n.put("sub_type", "poke");
-        n.put("user_id", 0);
-        n.put("target_id", 0);
         n.put("sender_uid", uids.get(0));
         n.put("target_uid", uids.get(1));
+        n.put("user_id", numericId(uids.get(0)));
+        n.put("target_id", numericId(uids.get(1)));
         if (group) n.put("group_id", peer);
-        else n.put("user_id", peer);
+        else if (n.optLong("user_id") == 0) n.put("user_id", peer);
         return n;
     }
 
@@ -55,12 +67,12 @@ public final class Notices {
         JSONObject n = base(self, time);
         n.put("notice_type", "notify");
         n.put("sub_type", "poke");
-        n.put("user_id", 0);
-        n.put("target_id", 0);
         n.put("sender_uid", uids.get(0));
         n.put("target_uid", uids.get(1));
+        n.put("user_id", numericId(uids.get(0)));
+        n.put("target_id", numericId(uids.get(1)));
         if (group) n.put("group_id", peer);
-        else n.put("user_id", peer);
+        else if (n.optLong("user_id") == 0) n.put("user_id", peer);
         return n;
     }
 
@@ -202,6 +214,11 @@ public final class Notices {
         n.put("comment", comment == null ? "" : comment);
         n.put("flag", flag == null ? "" : flag);
         return n;
+    }
+
+    static long numericId(String raw) {
+        if (raw == null || raw.isEmpty()) return 0;
+        try { return Long.parseLong(raw.trim()); } catch (Exception e) { return 0; }
     }
 
     static JSONObject base(long self, long time) throws Exception {

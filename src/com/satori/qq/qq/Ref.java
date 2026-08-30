@@ -22,7 +22,32 @@ public final class Ref {
     public Object callS(Class<?> c, String m, Object... args) { return XposedHelpers.callStaticMethod(c, m, args); }
 
     public Object get(Object o, String f) { return XposedHelpers.getObjectField(o, f); }
+    public long getLong(Object o, String f) {
+        try {
+            Object v = XposedHelpers.getObjectField(o, f);
+            if (v instanceof Number) return ((Number) v).longValue();
+            if (v != null) {
+                try { return Long.parseLong(String.valueOf(v).trim()); } catch (Exception ignore) {}
+            }
+        } catch (Throwable ignore) {}
+        try { return XposedHelpers.getLongField(o, f); } catch (Throwable ignore) {}
+        return 0;
+    }
     public void set(Object o, String f, Object v) { XposedHelpers.setObjectField(o, f, v); }
+    /** Public field write that accepts boxed numbers for primitive ints/longs. */
+    public void put(Object o, String f, Object v) {
+        try {
+            java.lang.reflect.Field field = XposedHelpers.findField(o.getClass(), f);
+            field.setAccessible(true);
+            Class<?> t = field.getType();
+            if (t == int.class) field.setInt(o, v == null ? 0 : ((Number) v).intValue());
+            else if (t == long.class) field.setLong(o, v == null ? 0L : ((Number) v).longValue());
+            else if (t == boolean.class) field.setBoolean(o, v instanceof Boolean ? (Boolean) v : false);
+            else field.set(o, v);
+        } catch (Throwable e) {
+            set(o, f, v);
+        }
+    }
     public Object getStatic(String clsName, String f) { return XposedHelpers.getStaticObjectField(cls(clsName), f); }
 
     /** A no-op proxy of the given callback interface (for fire-and-forget kernel calls). */

@@ -14,9 +14,11 @@ public final class MsgStore {
         public long peerUin;      // group code OR peer uin
         public long msgId;        // QQ NT msgId (long)
         public long msgSeq;       // QQ NT msgSeq
+        public long msgTime;      // QQ NT msgTime (unix seconds)
         public long senderUin;
         public String senderUid;
         public Object msgRecord;  // original MsgRecord (for get_msg / reply resolution)
+        public String content;    // last outbound Satori content, for get after send
     }
 
     /** Opaque resource id -> the best local/remote representation learned from QQ. */
@@ -46,6 +48,7 @@ public final class MsgStore {
     // uin <-> uid caches
     private final Map<Long, String> uin2uid = new ConcurrentHashMap<>();
     private final Map<String, Long> uid2uin = new ConcurrentHashMap<>();
+    private final Map<String, String> roles = new ConcurrentHashMap<>();
 
     private final AtomicInteger resourceSeq = new AtomicInteger(1);
     private final Map<String, Resource> resources = new ConcurrentHashMap<>();
@@ -54,7 +57,17 @@ public final class MsgStore {
 
     public synchronized int put(Rec r) {
         Integer existing = byMsgId.get(r.msgId);
-        if (existing != null && r.msgId != 0) { return existing; }
+        if (existing != null && r.msgId != 0) {
+            Rec old = byId.get(existing);
+            if (old != null) {
+                if (r.msgRecord != null) old.msgRecord = r.msgRecord;
+                if (r.content != null && !r.content.isEmpty()) old.content = r.content;
+                if (r.senderUin != 0) old.senderUin = r.senderUin;
+                if (r.msgSeq != 0) old.msgSeq = r.msgSeq;
+                if (r.msgTime != 0) old.msgTime = r.msgTime;
+            }
+            return existing;
+        }
         int id = seq.getAndIncrement();
         if (id == Integer.MAX_VALUE) seq.set(1);
         r.id = id;
@@ -87,10 +100,55 @@ public final class MsgStore {
         return null;
     }
 
+    /** In-process records for one peer, oldest first, capped at the newest {@code limit}. */
+    public java.util.List<Rec> listPeer(int chatType, long peerUin, String peerUid, int limit) {
+        java.util.ArrayList<Rec> out = new java.util.ArrayList<>();
+        for (Rec r : byId.values()) {
+            if (r == null) continue;
+            if (chatType != 0 && r.chatType != chatType) continue;
+            boolean match = (peerUin != 0 && r.peerUin == peerUin)
+                    || (peerUid != null && !peerUid.isEmpty() && peerUid.equals(r.peerUid));
+            if (!match) continue;
+            out.add(r);
+        }
+        out.sort((a, b) -> {
+            int bySeq = Long.compare(a.msgSeq, b.msgSeq);
+            return bySeq != 0 ? bySeq : Long.compare(a.msgId, b.msgId);
+        });
+        int cap = Math.max(1, limit);
+        if (out.size() > cap) return new java.util.ArrayList<>(out.subList(out.size() - cap, out.size()));
+        return out;
+    }
+
     public int idOfMsgId(long msgId) {
         Rec r = getByMsgId(msgId);
         if (r != null) return r.id;
         return 0;
+    }
+
+    /** Resolve a public Satori message.id (QQ msgId) or a legacy in-process store id. */
+    public Rec resolve(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim();
+        if (s.isEmpty()) return null;
+        long n;
+        try { n = Long.parseLong(s); } catch (Exception e) { return null; }
+        if (n == 0) return null;
+        Rec byMid = getByMsgId(n);
+        if (byMid != null) return byMid;
+        if (n > 0 && n <= Integer.MAX_VALUE) return get((int) n);
+        return null;
+    }
+
+    public void learnRole(long groupId, long uin, String role) {
+        if (groupId == 0 || uin == 0 || role == null || role.isEmpty()) return;
+        roles.put(groupId + ":" + uin, role);
+    }
+
+    public String roleOf(long groupId, long uin) {
+        if (groupId == 0 || uin == 0) return "";
+        String role = roles.get(groupId + ":" + uin);
+        return role == null ? "" : role;
     }
 
     public void learnUid(long uin, String uid) {

@@ -356,6 +356,7 @@ public final class Codec {
             ch.put("id", String.valueOf(peerUin));
             ch.put("type", 0);
             if (name != null && !name.isEmpty()) ch.put("name", name);
+            if (peerUin != 0) ch.put("avatar", groupAvatarUrl(peerUin));
         } else {
             ch.put("id", "private:" + peerUin);
             ch.put("type", 1);
@@ -385,6 +386,47 @@ public final class Codec {
         return u;
     }
 
+    /** Unix seconds from NT msgTime. Prefer the string snapshot; Android optLong("time") is unreliable. */
+    public static long eventTime(JSONObject ob) {
+        if (ob == null) return 0;
+        String s = ob.optString("msg_time", "");
+        if (!s.isEmpty()) {
+            try {
+                long t = Long.parseLong(s.trim());
+                if (t > 10_000_000_000L) t /= 1000L;
+                if (t > 0) return t;
+            } catch (Exception ignore) {}
+        }
+        long t = ob.optLong("time", 0);
+        if (t > 10_000_000_000L) t /= 1000L;
+        return t;
+    }
+
+    /** Prefer QQ NT msgId, then an explicit string, then the legacy store id. */
+    public static String publicMessageId(JSONObject ob) {
+        if (ob == null) return "";
+        long qqMsg = ob.optLong("qq_msg_id", 0);
+        if (qqMsg != 0) return String.valueOf(qqMsg);
+        String asStr = ob.optString("message_id_str", "");
+        if (!asStr.isEmpty()) return asStr;
+        Object raw = ob.opt("message_id");
+        if (raw instanceof String) {
+            String s = ((String) raw).trim();
+            if (!s.isEmpty() && !"0".equals(s)) return s;
+        }
+        long n = ob.optLong("message_id", 0);
+        return n == 0 ? "" : String.valueOf(n);
+    }
+
+    /** Top-level user_id, or sender.user_id from history items that only kept sender. */
+    public static long eventUserId(JSONObject ob) {
+        if (ob == null) return 0;
+        long id = ob.optLong("user_id", 0);
+        if (id != 0) return id;
+        JSONObject sender = ob.optJSONObject("sender");
+        return sender == null ? 0 : sender.optLong("user_id", 0);
+    }
+
     /** QQ public avatar CDN. Koishi console / Satori User.avatar. */
     public static String avatarUrl(long uin) {
         return "https://q.qlogo.cn/headimg_dl?dst_uin=" + uin + "&spec=640";
@@ -406,7 +448,8 @@ public final class Codec {
         String post = ob.optString("post_type", "");
         JSONObject ev = new JSONObject();
         ev.put("sn", sn);
-        ev.put("timestamp", ob.optLong("time", System.currentTimeMillis() / 1000) * 1000);
+        long ts = eventTime(ob);
+        ev.put("timestamp", (ts > 0 ? ts : System.currentTimeMillis() / 1000) * 1000);
         ev.put("login", loginSlim);
         if ("message".equals(post)) return messageCreated(ob, ev, assetBase);
         if ("notice".equals(post)) return noticeEvent(ob, ev);
@@ -417,34 +460,44 @@ public final class Codec {
     private static JSONObject messageCreated(JSONObject ob, JSONObject ev, String assetBase)
             throws Exception {
         boolean group = "group".equals(ob.optString("message_type"));
-        long peer = group ? ob.optLong("group_id") : ob.optLong("user_id");
+        long userId = eventUserId(ob);
+        long peer = group ? ob.optLong("group_id") : (ob.optLong("user_id", 0) != 0
+                ? ob.optLong("user_id") : userId);
         JSONObject sender = ob.optJSONObject("sender");
         String nick = sender == null ? "" : sender.optString("nickname", "");
         String card = sender == null ? "" : sender.optString("card", "");
+        String display = first(nick, card);
+        String content = fromSegments(ob.optJSONArray("message"), assetBase);
+        if (content.isEmpty()) content = ob.optString("raw_message", "");
+        if (content.isEmpty() && userId == 0) return null;
+        String gname = group ? ob.optString("group_name", "") : "";
         ev.put("type", "message-created");
-        ev.put("channel", channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, ""));
-        if (group) ev.put("guild", guild(peer, ""));
-        ev.put("user", user(ob.optLong("user_id"), nick, card));
+        ev.put("channel", channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, gname));
+        if (group) ev.put("guild", guild(peer, gname));
+        ev.put("user", user(userId, display, card));
         if (group) {
             JSONObject member = new JSONObject();
             member.put("user", ev.optJSONObject("user"));
-            if (!card.isEmpty()) member.put("nick", card);
-            String role = sender == null ? "" : sender.optString("role", "");
-            if (!role.isEmpty()) {
-                JSONArray roles = new JSONArray();
-                roles.put(new JSONObject().put("id", role).put("name", role));
-                member.put("roles", roles);
+            if (!card.isEmpty()) {
+                member.put("name", card);
+                member.put("nick", card);
             }
+            String role = sender == null ? "" : sender.optString("role", "");
+            if (role.isEmpty()) role = "member";
+            JSONArray roles = new JSONArray();
+            roles.put(new JSONObject().put("id", role).put("name", role));
+            member.put("roles", roles);
             ev.put("member", member);
         }
         JSONObject msg = new JSONObject();
-        msg.put("id", String.valueOf(ob.optInt("message_id")));
-        msg.put("content", fromSegments(ob.optJSONArray("message"), assetBase));
+        String mid = publicMessageId(ob);
+        if (!mid.isEmpty()) msg.put("id", mid);
+        msg.put("content", content);
         msg.put("channel", ev.optJSONObject("channel"));
         if (group) msg.put("guild", ev.optJSONObject("guild"));
         msg.put("user", ev.optJSONObject("user"));
         if (group) msg.put("member", ev.optJSONObject("member"));
-        long created = ob.optLong("time", 0);
+        long created = eventTime(ob);
         if (created > 0) msg.put("created_at", created * 1000);
         ev.put("message", msg);
         return ev;
@@ -458,9 +511,10 @@ public final class Codec {
         if (group) ev.put("guild", guild(peer, ""));
         if ("group_recall".equals(nt) || "friend_recall".equals(nt)) {
             ev.put("type", "message-deleted");
-            ev.put("message", new JSONObject().put("id", String.valueOf(ob.optInt("message_id"))));
-            ev.put("user", user(ob.optLong("user_id"), "", ""));
-            ev.put("operator", user(ob.optLong("operator_id"), "", ""));
+            String mid = publicMessageId(ob);
+            ev.put("message", new JSONObject().put("id", mid.isEmpty() ? "0" : mid));
+            ev.put("user", user(eventUserId(ob), "", ""));
+            ev.put("operator", user(ob.optLong("operator_id", 0), "", ""));
             return ev;
         }
         if ("notify".equals(nt) && "poke".equals(ob.optString("sub_type"))) {
@@ -470,7 +524,7 @@ public final class Codec {
                     .put("user_id", String.valueOf(ob.optLong("user_id")))
                     .put("target_id", String.valueOf(ob.optLong("target_id")))
                     .put("group_id", group ? String.valueOf(ob.optLong("group_id")) : ""));
-            ev.put("user", user(ob.optLong("user_id"), "", ""));
+            ev.put("user", user(eventUserId(ob), "", ""));
             return ev;
         }
         if ("group_increase".equals(nt)) {

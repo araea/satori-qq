@@ -29,6 +29,29 @@ public final class MsgStoreTest {
         check(!MsgStore.jsonSafeResourceId("Eh\u0001x"), "control char rejected");
         check(MsgStore.jsonSafeResourceId("satori-res:file:2"), "ascii id accepted");
 
+        MsgStore.Rec rec = new MsgStore.Rec();
+        rec.msgId = 7753807298269865192L;
+        rec.senderUin = 5;
+        int storeId = store.put(rec);
+        check(store.resolve("7753807298269865192") != null
+                && store.resolve("7753807298269865192").id == storeId, "resolve public qq msgId");
+        check(store.resolve(String.valueOf(storeId)) != null
+                && store.resolve(String.valueOf(storeId)).msgId == rec.msgId, "resolve legacy store id");
+        check(store.resolve("0") == null, "resolve zero");
+        store.learnRole(928613831L, 5, "admin");
+        check("admin".equals(store.roleOf(928613831L, 5)), "learnRole");
+        check(store.roleOf(1, 5).isEmpty(), "role miss");
+
+        MsgStore.Rec a = new MsgStore.Rec();
+        a.chatType = 2; a.peerUin = 928613831L; a.peerUid = "928613831"; a.msgId = 11; a.msgSeq = 1;
+        MsgStore.Rec b = new MsgStore.Rec();
+        b.chatType = 2; b.peerUin = 928613831L; b.peerUid = "928613831"; b.msgId = 12; b.msgSeq = 2;
+        MsgStore.Rec other = new MsgStore.Rec();
+        other.chatType = 2; other.peerUin = 1; other.peerUid = "1"; other.msgId = 13; other.msgSeq = 3;
+        store.put(a); store.put(b); store.put(other);
+        java.util.List<MsgStore.Rec> listed = store.listPeer(2, 928613831L, "928613831", 10);
+        check(listed.size() == 2 && listed.get(0).msgId == 11 && listed.get(1).msgId == 12, "listPeer");
+
         System.out.println("MsgStoreTest: ok");
     }
 

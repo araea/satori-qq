@@ -605,6 +605,21 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "group-extra":
             case "group_extra":
                 return groupExtra(params.optLong("guild_id", params.optLong("group_id", 0)));
+            case "group-refresh":
+            case "group_refresh":
+                if (!qq.isOnline()) throw new ApiError(1500, "QQ kernel offline or not ready");
+                qq.refreshGroupList();
+                return listWrap(satoriGuildList());
+            case "group-leave":
+            case "group_leave":
+                return guarded("internal.group_leave", () -> {
+                    long g = params.optLong("guild_id", params.optLong("group_id", 0));
+                    if (g == 0) throw new ApiError(1400, "missing guild_id");
+                    if (!params.optBoolean("confirm", false))
+                        throw new ApiError(1400, "group_leave requires confirm=true");
+                    requireOp(qq.quitGroup(g));
+                    return new JSONObject().put("guild_id", String.valueOf(g)).put("left", true);
+                });
             case "invite":
                 return guarded("internal.invite", () -> {
                     long g = params.optLong("guild_id", params.optLong("group_id", 0));
@@ -613,6 +628,15 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     requireOp(qq.inviteToGroup(g, uidFor(g, u)));
                     return new JSONObject();
                 });
+            case "dice":
+                return guarded("internal.dice", () -> sendSpecialFace(params, 358, "dice"));
+            case "rps":
+            case "rock-paper-scissors":
+            case "rock_paper_scissors":
+                return guarded("internal.rps", () -> sendSpecialFace(params, 359, "rps"));
+            case "capabilities":
+            case "help":
+                return internalCapabilities();
             case "restart":
                 scheduleRestart(Math.max(500, params.optInt("delay", 0)));
                 return new JSONObject();
@@ -636,9 +660,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 return satoriGetForward(params.optString("id", params.optString("message_id", "")));
             case "qzone.create":
             case "qzone.publish":
-                return qzonePublish(params);
+                return guarded("internal.qzone.publish", () -> qzonePublish(params));
             case "qzone.delete":
-                return qzoneDelete(params);
+                return guarded("internal.qzone.delete", () -> qzoneDelete(params));
             case "qzone.list":
                 return qzoneList(params);
             case "qzone.auth":
@@ -646,7 +670,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "qzone.delete-all":
             case "qzone.delete_all":
             case "qzone.clear":
-                return qzone.deleteAll();
+                return guarded("internal.qzone.clear", () -> qzone.deleteAll());
             default:
                 throw new NotImplemented("internal/" + name);
         }
@@ -654,13 +678,15 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private Object dispatchGroupFile(JSONObject p) throws Exception {
         final JSONObject params = p == null ? new JSONObject() : p;
-        String op = params.optString("op", params.optString("action", "list"));
+        String op = params.optString("op", params.optString("action", "list"))
+                .trim().toLowerCase(java.util.Locale.ROOT).replace('-', '_');
+        final long groupId = params.optLong("guild_id", params.optLong("group_id", 0));
+        final int busId = params.optInt("busid", params.optInt("bus_id", 0));
         switch (op) {
-            case "info": return getGroupFileSystemInfo(params.optLong("guild_id", params.optLong("group_id", 0)));
-            case "list": return getGroupFiles(params.optLong("guild_id", params.optLong("group_id", 0)),
+            case "info": return getGroupFileSystemInfo(groupId);
+            case "list": return getGroupFiles(groupId,
                     firstNonEmpty(params.optString("folder_id", ""), "/"));
-            case "url": return getGroupFileUrl(params.optLong("guild_id", params.optLong("group_id", 0)),
-                    params.optString("file_id", ""), params.optInt("busid", params.optInt("bus_id", 0)));
+            case "url": return getGroupFileUrl(groupId, params.optString("file_id", ""), busId);
             case "upload": return guarded("internal.group_file", () -> {
                 String spec = params.optString("file", params.optString("url", ""));
                 if (spec.startsWith("internal:")) params.put("file", resolveInternalSpec(spec));
@@ -676,8 +702,83 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 }
                 return uploadGroupFile(params);
             });
+            case "create_folder":
+            case "mkdir":
+                return guarded("internal.group_file", () -> createGroupFileFolder(groupId,
+                        firstNonEmpty(params.optString("parent_id", ""),
+                                params.optString("folder_id", "/")),
+                        firstNonEmpty(params.optString("name", ""),
+                                params.optString("folder_name", ""))));
+            case "delete_folder":
+            case "rmdir":
+                return guarded("internal.group_file", () -> deleteGroupFolder(groupId,
+                        params.optString("folder_id", "")));
+            case "rename_folder":
+                return guarded("internal.group_file", () -> renameGroupFolder(groupId,
+                        params.optString("folder_id", ""), firstNonEmpty(
+                                params.optString("new_name", ""),
+                                firstNonEmpty(params.optString("new_folder_name", ""),
+                                        params.optString("name", "")))));
+            case "delete_file":
+            case "remove_file":
+                return guarded("internal.group_file", () -> deleteGroupFile(groupId,
+                        params.optString("file_id", ""), busId));
+            case "rename_file":
+                return guarded("internal.group_file", () -> renameGroupFile(groupId,
+                        params.optString("file_id", ""),
+                        firstNonEmpty(params.optString("parent_id", ""), "/"),
+                        firstNonEmpty(params.optString("new_name", ""),
+                                params.optString("name", "")), busId));
+            case "move_file":
+                return guarded("internal.group_file", () -> moveGroupFile(groupId,
+                        params.optString("file_id", ""),
+                        firstNonEmpty(params.optString("parent_id", ""), "/"),
+                        firstNonEmpty(params.optString("dest_id", ""), firstNonEmpty(
+                                params.optString("destination_id", ""),
+                                params.optString("folder_id", "/"))), busId));
             default: throw new NotImplemented("internal/group_file " + op);
         }
+    }
+
+    /** QQ's built-in random dice/RPS faces (358/359), sent to a group or direct channel. */
+    private JSONObject sendSpecialFace(JSONObject p, int faceId, String kind) throws Exception {
+        String channelId = p.optString("channel_id", "");
+        long groupId = p.optLong("guild_id", p.optLong("group_id", 0));
+        long userId = parseId(p.optString("user_id", ""));
+        if (!channelId.isEmpty()) {
+            if (Codec.isPrivateChannel(channelId)) userId = Codec.channelPeer(channelId);
+            else groupId = Codec.channelPeer(channelId);
+        }
+        JSONArray message = new JSONArray().put(new JSONObject()
+                .put("type", "face")
+                .put("data", new JSONObject().put("id", String.valueOf(faceId))));
+        JSONObject sent;
+        if (groupId != 0) sent = sendGroup(groupId, message, "<emoji id=\"" + faceId + "\"/>");
+        else if (userId != 0) sent = sendPrivate(userId, message, "<emoji id=\"" + faceId + "\"/>");
+        else throw new ApiError(1400, "missing channel_id, guild_id, or user_id");
+        sent.put("kind", kind).put("face_id", faceId);
+        return sent;
+    }
+
+    /** Machine-readable inventory for clients that want QQ-only extensions. */
+    private JSONObject internalCapabilities() throws Exception {
+        return new JSONObject()
+                .put("version", APP_VERSION)
+                .put("actions", new JSONArray()
+                        .put("poke").put("like").put("invite")
+                        .put("card").put("special_title").put("title_display")
+                        .put("sign").put("essence").put("group_remark")
+                        .put("group_extra").put("group_refresh").put("group_leave")
+                        .put("group_file").put("get_forward").put("get_resource")
+                        .put("dice").put("rps")
+                        .put("qzone.publish").put("qzone.delete").put("qzone.list")
+                        .put("qzone.clear").put("status").put("version")
+                        .put("clean_cache").put("restart"))
+                .put("group_file_ops", new JSONArray()
+                        .put("info").put("list").put("url").put("upload")
+                        .put("create_folder").put("rename_folder").put("delete_folder")
+                        .put("rename_file").put("move_file").put("delete_file"))
+                .put("special_faces", new JSONObject().put("dice", 358).put("rps", 359));
     }
 
     private JSONArray messageCreate(JSONObject p) throws Exception {

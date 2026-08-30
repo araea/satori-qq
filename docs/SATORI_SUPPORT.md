@@ -62,9 +62,13 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 | `essence` | 设/取消精华。`message_id` + 可选 `op=add\|remove` |
 | `group_remark` | 自己对这个群的备注。`guild_id` + `remark` |
 | `group_extra` | 读群扩展标志，含 `honor_open` |
-| `group_file` | `op=info\|list\|url\|upload` |
+| `group_refresh` | 强制刷新 QQ 内核群列表并返回最新群列表 |
+| `group_leave` | 退出群；`guild_id` + 必须显式 `confirm=true` |
+| `group_file` | 完整群文件管理：`op=info\|list\|url\|upload\|create_folder\|rename_folder\|delete_folder\|rename_file\|move_file\|delete_file` |
 | `get_forward` | 按 resid 取合并转发 |
 | `get_resource` | 下载已登记的图/语音/文件 |
+| `dice` / `rps` | 向 `channel_id`、`guild_id` 或 `user_id` 发送 QQ 原生随机骰子 / 猜拳 |
+| `capabilities` / `help` | 返回内部动作、群文件操作和特殊表情 ID 的机器可读清单 |
 | `status` / `version` | 实现端健康与版本 |
 | `qzone.publish` / `qzone.create` | 发说说。`content` + 可选 `ugc_right` |
 | `qzone.delete` | 删一条说说。`tid` |
@@ -72,6 +76,9 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 | `qzone.clear` / `qzone.delete_all` / `qzone.delete-all` | 清空全部说说 |
 | `qzone.auth` | 调试 QZone 鉴权（pskey 等） |
 | `restart` / `clean_cache` | 退出 QQ 等 watchdog 拉起；清临时文件 |
+
+所有内部写操作也经过与标准消息发送相同的串行、最小间隔、每分钟预算和失败熔断保护；
+`qzone.publish/delete/clear` 同样纳入保护，避免多个本地调用方并发制造突发请求。
 
 ## 事件
 

@@ -8,6 +8,10 @@ public final class OutboundGuardTest {
         check(!OutboundGuard.isMutation("upload.create"), "local upload stays available offline");
         check(OutboundGuard.isMutation("guild.member.mute"), "moderation is guarded");
         check(OutboundGuard.isMutation("internal.invite"), "group invite is guarded");
+        check(OutboundGuard.isMutation("internal.group_leave"), "group leave is guarded");
+        check(OutboundGuard.isMutation("internal.group_file"), "group file writes are guarded");
+        check(OutboundGuard.isMutation("internal.dice"), "special face sends are guarded");
+        check(OutboundGuard.isMutation("internal.qzone.publish"), "qzone writes are guarded");
         check(!OutboundGuard.isMutation("message.update"), "unsupported message.update is not guarded");
         check(!OutboundGuard.isMutation("reaction.clear"), "unsupported reaction.clear is not guarded");
         check(!OutboundGuard.isMutation("channel.create"), "unsupported channel.create is not guarded");

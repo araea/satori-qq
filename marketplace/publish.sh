@@ -18,6 +18,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 cd "$TMP"
 "$GH" repo clone "$ORG_REPO" repo -- --depth=1
+"$GH" api "repos/$ORG_REPO" -X PATCH -f description='satori-qq — Satori v1 bridge for QQ (Koishi)' >/dev/null
 cd repo
 cp "$MP/SUMMARY" "$MP/README.md" "$MP/SOURCE_URL" "$MP/ic_launcher.png" .
 git add SUMMARY README.md SOURCE_URL ic_launcher.png

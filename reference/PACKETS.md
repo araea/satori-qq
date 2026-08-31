@@ -1,11 +1,8 @@
-# OIDB / 封包子系统参考（命令号 + 结构，抄自 NapCat/Lagrange，非 abc 反汇编）
+# OIDB / 封包参考
 
-> 建议参考现代维护库：**NapCatQQ**(TS, github.com/NapNeko/NapCatQQ, `packages/napcat-core/packet/`)、
-> **Lagrange.Core**(C#, `Lagrange.Core/Internal/Packets/Service/Oidb_0xXXXX.cs`)。Shamrock 太老别用。
-> 它们的 body protobuf 与安卓**完全一样**（同一服务器协议），只有**发送方式**不同(桌面 vs 安卓 MSF)。
-> **命令号不用啃 QQ.hap 的 abc**——NapCat/Lagrange 源码里明写。
+命令号与结构抄自 NapCat / Lagrange。body protobuf 与安卓一致，发送方式不同。
 
-## OIDB 外壳 `OidbSvcTrpcTcpBase`（字段号确认）
+## OIDB 外壳 `OidbSvcTrpcTcpBase`
 `1=command(uint32), 2=subCommand(uint32), 3=errorCode(uint32), 4=body(bytes), 5=errorMsg(string), 12=isReserved(uint32)`
 - serviceCmd 字符串 = `OidbSvcTrpcTcp.0x{CMD大写HEX}_{sub}`，如 `OidbSvcTrpcTcp.0x8FC_2`。
 - 大多现代命令 isReserved=1（body 用 uid）。

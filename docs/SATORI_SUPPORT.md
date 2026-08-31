@@ -1,21 +1,17 @@
 # Satori v1（QQ 9.3.55）
 
-本模块是 Satori **实现端**（SDK）：Koishi 的 `adapter-satori` 连 `http://127.0.0.1:3001`。
+`adapter-satori` 连 `http://127.0.0.1:3001`。
 
 - HTTP：`POST /v1/{resource}.{method}`，JSON 请求体，成功 200；`upload.create` 使用 multipart。
-- 事件：`GET /v1/events` 升级为 WebSocket；10s 内 `IDENTIFY`，回复 `READY`，之后推 `EVENT`。省略 `sn` 表示新会话、不回放；显式 `sn=0` 会回放缓冲区内 `sn > 0` 的事件。
-- 消息 `id` 为 QQ NT `msgId` 字符串（可跨进程引用/撤回/get）；历史游标仍是 `message_seq`。
-- 元信息：`POST /v1/meta`；内部资源代理：`GET /v1/proxy/{url}`。
+- 事件：`GET /v1/events` 升级为 WebSocket；10s 内 `IDENTIFY`，回复 `READY`，之后推 `EVENT`。省略 `sn` 表示新会话；显式 `sn=0` 回放缓冲区内 `sn > 0` 的事件。
+- 消息 `id` 为 QQ NT `msgId` 字符串；历史游标为 `message_seq`。
+- 元信息：`POST /v1/meta`；资源代理：`GET /v1/proxy/{url}`。
 - `platform`：`red`；`adapter`：`satori-qq`。
-- 群频道：`channel.id = 群号`，`type = 0`（TEXT），`guild.id` 同群号（`guild.plain`）。
-- 私聊频道：`channel.id = private:{uin}`，`type = 1`（DIRECT）。
-- 消息 `content` 为 Satori 元素串，例如 `hello <at id="123"/> <img src="https://..."/>`。
+- 群频道：`channel.id = 群号`，`type = 0`；`guild.id` 同群号。
+- 私聊频道：`channel.id = private:{uin}`，`type = 1`。
+- 消息 `content` 为 Satori 元素串，如 `hello <at id="123"/> <img src="https://..."/>`。
 
-`ok` 主号真机通过（此前已核过的内核路径）；`limited` 本地正确但被服务器拦；`-` 明确不做。
-
-“支持完整”按 **QQ 能提供的能力 + Satori SDK 通用回退** 计算。QQ 没有消息编辑、多频道、
-自定义群角色或清空他人表态，因此对应标准 API 按协议返回 404，而不是伪造成功。
-WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
+QQ 无消息编辑、多频道、自定义群角色或清空他人表态时，对应 API 返回 404。仅提供 WebSocket 事件流。
 
 ## 标准方法
 
@@ -82,10 +78,9 @@ WebHook 属于协议可选功能，本实现只提供 WebSocket 事件流。
 | `qzone.auth` | 调试 QZone 鉴权（pskey 等） |
 | `restart` / `clean_cache` | 退出 QQ 等 watchdog 拉起；清临时文件 |
 
-所有内部写操作也经过与标准消息发送相同的串行、最小间隔、每分钟预算和失败熔断保护；
-`qzone.publish/delete/clear` 同样纳入保护，避免多个本地调用方并发制造突发请求。
+所有内部写操作经过串行、限频与熔断保护。
 
-Koishi 可直接使用官方适配器的 internal 代理；camelCase、snake_case 和分层点号均会归一化：
+Koishi 示例：
 
 ```js
 const overview = await bot.internal.groupOverview({ guild_id: '123456' })
@@ -130,23 +125,8 @@ const context = await bot.internal.messageContext({
 
 ## Koishi
 
-```yaml
-plugins:
-  server:
-    port: 5140
-    selfUrl: 'http://127.0.0.1:5140'   # 让 assets-local 产出 http 而不是 file:
-  adapter-satori:
-    endpoint: 'http://127.0.0.1:3001'
-    token: '与 satori-qq.json 相同'
-```
+`selfUrl` 须与 `server.port` 一致，否则 assets 会变成 QQ 进程读不到的 `file://` 路径。
 
-`selfUrl` 缺失时 assets 会变成 `file:///data/data/com.termux/...`，QQ 进程读不到，表现为发图失败。
-如果 `server.maxPort` 允许端口漂移，应确保 5140 未被占用；否则 `selfUrl` 必须与实际监听端口同步。
+`manual_self_messages=true`（默认）时，QQ 客户端手发消息以 `qq-client:{QQ号}` 投递，真实身份在 `session.event.satoriQq.actualUserId`。`manual_self_user_id` 可覆盖。
 
-Koishi Core 会无条件忽略 `session.userId === session.selfId` 的消息。默认配置
-`manual_self_messages=true` 会仅为 QQ UI 手发消息设置稳定的虚拟作者
-`qq-client:{QQ号}`，使它像另一名用户一样经过 middleware；真实身份位于
-`session.event.satoriQq.actualUserId`。`manual_self_user_id` 可覆盖虚拟 ID，设为实际
-bot ID 会恢复 Koishi 的忽略行为。该映射不影响历史消息 API，也不影响 bot API 发出的消息。
-
-私聊自己不投递。测发送用真实群或好友。
+私聊自己不投递。

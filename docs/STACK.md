@@ -1,7 +1,6 @@
-# 反检测全栈 · 换机复现 · QQ 升版本
+# 反检测 · 换机 · QQ 升版本
 
-把 Xposed 注入藏到腾讯 QSec 不太容易扫到的程度。目标是「少掉线」，不是「永不踢」。
-踢号票据由服务器签发，本地无法作废。操作面以本文为准。
+目标：少掉线。踢号票据由服务器签发，本地无法作废。
 
 ## 原则
 
@@ -61,13 +60,13 @@
 
 主线是反检测（阶段 2：`dlsym`，等自然加载）。协议是 Satori v1，不扩新动作。路线见仓库外 `satori-qq-后续反检测增强方案.md`。
 
-## 思路来源（仍在维护或可对照）
+## 思路来源
 
-- [QQNTHookBypass](https://github.com/jhl337/QQNTHookBypass)：出站拦 `trpc.o3.report.*` / `mobile_security.*`，入站伪造空成功。本仓库同样拦 `trpc.gc_indust.device_report.*`。**不要**对 `trpc.o3.*` 通配。
-- fekit 9.3.55 导入 `dlsym`：可绕过 GOT。0.8.0 只在检测库 GOT 上打这一槽；`my_dlsym` 只把已包装的 open/syscall/… 指回来，不带 getdents。
-- turingxq 导入 `__system_property_find`：v5.1 已打，只对 magisk/zygisk 等名字返回空。
-- fekit 导入 `getenv`/`freopen`，turingxq 导入 `getenv`/`fdopen`：0.8.3 打检测库 GOT；`MAGISK_VER` 等键返回空。`/proc/self/environ` 按 NUL 过滤。不要全局 hook libc `getenv`。
-- `:MSF` 进程自己也加载 `libfekit.so`。v4 只打主进程，MSF 的 GOT 是裸的。
+- QQNTHookBypass：拦 `trpc.o3.report.*` / `mobile_security.*`，入站空成功。本仓库另拦 `trpc.gc_indust.device_report.*`。不要 `trpc.o3.*` 通配。
+- fekit 9.3.55 导入 `dlsym`：0.8.0 只在检测库 GOT 打这一槽。
+- turingxq 导入 `__system_property_find`：v5.1 已对 magisk/zygisk 等返回空。
+- fekit 导入 `getenv`/`freopen`，turingxq 导入 `getenv`/`fdopen`：0.8.3 打检测库 GOT。
+- `:MSF` 也加载 `libfekit.so`，须单独处理。
 
 ## 换 root / 换机
 

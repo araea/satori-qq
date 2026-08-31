@@ -24,8 +24,6 @@ plugins:
     token: ''
 ```
 
-协议与内部 API 见 [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)。可选配置见 `satori-qq.sample.json`。
-
 ## 构建
 
 ```sh
@@ -38,6 +36,16 @@ pm install -r -d build/SatoriQQ.apk
 ```sh
 curl -fsSL -o libs/r8.jar https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar
 ```
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md) | 协议、方法与事件 |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 模块结构与 JNI |
+| [`docs/HANDOFF.md`](docs/HANDOFF.md) | 构建与本机环境 |
+| [`docs/STACK.md`](docs/STACK.md) | 反检测与换机 |
+| [`satori-qq.sample.json`](satori-qq.sample.json) | 配置项 |
 
 ## QQ 群
 

@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.1";
+    public static final String APP_VERSION = "0.8.9.13";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -2179,7 +2179,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         outboundEcho.incrementAndGet();
         try {
             QQClient.SendResult r = qq.sendMsg(chatType, peer, els);
-            if (r != null && r.msgId != 0) outboundMsgIds.add(r.msgId);
+            if (r != null && r.msgId != 0) rememberOutboundMsgId(r.msgId);
             return r;
         } finally {
             outboundEcho.decrementAndGet();
@@ -2369,6 +2369,60 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }
     }
 
+    private JSONObject synthesizeInboundFromRecord(Object rec, QQClient.MsgListResult hist)
+            throws Exception {
+        Object inner = Convert.unwrapRecord(rec);
+        if (inner == null) return null;
+        long msgId = qq.ref.getLong(inner, "msgId");
+        long msgSeq = qq.ref.getLong(inner, "msgSeq");
+        long msgTime = qq.ref.getLong(inner, "msgTime");
+        if (msgTime > 10_000_000_000L) msgTime /= 1000L;
+        long senderUin = qq.ref.getLong(inner, "senderUin");
+        long peerUin = qq.ref.getLong(inner, "peerUin");
+        int chatType = Ref.asInt(qq.ref.get(inner, "chatType"));
+        if (senderUin == 0) return null;
+        if (msgId != 0) {
+            MsgStore.Rec stored = store.getByMsgId(msgId);
+            if (stored != null) {
+                JSONObject ev = synthesizeFromRec(stored);
+                if (ev != null && !ev.optString("raw_message", "").isEmpty()) return ev;
+            }
+        }
+        String text = "";
+        if (msgId != 0 && hist != null && hist.texts != null) {
+            String t = hist.texts.get(String.valueOf(msgId));
+            if (t != null) text = t;
+        }
+        if (text.isEmpty()) text = qq.peekRecordText(rec);
+        if (text.isEmpty()) return null;
+        boolean group = chatType == QQClient.CT_GROUP;
+        String nick = Ref.asStr(qq.ref.get(inner, "sendNickName"));
+        String card = Ref.asStr(qq.ref.get(inner, "sendMemberName"));
+        JSONObject sender = new JSONObject()
+                .put("user_id", senderUin)
+                .put("nickname", nick == null ? "" : nick);
+        if (group) sender.put("card", card == null ? "" : card);
+        JSONArray segs = Codec.toSegments(text);
+        JSONObject ev = new JSONObject()
+                .put("post_type", "message")
+                .put("message_type", group ? "group" : "private")
+                .put("sub_type", group ? "normal" : "friend")
+                .put("message_id", msgId != 0 ? String.valueOf(msgId) : "0")
+                .put("qq_msg_id", msgId)
+                .put("user_id", senderUin)
+                .put("sender", sender)
+                .put("message", segs)
+                .put("raw_message", text)
+                .put("message_seq", msgSeq);
+        if (msgTime > 0) {
+            ev.put("time", msgTime);
+            ev.put("msg_time", String.valueOf(msgTime));
+        }
+        if (group) ev.put("group_id", peerUin);
+        else ev.put("peer_id", peerUin);
+        return ev;
+    }
+
     private JSONObject synthesizeFromRec(MsgStore.Rec r) throws Exception {
         if (r == null || (r.msgId == 0 && r.senderUin == 0)) return null;
         boolean group = r.chatType == QQClient.CT_GROUP;
@@ -2385,6 +2439,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("time", System.currentTimeMillis() / 1000)
                 .put("message_seq", r.msgSeq);
         if (group) ev.put("group_id", r.peerUin);
+        else ev.put("peer_id", r.peerUin);
         JSONArray segs = new JSONArray();
         if (r.content != null && !r.content.isEmpty()) {
             try { segs = Codec.toSegments(r.content); } catch (Exception ignore) {}
@@ -3369,7 +3424,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     // ============ QQ inbound: events ============
-    /** message.create 回声的 msgId；recv 见到就丢，不再进 Koishi。 */
+    /** MsgRecord.sendStatus: still uploading / waiting for server seq. */
+    private static final int SEND_STATUS_SENDING = 1;
+    /** MsgRecord.sendStatus: sent locally but server did not assign seq; skip network emit. */
+    private static final int SEND_STATUS_SUCCESS_NOSEQ = 3;
+    /** message.create 回声的 msgId；短期保留，覆盖内核的 add/update/recv 多路回调。 */
     private final java.util.Set<Long> outboundMsgIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
     /** 已成功投递的 msgId，防内核重复推送。 */
     private final java.util.Set<Long> emittedMsgIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -3381,6 +3440,108 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final java.util.Set<String> seenRequests = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<Long> seenRecalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> seenMemberChanges = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** 群聊手打自消息：onAddSendMsg 常只有 sendStatus=1，需 fetchRecord 补投递。 */
+    private final java.util.concurrent.ScheduledExecutorService selfSendScheduler =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "satori-self-send");
+                t.setDaemon(true);
+                return t;
+            });
+    private final java.util.Set<Long> selfSendPollScheduled = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final long OUTBOUND_MSG_TTL_MS = 120_000;
+
+    private void rememberOutboundMsgId(long msgId) {
+        if (msgId == 0) return;
+        if (!outboundMsgIds.add(msgId)) return;
+        selfSendScheduler.schedule(() -> outboundMsgIds.remove(msgId), OUTBOUND_MSG_TTL_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    private void rememberConcurrentOutbound(Object rec) throws Exception {
+        if (outboundEcho.get() <= 0 || !isSelfRecord(rec)) return;
+        rememberOutboundMsgId(Ref.asLong(recordField(rec, "msgId")));
+    }
+
+    private String recordPeerUid(Object rec) throws Exception {
+        Object inner = Convert.unwrapRecord(rec);
+        String peerUid = Ref.asStr(qq.ref.get(inner, "peerUid"));
+        if (peerUid != null && !peerUid.isEmpty()) return peerUid;
+        return String.valueOf(Ref.asLong(qq.ref.get(inner, "peerUin")));
+    }
+
+    private Object recordField(Object rec, String field) throws Exception {
+        return qq.ref.get(Convert.unwrapRecord(rec), field);
+    }
+
+    private boolean isSelfRecord(Object rec) throws Exception {
+        long self = selfUin();
+        return self != 0 && Ref.asLong(recordField(rec, "senderUin")) == self;
+    }
+
+    private boolean shouldDeferSelfSend(Object rec) throws Exception {
+        if (!isSelfRecord(rec)) return false;
+        int status = Ref.asInt(recordField(rec, "sendStatus"));
+        return status == SEND_STATUS_SENDING || status == SEND_STATUS_SUCCESS_NOSEQ;
+    }
+
+    /** onMsgUpdates 里 sendStatus 可能仍不准，只跳过 NOSEQ。 */
+    private boolean shouldDeferSelfSendUpdate(Object rec) throws Exception {
+        if (!isSelfRecord(rec)) return false;
+        return Ref.asInt(recordField(rec, "sendStatus")) == SEND_STATUS_SUCCESS_NOSEQ;
+    }
+
+    private void scheduleSelfSendEmit(Object rec) {
+        try {
+            if (!isSelfRecord(rec)) return;
+            long msgId = Ref.asLong(recordField(rec, "msgId"));
+            if (msgId == 0 || !selfSendPollScheduled.add(msgId)) return;
+            final int chatType = Ref.asInt(recordField(rec, "chatType"));
+            final String peer = recordPeerUid(rec);
+            long[] delays = {150, 400, 900, 2000, 4000, 8000};
+            for (int i = 0; i < delays.length; i++) {
+                final int attempt = i;
+                selfSendScheduler.schedule(() -> {
+                    try {
+                        if (emittedMsgIds.contains(msgId)) return;
+                        if (outboundMsgIds.contains(msgId)) return;
+                        Object fetched = qq.fetchRecord(chatType, peer, msgId);
+                        QQClient.MsgListResult hist = null;
+                        if (fetched == null) {
+                            if (chatType == QQClient.CT_GROUP) {
+                                hist = qq.getHistory(chatType, peer, 0, 20, true);
+                                if (hist.records != null) {
+                                    for (Object cand : hist.records) {
+                                        if (Ref.asLong(qq.ref.get(cand, "msgId")) == msgId) {
+                                            fetched = cand;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (chatType == QQClient.CT_GROUP) {
+                            hist = qq.getHistory(chatType, peer, 0, 20, true);
+                        }
+                        if (fetched != null) {
+                            tryEmitInboundMsg(fetched, hist);
+                        }
+                    } catch (Throwable t) {
+                        L.e("selfSendPoll", t);
+                    } finally {
+                        if (attempt == delays.length - 1) selfSendPollScheduled.remove(msgId);
+                    }
+                }, delays[i], java.util.concurrent.TimeUnit.MILLISECONDS);
+            }
+        } catch (Throwable t) {
+            L.e("scheduleSelfSendEmit", t);
+        }
+    }
+
+    private static final int EMIT_OK = 0;
+    private static final int EMIT_SKIP_OUTBOUND = 1;
+    private static final int EMIT_SKIP_ECHO = 2;
+    private static final int EMIT_SKIP_DEDUPE = 3;
+    private static final int EMIT_SKIP_EMPTY = 4;
+    private static final int EMIT_SKIP_NULL = 5;
 
     private static final class FriendReq {
         final String uid;
@@ -3424,52 +3585,119 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return false;
     }
 
-    @Override public void onRecvMsgs(List<?> records) {
+    private void tryEmitInboundMsg(Object rec) {
+        tryEmitInboundMsg(rec, null);
+    }
+
+    private void tryEmitInboundMsg(Object rec, QQClient.MsgListResult hist) {
+        tryEmitInboundMsgInternal(rec, hist);
+    }
+
+    private String manualSelfUserId(long self) {
+        return cfg.manualSelfUserId.isEmpty() ? "qq-client:" + self : cfg.manualSelfUserId;
+    }
+
+    private void markManualSelfMessage(JSONObject ev, long self) throws Exception {
+        if (ev == null || !cfg.manualSelfMessages) return;
+        String virtualId = manualSelfUserId(self);
+        ev.put("satori_user_id", virtualId);
+        ev.put("manual_self", true);
+        ev.put("actual_user_id", String.valueOf(self));
+    }
+
+    private int tryEmitInboundMsgInternal(Object rec, QQClient.MsgListResult hist) {
         long self = selfUin();
+        try {
+            Object inner = Convert.unwrapRecord(rec);
+            rememberReactionState(inner);
+            long msgId = Ref.asLong(qq.ref.get(inner, "msgId"));
+            long senderUin = Ref.asLong(qq.ref.get(inner, "senderUin"));
+
+            // 机器人 API 发出的回声：sendTracked 已登记 msgId。
+            if (msgId != 0 && outboundMsgIds.contains(msgId)) return EMIT_SKIP_OUTBOUND;
+
+            // sendMsg 窗口内的自消息回声（含 msgId 比登记更早到达的竞态）。
+            if (self != 0 && senderUin == self && outboundEcho.get() > 0)
+                return EMIT_SKIP_ECHO;
+
+            // 已完整投递过（内核重复推送同一条）。
+            if (msgId != 0 && emittedMsgIds.contains(msgId)) return EMIT_SKIP_DEDUPE;
+
+            JSONObject ev = conv.recordToEvent(rec, self);
+            // Preserve notices (recall, poke, member changes) returned by Convert.
+            // Synthesis is only a fallback for an otherwise unparseable message record.
+            if (ev == null) ev = synthesizeInboundFromRecord(rec, hist);
+            if (ev != null && self != 0) ev.put("self_id", self);
+            fillEmptyText(ev, rec);
+            if (hist != null) fillEmptyTextFromMap(ev, hist);
+            if (ev == null) return EMIT_SKIP_NULL;
+            if (!isDeliverableMessage(ev)) return EMIT_SKIP_EMPTY;
+            if (self != 0 && senderUin == self) markManualSelfMessage(ev, self);
+
+            String nt = ev.optString("notice_type", "");
+            if ("group_recall".equals(nt) || "friend_recall".equals(nt)) {
+                long mid = ev.optLong("qq_msg_id", 0);
+                if (mid == 0) mid = ev.optLong("message_id", 0);
+                if (mid != 0 && !seenRecalls.add(mid)) return EMIT_SKIP_DEDUPE;
+            }
+
+            if (msgId != 0) {
+                emittedMsgIds.add(msgId);
+                if (emittedMsgIds.size() > 8000) emittedMsgIds.clear();
+            }
+            emitObEvent(ev);
+            L.d("event -> " + ev.optString("post_type") + "/"
+                    + ev.optString("message_type", ev.optString("notice_type"))
+                    + " from " + ev.optLong("user_id"));
+            return EMIT_OK;
+        } catch (Throwable t) {
+            L.e("tryEmitInboundMsg", t);
+            return EMIT_SKIP_NULL;
+        }
+    }
+
+    @Override public void onRecvMsgs(List<?> records) {
         for (Object rec : records) {
             try {
-                rememberReactionState(rec);
-                long msgId = Ref.asLong(qq.ref.get(rec, "msgId"));
-                long senderUin = Ref.asLong(qq.ref.get(rec, "senderUin"));
-
-                // 机器人 API 发出的回声：sendTracked 已登记 msgId。
-                if (msgId != 0 && outboundMsgIds.remove(msgId)) continue;
-
-                // sendMsg 窗口内的自消息回声（含 msgId 比登记更早到达的竞态）。
-                if (self != 0 && senderUin == self && outboundEcho.get() > 0) continue;
-
-                // 已完整投递过（内核重复推送同一条）。
-                if (msgId != 0 && emittedMsgIds.contains(msgId)) continue;
-
-                JSONObject ev = conv.recordToEvent(rec, self);
-                if (ev == null || !isDeliverableMessage(ev)) continue;
-
-                String nt = ev.optString("notice_type", "");
-                if ("group_recall".equals(nt) || "friend_recall".equals(nt)) {
-                    long mid = ev.optLong("qq_msg_id", 0);
-                    if (mid == 0) mid = ev.optLong("message_id", 0);
-                    if (mid != 0 && !seenRecalls.add(mid)) continue;
-                }
-
-                if (msgId != 0) {
-                    emittedMsgIds.add(msgId);
-                    if (emittedMsgIds.size() > 8000) emittedMsgIds.clear();
-                }
-                emitObEvent(ev);
-                L.d("event -> " + ev.optString("post_type") + "/"
-                        + ev.optString("message_type", ev.optString("notice_type"))
-                        + " from " + ev.optLong("user_id"));
+                rememberConcurrentOutbound(rec);
+                if (isSelfRecord(rec)) scheduleSelfSendEmit(rec);
+                if (shouldDeferSelfSend(rec)) continue;
+                tryEmitInboundMsg(rec);
             } catch (Throwable t) {
                 L.e("onRecvMsgs", t);
             }
         }
     }
 
+    @Override public void onAddSendMsg(Object rec) {
+        if (rec == null) return;
+        try {
+            rememberConcurrentOutbound(rec);
+            scheduleSelfSendEmit(rec);
+            if (shouldDeferSelfSend(rec)) return;
+            tryEmitInboundMsg(rec);
+        } catch (Throwable t) {
+            L.e("onAddSendMsg", t);
+        }
+    }
+
     @Override public void onMsgUpdates(List<?> records) {
         if (records == null) return;
         for (Object record : records) {
-            try { emitReactionChanges(record); }
-            catch (Throwable t) { L.e("onMsgUpdates", t); }
+            try {
+                rememberConcurrentOutbound(record);
+                emitReactionChanges(record);
+                // Updates also carry reactions and edits to old records. Only a self-authored
+                // candidate seen through add/recv can be a newly typed message. This prevents
+                // an update to an old self-authored message from being replayed as new input.
+                if (isSelfRecord(record)) {
+                    long msgId = Ref.asLong(recordField(record, "msgId"));
+                    if (msgId != 0 && selfSendPollScheduled.contains(msgId)
+                            && !shouldDeferSelfSendUpdate(record)) tryEmitInboundMsg(record);
+                }
+            } catch (Throwable t) {
+                L.e("onMsgUpdates", t);
+            }
         }
     }
 
@@ -3961,6 +4189,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("adapter", ADAPTER)
                 .put("qq_version", qqVersion.isEmpty() ? "unknown" : qqVersion)
                 .put("runtime", "Android QQNT/Xposed")
+                .put("manual_self_messages", cfg.manualSelfMessages)
+                .put("manual_self_user_id", manualSelfUserId(selfUin()))
                 .put("hist", "60");
     }
 

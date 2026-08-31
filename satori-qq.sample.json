@@ -17,5 +17,7 @@
   "online_stabilize_ms": 30000,
   "outbound_max_per_minute": 20,
   "outbound_failure_threshold": 3,
-  "outbound_circuit_open_ms": 120000
+  "outbound_circuit_open_ms": 120000,
+  "manual_self_messages": true,
+  "manual_self_user_id": ""
 }

@@ -461,8 +461,8 @@ public final class Codec {
             throws Exception {
         boolean group = "group".equals(ob.optString("message_type"));
         long userId = eventUserId(ob);
-        long peer = group ? ob.optLong("group_id") : (ob.optLong("user_id", 0) != 0
-                ? ob.optLong("user_id") : userId);
+        long peer = group ? ob.optLong("group_id") : ob.optLong("peer_id",
+                ob.optLong("user_id", 0) != 0 ? ob.optLong("user_id") : userId);
         JSONObject sender = ob.optJSONObject("sender");
         String nick = sender == null ? "" : sender.optString("nickname", "");
         String card = sender == null ? "" : sender.optString("card", "");
@@ -474,7 +474,16 @@ public final class Codec {
         ev.put("type", "message-created");
         ev.put("channel", channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, gname));
         if (group) ev.put("guild", guild(peer, gname));
-        ev.put("user", user(userId, display, card));
+        JSONObject author = user(userId, display, card);
+        String satoriUserId = ob.optString("satori_user_id", "").trim();
+        if (!satoriUserId.isEmpty()) author.put("id", satoriUserId);
+        ev.put("user", author);
+        if (ob.optBoolean("manual_self", false)) {
+            ev.put("satori_qq", new JSONObject()
+                    .put("manual_self", true)
+                    .put("actual_user_id", ob.optString("actual_user_id", String.valueOf(userId)))
+                    .put("user_id", author.optString("id")));
+        }
         if (group) {
             JSONObject member = new JSONObject();
             member.put("user", ev.optJSONObject("user"));

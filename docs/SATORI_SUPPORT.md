@@ -104,7 +104,7 @@ const context = await bot.internal.messageContext({
 
 | Satori | 来源 |
 | --- | --- |
-| `message-created` | 收消息（含自己在 QQ 客户端发出的；机器人 API 发出的回声会去重） |
+| `message-created` | 收消息；QQ 客户端手发消息使用 `qq-client:{selfUin}` 虚拟作者并携带 `satori_qq.manual_self`，机器人 API 回声会去重 |
 | `message-deleted` | 撤回 |
 | `guild-added` / `updated` / `removed` | 加群 / 退群 / 少量真实改名；登录拉全表（INIT/SYNC/REFRESH）不刷 |
 | `channel-added` / `updated` / `removed` | 同一群变化的 `guild.plain` 单频道映射 |
@@ -142,5 +142,11 @@ plugins:
 
 `selfUrl` 缺失时 assets 会变成 `file:///data/data/com.termux/...`，QQ 进程读不到，表现为发图失败。
 如果 `server.maxPort` 允许端口漂移，应确保 5140 未被占用；否则 `selfUrl` 必须与实际监听端口同步。
+
+Koishi Core 会无条件忽略 `session.userId === session.selfId` 的消息。默认配置
+`manual_self_messages=true` 会仅为 QQ UI 手发消息设置稳定的虚拟作者
+`qq-client:{QQ号}`，使它像另一名用户一样经过 middleware；真实身份位于
+`session.event.satoriQq.actualUserId`。`manual_self_user_id` 可覆盖虚拟 ID，设为实际
+bot ID 会恢复 Koishi 的忽略行为。该映射不影响历史消息 API，也不影响 bot API 发出的消息。
 
 私聊自己不投递。测发送用真实群或好友。

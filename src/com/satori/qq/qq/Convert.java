@@ -419,6 +419,9 @@ public final class Convert {
             } else {
                 ev.put("message_type", "private");
                 ev.put("sub_type", "friend");
+                // For a locally sent C2C message senderUin is self, while peerUin is
+                // the conversation target. Keep the channel address independent of author.
+                ev.put("peer_id", peerUin);
             }
             ev.put("sender", sender);
             return ev;

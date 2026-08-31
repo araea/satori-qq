@@ -49,6 +49,8 @@ public final class QQClient {
 
     public interface Listener {
         void onRecvMsgs(List<?> msgRecords);
+        /** Client-side send callback; group self messages often finish via onMsgUpdates. */
+        void onAddSendMsg(Object msgRecord);
         void onMsgUpdates(List<?> msgRecords);
         void onRecall(int type, String info, long time);
         void onBuddyReq(Object buddyReqInfo);
@@ -235,11 +237,8 @@ public final class QQClient {
                             l.onMsgUpdates((List<?>) args[0]);
                         break;
                     case "onAddSendMsg":
-                        if (args != null && args.length >= 1 && args[0] != null) {
-                            java.util.ArrayList<Object> one = new java.util.ArrayList<>();
-                            one.add(args[0]);
-                            l.onRecvMsgs(one);
-                        }
+                        if (args != null && args.length >= 1 && args[0] != null)
+                            l.onAddSendMsg(args[0]);
                         break;
                     case "onMsgRecall":
                         if (args != null && args.length >= 3)

@@ -11,6 +11,7 @@ satori-qq
 
 - Satori v1：登录、消息收发/历史/撤回、群与成员、好友、表态、文件上传和 WebSocket 事件。
 - QQ 消息：文本、图片、语音、视频、文件、回复、@、表情、合并转发；消息 ID 使用可跨进程引用的 QQ `msgId`。
+- QQ 客户端手动发出的消息会以独立操作者身份进入 Koishi，可直接触发命令并让 bot 在原会话回复；API 发送回声不会回环。
 - QQ 扩展：戳一戳、资料卡点赞、群签到、精华、名片、头衔、群荣誉、群文件管理、邀请/退群、骰子/猜拳和 QZone 说说。
 - 实用查询：群概览、成员/联系人搜索、消息前后文、资源下载和实现端健康状态。
 - 稳定性：写操作串行、限频和熔断；发送回声去重；短暂断线按事件序号恢复。
@@ -49,6 +50,11 @@ plugins:
 - 恢复：省略 `IDENTIFY.sn` 表示新会话；显式传入最后收到的 `sn` 才回放断线事件
 
 `platform` 为 `red`，`adapter` 为 `satori-qq`。可选配置见 `satori-qq.sample.json`。
+
+Koishi Core 默认忽略 `userId === selfId` 的消息。模块因此只对 QQ 客户端手动发送的
+消息使用稳定虚拟身份 `qq-client:{QQ号}`，真实 QQ 号保留在
+`session.event.satoriQq.actualUserId`；普通入站消息和 `message.create` 不改写。
+可用 `manual_self_messages=false` 关闭，或用 `manual_self_user_id` 自定义虚拟身份。
 
 Koishi 可直接通过官方适配器调用 QQ 内部接口：
 

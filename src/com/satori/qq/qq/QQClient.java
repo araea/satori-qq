@@ -1886,8 +1886,57 @@ public final class QQClient {
                 (gs, cb) -> ref.call(gs, "quitGroup", groupCode, cb));
     }
     public OpResult setGroupName(long groupCode, String name) {
-        return awaitGroup(OPERATE_CB, "modifyGroupName",
-                (gs, cb) -> ref.call(gs, "modifyGroupName", groupCode, name == null ? "" : name, false, cb));
+        final String wanted = name == null ? "" : name;
+        final boolean normalMember = isNormalGroupMember(groupCode);
+        OpResult primary = awaitGroup(OPERATE_CB, "modifyGroupName",
+                (gs, cb) -> ref.call(gs, "modifyGroupName", groupCode, wanted, normalMember, cb));
+        if (!primary.ok()) return primary;
+        if (refreshAndVerifyGroupName(groupCode, wanted)) return primary;
+
+        // QQ 9.3.55 can acknowledge modifyGroupName after only updating the conversation-side
+        // TroopInfo cache. The group detail page then still sees an empty groupName. Persist the
+        // same field through the filtered V2 detail API, so unrelated group settings are untouched.
+        OpResult detail = awaitGroup(OPERATE_CB, "modifyGroupDetailInfoV2(groupName)", (gs, cb) -> {
+            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupModifyInfoReq");
+            ref.put(req, "groupCode", groupCode);
+            Object filter = ref.get(req, "filter");
+            Object info = ref.get(req, "modifyInfo");
+            if (filter == null || info == null)
+                throw new IllegalStateException("GroupModifyInfoReq fields unavailable");
+            ref.put(filter, "groupName", 1);
+            ref.put(info, "groupName", wanted);
+            ref.call(gs, "modifyGroupDetailInfoV2", req, 0, cb);
+        });
+        if (!detail.ok()) return detail;
+        if (refreshAndVerifyGroupName(groupCode, wanted)) return detail;
+
+        OpResult failed = new OpResult();
+        failed.msg = "group name write was acknowledged but read-back did not match";
+        return failed;
+    }
+
+    /** Matches QQ 9.3.55 TroopOperationRepo: the boolean is isNormalMember. */
+    private boolean isNormalGroupMember(long groupCode) {
+        Object info = groupInfo(groupCode);
+        if (info == null) return true;
+        try {
+            Object role = ref.get(info, "memberRole");
+            String roleName;
+            if (role instanceof Enum) roleName = ((Enum<?>) role).name();
+            else roleName = role == null ? "" : String.valueOf(ref.call(role, "name"));
+            roleName = roleName.toUpperCase(java.util.Locale.ROOT);
+            return !(roleName.contains("OWNER") || roleName.contains("ADMIN"));
+        } catch (Throwable t) {
+            L.e("read group memberRole " + groupCode, t);
+            return true;
+        }
+    }
+
+    private boolean refreshAndVerifyGroupName(long groupCode, String wanted) {
+        refreshGroupList();
+        Object info = groupInfoCache.get(groupCode);
+        if (info == null) return false;
+        return wanted.equals(Ref.asStr(ref.get(info, "groupName")));
     }
 
     /** NT IKernelGroupService.setHeader(groupCode, localPath). Owner/admin only. */

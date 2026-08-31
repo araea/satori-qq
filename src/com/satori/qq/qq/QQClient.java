@@ -574,14 +574,30 @@ public final class QQClient {
     // ---------- sending ----------
     public static final class SendResult { public int code = -1; public String msg = ""; public long msgId; }
 
+    /** Called after QQ allocates the message id and before it can emit any send callback. */
+    public interface SendTracker {
+        void onGenerated(long msgId);
+    }
+
     /** Send a pre-built element list to a group (chatType=2) or c2c (chatType=1). */
     public SendResult sendMsg(int chatType, String peerUid, ArrayList<?> elements) {
+        return sendMsg(chatType, peerUid, elements, null);
+    }
+
+    /**
+     * Send a message while exposing its id before entering the QQ kernel. This makes echo
+     * suppression exact: unrelated messages typed in the QQ UI are never classified by a
+     * broad "a bot send is in progress" time window.
+     */
+    public SendResult sendMsg(int chatType, String peerUid, ArrayList<?> elements,
+                              SendTracker tracker) {
         SendResult r = new SendResult();
         Object msgService = getMsgService();
         if (msgService == null) { r.msg = "kernel session not ready"; return r; }
         try {
             long msgId = Ref.asLong(ref.call(msgService, "generateMsgUniqueId", chatType, System.currentTimeMillis()));
             r.msgId = msgId;
+            if (tracker != null && msgId != 0) tracker.onGenerated(msgId);
             Object contact = ref.neu(CONTACT, chatType, peerUid, "");
             final CountDownLatch latch = new CountDownLatch(1);
             final AtomicInteger code = new AtomicInteger(-1);

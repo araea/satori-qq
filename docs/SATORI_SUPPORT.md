@@ -63,6 +63,9 @@ QQ 无消息编辑、多频道、自定义群角色或清空他人表态时，�
 | `group_extra` | 读群扩展标志，含 `honor_open` |
 | `group_overview` | 群仪表盘：群/频道、成员角色与活跃统计、自己的成员信息、展示开关；可选 `include_members` / `include_files` |
 | `group_member_search` | 按 UIN、昵称、群名片、头衔和角色搜索群成员，支持 `offset` / `limit` |
+| `group_active` | 群潜水榜 / 活跃榜：按最后发言时间排序（`order=inactive\|active`），可选 `days` 阈值、`role`、`limit`，含 `never_spoke` 统计。只读 |
+| `member_info` | 单个群成员详情（角色、群名片、头衔、等级、入群与最后发言时间）。`guild_id` + `user_id`。只读 |
+| `random_member` | 群随机点名 / 抽奖：`count` 名，可 `exclude_self` / `exclude_bots`（管理）/ `active_within_days`；Fisher–Yates 无重复。只读 |
 | `contact_search` | 按号码、昵称、备注或群名搜索好友与群；`type=all|friend|guild` |
 | `group_refresh` | 强制刷新 QQ 内核群列表并返回最新群列表 |
 | `group_leave` | 退出群；`guild_id` + 必须显式 `confirm=true` |

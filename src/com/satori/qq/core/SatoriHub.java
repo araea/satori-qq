@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.14";
+    public static final String APP_VERSION = "0.8.9.15";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -635,6 +635,24 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "contact_search":
             case "contact.search":
                 return contactSearch(params);
+            case "group-active":
+            case "group_active":
+            case "group.active":
+            case "member-activity":
+            case "member_activity":
+                return groupActive(params);
+            case "member-info":
+            case "member_info":
+            case "member.info":
+                return memberInfo(params);
+            case "random-member":
+            case "random_member":
+            case "member.random":
+            case "roll-call":
+            case "roll_call":
+            case "lucky-draw":
+            case "lucky_draw":
+                return randomMember(params);
             case "honor-display":
             case "honor_display":
             case "honor.display":
@@ -838,6 +856,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("sign").put("essence").put("group_remark")
                         .put("honor_display").put("group_extra").put("group_overview")
                         .put("group_member_search").put("contact_search")
+                        .put("group_active").put("member_info").put("random_member")
                         .put("group_refresh").put("group_leave")
                         .put("group_file").put("get_forward").put("get_resource")
                         .put("message_context")
@@ -852,7 +871,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("special_faces", new JSONObject().put("dice", 358).put("rps", 359))
                 .put("read_actions", new JSONArray()
                         .put("group_extra").put("group_overview").put("group_member_search")
-                        .put("contact_search").put("message_context")
+                        .put("contact_search").put("group_active").put("member_info")
+                        .put("random_member").put("message_context")
                         .put("get_forward").put("get_resource").put("qzone.list")
                         .put("status").put("version").put("capabilities"))
                 .put("write_actions", new JSONArray()
@@ -947,6 +967,142 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             out.put("next", new JSONArray().put(next)).put("next_offset", nextOffset);
         }
         return out;
+    }
+
+    /**
+     * Activity / lurker leaderboard for a group.  Ranks members by their last-speak time,
+     * built entirely from the already-cached member list (no extra kernel traffic).
+     *
+     * <p>{@code order=inactive} (default) surfaces the quietest members first — the classic
+     * "谁在潜水" admin query; {@code order=active} lists the most recently active.  {@code days}
+     * filters to members whose silence (inactive) or recent activity (active) crosses that
+     * threshold; {@code limit} caps the returned rows (default 20, max 200).</p>
+     */
+    private JSONObject groupActive(JSONObject p) throws Exception {
+        long groupId = guildIdOf(p);
+        String order = p.optString("order", p.optString("sort", "inactive"))
+                .trim().toLowerCase(java.util.Locale.ROOT);
+        boolean active = "active".equals(order) || "desc".equals(order);
+        int limit = Math.max(1, Math.min(200, p.optInt("limit", 20)));
+        int days = Math.max(0, p.optInt("days", 0));
+        String wantedRole = p.optString("role", "").trim().toLowerCase(java.util.Locale.ROOT);
+        long now = System.currentTimeMillis() / 1000L;
+        long threshold = days > 0 ? (long) days * 86400L : 0;
+
+        JSONArray members = getGroupMemberList(groupId);
+        java.util.List<JSONObject> rows = new java.util.ArrayList<>();
+        int neverSpoke = 0;
+        for (int i = 0; i < members.length(); i++) {
+            JSONObject m = members.optJSONObject(i);
+            if (m == null) continue;
+            String role = m.optString("role", "member");
+            if (!wantedRole.isEmpty() && !wantedRole.equals(role)) continue;
+            long last = m.optLong("last_sent_time", 0);
+            long silent = last > 0 ? Math.max(0, now - last) : Long.MAX_VALUE;
+            if (last <= 0) neverSpoke++;
+            if (threshold > 0) {
+                if (active && (last <= 0 || silent > threshold)) continue;
+                if (!active && last > 0 && silent < threshold) continue;
+            }
+            JSONObject row = memberToSatori(m)
+                    .put("role", role)
+                    .put("last_sent_at", last > 0 ? last * 1000L : 0L)
+                    .put("silent_seconds", silent == Long.MAX_VALUE ? -1L : silent)
+                    .put("silent_days", silent == Long.MAX_VALUE ? -1L : silent / 86400L);
+            rows.add(row);
+        }
+        rows.sort((a, b) -> {
+            long sa = a.optLong("silent_seconds", -1L);
+            long sb = b.optLong("silent_seconds", -1L);
+            // "never spoke" (-1) is the most inactive; treat it as the largest silence.
+            long na = sa < 0 ? Long.MAX_VALUE : sa;
+            long nb = sb < 0 ? Long.MAX_VALUE : sb;
+            return active ? Long.compare(na, nb) : Long.compare(nb, na);
+        });
+        JSONArray data = new JSONArray();
+        for (int i = 0; i < rows.size() && data.length() < limit; i++) data.put(rows.get(i));
+        return new JSONObject()
+                .put("guild_id", String.valueOf(groupId))
+                .put("order", active ? "active" : "inactive")
+                .put("total", members.length())
+                .put("matched", rows.size())
+                .put("never_spoke", neverSpoke)
+                .put("data", data);
+    }
+
+    /** Full detail for one member of a group, without scanning the whole {@code member.list}. */
+    private JSONObject memberInfo(JSONObject p) throws Exception {
+        long groupId = guildIdOf(p);
+        long userId = parseId(p.optString("user_id", ""));
+        if (userId == 0) throw new ApiError(1400, "missing user_id");
+        JSONArray members = getGroupMemberList(groupId);
+        for (int i = 0; i < members.length(); i++) {
+            JSONObject m = members.optJSONObject(i);
+            if (m == null || m.optLong("user_id", 0) != userId) continue;
+            long last = m.optLong("last_sent_time", 0);
+            long now = System.currentTimeMillis() / 1000L;
+            JSONObject out = memberToSatori(m)
+                    .put("guild_id", String.valueOf(groupId))
+                    .put("user_id", String.valueOf(userId))
+                    .put("role", m.optString("role", "member"))
+                    .put("level", m.optString("level", ""))
+                    .put("join_time", m.optLong("join_time", 0))
+                    .put("last_sent_at", last > 0 ? last * 1000L : 0L);
+            if (last > 0) out.put("silent_days", Math.max(0, now - last) / 86400L);
+            return out;
+        }
+        throw new ApiError(1404, "member " + userId + " not in group " + groupId);
+    }
+
+    /**
+     * Pick random members from a group — group roll-call / lottery / 抽奖 in one call.
+     *
+     * <p>{@code count} winners (default 1, max 50); {@code exclude_self} / {@code exclude_bots}
+     * (owner+admin) trim the pool; {@code active_within_days} restricts to members who spoke
+     * recently so a draw never lands on a long-gone lurker.  A Fisher–Yates shuffle over the
+     * cached member list keeps the pick uniform and repeat-free.</p>
+     */
+    private JSONObject randomMember(JSONObject p) throws Exception {
+        long groupId = guildIdOf(p);
+        int count = Math.max(1, Math.min(50, p.optInt("count", p.optInt("num", 1))));
+        boolean excludeSelf = p.optBoolean("exclude_self", true);
+        boolean excludeManagers = p.optBoolean("exclude_bots", p.optBoolean("exclude_managers", false));
+        int activeDays = Math.max(0, p.optInt("active_within_days", 0));
+        long now = System.currentTimeMillis() / 1000L;
+        long self = selfUin();
+
+        JSONArray members = getGroupMemberList(groupId);
+        java.util.List<JSONObject> pool = new java.util.ArrayList<>();
+        for (int i = 0; i < members.length(); i++) {
+            JSONObject m = members.optJSONObject(i);
+            if (m == null) continue;
+            long uin = m.optLong("user_id", 0);
+            if (uin == 0) continue;
+            if (excludeSelf && uin == self) continue;
+            String role = m.optString("role", "member");
+            if (excludeManagers && ("owner".equals(role) || "admin".equals(role))) continue;
+            if (activeDays > 0) {
+                long last = m.optLong("last_sent_time", 0);
+                if (last <= 0 || now - last > (long) activeDays * 86400L) continue;
+            }
+            pool.add(m);
+        }
+        int draw = Math.min(count, pool.size());
+        java.util.Random rnd = new java.util.Random();
+        for (int i = 0; i < draw; i++) {
+            int j = i + rnd.nextInt(pool.size() - i);
+            JSONObject tmp = pool.get(i); pool.set(i, pool.get(j)); pool.set(j, tmp);
+        }
+        JSONArray data = new JSONArray();
+        for (int i = 0; i < draw; i++) {
+            JSONObject m = pool.get(i);
+            data.put(memberToSatori(m).put("role", m.optString("role", "member")));
+        }
+        return new JSONObject()
+                .put("guild_id", String.valueOf(groupId))
+                .put("pool", pool.size())
+                .put("count", draw)
+                .put("data", data);
     }
 
     /** Search friends and groups using the local QQ core caches. */

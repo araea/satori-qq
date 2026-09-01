@@ -5,6 +5,7 @@
 - HTTP：`POST /v1/{resource}.{method}`，JSON 请求体，成功 200；`upload.create` 使用 multipart。
 - 事件：`GET /v1/events` 升级为 WebSocket；10s 内 `IDENTIFY`，回复 `READY`，之后推 `EVENT`。省略 `sn` 表示新会话；显式 `sn=0` 回放缓冲区内 `sn > 0` 的事件。
 - 消息 `id` 为 QQ NT `msgId` 字符串；历史游标为 `message_seq`。
+- `<quote>` / `[CQ:reply]` 的 `id` 同样是 `msgId`，可直接喂给 `message.get`、`message.delete`。
 - 元信息：`POST /v1/meta`；资源代理：`GET /v1/proxy/{url}`。
 - `platform`：`red`；`adapter`：`satori-qq`。
 - 群频道：`channel.id = 群号`，`type = 0`；`guild.id` 同群号。
@@ -66,6 +67,8 @@ QQ 无消息编辑、多频道、自定义群角色或清空他人表态时，�
 | `group_active` | 群潜水榜 / 活跃榜：按最后发言时间排序（`order=inactive\|active`），可选 `days` 阈值、`role`、`limit`，含 `never_spoke` 统计。只读 |
 | `member_info` | 单个群成员详情（角色、群名片、头衔、等级、入群与最后发言时间）。`guild_id` + `user_id`。只读 |
 | `random_member` | 群随机点名 / 抽奖：`count` 名，可 `exclude_self` / `exclude_bots`（管理）/ `active_within_days`；Fisher–Yates 无重复。只读 |
+| `random_team` | 群随机分队：`team_count` 队，可用 `user_ids` 指定参赛者，并按自己、管理、角色、近期活跃度过滤；安全随机、人数均衡。只读 |
+| `group_anniversary` | 未来 `days` 天的入群周年日历，含周年数与倒计时；按设备时区计算，闰日成员在非闰年按 2 月 28 日纪念。只读 |
 | `contact_search` | 按号码、昵称、备注或群名搜索好友与群；`type=all|friend|guild` |
 | `group_refresh` | 强制刷新 QQ 内核群列表并返回最新群列表 |
 | `group_leave` | 退出群；`guild_id` + 必须显式 `confirm=true` |
@@ -73,6 +76,7 @@ QQ 无消息编辑、多频道、自定义群角色或清空他人表态时，�
 | `get_forward` | 按 resid 取合并转发 |
 | `get_resource` | 下载已登记的图/语音/文件 |
 | `message_context` | 按 `channel_id` + `message_id` 返回消息及其前后文；`before` / `after` 各最多 50 条 |
+| `message_search` | 在单个 `channel_id` 的近期本地历史中按 `query` / `user_id` / 时间筛选；`scan_limit` 默认 200、最多 1000，返回续查游标。只读 |
 | `dice` / `rps` | 向 `channel_id`、`guild_id` 或 `user_id` 发送 QQ 原生随机骰子 / 猜拳 |
 | `capabilities` / `help` | 返回内部动作、群文件操作和特殊表情 ID 的机器可读清单 |
 | `status` / `version` | 实现端健康与版本 |

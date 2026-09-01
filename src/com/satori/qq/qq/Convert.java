@@ -554,8 +554,17 @@ public final class Convert {
                     case 7: { // reply
                         Object rp = ref.get(e, "replyElement");
                         long seq = Ref.asLong(ref.get(rp, "replayMsgSeq"));
-                        seg(segs, "reply", "id", String.valueOf(seq));
-                        raw.append("[CQ:reply,id=").append(seq).append("]");
+                        // A quoted message must be addressed by its QQ NT msgId: msgSeq is only a
+                        // history cursor, and message.get / message.delete resolve by msgId. Fall
+                        // back to the in-process record for the seq, then to the seq itself.
+                        long quoted = ref.getLong(rp, "replayMsgId");
+                        if (quoted == 0) {
+                            MsgStore.Rec parent = store.findByPeerSeq(chatType, 0, peerUid, seq);
+                            if (parent != null) quoted = parent.msgId;
+                        }
+                        String rid = String.valueOf(quoted != 0 ? quoted : seq);
+                        seg(segs, "reply", "id", rid);
+                        raw.append("[CQ:reply,id=").append(rid).append("]");
                         break;
                     }
                     case 3: { // file

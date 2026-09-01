@@ -31,11 +31,17 @@ plugins:
 pm install -r -d build/SatoriQQ.apk
 ```
 
-克隆后下载 R8：
+克隆后下载 R8 与 org.json（都在 `libs/`，均被 gitignore）：
 
 ```sh
 curl -fsSL -o libs/r8.jar https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar
+curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/20250517/json-20250517.jar
 ```
+
+## 测试
+
+`./test.sh` 跑 JVM 单元测试，覆盖不碰 QQ 内核的纯逻辑部分。真机行为另见
+`tests/ws-health.js` 与 `scripts/` 下的现场脚本。
 
 ## 文档
 
@@ -43,8 +49,6 @@ curl -fsSL -o libs/r8.jar https://maven.google.com/com/android/tools/r8/8.9.35/r
 | --- | --- |
 | [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md) | 协议、方法与事件 |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 模块结构与 JNI |
-| [`docs/HANDOFF.md`](docs/HANDOFF.md) | 构建与本机环境 |
-| [`docs/STACK.md`](docs/STACK.md) | 反检测与换机 |
 | [`satori-qq.sample.json`](satori-qq.sample.json) | 配置项 |
 
 ## QQ 群

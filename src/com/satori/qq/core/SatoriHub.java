@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.15";
+    public static final String APP_VERSION = "0.8.9.16";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -653,6 +653,18 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "lucky-draw":
             case "lucky_draw":
                 return randomMember(params);
+            case "random-team":
+            case "random_team":
+            case "member.team":
+            case "group-team":
+            case "group_team":
+                return randomTeam(params);
+            case "group-anniversary":
+            case "group_anniversary":
+            case "group.anniversary":
+            case "member-anniversary":
+            case "member_anniversary":
+                return groupAnniversary(params);
             case "honor-display":
             case "honor_display":
             case "honor.display":
@@ -716,6 +728,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "message_context":
             case "message.context":
                 return messageContext(params);
+            case "message-search":
+            case "message_search":
+            case "message.search":
+                return messageSearch(params);
             case "qzone.create":
             case "qzone.publish":
                 return guarded("internal.qzone.publish", () -> qzonePublish(params));
@@ -857,9 +873,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("honor_display").put("group_extra").put("group_overview")
                         .put("group_member_search").put("contact_search")
                         .put("group_active").put("member_info").put("random_member")
+                        .put("random_team").put("group_anniversary")
                         .put("group_refresh").put("group_leave")
                         .put("group_file").put("get_forward").put("get_resource")
-                        .put("message_context")
+                        .put("message_context").put("message_search")
                         .put("dice").put("rps")
                         .put("qzone.publish").put("qzone.delete").put("qzone.list")
                         .put("qzone.clear").put("status").put("version")
@@ -872,7 +889,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("read_actions", new JSONArray()
                         .put("group_extra").put("group_overview").put("group_member_search")
                         .put("contact_search").put("group_active").put("member_info")
-                        .put("random_member").put("message_context")
+                        .put("random_member").put("random_team").put("group_anniversary")
+                        .put("message_context").put("message_search")
                         .put("get_forward").put("get_resource").put("qzone.list")
                         .put("status").put("version").put("capabilities"))
                 .put("write_actions", new JSONArray()
@@ -1105,6 +1123,112 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("data", data);
     }
 
+    /** Split an eligible member pool into uniformly shuffled, size-balanced teams. */
+    private JSONObject randomTeam(JSONObject p) throws Exception {
+        long groupId = guildIdOf(p);
+        int requested = Math.max(2, Math.min(20,
+                p.optInt("team_count", p.optInt("teams", 2))));
+        boolean excludeSelf = p.optBoolean("exclude_self", true);
+        boolean excludeManagers = p.optBoolean("exclude_managers", false);
+        int activeDays = Math.max(0, Math.min(3650, p.optInt("active_within_days", 0)));
+        String wantedRole = p.optString("role", "").trim().toLowerCase(java.util.Locale.ROOT);
+        java.util.Set<Long> selected = new java.util.HashSet<>();
+        JSONArray requestedUsers = p.optJSONArray("user_ids");
+        if (requestedUsers != null) {
+            for (int i = 0; i < requestedUsers.length(); i++) {
+                long id = parseId(String.valueOf(requestedUsers.opt(i)));
+                if (id != 0) selected.add(id);
+            }
+        }
+        long self = selfUin();
+        long now = System.currentTimeMillis() / 1000L;
+        JSONArray members = getGroupMemberList(groupId);
+        java.util.List<JSONObject> pool = new java.util.ArrayList<>();
+        for (int i = 0; i < members.length(); i++) {
+            JSONObject member = members.optJSONObject(i);
+            if (member == null) continue;
+            long uin = member.optLong("user_id", 0);
+            if (uin == 0 || (excludeSelf && uin == self)) continue;
+            if (!selected.isEmpty() && !selected.contains(uin)) continue;
+            String role = member.optString("role", "member");
+            if (!wantedRole.isEmpty() && !wantedRole.equals(role)) continue;
+            if (excludeManagers && ("owner".equals(role) || "admin".equals(role))) continue;
+            if (activeDays > 0) {
+                long last = member.optLong("last_sent_time", 0);
+                if (last <= 0 || now - last > (long) activeDays * 86400L) continue;
+            }
+            pool.add(member);
+        }
+        if (pool.size() < 2) throw new ApiError(1404, "fewer than two eligible members");
+        java.util.Collections.shuffle(pool, new java.security.SecureRandom());
+        int teamCount = Math.min(requested, pool.size());
+        JSONArray names = p.optJSONArray("names");
+        java.util.List<JSONArray> buckets = new java.util.ArrayList<>();
+        for (int i = 0; i < teamCount; i++) buckets.add(new JSONArray());
+        for (int i = 0; i < pool.size(); i++) {
+            JSONObject member = pool.get(i);
+            buckets.get(i % teamCount).put(memberToSatori(member)
+                    .put("role", member.optString("role", "member")));
+        }
+        JSONArray teams = new JSONArray();
+        for (int i = 0; i < teamCount; i++) {
+            String name = names == null ? "" : names.optString(i, "").trim();
+            if (name.isEmpty()) name = "Team " + (i + 1);
+            teams.put(new JSONObject().put("id", String.valueOf(i + 1))
+                    .put("name", name).put("size", buckets.get(i).length())
+                    .put("members", buckets.get(i)));
+        }
+        return new JSONObject().put("guild_id", String.valueOf(groupId))
+                .put("pool", pool.size()).put("team_count", teamCount).put("teams", teams);
+    }
+
+    /** Upcoming join anniversaries, calculated in the device's local calendar. */
+    private JSONObject groupAnniversary(JSONObject p) throws Exception {
+        long groupId = guildIdOf(p);
+        int days = Math.max(0, Math.min(366, p.optInt("days", 30)));
+        int minYears = Math.max(1, Math.min(100, p.optInt("min_years", 1)));
+        int limit = Math.max(1, Math.min(200, p.optInt("limit", 50)));
+        java.time.ZoneId zone = java.time.ZoneId.systemDefault();
+        java.time.LocalDate today = java.time.LocalDate.now(zone);
+        JSONArray members = getGroupMemberList(groupId);
+        java.util.List<JSONObject> rows = new java.util.ArrayList<>();
+        for (int i = 0; i < members.length(); i++) {
+            JSONObject member = members.optJSONObject(i);
+            if (member == null) continue;
+            long joined = member.optLong("join_time", 0);
+            if (joined <= 0) continue;
+            java.time.LocalDate joinDate = java.time.Instant.ofEpochSecond(joined)
+                    .atZone(zone).toLocalDate();
+            java.time.LocalDate anniversary = anniversaryInYear(joinDate, today.getYear());
+            if (anniversary.isBefore(today))
+                anniversary = anniversaryInYear(joinDate, today.getYear() + 1);
+            long until = java.time.temporal.ChronoUnit.DAYS.between(today, anniversary);
+            int years = anniversary.getYear() - joinDate.getYear();
+            if (until > days || years < minYears) continue;
+            long at = anniversary.atStartOfDay(zone).toInstant().toEpochMilli();
+            rows.add(memberToSatori(member)
+                    .put("join_date", joinDate.toString()).put("anniversary", anniversary.toString())
+                    .put("anniversary_at", at).put("days_until", until).put("years", years));
+        }
+        rows.sort((a, b) -> {
+            int byDay = Long.compare(a.optLong("days_until"), b.optLong("days_until"));
+            if (byDay != 0) return byDay;
+            return Integer.compare(b.optInt("years"), a.optInt("years"));
+        });
+        JSONArray data = new JSONArray();
+        for (int i = 0; i < rows.size() && i < limit; i++) data.put(rows.get(i));
+        return new JSONObject().put("guild_id", String.valueOf(groupId))
+                .put("timezone", zone.getId()).put("days", days)
+                .put("total", rows.size()).put("data", data);
+    }
+
+    /** Feb 29 anniversaries are observed on Feb 28 in non-leap years. */
+    static java.time.LocalDate anniversaryInYear(java.time.LocalDate joined, int year) {
+        int day = Math.min(joined.getDayOfMonth(),
+                java.time.YearMonth.of(year, joined.getMonth()).lengthOfMonth());
+        return java.time.LocalDate.of(year, joined.getMonth(), day);
+    }
+
     /** Search friends and groups using the local QQ core caches. */
     private JSONObject contactSearch(JSONObject p) throws Exception {
         String query = p.optString("query", p.optString("keyword", "")).trim()
@@ -1173,6 +1297,79 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             if (page.has("next")) out.put("next", page.optString("next"));
         } else out.put("after", new JSONArray());
         return out;
+    }
+
+    /** Upper bound on history pages one message_search may walk, independent of scan_limit. */
+    private static final int MAX_SEARCH_PAGES = 32;
+
+    /** Search a bounded slice of local QQ history without invoking QQ's global search service. */
+    private JSONObject messageSearch(JSONObject p) throws Exception {
+        String channelId = p.optString("channel_id", "");
+        if (channelId.isEmpty() || Codec.channelPeer(channelId) == 0)
+            throw new ApiError(1400, "missing or invalid channel_id");
+        String query = p.optString("query", p.optString("keyword", "")).trim()
+                .toLowerCase(java.util.Locale.ROOT);
+        long userId = parseId(p.optString("user_id", ""));
+        if (query.isEmpty() && userId == 0)
+            throw new ApiError(1400, "message_search requires query or user_id");
+        int limit = Math.max(1, Math.min(100, p.optInt("limit", 20)));
+        int scanLimit = Math.max(limit, Math.min(1000, p.optInt("scan_limit", 200)));
+        long since = normalizeEpochMs(p.optLong("since", 0));
+        long until = normalizeEpochMs(p.optLong("until", 0));
+        long cursor = parseLongQuiet(p.optString("before", p.optString("cursor", "0")));
+        JSONArray data = new JSONArray();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        int scanned = 0, matched = 0, pages = 0;
+        boolean reachedSince = false;
+        while (scanned < scanLimit && !reachedSince && pages < MAX_SEARCH_PAGES) {
+            pages++;
+            int pageSize = Math.min(100, scanLimit - scanned);
+            JSONObject req = new JSONObject().put("channel_id", channelId)
+                    .put("direction", "before").put("order", "desc").put("limit", pageSize);
+            if (cursor > 0) req.put("next", String.valueOf(cursor));
+            JSONObject page = satoriMsgList(req);
+            JSONArray messages = page.optJSONArray("data");
+            if (messages == null || messages.length() == 0) { cursor = 0; break; }
+            for (int i = 0; i < messages.length(); i++) {
+                JSONObject message = messages.optJSONObject(i);
+                if (message == null) continue;
+                String id = message.optString("id", "");
+                if (!id.isEmpty() && !seen.add(id)) continue;
+                scanned++;
+                long created = message.optLong("created_at", 0);
+                if (since > 0 && created > 0 && created < since) {
+                    reachedSince = true;
+                    continue;
+                }
+                if (until > 0 && created > until) continue;
+                if (userId != 0 && messageUserId(message) != userId) continue;
+                if (!query.isEmpty() && !containsFold(message.optString("content", ""), query))
+                    continue;
+                matched++;
+                if (data.length() < limit) data.put(message);
+            }
+            // QQ 的历史接口常常少于请求条数就返回，页短不代表到底：只认游标是否推进。
+            long next = parseLongQuiet(page.optString("prev", page.optString("next", "0")));
+            if (next == 0 || next == cursor) {
+                cursor = 0;
+                break;
+            }
+            cursor = next;
+        }
+        JSONObject out = new JSONObject().put("channel_id", channelId).put("query", query)
+                .put("scanned", scanned).put("matched", matched)
+                .put("truncated", matched > data.length()).put("data", data);
+        if (cursor > 0 && !reachedSince) out.put("next", String.valueOf(cursor));
+        return out;
+    }
+
+    static long messageUserId(JSONObject message) {
+        JSONObject user = message == null ? null : message.optJSONObject("user");
+        return user == null ? 0 : parseLongQuiet(user.optString("id", "0"));
+    }
+
+    static long normalizeEpochMs(long value) {
+        return value > 0 && value < 10_000_000_000L ? value * 1000L : value;
     }
 
     private static boolean containsFold(String value, String lowerQuery) {
@@ -1636,6 +1833,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         boolean group = !Codec.isPrivateChannel(channelId);
         long peer = Codec.channelPeer(channelId);
         if (peer == 0) return null;
+        int chatType = group ? QQClient.CT_GROUP : QQClient.CT_C2C;
+        // Quotes emitted before the msgId fix carry a msgSeq. Resolve those inside this channel
+        // rather than letting them fall through to an unrelated legacy store id. A real msgId is
+        // 19 digits and never collides with a seq, and this runs only after resolve() missed.
+        MsgStore.Rec bySeq = store.findByPeerSeq(chatType, peer, null, msgId);
+        if (bySeq != null) return bySeq;
         try {
             String peerUid = group ? String.valueOf(peer) : uidFor(0, peer);
             Object rec = qq.fetchRecord(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peerUid, msgId);
@@ -4309,8 +4512,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("good", online)
                 .put("online_since_epoch_ms", onlineSinceMs)
                 .put("outbound_guard", outboundGuard.stats())
-                .put("fekit_attach", AntiDetect.fekitAttachStats(cfg.observeFekitAttach))
-                .put("env_report", AntiDetect.envReportStats(cfg.blockO3Report));
+                .put("fekit_attach", AntiDetect.fekitAttachStats(
+                        cfg.antiDetect && cfg.observeFekitAttach))
+                .put("env_report", AntiDetect.envReportStats(
+                        cfg.antiDetect && cfg.blockO3Report));
     }
 
     private JSONObject versionInfo() throws Exception {

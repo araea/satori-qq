@@ -40,6 +40,7 @@ public final class AntiDetectStatsTest {
         JSONObject hooks = env.getJSONObject("hooks");
         check(hooks.has("channel_send") && hooks.has("channel_in")
                 && hooks.has("msf_send") && hooks.has("msf_in"), "hook counters");
+        check(env.has("intercepts_ready"), "intercept readiness");
         check("main".equals(env.getString("process")), "process key");
         check(AntiDetect.isDeniedPath("/data/adb/magisk"), "adb magisk");
         check(AntiDetect.isDeniedPath("/data/./adb/modules/foo"), "dot-slash adb");

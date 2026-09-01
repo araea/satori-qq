@@ -7,7 +7,7 @@ PKG=com.satori.qq
 ORG_REPO="Xposed-Modules-Repo/$PKG"
 GH=/data/data/com.termux/files/usr/bin/gh
 APK="$ROOT/build/SatoriQQ.apk"
-TAG="50-0.8.9.15"
+TAG="51-0.8.9.16"
 
 if ! "$GH" api "repos/$ORG_REPO" --jq .name >/dev/null 2>&1; then
   echo "Marketplace repo not ready yet: $ORG_REPO"
@@ -31,8 +31,8 @@ fi
 
 "$GH" release create "$TAG" "$APK" \
   --repo "$ORG_REPO" \
-  --title "0.8.9.15" \
-  --notes-file "$MP/CHANGELOG-0.8.9.15.md" 2>/dev/null || \
+  --title "0.8.9.16" \
+  --notes-file "$MP/CHANGELOG-0.8.9.16.md" 2>/dev/null || \
   echo "Release $TAG may already exist"
 
 echo "Published to https://github.com/$ORG_REPO"

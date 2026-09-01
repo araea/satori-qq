@@ -52,6 +52,12 @@ public final class MsgStoreTest {
         java.util.List<MsgStore.Rec> listed = store.listPeer(2, 928613831L, "928613831", 10);
         check(listed.size() == 2 && listed.get(0).msgId == 11 && listed.get(1).msgId == 12, "listPeer");
 
+        // 引用元素兜底靠 seq 反查 msgId：同频道命中，跨频道和零 seq 必须落空。
+        check(store.findByPeerSeq(2, 928613831L, null, 2).msgId == 12, "findByPeerSeq by uin");
+        check(store.findByPeerSeq(2, 0, "928613831", 1).msgId == 11, "findByPeerSeq by uid");
+        check(store.findByPeerSeq(2, 928613831L, null, 3) == null, "seq from another peer");
+        check(store.findByPeerSeq(2, 928613831L, null, 0) == null, "zero seq");
+
         System.out.println("MsgStoreTest: ok");
     }
 

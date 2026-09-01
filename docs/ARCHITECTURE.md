@@ -31,4 +31,4 @@ native/         libmapshide.so
 - 语音：`SilkCodecWrapper.encode`（本机 VideoElement **无** fileWidth/fileHeight）
 - QSec：`getSign(String, byte[])` 不动；`detectMethod` / `getXpsInfo` 可中和；`getFeKitAttach` 只计数；`trpc.o3.report` 可丢（不要动 `ecdh_access`）
 
-升版本清单：[`STACK.md`](STACK.md#qq-升版本)。
+升级 QQ 后需重新核验上述 JNI 类、方法签名、元素字段和 QSec 命令白名单。

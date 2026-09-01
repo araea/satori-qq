@@ -45,6 +45,8 @@ public final class AntiDetect {
     private static final AtomicLong ENV_REPORT_DROPPED = new AtomicLong();
     private static final ConcurrentHashMap<String, AtomicLong> ENV_REPORT_BY_CMD =
             new ConcurrentHashMap<>();
+    private static final AtomicLong ENV_LAST_PERSIST_MS = new AtomicLong();
+    private static final long ENV_PERSIST_INTERVAL_MS = 5000L;
     private static volatile int hookChannelSend;
     private static volatile int hookChannelIn;
     private static volatile int hookMsfSend;
@@ -84,6 +86,10 @@ public final class AntiDetect {
         }
         hookAdbSettings();
         hookAdbProperties();
+        // Publish a process-local installation snapshot even when no report has been observed.
+        // This lets the main-process status endpoint detect stale/missing MSF coverage after a
+        // QQ upgrade, without adding another probe hook or touching the signing path.
+        persistEnvReport(true);
     }
 
     /** QSec / ChannelManager environment reports. Never matches ecdh_access (login). */
@@ -100,7 +106,7 @@ public final class AntiDetect {
         String key = cmd == null || cmd.isEmpty() ? "empty" : cmd;
         if (key.length() > 96) key = key.substring(0, 96);
         ENV_REPORT_BY_CMD.computeIfAbsent(key, k -> new AtomicLong()).incrementAndGet();
-        persistEnvReport();
+        persistEnvReport(false);
     }
 
     public static JSONObject envReportStats(boolean enabled) {
@@ -115,12 +121,8 @@ public final class AntiDetect {
                 if (count != null) commands.put(key, count.get());
             }
             out.put("commands", commands);
-            JSONObject hooks = new JSONObject();
-            hooks.put("channel_send", hookChannelSend);
-            hooks.put("channel_in", hookChannelIn);
-            hooks.put("msf_send", hookMsfSend);
-            hooks.put("msf_in", hookMsfIn);
-            out.put("hooks", hooks);
+            out.put("hooks", hookStats());
+            out.put("intercepts_ready", !enabled || interceptsReady(envProcessKey()));
             JSONObject msf = readEnvFile("msf");
             if (msf != null) out.put("msf", msf);
             JSONObject maps = readEnvFile("maps_main");
@@ -141,18 +143,28 @@ public final class AntiDetect {
         return "main";
     }
 
-    private static void persistEnvReport() {
+    private static synchronized void persistEnvReport(boolean force) {
         try {
+            long now = System.currentTimeMillis();
+            long previous = ENV_LAST_PERSIST_MS.get();
+            if (!force && previous != 0 && now - previous < ENV_PERSIST_INTERVAL_MS) return;
             File dir = new File(ENV_DIR);
             if (!dir.isDirectory()) return;
-            JSONObject o = new JSONObject();
-            o.put("dropped", ENV_REPORT_DROPPED.get());
+            ENV_LAST_PERSIST_MS.set(now);
+            String process = envProcessKey();
+            JSONObject o = new JSONObject()
+                    .put("process", process)
+                    .put("pid", android.os.Process.myPid())
+                    .put("updated_at_epoch_ms", now)
+                    .put("dropped", ENV_REPORT_DROPPED.get())
+                    .put("intercepts_ready", interceptsReady(process));
             JSONObject commands = new JSONObject();
             for (String key : ENV_REPORT_BY_CMD.keySet()) {
                 AtomicLong count = ENV_REPORT_BY_CMD.get(key);
                 if (count != null) commands.put(key, count.get());
             }
             o.put("commands", commands);
+            o.put("hooks", hookStats());
             File f = new File(dir, "qk_env_" + envProcessKey() + ".json");
             File tmp = new File(f.getPath() + ".tmp");
             FileOutputStream out = new FileOutputStream(tmp);
@@ -165,6 +177,20 @@ public final class AntiDetect {
                 tmp.delete();
             }
         } catch (Throwable ignore) {}
+    }
+
+    private static JSONObject hookStats() throws Exception {
+        return new JSONObject()
+                .put("channel_send", hookChannelSend)
+                .put("channel_in", hookChannelIn)
+                .put("msf_send", hookMsfSend)
+                .put("msf_in", hookMsfIn);
+    }
+
+    private static boolean interceptsReady(String process) {
+        return "msf".equals(process)
+                ? hookMsfSend > 0 && hookMsfIn > 0
+                : hookChannelSend > 0 && hookChannelIn > 0;
     }
 
     private static JSONObject readEnvFile(String key) {
@@ -757,7 +783,7 @@ public final class AntiDetect {
                         }
                         out.put(e.getKey(), e.getValue());
                     }
-                    if (changed) p.setResult(out);
+                    if (changed) p.setResult(java.util.Collections.unmodifiableMap(out));
                 }
             });
             L.i("AntiDetect: getenv hide");

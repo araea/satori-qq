@@ -31,6 +31,9 @@ public final class Cfg {
     public volatile boolean manualSelfMessages = true;
     /** Empty uses the stable, non-QQ id "qq-client:{selfUin}". */
     public volatile String manualSelfUserId = "";
+    /** Merge-forward strategy: "auto" (native first, fake fallback), "native" (self-chat
+     *  scaffolding only), "fake" (SsoSendLongMsg card only — QQNT viewers may fail to open). */
+    public volatile String forwardMode = "auto";
 
     private static final String[] PATHS = new String[]{
         // QQ can always read its own external files dir under scoped storage
@@ -73,6 +76,7 @@ public final class Cfg {
                 c.outboundCircuitOpenMs = bounded(o.optInt("outbound_circuit_open_ms", c.outboundCircuitOpenMs), 1000, 1800000);
                 c.manualSelfMessages = o.optBoolean("manual_self_messages", c.manualSelfMessages);
                 c.manualSelfUserId = o.optString("manual_self_user_id", c.manualSelfUserId).trim();
+                c.forwardMode = normalizeForwardMode(o.optString("forward_mode", c.forwardMode));
                 L.i("Config loaded from " + p + " (port=" + c.port + ", auth=" + (c.token.isEmpty()?"off":"on") + ")");
                 return c;
             } catch (Throwable t) {
@@ -85,5 +89,10 @@ public final class Cfg {
 
     private static int bounded(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private static String normalizeForwardMode(String raw) {
+        String v = raw == null ? "" : raw.trim().toLowerCase(java.util.Locale.ROOT);
+        return "native".equals(v) || "fake".equals(v) ? v : "auto";
     }
 }

@@ -14,6 +14,99 @@ import java.util.List;
 public final class Codec {
     private Codec() {}
 
+    /**
+     * Legacy CQ text -> internal segments.
+     *
+     * <p>History lookups can only reach a text snapshot of a message (the kernel keeps no
+     * {@code msgRecord} for it), and that snapshot is CQ-coded text.  Satori requires
+     * {@code Message.content} to be a standard element string, so the snapshot has to be parsed
+     * back into segments before {@link #fromSegments} turns it into elements.  Plain text is
+     * returned as a single text segment, which also gets it XML-escaped instead of being spliced
+     * into the element string raw.</p>
+     */
+    public static JSONArray cqToSegments(String text) {
+        JSONArray segs = new JSONArray();
+        if (text == null || text.isEmpty()) return segs;
+        // A json card carries commas and brackets inside its payload; when it is the whole
+        // message, take everything up to the last bracket instead of the first.
+        java.util.regex.Matcher whole = CQ_JSON_ONLY.matcher(text);
+        if (whole.matches()) {
+            JSONObject d = new JSONObject();
+            try { d.put("data", unescapeCq(whole.group(1))); } catch (Exception ignore) {}
+            segObj(segs, "json", d);
+            return segs;
+        }
+        java.util.regex.Matcher m = CQ_CODE.matcher(text);
+        int last = 0;
+        while (m.find()) {
+            if (m.start() > last) segText(segs, text.substring(last, m.start()));
+            JSONObject seg = cqSegment(m.group(1), m.group(2));
+            if (seg != null) segs.put(seg); else segText(segs, m.group(0));
+            last = m.end();
+        }
+        if (last < text.length()) segText(segs, text.substring(last));
+        return segs;
+    }
+
+    /** CQ text -> Satori element string. */
+    public static String fromCqText(String text, String assetBase) {
+        if (text == null || text.isEmpty()) return "";
+        return fromSegments(cqToSegments(text), assetBase);
+    }
+
+    private static final java.util.regex.Pattern CQ_CODE =
+            java.util.regex.Pattern.compile("\\[CQ:([A-Za-z][A-Za-z0-9_\\-]*)((?:,[^\\]]*)?)\\]");
+    private static final java.util.regex.Pattern CQ_JSON_ONLY =
+            java.util.regex.Pattern.compile("\\[CQ:(?:json|lightapp),data=(.*)\\]", java.util.regex.Pattern.DOTALL);
+    /** Params are separated by commas; a comma inside a value is not followed by "key=". */
+    private static final java.util.regex.Pattern CQ_PARAM_SPLIT =
+            java.util.regex.Pattern.compile(",(?=[A-Za-z_][A-Za-z0-9_]*=)");
+
+    /** Known CQ types map onto the same segment shapes {@code Convert} emits. */
+    private static JSONObject cqSegment(String type, String params) {
+        JSONObject d = new JSONObject();
+        if (params != null && params.startsWith(",")) {
+            for (String pair : CQ_PARAM_SPLIT.split(params.substring(1))) {
+                int eq = pair.indexOf(61);
+                if (eq <= 0) continue;
+                try { d.put(pair.substring(0, eq).trim(), unescapeCq(pair.substring(eq + 1))); }
+                catch (Exception ignore) {}
+            }
+        }
+        switch (type) {
+            case "at": case "face": case "image": case "record": case "video": case "file":
+            case "reply": case "json": case "lightapp": case "mface": case "poke": case "forward": {
+                JSONObject seg = new JSONObject();
+                try {
+                    seg.put("type", "lightapp".equals(type) ? "json" : type);
+                    seg.put("data", d);
+                } catch (Exception ignore) { return null; }
+                return seg;
+            }
+            default:
+                return null;
+        }
+    }
+
+    private static void segText(JSONArray segs, String text) {
+        if (text == null || text.isEmpty()) return;
+        JSONObject d = new JSONObject();
+        try { d.put("text", unescapeCq(text)); } catch (Exception ignore) {}
+        segObj(segs, "text", d);
+    }
+
+    private static void segObj(JSONArray segs, String type, JSONObject data) {
+        try { segs.put(new JSONObject().put("type", type).put("data", data)); }
+        catch (Exception ignore) {}
+    }
+
+    /** CQ escaping: &amp;#91; &amp;#93; &amp;#44; &amp;amp; */
+    private static String unescapeCq(String raw) {
+        if (raw == null || raw.indexOf(38) < 0) return raw == null ? "" : raw;
+        return raw.replace("&#91;", "[").replace("&#93;", "]")
+                .replace("&#44;", ",").replace("&amp;", "&");
+    }
+
     public static JSONArray toSegments(String content) {
         return toSegments(Elements.parse(content));
     }
@@ -468,7 +561,7 @@ public final class Codec {
         String card = sender == null ? "" : sender.optString("card", "");
         String display = first(nick, card);
         String content = fromSegments(ob.optJSONArray("message"), assetBase);
-        if (content.isEmpty()) content = ob.optString("raw_message", "");
+        if (content.isEmpty()) content = fromCqText(ob.optString("raw_message", ""), assetBase);
         if (content.isEmpty() && userId == 0) return null;
         String gname = group ? ob.optString("group_name", "") : "";
         ev.put("type", "message-created");

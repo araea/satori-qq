@@ -21,7 +21,7 @@ QQ 无消息编辑、多频道、自定义群角色或清空他人表态时，�
 | 方法 | 状态 | 对应能力 |
 | --- | --- | --- |
 | `login.get` | ok | 登录号、在线状态、`features` |
-| `message.create` | ok | 发送；标准 `<message>` 可拆成多条，`<message forward>` 走合并转发 |
+| `message.create` | ok | 发送；标准 `<message>` 可拆成多条，`<message forward>` 走合并转发（`forward_mode`：`auto` 原生优先 / `native` 自聊脚手架 / `fake` SsoSendLongMsg 卡片；QQNT 9.3.55 实测只有原生卡片能点开）。原生卡片返回真实 QQ `msgId`，可被 `message.delete` 撤回 |
 | `message.get` | ok | 按 QQ `msgId` 字符串取一条；也认旧进程内 store id |
 | `message.list` | ok | 双向分页；`before` / `after` / `around`、`asc` / `desc`，游标用 `message_seq`；`message.id` / `user.id` 与实时事件一致 |
 | `message.delete` | ok | 撤回；`message_id` 为 QQ `msgId` |

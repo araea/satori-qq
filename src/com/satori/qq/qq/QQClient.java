@@ -845,6 +845,17 @@ public final class QQClient {
     /** Native merge-forward of already-sent messages. src and dest are usually the same contact. */
     public SendResult multiForward(int chatType, String peerUid, ArrayList<Long> msgIds,
                                    ArrayList<String> names) {
+        return multiForward(chatType, peerUid, chatType, peerUid, msgIds, names);
+    }
+
+    /**
+     * Native merge-forward where the source messages live in a different chat than the
+     * destination (e.g. scaffolding messages parked in the bot's own self-chat, forwarded
+     * into a group). Mirrors the manual QQ flow: select messages in chat A, forward to chat B.
+     */
+    public SendResult multiForward(int srcChatType, String srcPeerUid, int dstChatType,
+                                   String dstPeerUid, ArrayList<Long> msgIds,
+                                   ArrayList<String> names) {
         SendResult r = new SendResult();
         Object msgService = getMsgService();
         if (msgService == null) { r.msg = "kernel session not ready"; return r; }
@@ -858,7 +869,8 @@ public final class QQClient {
                         ? names.get(i) : "";
                 infos.add(ref.neu(infoCls, id, name));
             }
-            Object contact = ref.neu(CONTACT, chatType, peerUid, "");
+            Object src = ref.neu(CONTACT, srcChatType, srcPeerUid, "");
+            Object dst = ref.neu(CONTACT, dstChatType, dstPeerUid, "");
             final CountDownLatch latch = new CountDownLatch(1);
             final AtomicInteger code = new AtomicInteger(-1);
             final String[] wording = new String[]{""};
@@ -871,7 +883,7 @@ public final class QQClient {
                         }
                         return null;
                     });
-            ref.call(msgService, "multiForwardMsg", infos, contact, contact, cb);
+            ref.call(msgService, "multiForwardMsg", infos, src, dst, cb);
             if (latch.await(20, TimeUnit.SECONDS)) {
                 r.code = code.get();
                 r.msg = wording[0];

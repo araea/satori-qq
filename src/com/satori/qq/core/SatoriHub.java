@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.16";
+    public static final String APP_VERSION = "0.8.9.17";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -1482,7 +1482,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         JSONObject msg = ev == null ? null : ev.optJSONObject("message");
         if (msg == null) return new JSONObject();
         if (msg.optString("content", "").isEmpty()) {
-            String text = snapshotText(msg.optString("id", ""), rec);
+            String text = snapshotContent(msg.optString("id", ""), rec);
             if (!text.isEmpty()) msg.put("content", text);
         }
         if (rec.msgTime > 0) msg.put("created_at", rec.msgTime * 1000L);
@@ -1542,9 +1542,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 if (src == null) continue;
                 JSONObject msg = copyJson(src);
                 if (msg.optString("content", "").isEmpty() && !row.text.isEmpty())
-                    msg.put("content", row.text);
+                    msg.put("content", Codec.fromCqText(row.text, assetBase()));
                 if (msg.optString("content", "").isEmpty()) {
-                    String t = snapshotText(String.valueOf(row.msgId), store.getByMsgId(row.msgId));
+                    String t = snapshotContent(String.valueOf(row.msgId), store.getByMsgId(row.msgId));
                     if (!t.isEmpty()) msg.put("content", t);
                 }
                 if (row.time > 0) msg.put("created_at", row.time * 1000L);
@@ -1950,16 +1950,42 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     /**
-     * Merge-forward: Android QQNT only opens cards created by kernel {@code multiForwardMsg}
-     * from real local messages. Fake SsoSendLongMsg + type-16/13/ark is fallback only.
-     * Exactly one of groupId/userId is non-zero.
+     * Merge-forward. Two deliverable paths, selected by {@code forward_mode}:
+     * <ul>
+     *   <li><b>native</b> — inner messages are sent to the bot's own self-chat (never the
+     *       destination), then packed via kernel {@code multiForwardMsg}. Verified on QQNT
+     *       9.3.55: the group sees only one card and it opens normally.</li>
+     *   <li><b>fake</b> — nodes are uploaded via {@code SsoSendLongMsg} and delivered as a
+     *       type-16/13/ark card. Nothing lands in any chat, but on QQNT 9.3.55 the card is a
+     *       dead end: it renders and cannot be opened.</li>
+     * </ul>
+     * {@code auto} (default) tries native first and only falls back to fake when native
+     * fails outright; {@code native}/{@code fake} pin one path for testing. Exactly one of groupId/userId is non-zero.
      */
     private JSONObject sendForward(long groupId, long userId, Object messages) throws Exception {
         if (groupId == 0 && userId == 0) throw new ApiError(1400, "missing group_id/user_id");
         List<LongMsg.Node> nodes = parseForwardNodes(messages, groupId != 0);
         if (nodes.isEmpty()) throw new ApiError(1400, "empty forward messages");
+        String mode = cfg.forwardMode == null ? "auto" : cfg.forwardMode;
+        if ("fake".equals(mode)) return sendForwardFake(groupId, userId, nodes);
         JSONObject nativeSent = sendForwardNative(groupId, userId, messages);
         if (nativeSent != null) return nativeSent;
+        if ("native".equals(mode))
+            throw new ApiError(1500, "native forward failed (self-chat scaffolding); see logs");
+        return sendForwardFake(groupId, userId, nodes);
+    }
+
+    /**
+     * Fake path: upload nodes to the long-msg store, then send a card referencing the resId.
+     *
+     * <p>Confirmed unusable on QQNT 9.3.55 (2026-09-02, group 280183116): the card renders in
+     * the chat but tapping it fails to open — the viewer resolves content via kernel
+     * {@code getMultiMsg(msgId)}, which only works for cards built by {@code multiForwardMsg}
+     * from real local messages. Kept as an explicit {@code forward_mode=fake} opt-in for
+     * re-testing on other clients; {@code auto} prefers the native path.</p>
+     */
+    private JSONObject sendForwardFake(long groupId, long userId, List<LongMsg.Node> nodes)
+            throws Exception {
         String selfUid = "";
         if (groupId == 0) {
             selfUid = qq.resolveUid(selfUin());
@@ -1988,18 +2014,28 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     /**
      * Android QQNT opens merge-forward via kernel getMultiMsg(msgId). That only works for cards
      * created by {@code multiForwardMsg} from real local messages, not fake SsoSendLongMsg ark/16.
+     *
+     * <p>The inner scaffolding messages are sent to the bot's own self-chat, never to the
+     * destination: multiForwardMsg only needs their msgIds, and this way the group never sees
+     * them — not even as recallable flashes. They simply stay in the self-chat as private
+     * by-products of building the card.</p>
      */
     private JSONObject sendForwardNative(long groupId, long userId, Object messages)
             throws Exception {
-        int chatType = groupId != 0 ? QQClient.CT_GROUP : QQClient.CT_C2C;
-        String peer;
+        int dstChatType = groupId != 0 ? QQClient.CT_GROUP : QQClient.CT_C2C;
+        String dstPeer;
         if (groupId != 0) {
-            peer = String.valueOf(groupId);
+            dstPeer = String.valueOf(groupId);
         } else {
-            peer = store.uidOf(userId);
-            if (peer == null || peer.isEmpty()) peer = qq.resolveUid(userId);
-            if (peer != null && !peer.isEmpty()) store.learnUid(userId, peer);
-            if (peer == null || peer.isEmpty()) return null;
+            dstPeer = store.uidOf(userId);
+            if (dstPeer == null || dstPeer.isEmpty()) dstPeer = qq.resolveUid(userId);
+            if (dstPeer != null && !dstPeer.isEmpty()) store.learnUid(userId, dstPeer);
+            if (dstPeer == null || dstPeer.isEmpty()) return null;
+        }
+        String selfUid = qq.resolveUid(selfUin());
+        if (selfUid == null || selfUid.isEmpty()) {
+            L.e("native forward: cannot resolve self uid", null);
+            return null;
         }
         java.util.ArrayList<Long> ids = new java.util.ArrayList<>();
         java.util.ArrayList<String> names = new java.util.ArrayList<>();
@@ -2010,9 +2046,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             if (d == null) continue;
             Object content = d.opt("content");
             if (content == null) content = "";
-            java.util.ArrayList<Object> els = conv.toElements(content, chatType);
+            // Elements are built for the self-chat they land in (C2C), not the destination.
+            java.util.ArrayList<Object> els = conv.toElements(content, QQClient.CT_C2C);
             if (els == null || els.isEmpty()) continue;
-            QQClient.SendResult sr = sendTracked(chatType, peer, els);
+            QQClient.SendResult sr = sendTracked(QQClient.CT_C2C, selfUid, els);
             if (sr.code != 0 || sr.msgId == 0) {
                 L.e("native forward inner send failed code=" + sr.code + " " + sr.msg, null);
                 return null;
@@ -2020,11 +2057,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             ids.add(sr.msgId);
             String name = d.optString("nickname", d.optString("name", ""));
             names.add(name);
-            afterSend(sr, chatType, groupId != 0 ? groupId : userId,
-                    groupId != 0 ? String.valueOf(groupId) : peer);
+            afterSend(sr, QQClient.CT_C2C, selfUin(), selfUid);
         }
         if (ids.isEmpty()) return null;
-        QQClient.SendResult fw = qq.multiForward(chatType, peer, ids, names);
+        // Anything the destination chat already had is older than this card.
+        long baselineSeq = newestMsgSeq(dstChatType, dstPeer);
+        QQClient.SendResult fw = qq.multiForward(QQClient.CT_C2C, selfUid, dstChatType, dstPeer,
+                ids, names);
         if (fw.code != 0) {
             L.e("multiForwardMsg failed code=" + fw.code + " " + fw.msg, null);
             return null;
@@ -2032,60 +2071,137 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         JSONObject found = null;
         for (int attempt = 0; attempt < 10 && found == null; attempt++) {
             try { Thread.sleep(attempt == 0 ? 800 : 500); } catch (InterruptedException ignore) {}
-            found = findNativeForward(chatType, peer, groupId, userId, ids);
+            found = findNativeForward(dstChatType, dstPeer, groupId, userId, ids, baselineSeq);
         }
         if (found != null) return found;
         L.e("multiForward card not in history yet inners=" + ids.size(), null);
         return new JSONObject().put("native_forward", true).put("message_id", 0);
     }
 
-    /** Newest merge-forward in history that is not one of the inner scaffolding msgIds. */
+    /**
+     * Newest merge-forward in the destination chat. Preferred match is a record that parsed
+     * into a {@code forward} segment; when the kernel stored the card without one, the newest
+     * own message past {@code baselineSeq} is taken instead — the card has to be registered
+     * either way, because without a stored message id it cannot be recalled.
+     */
     private JSONObject findNativeForward(int chatType, String peer, long groupId, long userId,
-                                         java.util.ArrayList<Long> innerIds) {
-        QQClient.MsgListResult hist = qq.getMsgs(chatType, peer, 0, 20);
+                                         java.util.ArrayList<Long> innerIds, long baselineSeq)
+            throws Exception {
+        // Merge-forward cards are authored by self and may only surface through the DB/AIO
+        // caches, not the plain getMsgsIncludeSelf view. Reuse getHistory (the same query
+        // message.list relies on) so the freshly sent card is found reliably.
+        QQClient.MsgListResult hist = qq.getHistory(chatType, peer, 0, 20, true);
         if (hist.records == null) return null;
+        // Prefer a record whose elements are a merge-forward (type 16) or struct long msg (13);
+        // fall back to the newest qualifying record so a card we can't structurally detect is
+        // still registered and therefore recallable.
+        Object bestRec = null; long bestId = 0; long bestSeq = 0; JSONObject bestData = null;
         for (int i = hist.records.size() - 1; i >= 0; i--) {
             Object rec = hist.records.get(i);
-            long msgId = 0;
-            try { msgId = Ref.asLong(qq.ref.get(rec, "msgId")); } catch (Throwable ignore) {}
-            if (msgId != 0 && innerIds.contains(msgId)) continue;
-            // self=0: own cards must not be dropped (live listener still skips self).
+            long msgId = recordId(rec);
+            if (msgId == 0 || innerIds.contains(msgId)) continue;
+            long seq = recordSeq(rec);
+            if (baselineSeq > 0 && seq <= baselineSeq) continue;
+            if (isForwardRecord(rec)) {
+                JSONObject data = extractForwardData(rec); // best-effort, may be null
+                return registerForwardCard(rec, msgId, seq, chatType, groupId, userId, peer, data);
+            }
+            if (bestRec == null || seq > bestSeq) {
+                bestRec = rec; bestId = msgId; bestSeq = seq;
+            }
+        }
+        if (bestRec != null)
+            return registerForwardCard(bestRec, bestId, bestSeq, chatType, groupId, userId, peer, null);
+        return null;
+    }
+
+    /** msgId/msgSeq of a history record, or 0 when the kernel record cannot be unwrapped. */
+    private long recordSeq(Object rec) {
+        Object inner = Convert.unwrapRecord(rec);
+        if (inner == null) return 0;
+        try { return qq.ref.getLong(inner, "msgSeq"); } catch (Throwable ignore) { return 0; }
+    }
+
+    private long recordId(Object rec) {
+        Object inner = Convert.unwrapRecord(rec);
+        if (inner == null) return 0;
+        try { return qq.ref.getLong(inner, "msgId"); } catch (Throwable ignore) { return 0; }
+    }
+
+    /** True when a history record's elements are a merge-forward (16) or struct long msg (13). */
+    private boolean isForwardRecord(Object rec) {
+        Object inner = Convert.unwrapRecord(rec);
+        if (inner == null) return false;
+        try {
+            Object els = qq.ref.get(inner, "elements");
+            if (!(els instanceof java.util.List)) return false;
+            for (Object e : (java.util.List<?>) els) {
+                if (e == null) continue;
+                int t = qq.ref.asInt(qq.ref.get(e, "elementType"));
+                if (t == 16 || t == 13) return true;
+            }
+        } catch (Throwable ignore) {}
+        return false;
+    }
+
+    /** Best-effort forward-segment data (for res_id); null when the record can't be parsed. */
+    private JSONObject extractForwardData(Object rec) {
+        try {
             JSONObject ev = conv.recordToEvent(rec, 0);
-            if (ev == null) continue;
+            if (ev == null) return null;
             JSONArray msg = ev.optJSONArray("message");
-            if (msg == null) continue;
-            JSONObject data = null;
+            if (msg == null) return null;
             for (int j = 0; j < msg.length(); j++) {
                 JSONObject s = msg.optJSONObject(j);
-                if (s != null && "forward".equals(s.optString("type"))) {
-                    data = s.optJSONObject("data");
-                    break;
-                }
+                if (s != null && "forward".equals(s.optString("type")))
+                    return s.optJSONObject("data");
             }
-            if (data == null) continue;
-            MsgStore.Rec stored = new MsgStore.Rec();
-            stored.chatType = chatType;
-            stored.peerUin = groupId != 0 ? groupId : userId;
-            stored.peerUid = groupId != 0 ? "" : peer;
-            stored.msgId = msgId;
-            stored.senderUin = selfUin();
-            stored.msgRecord = rec;
-            int obId = store.put(stored);
-            JSONObject out;
-            try {
-                out = new JSONObject().put("message_id", obId).put("native_forward", true);
-                if (data.has("id") && !data.optString("id").isEmpty()) {
-                    out.put("res_id", data.optString("id")).put("forward_id", data.optString("id"));
-                }
-                if (data.has("filename")) out.put("filename", data.optString("filename"));
-                if (data.has("element_type")) out.put("element_type", data.optInt("element_type"));
-            } catch (Exception e) {
-                return null;
-            }
-            if (msgId != 0) qq.prefetchForward(chatType, peer, msgId);
-            return out;
-        }
+        } catch (Throwable ignore) {}
         return null;
+    }
+
+    /** Newest msgSeq in a chat; the baseline for spotting messages that arrive later. */
+    private long newestMsgSeq(int chatType, String peer) {
+        // Include self: the merge-forward card is self-authored and must count toward baseline.
+        // getHistory mirrors message.list so it sees the card even when plain getMsgs would not.
+        QQClient.MsgListResult hist = qq.getHistory(chatType, peer, 0, 5, true);
+        if (hist.records == null) return 0;
+        long max = 0;
+        for (Object rec : hist.records) {
+            long seq = recordSeq(rec);
+            if (seq > max) max = seq;
+        }
+        return max;
+    }
+
+    /**
+     * Store the card so it resolves like any other message. The returned id is the QQ msgId,
+     * which is what {@code message.delete} and {@code message.get} accept.
+     */
+    private JSONObject registerForwardCard(Object rec, long msgId, long seq, int chatType,
+                                           long groupId, long userId, String peer,
+                                           JSONObject data) throws Exception {
+        MsgStore.Rec stored = new MsgStore.Rec();
+        stored.chatType = chatType;
+        stored.peerUin = groupId != 0 ? groupId : userId;
+        stored.peerUid = groupId != 0 ? "" : peer;
+        stored.msgId = msgId;
+        stored.msgSeq = seq;
+        stored.senderUin = selfUin();
+        stored.msgRecord = rec;
+        int obId = store.put(stored);
+        JSONObject out = new JSONObject()
+                .put("message_id", obId)
+                .put("qq_msg_id", msgId)
+                .put("native_forward", true);
+        if (data != null) {
+            String resId = data.optString("id", "");
+            if (!resId.isEmpty()) out.put("res_id", resId).put("forward_id", resId);
+            if (data.has("filename")) out.put("filename", data.optString("filename"));
+            if (data.has("element_type")) out.put("element_type", data.optInt("element_type"));
+        }
+        if (msgId != 0) qq.prefetchForward(chatType, peer, msgId);
+        return out;
     }
 
     private JSONObject sendForwardElements(long groupId, long userId, java.util.ArrayList<Object> els,
@@ -2562,6 +2678,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (fetched != null)
             rec.msgSeq = qq.ref.getLong(Convert.unwrapRecord(fetched), "msgSeq");
         rec.content = content == null ? "" : content;
+        rec.contentIsElements = !rec.content.isEmpty();
         int id = store.put(rec);
         JSONObject out = new JSONObject().put("store_id", id);
         if (r.msgId != 0) {
@@ -2679,7 +2796,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (!text.isEmpty()) {
             d.put("raw_message", text);
             if (d.optJSONArray("message") == null || d.optJSONArray("message").length() == 0) {
-                try { d.put("message", Codec.toSegments(text)); } catch (Exception ignore) {}
+                try { d.put("message", Codec.cqToSegments(text)); } catch (Exception ignore) {}
             }
             if (r.content == null || r.content.isEmpty()) r.content = text;
         }
@@ -2904,6 +3021,18 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             out.put(k, src.get(k));
         }
         return out;
+    }
+
+    /**
+     * 快照有两种来源：本端 API 发出的消息存的是 Satori 元素串，内核历史存的是 CQ 文本。
+     * 前者原样返回，后者按协议转成元素串。
+     */
+    private String snapshotContent(String msgId, MsgStore.Rec rec) {
+        String text = snapshotText(msgId, rec);
+        if (text.isEmpty()) return "";
+        MsgStore.Rec r = rec != null ? rec : store.getByMsgId(parseLongQuiet(msgId));
+        if (r != null && r.contentIsElements && text.equals(r.content)) return text;
+        return Codec.fromCqText(text, assetBase());
     }
 
     private String snapshotText(String msgId, MsgStore.Rec rec) {

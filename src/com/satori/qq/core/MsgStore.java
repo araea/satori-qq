@@ -19,6 +19,8 @@ public final class MsgStore {
         public String senderUid;
         public Object msgRecord;  // original MsgRecord (for get_msg / reply resolution)
         public String content;    // last outbound Satori content, for get after send
+        /** true when {@link #content} is a Satori element string (this end sent it), not CQ text. */
+        public boolean contentIsElements;
     }
 
     /** Opaque resource id -> the best local/remote representation learned from QQ. */

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Same package/version/label as AndroidManifest.xml, minus every Xposed
+     meta-data key. DuckDetector's LSPosedPackageProbe flags installed apps
+     whose meta-data contains any key starting with "xposed"
+     (xposedmodule/xposedminversion/xposeddescription/xposedscope/
+     xposedsharedprefs). LSPosed's daemon resolves enabled modules purely via
+     assets/xposed_init (ConfigManager.getModuleApkPath + ConfigFileManager.
+     loadModule) and never re-checks meta-data, so this variant keeps loading
+     once the module has been enabled with the bootstrap APK. Install it with
+     `pm install -r` over the enabled module; keep both manifests' package,
+     versionCode and versionName in sync (tests enforce this). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.satori.qq"
+    android:versionCode="53"
+    android:versionName="0.8.9.18">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+    <application
+        android:label="Kernel Bridge"
+        android:hasCode="true"
+        android:extractNativeLibs="true">
+    </application>
+</manifest>

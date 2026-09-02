@@ -15,6 +15,9 @@ OUT=${SATORI_QQ_OUT:-$R/build}
 APK_UNSIGNED=$OUT/satori-qq.unsigned.apk
 APK=$OUT/SatoriQQ.apk
 
+APK_STEALTH=$OUT/SatoriQQ.stealth.apk
+APK_STEALTH_UNSIGNED=$OUT/satori-qq.stealth.unsigned.apk
+
 echo "== 1. javac =="
 rm -rf $OUT/classes && mkdir -p $OUT/classes
 find $R/src $R/stubs -name '*.java' > $OUT/sources.txt
@@ -61,5 +64,36 @@ rm -f $APK
 $ZIPALIGN -f -p 4 $APK_UNSIGNED $OUT/satori-qq.aligned.apk
 apksigner sign --ks $KS --ks-pass pass:satori123 --key-pass pass:satori123 \
   --out $APK $OUT/satori-qq.aligned.apk
+
+echo "== 6. stealth variant (no Xposed meta-data) =="
+# DuckDetector's LSPosedPackageProbe flags any installed app whose manifest
+# meta-data contains a key starting with "xposed". LSPosed's daemon resolves
+# enabled modules purely via assets/xposed_init (ConfigManager.getModuleApkPath
+# + ConfigFileManager.loadModule) and never re-checks meta-data, and the daemon
+# does not even handle ACTION_PACKAGE_REPLACED — so this variant keeps loading
+# once the module was enabled with the bootstrap APK. Enable first, then:
+#   pm install -r -d build/SatoriQQ.stealth.apk
+rm -f $APK_STEALTH
+rm -rf $OUT/stealth && mkdir -p $OUT/stealth
+cp $R/AndroidManifest.stealth.xml $OUT/stealth/AndroidManifest.xml
+$AAPT package -f -M $OUT/stealth/AndroidManifest.xml -I $FRAMEWORK -A $R/assets -F $APK_STEALTH_UNSIGNED
+( cd $OUT/dex && $AAPT add $APK_STEALTH_UNSIGNED classes.dex >/dev/null )
+if [ -f $OUT/lib/arm64-v8a/libmapshide.so ]; then ( cd $OUT && $AAPT add $APK_STEALTH_UNSIGNED lib/arm64-v8a/libmapshide.so >/dev/null ); fi
+$ZIPALIGN -f -p 4 $APK_STEALTH_UNSIGNED $OUT/satori-qq.stealth.aligned.apk
+apksigner sign --ks $KS --ks-pass pass:satori123 --key-pass pass:satori123 \
+  --out $APK_STEALTH $OUT/satori-qq.stealth.aligned.apk
+
+echo "== 7. assert anti-detection surface =="
+# Bootstrap APK must keep the module marker (vector/LSPosed registration);
+# stealth APK must expose zero xposed meta-data keys to package scans.
+norm_xposed=$($AAPT dump xmltree $APK AndroidManifest.xml | grep -c 'android:name(0x01010003)="xposed' || true)
+stealth_xposed=$($AAPT dump xmltree $APK_STEALTH AndroidManifest.xml | grep -c 'android:name(0x01010003)="xposed' || true)
+if [ "${norm_xposed:-0}" -lt 4 ]; then
+  echo "   FAIL bootstrap APK lost xposed meta-data ($norm_xposed/4)"; exit 1
+fi
+if [ "${stealth_xposed:-0}" -ne 0 ]; then
+  echo "   FAIL stealth APK still exposes xposed meta-data ($stealth_xposed)"; exit 1
+fi
+echo "   ok xposed meta-data — bootstrap: $norm_xposed, stealth: $stealth_xposed"
 echo "== DONE =="
-ls -la $APK
+ls -la $APK $APK_STEALTH

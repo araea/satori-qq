@@ -11,6 +11,15 @@ packet/         OIDB / 长消息 / 群文件
 native/         libmapshide.so
 ```
 
+## 双清单（Duck Detector 对抗）
+
+`AndroidManifest.xml`（引导）带全套 Xposed meta-data 供 vector 列模块与注册；
+`AndroidManifest.stealth.xml`（隐身）零 `xposed*` 键，仅保留 `assets/xposed_init`。
+依据：LSPosed 守护进程解析已启用模块只看入口文件（`ConfigManager.getModuleApkPath`
++ `ConfigFileManager.loadModule`），`PACKAGE_REPLACED` 不在其广播处理之列，
+meta-data 仅管理器 UI 与 `PACKAGE_ADDED` 注册路径需要。先启用引导包，再
+`pm install -r` 隐身包；升级照旧（build.sh 步骤 6/7 产出并断言双包）。
+
 **收** `IKernelMsgListener.onRecvMsg` → Satori `message-created`。**发** `message.create`：`<message forward>` 走合并转发，否则 `sendMsg`。**OIDB** 走 `onSendSSORequest`（不要 `onSendOidbRequest`，会把 0x8FC 拼成 `0x2300`）。QQ 自己做 SSO / QSec 签名。
 
 在线：账号 + NT session + MsgService + 当前 listener，且栈顶不是 `LoginActivity`。离线动作 1500。进程被杀只能靠 watchdog 拉起。

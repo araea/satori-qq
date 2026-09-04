@@ -2,7 +2,7 @@
 
 本机 QQ 的 Satori v1 实现端，供 Koishi `adapter-satori` 连接。
 
-当前按 QQ 9.3.55（NT）核验。
+当前按 QQ 9.3.60.40970（NT）核验。
 
 ## 使用
 

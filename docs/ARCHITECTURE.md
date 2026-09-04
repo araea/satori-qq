@@ -1,4 +1,4 @@
-# 架构（QQ 9.3.55）
+# 架构（QQ 9.3.60.40970）
 
 ```
 Main            QQ 所有进程：MapsHide + AntiDetect；仅主进程再 SatoriHub → QQClient
@@ -40,4 +40,7 @@ meta-data 仅管理器 UI 与 `PACKAGE_ADDED` 注册路径需要。先启用引�
 - 语音：`SilkCodecWrapper.encode`（本机 VideoElement **无** fileWidth/fileHeight）
 - QSec：`getSign(String, byte[])` 不动；`detectMethod` / `getXpsInfo` 可中和；`getFeKitAttach` 只计数；`trpc.o3.report` 可丢（不要动 `ecdh_access`）
 
-升级 QQ 后需重新核验上述 JNI 类、方法签名、元素字段和 QSec 命令白名单。
+QQ 9.3.60 移除了 `MsgRecord.senderRoleType` 及 `RevokeElement.senderUid`；可选兼容字段必须经
+`Ref.getOrNull` 探测，不能让缺字段中断整条消息事件。升级 QQ 后需重新核验上述
+JNI 类、方法签名、元素字段和 QSec 命令白名单。新版 `MsgRecord.roleType/roleId`
+不是群成员身份，群消息角色从 `getAllMemberList` 缓存解析。

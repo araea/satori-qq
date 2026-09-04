@@ -22,6 +22,26 @@ public final class Ref {
     public Object callS(Class<?> c, String m, Object... args) { return XposedHelpers.callStaticMethod(c, m, args); }
 
     public Object get(Object o, String f) { return XposedHelpers.getObjectField(o, f); }
+    /**
+     * Read an optional field without asking XposedHelpers to resolve a field that may not exist.
+     * QQ occasionally removes nativeinterface fields between releases; those compatibility probes
+     * must fall through instead of aborting the whole message conversion.
+     */
+    public Object getOrNull(Object o, String f) {
+        if (o == null || f == null || f.isEmpty()) return null;
+        for (Class<?> c = o.getClass(); c != null; c = c.getSuperclass()) {
+            try {
+                java.lang.reflect.Field field = c.getDeclaredField(f);
+                field.setAccessible(true);
+                return field.get(o);
+            } catch (NoSuchFieldException ignore) {
+                // Keep walking: QQ wrappers sometimes inherit fields from a generated base class.
+            } catch (Throwable ignore) {
+                return null;
+            }
+        }
+        return null;
+    }
     public long getLong(Object o, String f) {
         try {
             Object v = XposedHelpers.getObjectField(o, f);

@@ -20,7 +20,7 @@ import java.nio.charset.StandardCharsets;
 
 /** Bridge into the Android QQ NT kernel: capture session, send, register listeners and identity. */
 public final class QQClient {
-    // ---- QQ 9.3.50 class names, reverified on 9.3.55 ----
+    // ---- QQ 9.3.50 class names, reverified on 9.3.60 ----
     public static final String SESSION_CPP     = "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
     public static final String MSG_LISTENER    = "com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener";
     public static final String CONTACT         = "com.tencent.qqnt.kernelpublic.nativeinterface.Contact";
@@ -70,6 +70,10 @@ public final class QQClient {
     private final boolean mainProcess;
     private final java.util.concurrent.ConcurrentHashMap<String, MediaDownload> mediaDownloads =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<Long, java.util.Map<String, Object>>
+            groupMemberCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<Long> groupMemberWarmups =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static final class MediaDownload {
         final CountDownLatch latch = new CountDownLatch(1);
@@ -1784,11 +1788,57 @@ public final class QQClient {
             });
             ref.call(gs, "getAllMemberList", groupCode, force, cb);
             latch.await(15, TimeUnit.SECONDS);
-            return (java.util.Map<String, Object>) holder[0];
+            java.util.Map<String, Object> result = (java.util.Map<String, Object>) holder[0];
+            if (result != null) groupMemberCache.put(groupCode, result);
+            return result;
         } catch (Throwable t) {
             L.e("getAllMembers " + groupCode, t);
             return null;
         }
+    }
+
+    /** Resolve a message sender's role from an already fetched QQ member map, without blocking. */
+    public String cachedGroupMemberRole(long groupCode, String uid, long uin) {
+        java.util.Map<String, Object> members = groupMemberCache.get(groupCode);
+        if (members == null) return "";
+        Object info = uid == null || uid.isEmpty() ? null : members.get(uid);
+        if (info == null && uin != 0) {
+            for (Object candidate : members.values()) {
+                if (candidate != null && ref.getLong(candidate, "uin") == uin) {
+                    info = candidate;
+                    break;
+                }
+            }
+        }
+        if (info == null) return "";
+        Object role = ref.getOrNull(info, "role");
+        String name = "";
+        try {
+            if (role instanceof Enum) name = ((Enum<?>) role).name();
+            else if (role != null) name = String.valueOf(ref.call(role, "name"));
+        } catch (Throwable ignore) {}
+        name = name.toUpperCase(java.util.Locale.ROOT);
+        if (name.contains("OWNER")) return "owner";
+        if (name.contains("ADMIN")) return "admin";
+        if (name.contains("MEMBER")) return "member";
+        return "";
+    }
+
+    /** Prime one group's member map off the kernel callback thread. */
+    public void warmGroupMembersAsync(long groupCode) {
+        if (groupCode == 0 || groupMemberCache.containsKey(groupCode)
+                || !groupMemberWarmups.add(groupCode)) return;
+        Thread t = new Thread(() -> {
+            try { getAllMembers(groupCode); }
+            finally { groupMemberWarmups.remove(groupCode); }
+        }, "pool-4-thread-2");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** History conversion may wait once so its role metadata is correct on the first page. */
+    public void ensureGroupMembers(long groupCode) {
+        if (groupCode != 0 && !groupMemberCache.containsKey(groupCode)) getAllMembers(groupCode);
     }
 
     /** Cached group simple-infos; triggers a refresh and waits briefly if the cache is empty. */

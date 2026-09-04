@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.18";
+    public static final String APP_VERSION = "0.8.9.19";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -2939,6 +2939,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                                       String direction, int chatType, long peerUin,
                                       String peerUid) throws Exception {
         if (hist.timedOut) throw new ApiError(1500, hist.describe());
+        if (chatType == QQClient.CT_GROUP) qq.ensureGroupMembers(peerUin);
         JSONArray messages = new JSONArray();
         int skipped = 0;
         if (hist.records != null) {
@@ -3258,12 +3259,14 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         o.put("join_time", Ref.asInt(qq.ref.get(mi, "joinTime")));
         o.put("last_sent_time", Ref.asInt(qq.ref.get(mi, "lastSpeakTime")));
         o.put("level", String.valueOf(Ref.asInt(qq.ref.get(mi, "memberLevel"))));
-        o.put("role", roleStr(qq.ref.get(mi, "role")));
+        String role = roleStr(qq.ref.get(mi, "role"));
+        o.put("role", role);
         o.put("unfriendly", false);
         o.put("title", Ref.asStr(qq.ref.get(mi, "memberSpecialTitle")));
         o.put("title_expire_time", Ref.asLong(qq.ref.get(mi, "specialTitleExpireTime")));
         o.put("card_changeable", true);
         store.learnUid(uin, Ref.asStr(qq.ref.get(mi, "uid")));
+        store.learnRole(groupId, uin, role);
         return o;
     }
 
@@ -3826,7 +3829,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private JSONObject groupSign(long groupId) throws Exception {
         if (groupId == 0) throw new ApiError(1400, "missing group_id");
         String ver = qq.qqVersion();
-        if (ver == null || ver.isEmpty()) ver = "9.3.55";
+        if (ver == null || ver.isEmpty()) ver = "9.3.60";
         byte[] inner = Pb.w()
                 .string(1, String.valueOf(selfUin()))
                 .string(2, String.valueOf(groupId))

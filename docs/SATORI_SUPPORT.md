@@ -1,4 +1,4 @@
-# Satori v1（QQ 9.3.55）
+# Satori v1（QQ 9.3.60.40970）
 
 `adapter-satori` 连 `http://127.0.0.1:3001`。
 

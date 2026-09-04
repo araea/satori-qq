@@ -447,8 +447,10 @@ public final class Convert {
     private String senderRole(Object rec, long groupId, long senderUin) {
         String cached = store.roleOf(groupId, senderUin);
         if (!cached.isEmpty()) return cached;
-        for (String field : new String[]{"senderRoleType", "senderRole", "roleType", "roleId"}) {
-            Object v = ref.get(rec, field);
+        // roleType/roleId in 9.3.60 describe guild/channel roles, not the sender's
+        // group membership. Using them here turns every group sender into MEMBER.
+        for (String field : new String[]{"senderRoleType", "senderRole"}) {
+            Object v = ref.getOrNull(rec, field);
             if (v == null) continue;
             String mapped = mapRole(v);
             if (!mapped.isEmpty()) {
@@ -456,13 +458,28 @@ public final class Convert {
                 return mapped;
             }
         }
+        String senderUid = Ref.asStr(ref.getOrNull(rec, "senderUid"));
+        String mapped = qq.cachedGroupMemberRole(groupId, senderUid, senderUin);
+        if (!mapped.isEmpty()) {
+            store.learnRole(groupId, senderUin, mapped);
+            return mapped;
+        }
+        qq.warmGroupMembersAsync(groupId);
         return "member";
     }
 
-    private String mapRole(Object v) {
+    static String mapRole(Object v) {
+        if (v instanceof Number) {
+            // Some older senderRole fields expose MemberRole by ordinal.
+            int role = ((Number) v).intValue();
+            if (role == 4) return "owner";
+            if (role == 3) return "admin";
+            if (role == 2) return "member";
+            return "";
+        }
         String name = "";
         try {
-            if (v.getClass().isEnum()) name = String.valueOf(qq.ref.call(v, "name"));
+            if (v.getClass().isEnum()) name = ((Enum<?>) v).name();
         } catch (Throwable ignore) {}
         if (name.isEmpty()) name = String.valueOf(v);
         String n = name.toUpperCase(java.util.Locale.ROOT);
@@ -744,8 +761,8 @@ public final class Convert {
             if (opUid != null && !opUid.isEmpty() && operator != 0) store.learnUid(operator, opUid);
             if (rev != null) {
                 String origSender = firstNonEmpty(
-                        Ref.asStr(ref.get(rev, "origMsgSenderUid")),
-                        Ref.asStr(ref.get(rev, "senderUid")));
+                        Ref.asStr(ref.getOrNull(rev, "origMsgSenderUid")),
+                        Ref.asStr(ref.getOrNull(rev, "senderUid")));
                 long su = resolvePerson(origSender);
                 if (su != 0) senderUin = su;
             }
@@ -754,10 +771,10 @@ public final class Convert {
             if (rev != null) {
                 for (String f : new String[]{"msgId", "origMsgId", "recallMsgId", "recalledMsgId",
                         "referencedMsgId"}) {
-                    recalled = Ref.asLong(ref.get(rev, f));
+                    recalled = Ref.asLong(ref.getOrNull(rev, f));
                     if (recalled != 0) break;
                 }
-                long s = Ref.asLong(ref.get(rev, "msgSeq"));
+                long s = Ref.asLong(ref.getOrNull(rev, "msgSeq"));
                 if (s != 0) revSeq = s;
             }
             long pubId = recalled != 0 ? recalled : msgId;

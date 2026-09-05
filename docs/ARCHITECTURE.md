@@ -28,7 +28,7 @@ meta-data 仅管理器 UI 与 `PACKAGE_ADDED` 注册路径需要。先启用引�
 
 ## JNI（`nativeinterface`，避开混淆 `api.*`）
 
-会话：`IQQNTWrapperSession$CppProxy` 构造。服务：`getMsgService` / `getGroupService` / `getProfileService` / `getBuddyService` / `getRichMediaService`。
+会话：hook `IQQNTWrapperSession$CppProxy` 构造捕获。兜底：另 hook `getMsgService` / `getGroupService`（无锁身份校验短路），捕获 hook 安装前已建、构造函数漏抓的活动会话——否则会出现 QQ 在线、HTTP 端口在听、却 `isOnline()` 恒 false、发送全 1500 的隐性离线。服务：`getMsgService` / `getGroupService` / `getProfileService` / `getBuddyService` / `getRichMediaService`。
 
 - 发：`sendMsg(msgId, Contact, elems, emptyAttrs, cb)`；`Contact(chatType, peerUid, "")`；群 peer=群号，私聊 peer=**uid**
 - uin→uid：`getUidByUin`

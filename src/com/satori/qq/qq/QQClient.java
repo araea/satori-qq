@@ -100,11 +100,36 @@ public final class QQClient {
                     onSession(p.thisObject);
                 }
             });
-            L.i("Hooked session ctor: " + SESSION_CPP);
+            // Fallback capture. The constructor hook only sees sessions built AFTER it is
+            // installed. If QQ created the session before this hook ran — a module reload
+            // without a QQ restart, or a timing race after a QQ client update — the ctor
+            // never fires, so `session` stays null and every send fails with
+            // "kernel offline or not ready" even though QQ itself is online and the Satori
+            // HTTP port is up (a state no external port/activity probe can distinguish).
+            // QQ calls these no-arg service getters on the live session constantly during
+            // normal operation, so capturing `thisObject` here recovers a missed session
+            // within seconds, with no QQ restart. A lock-free identity check keeps the
+            // already-captured hot path free of the synchronized onSession() cost.
+            XC_MethodHook capture = new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    Object s = p.thisObject;
+                    if (s != null && session != s) onSession(s);
+                }
+            };
+            for (String m : SESSION_CAPTURE_GETTERS) {
+                try { XposedBridge.hookAllMethods(sc, m, capture); }
+                catch (Throwable t) { L.e("Failed to hook session." + m + " (fallback capture)", t); }
+            }
+            L.i("Hooked session ctor + fallback getters: " + SESSION_CPP);
         } catch (Throwable t) {
             L.e("Failed to hook session ctor", t);
         }
     }
+
+    /** No-arg session getters QQ calls during routine operation; used as a fallback path to
+     *  recover a live session the constructor hook missed. All are methods this module already
+     *  invokes, so they are guaranteed to exist on the session CppProxy for supported clients. */
+    private static final String[] SESSION_CAPTURE_GETTERS = { "getMsgService", "getGroupService" };
 
     private volatile boolean listenerPollerStarted;
 

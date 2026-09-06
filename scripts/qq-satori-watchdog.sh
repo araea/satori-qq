@@ -268,9 +268,13 @@ launch_qq() {
 protect_qq() {
     pid="$1"
     [ -n "$pid" ] || return 0
-    /system/bin/cmd activity unfreeze "$QQ_PACKAGE" >/dev/null 2>&1
-    /system/bin/cmd activity unfreeze "${QQ_PACKAGE}:MSF" >/dev/null 2>&1
+    /system/bin/cmd activity unfreeze --sticky "$QQ_PACKAGE" >/dev/null 2>&1
+    /system/bin/cmd activity unfreeze --sticky "${QQ_PACKAGE}:MSF" >/dev/null 2>&1
     /system/bin/am set-inactive "$QQ_PACKAGE" false >/dev/null 2>&1
+    /system/bin/am set-standby-bucket --user 0 "$QQ_PACKAGE" active >/dev/null 2>&1
+    /system/bin/cmd activity set-bg-restriction-level --user 0 "$QQ_PACKAGE" unrestricted >/dev/null 2>&1
+    /system/bin/cmd appops set --user 0 "$QQ_PACKAGE" RUN_ANY_IN_BACKGROUND allow >/dev/null 2>&1
+    /system/bin/cmd appops set --user 0 "$QQ_PACKAGE" RUN_IN_BACKGROUND allow >/dev/null 2>&1
     # QQ's own CoreService keeps the UI process at SVC (adj~450) instead of
     # cached (~905). Do not write oom_score_adj: fekit reads it.
     /system/bin/am startservice -n "$QQ_PACKAGE/.app.CoreService" >/dev/null 2>&1
@@ -283,8 +287,8 @@ protect_qq() {
 protect_qq_fast() {
     pid="$1"
     [ -n "$pid" ] || return 0
-    /system/bin/cmd activity unfreeze "$QQ_PACKAGE" >/dev/null 2>&1
-    /system/bin/cmd activity unfreeze "${QQ_PACKAGE}:MSF" >/dev/null 2>&1
+    /system/bin/cmd activity unfreeze --sticky "$QQ_PACKAGE" >/dev/null 2>&1
+    /system/bin/cmd activity unfreeze --sticky "${QQ_PACKAGE}:MSF" >/dev/null 2>&1
     uid="$(awk '/^Uid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)"
     thaw_uid_cgroup_write "$uid"
 }
@@ -419,6 +423,9 @@ run_loop() {
         now="$(date +%s)"
         pid="$(qq_pid)"
         protect_qq "$pid"
+        # ROM updates these lists asynchronously after boot; restore our entries if overwritten.
+        ensure_bpm_persist
+        ensure_key_proc
         observed_port=down
         observed_login=no
         if [ -z "$pid" ]; then

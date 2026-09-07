@@ -20,6 +20,8 @@ public final class Cfg {
     public volatile boolean foregroundKeepalive = true;
     /** One-time cooperative request for Doze battery-optimization exemption (system dialog). */
     public volatile boolean requestBatteryExemption = true;
+    /** Termux-style acquire/release wake-lock toggle on the resident notification (opt-in per tap). */
+    public volatile boolean wakeLockControl = true;
     public volatile boolean antiDetect = true;   // Java-level anti-detection (see AntiDetect)
     public volatile boolean mapsHide = true;     // native /proc/self/maps filter (v3)
     public volatile boolean verboseLogs = false; // verbose logcat/Xposed logs are observable; opt in for debugging
@@ -70,6 +72,7 @@ public final class Cfg {
                 c.statusNotification = o.optBoolean("status_notification", c.statusNotification);
                 c.foregroundKeepalive = o.optBoolean("foreground_keepalive", c.foregroundKeepalive);
                 c.requestBatteryExemption = o.optBoolean("request_battery_exemption", c.requestBatteryExemption);
+                c.wakeLockControl = o.optBoolean("wake_lock_control", c.wakeLockControl);
                 c.antiDetect = o.optBoolean("anti_detect", c.antiDetect);
                 c.mapsHide = o.optBoolean("maps_hide", c.mapsHide);
                 c.verboseLogs = o.optBoolean("verbose_logs", c.verboseLogs);

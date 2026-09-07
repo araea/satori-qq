@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.22";
+    public static final String APP_VERSION = "0.8.9.23";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -44,6 +44,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private HttpServer server;
     private volatile StatusNotice notice;
     private volatile com.satori.qq.qq.Keepalive keepalive;
+    private volatile com.satori.qq.qq.WakeLockCtl wakeLock;
     private volatile long onlineSinceMs;
     private final Set<WsConn> identified = ConcurrentHashMap.newKeySet();
     private final AtomicLong eventSn = new AtomicLong();
@@ -105,6 +106,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             notice = created;
             n = created;
         }
+        if (cfg.wakeLockControl) ensureWakeLock(n);
         boolean online, listening;
         try {
             online = qq.isOnline();
@@ -122,6 +124,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             try { driveKeepalive(n, online, listening, uin, nick, conns); }
             catch (Throwable t) { L.e("keepalive tick", t); }
         }
+    }
+
+    /** Lazily create the Termux-style wake-lock toggle and hang it on the resident notification, so
+     *  its acquire/release action button rides the same entry. A tap redraws the notice via refresh. */
+    private void ensureWakeLock(StatusNotice n) {
+        com.satori.qq.qq.WakeLockCtl w = wakeLock;
+        if (w == null) {
+            android.content.Context ctx = qq.appContext();
+            if (ctx == null) return;
+            w = new com.satori.qq.qq.WakeLockCtl(ctx, this::refreshNotice);
+            wakeLock = w;
+        }
+        n.setWake(w);
     }
 
     /** VPN-style keepalive: while online, hold QQ's main process as a foreground service whose
@@ -223,6 +238,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("connections", server == null ? 0 : server.connectionCount())
                         .put("notice", noticeDiag())
                         .put("keepalive", keepaliveDiag())
+                        .put("wakelock", wakeLockDiag())
                         .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");
@@ -4725,6 +4741,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (k == null) return "pending-context";
         return (k.hooked() ? "hooked" : "no-hook") + "/fgs=" + (k.started() ? "on" : "off")
                 + "/" + k.info();
+    }
+
+    private String wakeLockDiag() {
+        if (!cfg.wakeLockControl) return "off";
+        com.satori.qq.qq.WakeLockCtl w = wakeLock;
+        if (w == null) return "pending-context";
+        try { return w.diag(); } catch (Throwable t) { return "err:" + t; }
     }
 
     private JSONObject status(boolean online) throws Exception {

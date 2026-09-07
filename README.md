@@ -44,8 +44,13 @@ OEM 后台冻结默认放过它——像 VPN 一样「开着就一直连着」�
 需 QQ 具备通知权限(Android 13+ 的 `POST_NOTIFICATIONS`,默认已授予)。
 `status_notification: false` 可关闭独立通知(开启保活时它仍作为前台服务通知存在)。
 
+**唤醒锁开关。** 仿 Termux,常驻通知上带一个「获取唤醒锁 / 释放唤醒锁」动作按钮。点一下
+获取,模块以 QQ 身份持有一枚 `PARTIAL_WAKE_LOCK`(外加一枚高性能 Wi-Fi 锁),让 CPU 与网卡
+在 Doze 下也不休眠,进一步加强保活;再点一下释放、恢复省电。默认不持有,由用户按需开关;
+无需模块声明权限(QQ 已持 `WAKE_LOCK`)。`wake_lock_control: false` 可移除该按钮。
+
 另有本地免鉴权探针 `GET http://127.0.0.1:3001/healthz`,返回 `online`/`listening`/
-在线时长与 `keepalive`/`notice` 诊断,机器可读地区分「真在线」与「端口在听但内核离线」。
+在线时长与 `keepalive`/`notice`/`wakelock` 诊断,机器可读地区分「真在线」与「端口在听但内核离线」。
 
 ## 构建
 

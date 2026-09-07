@@ -7,6 +7,7 @@
   "status_notification": true,
   "foreground_keepalive": true,
   "request_battery_exemption": true,
+  "wake_lock_control": true,
   "anti_detect": true,
   "maps_hide": true,
   "verbose_logs": false,

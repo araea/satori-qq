@@ -64,6 +64,10 @@ VPN 式保活,不是反复拉起进程。服务在线时,把 QQ 主进程里一�
 - **一次性授权**:首次在线且未加 Doze 白名单时,弹一次系统「忽略电池优化」对话框
   (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`);授予后后台启动 FGS 始终放行。
 - 开关:`foreground_keepalive` / `request_battery_exemption`;通知另由 `status_notification`。
+- **唤醒锁开关(仿 Termux)**:常驻通知带「获取/释放唤醒锁」动作按钮。以 QQ 身份持有
+  `PARTIAL_WAKE_LOCK` + 高性能 Wi-Fi 锁,让 CPU/网卡在 Doze 下不休眠——FGS 保进程常驻,
+  唤醒锁再保其不被打盹冻住网络。按钮 PendingIntent 发一条自寻址、NOT_EXPORTED 的广播到运行时
+  注册的接收器,每点一下翻转状态并重绘通知;默认不持有,由用户按需开关。开关:`wake_lock_control`。
 - 局限:FGS 大幅降低被杀/冻结概率但非绝对;ColorOS 等激进省电下仍建议保留 Doze 白名单
   (即上面的一次性授权)。QQ targetSdk 34,不受 Android 15+ `dataSync` 6 小时上限约束。
 
@@ -72,7 +76,7 @@ VPN 式保活,不是反复拉起进程。服务在线时,把 QQ 主进程里一�
 - HTTP accept 循环自带 3s 重绑,端口丢失可自愈;Satori HTTP/WS 只绑 `127.0.0.1`,
   无对外连接。
 - `GET /healthz`(本地免鉴权)直吐 `online` / `listening` / `self_id` / 在线时长,以及
-  `notice`(通知投递状态)与 `keepalive`(FGS 状态)诊断,机器可读,把「真在线」与
+  `notice`(通知投递状态)、`keepalive`(FGS 状态)与 `wakelock`(唤醒锁状态)诊断,机器可读,把「真在线」与
   「端口在听但内核离线」分开。
 - QQ 通知栏常驻一条静默(`IMPORTANCE_LOW`)通知,随状态切换 运行中 / 等待登录 /
   服务异常,人可读。需 QQ 具备通知权限(Android 13+ 的 `POST_NOTIFICATIONS`,默认已授予;

@@ -33,6 +33,8 @@ public final class StatusNotice {
     private final NotificationManager nm;
     private volatile boolean channelReady;
     private volatile String lastKey = "";
+    // Optional user-toggled wake lock, surfaced as a notification action button (Termux-style).
+    private volatile com.satori.qq.qq.WakeLockCtl wake;
 
     public StatusNotice(Context ctx) {
         this.ctx = ctx;
@@ -46,6 +48,9 @@ public final class StatusNotice {
     }
 
     public boolean available() { return nm != null; }
+
+    /** Attach the wake-lock controller so its acquire/release toggle rides on the resident entry. */
+    public void setWake(com.satori.qq.qq.WakeLockCtl w) { this.wake = w; }
 
     /** Diagnostic string for /healthz: whether the OS currently accepts our posts. */
     public String diag() {
@@ -103,12 +108,14 @@ public final class StatusNotice {
             coarse = String.valueOf(up / 60000L); // minute granularity for dedupe
             v.big = v.text + "\n在线 " + humanUptime(up);
         }
-        v.key = v.title + '|' + v.text + '|' + coarse;
+        com.satori.qq.qq.WakeLockCtl w = wake;
+        String wk = w == null ? "w-" : (w.held() ? "w1" : "w0");
+        v.key = v.title + '|' + v.text + '|' + coarse + '|' + wk;
         return v;
     }
 
     private Notification notif(View v) {
-        return new Notification.Builder(ctx, CHANNEL_ID)
+        Notification.Builder b = new Notification.Builder(ctx, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setContentTitle(v.title)
                 .setContentText(v.text)
@@ -116,8 +123,24 @@ public final class StatusNotice {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
-                .setColor(v.color)
-                .build();
+                .setColor(v.color);
+        addWakeAction(b);
+        return b.build();
+    }
+
+    /** Termux-style acquire/release wake-lock button. Silently skipped when no controller is set. */
+    private void addWakeAction(Notification.Builder b) {
+        com.satori.qq.qq.WakeLockCtl w = wake;
+        if (w == null) return;
+        try {
+            android.app.PendingIntent pi = w.toggleIntent();
+            if (pi == null) return;
+            int icon = w.held() ? android.R.drawable.ic_lock_idle_lock
+                                : android.R.drawable.ic_lock_lock;
+            b.addAction(icon, w.label(), pi);
+        } catch (Throwable t) {
+            L.e("notice: wake action", t);
+        }
     }
 
     /** Build the current-state notification (channel ensured), for handing to startForeground(). */

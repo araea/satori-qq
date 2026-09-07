@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.23";
+    public static final String APP_VERSION = "0.8.9.24";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -106,7 +106,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             notice = created;
             n = created;
         }
-        if (cfg.wakeLockControl) ensureWakeLock(n);
+        if (cfg.wakeLockControl || cfg.wifiSustain) ensureWakeLock(n);
         boolean online, listening;
         try {
             online = qq.isOnline();
@@ -119,6 +119,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         try {
             n.update(online, listening, uin, nick, cfg.port, conns, onlineSinceMs);
         } catch (Throwable t) { L.e("status notice refresh", t); }
+
+        try { driveWifiSustain(online, listening); }
+        catch (Throwable t) { L.e("wifi sustain tick", t); }
 
         if (cfg.foregroundKeepalive) {
             try { driveKeepalive(n, online, listening, uin, nick, conns); }
@@ -136,7 +139,17 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             w = new com.satori.qq.qq.WakeLockCtl(ctx, this::refreshNotice);
             wakeLock = w;
         }
-        n.setWake(w);
+        // The notification button only appears when the operator toggle itself is enabled;
+        // wifi_sustain alone needs the controller, not the button.
+        if (cfg.wakeLockControl) n.setWake(w);
+    }
+
+    /** Keep the radio out of screen-off power save while a client is actually attached to us. */
+    private void driveWifiSustain(boolean online, boolean listening) {
+        com.satori.qq.qq.WakeLockCtl w = wakeLock;
+        if (w == null) return;
+        boolean serving = online && listening && server != null && server.connectionCount() > 0;
+        w.sustainWifi(cfg.wifiSustain && serving);
     }
 
     /** VPN-style keepalive: while online, hold QQ's main process as a foreground service whose
@@ -510,6 +523,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private Object guarded(String method, Work work) throws Exception {
         OutboundGuard.Lease lease = null;
         boolean ok = false;
+        com.satori.qq.qq.WakeLockCtl w = wakeLock;
+        // QQ's kernel uploads media inline while sendMsg runs; on a locked screen a parked CPU
+        // and Wi-Fi radio make that transfer fail while plain text still rides the live socket.
+        if (w != null) w.begin();
         try {
             ensureOutboundReady();
             try {
@@ -523,6 +540,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             return data;
         } finally {
             if (lease != null) lease.complete(ok);
+            if (w != null) w.end();
         }
     }
 
@@ -2136,9 +2154,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             Object content = d.opt("content");
             if (content == null) content = "";
             // Elements are built for the self-chat they land in (C2C), not the destination.
-            java.util.ArrayList<Object> els = conv.toElements(content, QQClient.CT_C2C);
-            if (els == null || els.isEmpty()) continue;
-            QQClient.SendResult sr = sendTracked(QQClient.CT_C2C, selfUid, els);
+            QQClient.SendResult sr = sendMedia(QQClient.CT_C2C, selfUid, content, true);
+            if (sr == null) continue;
             if (sr.code != 0 || sr.msgId == 0) {
                 L.e("native forward inner send failed code=" + sr.code + " " + sr.msg, null);
                 return null;
@@ -2687,8 +2704,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private JSONObject sendGroup(long groupId, Object message, String content) throws Exception {
         if (groupId == 0) throw new ApiError(1400, "missing group_id");
         if (looksLikeForward(message)) return sendForward(groupId, 0, message);
-        java.util.ArrayList<Object> els = conv.toElements(message, QQClient.CT_GROUP);
-        QQClient.SendResult r = sendTracked(QQClient.CT_GROUP, String.valueOf(groupId), els);
+        QQClient.SendResult r = sendMedia(QQClient.CT_GROUP, String.valueOf(groupId), message);
         return afterSend(r, QQClient.CT_GROUP, groupId, String.valueOf(groupId), content);
     }
 
@@ -2706,8 +2722,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }
         if (uid == null || uid.isEmpty())
             throw new ApiError(1404, "cannot resolve uid for user " + userId);
-        java.util.ArrayList<Object> els = conv.toElements(message, QQClient.CT_C2C);
-        QQClient.SendResult r = sendTracked(QQClient.CT_C2C, uid, els);
+        QQClient.SendResult r = sendMedia(QQClient.CT_C2C, uid, message);
         return afterSend(r, QQClient.CT_C2C, userId, uid, content);
     }
 
@@ -2742,6 +2757,72 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private QQClient.SendResult sendTracked(int chatType, String peer, java.util.ArrayList<Object> els) {
         return qq.sendMsg(chatType, peer, els, this::rememberOutboundMsgId);
+    }
+
+    /**
+     * Send segments, retrying when QQ's kernel fails to upload their media.
+     *
+     * <p>Image/voice/video/file payloads are transferred to QQ's rich-media servers from inside
+     * {@code sendMsg}, before the message itself is dispatched. That transfer is the first thing to
+     * break when the screen has been locked long enough for the radio to be parked — the callback
+     * comes back {@code code=-1 "rich media transfer failed"} while plain text sent a second later
+     * still rides the already-established MSF socket. Nothing reached the peer in that case, so
+     * re-entering {@code sendMsg} cannot duplicate a delivered message.
+     *
+     * <p>Elements are rebuilt from the original segments on every attempt: the kernel writes upload
+     * state (file ids, paths, sizes) into the MsgElement it was handed, and a half-filled element
+     * from a failed attempt is not safe to hand back.
+     */
+    private QQClient.SendResult sendMedia(int chatType, String peer, Object message) throws Exception {
+        return sendMedia(chatType, peer, message, false);
+    }
+
+    /** {@code skipEmpty} returns null instead of entering the kernel when nothing converted. */
+    private QQClient.SendResult sendMedia(int chatType, String peer, Object message, boolean skipEmpty)
+            throws Exception {
+        int attempts = 1 + (hasMediaSegment(message) ? Math.max(0, cfg.mediaRetryAttempts) : 0);
+        // Clients wait on one HTTP call, so the retries have to fit inside their timeout budget.
+        long deadline = System.currentTimeMillis() + cfg.mediaRetryBudgetMs;
+        QQClient.SendResult r = null;
+        for (int i = 0; i < attempts; i++) {
+            if (i > 0) {
+                long backoff = (long) cfg.mediaRetryBackoffMs * i;
+                if (System.currentTimeMillis() + backoff >= deadline) {
+                    L.e("media transfer failed (" + r.msg + "); retry budget spent", null);
+                    return r;
+                }
+                L.e("media transfer failed (" + r.msg + "); retry " + i + "/" + (attempts - 1), null);
+                Thread.sleep(backoff);
+            }
+            java.util.ArrayList<Object> els = conv.toElements(message, chatType);
+            if (skipEmpty && (els == null || els.isEmpty())) return null;
+            r = sendTracked(chatType, peer, els);
+            if (r.code == 0 || !isMediaTransferFailure(r)) return r;
+        }
+        return r;
+    }
+
+    /** QQ's wording for an upload that never left the device; the send failed before dispatch. */
+    private static boolean isMediaTransferFailure(QQClient.SendResult r) {
+        if (r == null || r.code == 0 || r.msg == null) return false;
+        String m = r.msg.toLowerCase(java.util.Locale.ROOT);
+        return m.contains("rich media") || m.contains("media transfer") || m.contains("upload")
+                || m.contains("富媒体");
+    }
+
+    /** True when the outgoing segments carry something QQ has to upload before it can send. */
+    private static boolean hasMediaSegment(Object message) {
+        if (!(message instanceof JSONArray)) return false;
+        JSONArray arr = (JSONArray) message;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject seg = arr.optJSONObject(i);
+            if (seg == null) continue;
+            switch (seg.optString("type", "")) {
+                case "image": case "record": case "video": case "file": return true;
+                default: break;
+            }
+        }
+        return false;
     }
 
     private JSONObject afterSend(QQClient.SendResult r, int chatType, long peerUin, String peerUid)
@@ -4744,7 +4825,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private String wakeLockDiag() {
-        if (!cfg.wakeLockControl) return "off";
+        if (!cfg.wakeLockControl && !cfg.wifiSustain) return "off";
         com.satori.qq.qq.WakeLockCtl w = wakeLock;
         if (w == null) return "pending-context";
         try { return w.diag(); } catch (Throwable t) { return "err:" + t; }

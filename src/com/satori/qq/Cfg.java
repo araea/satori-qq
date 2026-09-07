@@ -22,6 +22,9 @@ public final class Cfg {
     public volatile boolean requestBatteryExemption = true;
     /** Termux-style acquire/release wake-lock toggle on the resident notification (opt-in per tap). */
     public volatile boolean wakeLockControl = true;
+    /** Hold a high-performance Wi-Fi lock while a Satori client is attached, so screen-off power
+     *  save cannot park the radio under an outbound upload or delay inbound events. */
+    public volatile boolean wifiSustain = true;
     public volatile boolean antiDetect = true;   // Java-level anti-detection (see AntiDetect)
     public volatile boolean mapsHide = true;     // native /proc/self/maps filter (v3)
     public volatile boolean verboseLogs = false; // verbose logcat/Xposed logs are observable; opt in for debugging
@@ -34,6 +37,12 @@ public final class Cfg {
     public volatile int outboundMaxQueued = 8;
     public volatile int onlineStabilizeMs = 30000;     // do not write immediately after session recovery
     public volatile int outboundMaxPerMinute = 20;
+    /** Extra attempts for a send whose rich-media upload failed inside QQ's kernel. The upload runs
+     *  before the message is dispatched, so a retry cannot duplicate anything the peer has seen. */
+    public volatile int mediaRetryAttempts = 2;
+    public volatile int mediaRetryBackoffMs = 4000;
+    /** Wall-clock ceiling for those retries; clients wait on a single HTTP call. */
+    public volatile int mediaRetryBudgetMs = 45000;
     public volatile int outboundFailureThreshold = 3;
     public volatile int outboundCircuitOpenMs = 120000;
     /** Deliver messages typed in the QQ UI to Koishi as a distinct operator identity. */
@@ -73,6 +82,7 @@ public final class Cfg {
                 c.foregroundKeepalive = o.optBoolean("foreground_keepalive", c.foregroundKeepalive);
                 c.requestBatteryExemption = o.optBoolean("request_battery_exemption", c.requestBatteryExemption);
                 c.wakeLockControl = o.optBoolean("wake_lock_control", c.wakeLockControl);
+                c.wifiSustain = o.optBoolean("wifi_sustain", c.wifiSustain);
                 c.antiDetect = o.optBoolean("anti_detect", c.antiDetect);
                 c.mapsHide = o.optBoolean("maps_hide", c.mapsHide);
                 c.verboseLogs = o.optBoolean("verbose_logs", c.verboseLogs);
@@ -86,6 +96,9 @@ public final class Cfg {
                 c.onlineStabilizeMs = bounded(o.optInt("online_stabilize_ms", c.onlineStabilizeMs), 0, 300000);
                 c.outboundMaxPerMinute = bounded(o.optInt("outbound_max_per_minute", c.outboundMaxPerMinute), 1, 600);
                 c.outboundFailureThreshold = bounded(o.optInt("outbound_failure_threshold", c.outboundFailureThreshold), 1, 20);
+                c.mediaRetryAttempts = bounded(o.optInt("media_retry_attempts", c.mediaRetryAttempts), 0, 5);
+                c.mediaRetryBackoffMs = bounded(o.optInt("media_retry_backoff_ms", c.mediaRetryBackoffMs), 0, 60000);
+                c.mediaRetryBudgetMs = bounded(o.optInt("media_retry_budget_ms", c.mediaRetryBudgetMs), 0, 300000);
                 c.outboundCircuitOpenMs = bounded(o.optInt("outbound_circuit_open_ms", c.outboundCircuitOpenMs), 1000, 1800000);
                 c.manualSelfMessages = o.optBoolean("manual_self_messages", c.manualSelfMessages);
                 c.manualSelfUserId = o.optString("manual_self_user_id", c.manualSelfUserId).trim();

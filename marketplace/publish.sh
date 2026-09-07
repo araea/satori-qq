@@ -17,7 +17,7 @@ fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 cd "$TMP"
-"$GH" repo clone "$ORG_REPO" repo -- --depth=1
+git clone --depth=1 "git@github.com:$ORG_REPO.git" repo
 "$GH" api "repos/$ORG_REPO" -X PATCH -f description='本机 QQ 的 Satori v1 实现端。' >/dev/null
 cd repo
 cp "$MP/SUMMARY" "$MP/README.md" "$MP/SOURCE_URL" "$MP/ic_launcher.png" .

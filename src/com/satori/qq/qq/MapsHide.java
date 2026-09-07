@@ -21,6 +21,7 @@ import com.satori.qq.L;
  * v5.9 (0.8.7): loop_ok ignores unverified tcp/env (-1); audit before seccomp.
  * v5.10 (0.8.8): locate so beside the module APK first; retry transient PM misses.
  * v5.11 (0.8.9): ZWSP path match + detector usb.config rewrite.
+ * v5.12 (0.8.9.25): detector-scoped native command, symbol and Turing report filtering.
  */
 public final class MapsHide {
     public static native int install();   // returns #GOT slots patched

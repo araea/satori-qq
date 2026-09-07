@@ -1,4 +1,4 @@
-# 架构（QQ 9.3.60.40970）
+# 架构（QQ 9.3.55 / 9.3.60.40970）
 
 ```
 Main            QQ 所有进程：MapsHide + AntiDetect；仅主进程再 SatoriHub → QQClient
@@ -8,7 +8,7 @@ core/           Satori 方法分发、事件、message id / file id 注册表
 satori/         元素解析与事件映射
 qq/             NT 桥、段转换、Silk、GOT+seccomp
 packet/         OIDB / 长消息 / 群文件
-native/         libmapshide.so
+native/         检测库 GOT、/proc 与直接系统调用过滤
 ```
 
 ## 双清单（Duck Detector 对抗）
@@ -39,6 +39,7 @@ meta-data 仅管理器 UI 与 `PACKAGE_ADDED` 注册路径需要。先启用引�
 - 图：`genFileMd5Hex` → `getRichMediaFilePathForMobileQQSend` → `copyFile` → `PicElement` → sendMsg 自动上传
 - 语音：`SilkCodecWrapper.encode`（本机 VideoElement **无** fileWidth/fileHeight）
 - QSec：`getSign(String, byte[])` 不动；`detectMethod` / `getXpsInfo` 可中和；`getFeKitAttach` 只计数；`trpc.o3.report` 可丢（不要动 `ecdh_access`）
+- 过检测：Java 层覆盖 Root / Xposed / Debug / Pandora / Turing；Native 层只修补检测库，过滤文件、属性、命令、符号与风险上报。
 
 QQ 9.3.60 移除了 `MsgRecord.senderRoleType` 及 `RevokeElement.senderUid`；可选兼容字段必须经
 `Ref.getOrNull` 探测，不能让缺字段中断整条消息事件。升级 QQ 后需重新核验上述

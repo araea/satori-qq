@@ -2,7 +2,7 @@
 
 本机 QQ 的 Satori v1 实现端。任何 Satori 协议客户端均可连接（如 Koishi `adapter-satori`）。
 
-当前按 QQ 9.3.60.40970（NT）核验。
+当前按 QQ 9.3.55、9.3.60.40970（NT）核验。
 
 ## 使用
 
@@ -16,6 +16,14 @@ plugins:
     endpoint: 'http://127.0.0.1:3001'
     token: ''
 ```
+
+## 过检测
+
+Java 与 Native 加固默认开启，覆盖 Root / Xposed / 调试器探测、包与堆栈扫描、
+QSec / Turing / Pandora、环境上报及检测库的 `/proc`、命令、符号和网络发送路径。
+设备标识伪装为可选项，留空时使用真实值。
+
+实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)，感谢其公开研究。
 
 ## 常驻与通知
 

@@ -1,5 +1,7 @@
 // mapshide.c — detector-lib GOT filter + in-process seccomp for bare svc.
 //
+// v5.12 (0.8.9.25): detector-scoped system/strstr/send/sendto interception,
+// /proc/self/exe normalization, and case-insensitive QSec library matching.
 // v5.11 (0.8.9): strip ZWSP/soft-hyphen before path match (CVE-2024-43093);
 // detector GOT rewrites persist.sys.usb.config to mtp. Rollback 0.8.8.
 // v5.10 (0.8.8): collapse /./ /../ before path_denied; case-insensitive
@@ -66,6 +68,7 @@ extern int fclose(FILE* stream);
 extern char* getenv(const char* name);
 extern int unsetenv(const char* name);
 extern FILE* popen(const char* cmd, const char* mode);
+extern int system(const char* cmd);
 extern void* opendir(const char* path);
 extern int snprintf(char* buf, size_t n, const char* fmt, ...);
 extern int stat(const char* path, void* st);
@@ -77,6 +80,10 @@ extern void* dlsym(void* handle, const char* symbol);
 extern int __system_property_get(const char* name, char* value);
 extern const void* __system_property_find(const char* name);
 extern void* readdir(void* dirp);
+struct sockaddr;
+extern long send(int sockfd, const void* buf, size_t len, int flags);
+extern long sendto(int sockfd, const void* buf, size_t len, int flags,
+        const struct sockaddr* dest_addr, unsigned int addrlen);
 
 #define LOGI(...) __android_log_print(4, "Q.Maps", __VA_ARGS__)
 #define LOGW(...) __android_log_print(5, "Q.Maps", __VA_ARGS__)
@@ -162,6 +169,8 @@ static uintptr_t g_text_lo;
 static uintptr_t g_text_hi;
 static int g_seccomp_on;
 static int g_named_rx;
+static int g_risk_blocks;
+static int g_system_blocks;
 
 static long raw_svc(long n, long a0, long a1, long a2, long a3, long a4, long a5) {
     register long x8 asm("x8") = n;
@@ -203,6 +212,27 @@ static int contains_ci(const char* line, size_t len, const char* b) {
         if (k == bl) return 1;
     }
     return 0;
+}
+
+static int risk_payload(const void* data, size_t len) {
+    if (!data || len == 0) return 0;
+    const char* p = (const char*)data;
+    const char* words[] = {
+        "riskCheckWup", "DeviceTokenV3", "turingRiskDetect",
+        "turingmfa", "risk_report", 0
+    };
+    for (int i = 0; words[i]; i++) {
+        if (contains_ci(p, len, words[i])) return 1;
+    }
+    return 0;
+}
+
+static int symbol_denied(const char* name) {
+    if (!name) return 0;
+    size_t n = strlen(name);
+    return contains_ci(name, n, "bytehook") || contains_ci(name, n, "xposed")
+            || contains_ci(name, n, "lsposed") || contains_ci(name, n, "mapshide")
+            || contains_ci(name, n, "frida") || contains_ci(name, n, "substrate");
 }
 
 static int line_blocked(const char* line, size_t len) {
@@ -412,9 +442,10 @@ static int is_environ_path(const char* p) {
 
 static int is_detector_path(const char* p) {
     if (!p) return 0;
-    return strstr(p, "fekit") || strstr(p, "ckguard") || strstr(p, "wtecdh")
-            || strstr(p, "turingxq") || strstr(p, "turing")
-            || strstr(p, "libqsec") || strstr(p, "dandelion");
+    size_t n = strlen(p);
+    return contains_ci(p, n, "fekit") || contains_ci(p, n, "ckguard")
+            || contains_ci(p, n, "wtecdh") || contains_ci(p, n, "turing")
+            || contains_ci(p, n, "libqsec") || contains_ci(p, n, "dandelion");
 }
 
 /* openat(dirfd, "maps") bypasses a path-only /proc filter. Resolve dirfd. */
@@ -681,8 +712,17 @@ static int my_faccessat(int dirfd, const char* path, int mode, int flags) {
     return (int)raw_svc(SYS_faccessat, (long)dirfd, (long)path, (long)mode, (long)flags, 0, 0);
 }
 
+static long copy_process_exe(char* buf, unsigned long bufsz) {
+    const char* safe = "/system/bin/app_process64";
+    size_t n = strlen(safe);
+    if (n > bufsz) n = bufsz;
+    for (size_t i = 0; i < n; i++) buf[i] = safe[i];
+    return (long)n;
+}
+
 static long my_readlink(const char* path, char* buf, unsigned long bufsz) {
     if (path_denied(path)) return -ENOENT;
+    if (path && strcmp(path, "/proc/self/exe") == 0 && buf) return copy_process_exe(buf, bufsz);
     return raw_svc(SYS_readlinkat, (long)AT_FDCWD, (long)path, (long)buf, (long)bufsz, 0, 0);
 }
 
@@ -692,6 +732,7 @@ static long my_readlinkat(int dirfd, const char* path, char* buf, unsigned long 
     char resolved[768];
     const char* ep = effective_path(dirfd, path, resolved, sizeof(resolved));
     if (path_denied(ep) || path_denied(path)) return -ENOENT;
+    if (ep && strcmp(ep, "/proc/self/exe") == 0 && buf) return copy_process_exe(buf, bufsz);
     return raw_svc(SYS_readlinkat, (long)dirfd, (long)path, (long)buf, (long)bufsz, 0, 0);
 }
 
@@ -725,6 +766,46 @@ static FILE* my_popen(const char* cmd, const char* mode) {
         return 0;
     }
     return popen(cmd, mode);
+}
+
+static int my_system(const char* cmd) {
+    if (cmd_denied(cmd) || (cmd && contains_ci(cmd, strlen(cmd), "/proc/mounts"))) {
+        g_system_blocks++;
+        return 0;
+    }
+    return system(cmd);
+}
+
+static char* my_strstr(const char* haystack, const char* needle) {
+    char* found = strstr(haystack, needle);
+    if (!found || !needle) return found;
+    const char* words[] = {
+        "lsposed", "xposed", "riru", "zygisk", "magisk", "frida",
+        "kernelsu", "ksu", "substrate", "mapshide", "satori", 0
+    };
+    size_t n = strlen(needle);
+    for (int i = 0; words[i]; i++) {
+        size_t wn = strlen(words[i]);
+        if (n == wn && contains_ci(needle, n, words[i])) return 0;
+    }
+    return found;
+}
+
+static long my_send(int sockfd, const void* buf, size_t len, int flags) {
+    if (risk_payload(buf, len)) {
+        g_risk_blocks++;
+        return (long)len;
+    }
+    return send(sockfd, buf, len, flags);
+}
+
+static long my_sendto(int sockfd, const void* buf, size_t len, int flags,
+        const struct sockaddr* dest_addr, unsigned int addrlen) {
+    if (risk_payload(buf, len)) {
+        g_risk_blocks++;
+        return (long)len;
+    }
+    return sendto(sockfd, buf, len, flags, dest_addr, addrlen);
 }
 
 typedef struct {
@@ -830,7 +911,7 @@ static int module_name_blocked(const char* name) {
     if (!name || !*name) return 0;
     size_t len = strlen(name);
     for (int i = 0; BLOCK[i]; i++) {
-        if (contains(name, len, BLOCK[i])) return 1;
+        if (contains_ci(name, len, BLOCK[i])) return 1;
     }
     return 0;
 }
@@ -852,6 +933,7 @@ static int my_dl_iterate_phdr(dl_iter_cb_t callback, void* data) {
 
 static void* my_dlsym(void* handle, const char* symbol) {
     if (!symbol) return dlsym(handle, symbol);
+    if (symbol_denied(symbol)) return 0;
     if (strcmp(symbol, "open") == 0 || strcmp(symbol, "open64") == 0
             || strcmp(symbol, "__open_2") == 0) return (void*)my_open;
     if (strcmp(symbol, "openat") == 0 || strcmp(symbol, "openat64") == 0
@@ -871,6 +953,10 @@ static void* my_dlsym(void* handle, const char* symbol) {
     if (strcmp(symbol, "statfs") == 0) return (void*)my_statfs;
     if (strcmp(symbol, "opendir") == 0) return (void*)my_opendir;
     if (strcmp(symbol, "popen") == 0) return (void*)my_popen;
+    if (strcmp(symbol, "system") == 0) return (void*)my_system;
+    if (strcmp(symbol, "strstr") == 0) return (void*)my_strstr;
+    if (strcmp(symbol, "send") == 0) return (void*)my_send;
+    if (strcmp(symbol, "sendto") == 0) return (void*)my_sendto;
     if (strcmp(symbol, "dladdr") == 0) return (void*)my_dladdr;
     if (strcmp(symbol, "dlopen") == 0) return (void*)my_dlopen;
     if (strcmp(symbol, "dlsym") == 0) return (void*)my_dlsym;
@@ -899,6 +985,10 @@ typedef struct {
     void* my_statfs;
     void* my_opendir;
     void* my_popen;
+    void* my_system;
+    void* my_strstr;
+    void* my_send;
+    void* my_sendto;
     void* my_dladdr;
     void* my_dlopen;
     void* my_sysprop_get;
@@ -969,6 +1059,10 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
             else if (strcmp(nm, "statfs") == 0) repl = ctx->my_statfs;
             else if (strcmp(nm, "opendir") == 0) repl = ctx->my_opendir;
             else if (strcmp(nm, "popen") == 0) repl = ctx->my_popen;
+            else if (strcmp(nm, "system") == 0) repl = ctx->my_system;
+            else if (strcmp(nm, "strstr") == 0) repl = ctx->my_strstr;
+            else if (strcmp(nm, "send") == 0) repl = ctx->my_send;
+            else if (strcmp(nm, "sendto") == 0) repl = ctx->my_sendto;
             else if (strcmp(nm, "dladdr") == 0) repl = ctx->my_dladdr;
             else if (strcmp(nm, "dlopen") == 0) repl = ctx->my_dlopen;
             else if (strcmp(nm, "__system_property_get") == 0) repl = ctx->my_sysprop_get;
@@ -1082,6 +1176,7 @@ static void patch_line(char* line, size_t ll, void* arg) {
 }
 
 static void locate_line(char* line, size_t ll, void* arg) {
+    (void)ll;
     uintptr_t here = (uintptr_t)arg;
     const char* rest;
     uintptr_t start = parse_hex(line, &rest);
@@ -1148,7 +1243,7 @@ static void on_sigsys(int sig, siginfo_t* si, void* uctx) {
     (void)sig;
     (void)si;
     ucontext_t* uc = (ucontext_t*)uctx;
-    uint64_t* r = uc->uc_mcontext.regs;
+    unsigned long long* r = uc->uc_mcontext.regs;
     long nr = (long)r[8];
     long ret;
     if (nr == SYS_openat) {
@@ -1213,7 +1308,6 @@ static int install_seccomp(void) {
     int allow_idx = n;
     (void)allow_idx;
     filt[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-    int ip_idx = n;
     filt[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, 12);
     filt[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, hi4g, 1, 0);
     filt[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP);
@@ -1379,13 +1473,14 @@ static void persist_maps_stats(int patched, int dlsym_n, int readdir_n,
             key) <= 0)
         return;
     int ok = hide_loop_ok(leak_maps, leak_tcp, leak_env, dlsym_n);
-    char json[384];
+    char json[448];
     int len = snprintf(json, sizeof(json),
             "{\"patched\":%d,\"dlsym\":%d,\"readdir\":%d,\"seccomp\":%d,"
             "\"named_rx\":%d,\"tcp\":1,\"getenv\":%d,\"freopen\":%d,\"environ\":1,"
+            "\"risk_blocks\":%d,\"system_blocks\":%d,"
             "\"leak_maps\":%d,\"leak_tcp\":%d,\"leak_env\":%d,\"loop_ok\":%d}\n",
             patched, dlsym_n, readdir_n, g_seccomp_on, g_named_rx, getenv_n, freopen_n,
-            leak_maps, leak_tcp, leak_env, ok);
+            g_risk_blocks, g_system_blocks, leak_maps, leak_tcp, leak_env, ok);
     if (len <= 0) return;
     long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)path,
             (long)(O_WRONLY | O_CREAT | O_TRUNC), 420L, 0L, 0L);
@@ -1446,6 +1541,10 @@ int Java_com_satori_qq_qq_MapsHide_install(void* env, void* clazz) {
     ctx.my_statfs = (void*)my_statfs;
     ctx.my_opendir = (void*)my_opendir;
     ctx.my_popen = (void*)my_popen;
+    ctx.my_system = (void*)my_system;
+    ctx.my_strstr = (void*)my_strstr;
+    ctx.my_send = (void*)my_send;
+    ctx.my_sendto = (void*)my_sendto;
     ctx.my_dladdr = (void*)my_dladdr;
     ctx.my_dlopen = (void*)my_dlopen;
     ctx.my_sysprop_get = (void*)my_sysprop_get;

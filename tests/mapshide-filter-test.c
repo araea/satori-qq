@@ -35,6 +35,7 @@ int main(void) {
     if ((rc = expect(is_mapping_header("Size: 4 kB\n", 11), 0, 7))) return rc;
     if ((rc = expect(is_detector_path("/data/app/x/libturingxq.so"), 1, 8))) return rc;
     if ((rc = expect(is_detector_path("/data/app/x/libfekit.so"), 1, 9))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/libQSec.so"), 1, 58))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/self/status"), 1, 10))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/mounts"), 1, 11))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/self/cmdline"), 0, 12))) return rc;
@@ -100,6 +101,14 @@ int main(void) {
             return rc;
         if ((rc = expect(strcmp(usb, "mtp") == 0, 1, 56))) return rc;
         if ((rc = expect(adb_prop_safe_copy("ro.build.type", usb), 0, 57))) return rc;
+    }
+    {
+        const char report[] = "prefix DeviceTokenV3 suffix";
+        const char safe[] = "MessageSvc.PbSendMsg";
+        if ((rc = expect(risk_payload(report, sizeof(report) - 1), 1, 59))) return rc;
+        if ((rc = expect(risk_payload(safe, sizeof(safe) - 1), 0, 60))) return rc;
+        if ((rc = expect(symbol_denied("bytehook_get_mode"), 1, 61))) return rc;
+        if ((rc = expect(symbol_denied("malloc"), 0, 62))) return rc;
     }
     return 0;
 }

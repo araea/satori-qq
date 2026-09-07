@@ -8,9 +8,13 @@ import de.robv.android.xposed.XposedBridge;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.BufferedReader;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -33,6 +37,11 @@ public final class AntiDetect {
     private final boolean blockReports;
     private final boolean observeFekitAttach;
     private final boolean blockO3Report;
+    private final boolean blockTuringRisk;
+    private final boolean blockServerKick;
+    private final String fakeImei;
+    private final String fakeAndroidId;
+    private final String fakeSerial;
 
     private static final AtomicLong FEKIT_ATTACH_TOTAL = new AtomicLong();
     private static final AtomicLong FEKIT_ATTACH_ERRORS = new AtomicLong();
@@ -51,6 +60,7 @@ public final class AntiDetect {
     private static volatile int hookChannelIn;
     private static volatile int hookMsfSend;
     private static volatile int hookMsfIn;
+    private static final AtomicLong HARDENING_HOOKS = new AtomicLong();
     private final java.util.Set<String> hookedSendClasses = ConcurrentHashMap.newKeySet();
 
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
@@ -60,11 +70,24 @@ public final class AntiDetect {
 
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
                       boolean observeFekitAttach, boolean blockO3Report) {
+        this(cl, blockTasks, blockReports, observeFekitAttach, blockO3Report,
+                true, true, "", "", "");
+    }
+
+    public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
+                      boolean observeFekitAttach, boolean blockO3Report,
+                      boolean blockTuringRisk, boolean blockServerKick,
+                      String fakeImei, String fakeAndroidId, String fakeSerial) {
         this.ref = new Ref(cl);
         this.blockTasks = blockTasks;
         this.blockReports = blockReports;
         this.observeFekitAttach = observeFekitAttach;
         this.blockO3Report = blockO3Report;
+        this.blockTuringRisk = blockTuringRisk;
+        this.blockServerKick = blockServerKick;
+        this.fakeImei = cleanFake(fakeImei);
+        this.fakeAndroidId = cleanFake(fakeAndroidId);
+        this.fakeSerial = cleanFake(fakeSerial);
     }
 
     public void install() {
@@ -75,6 +98,14 @@ public final class AntiDetect {
         hookPackageManager();
         hookRuntimeExec();
         hookGetenv();
+        hookVendorRootChecks();
+        hookProcTextReads();
+        hookStackAndLoader();
+        hookDeviceIdentity();
+        hookRuntimeMonitor();
+        hookTuringSdk();
+        hookQQDetectionPatch();
+        hookQimeiObserver();
         if (blockTasks) hookIntMethod("execTasks", 2);
         if (blockReports) hookIntMethod("reportLog", 4);
         if (observeFekitAttach) hookFekitAttachObserver();
@@ -85,7 +116,6 @@ public final class AntiDetect {
             hookMsfInbound();
         }
         hookAdbSettings();
-        hookAdbProperties();
         // Publish a process-local installation snapshot even when no report has been observed.
         // This lets the main-process status endpoint detect stale/missing MSF coverage after a
         // QQ upgrade, without adding another probe hook or touching the signing path.
@@ -96,9 +126,15 @@ public final class AntiDetect {
     public static boolean isEnvReportCmd(String cmd) {
         if (cmd == null || cmd.isEmpty()) return false;
         if (cmd.startsWith("trpc.o3.ecdh_access.")) return false;
-        return cmd.startsWith("trpc.o3.report.")
+        return cmd.equals("trpc.o3.report") || cmd.startsWith("trpc.o3.report.")
+                || cmd.equals("trpc.o3.mobile_security")
                 || cmd.startsWith("trpc.o3.mobile_security.")
-                || cmd.startsWith("trpc.gc_indust.device_report.");
+                || cmd.equals("trpc.gc_indust.device_report")
+                || cmd.startsWith("trpc.gc_indust.device_report.")
+                || cmd.equals("trpc.ilive_cdn.report")
+                || cmd.startsWith("trpc.ilive_cdn.report.")
+                || cmd.equals("OidbSvc.0xd79")
+                || cmd.startsWith("OidbSvc.0xd79_");
     }
 
     public static void recordEnvReportDrop(String cmd) {
@@ -184,7 +220,8 @@ public final class AntiDetect {
                 .put("channel_send", hookChannelSend)
                 .put("channel_in", hookChannelIn)
                 .put("msf_send", hookMsfSend)
-                .put("msf_in", hookMsfIn);
+                .put("msf_in", hookMsfIn)
+                .put("hardening", HARDENING_HOOKS.get());
     }
 
     private static boolean interceptsReady(String process) {
@@ -447,6 +484,7 @@ public final class AntiDetect {
                 if ((m.getModifiers() & java.lang.reflect.Modifier.ABSTRACT) != 0) continue;
                 Class<?>[] p = m.getParameterTypes();
                 if (p.length < 1 || p[0] != String.class) continue;
+                final Class<?> returnType = m.getReturnType();
                 m.setAccessible(true);
                 XposedBridge.hookMethod(m, new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
@@ -463,7 +501,8 @@ public final class AntiDetect {
                         }
                         recordEnvReportDrop(cmd);
                         ackNativeReceive(cmd, callbackId);
-                        param.setResult(null);
+                        Object value = safeDefault(returnType, true);
+                        param.setResult(value == VOID_VALUE ? null : value);
                     }
                 });
                 hooked++;
@@ -523,6 +562,7 @@ public final class AntiDetect {
                 return;
             }
             send.setAccessible(true);
+            final Class<?> returnType = send.getReturnType();
             XposedBridge.hookMethod(send, new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
                     Object msg = param.args == null || param.args.length < 1 ? null : param.args[0];
@@ -532,11 +572,11 @@ public final class AntiDetect {
                     catch (Throwable t) { return; }
                     if (!isEnvReportCmd(cmd)) return;
                     recordEnvReportDrop(cmd);
+                    Object seq = null;
                     try {
-                        param.setResult(ref.call(msg, "getRequestSsoSeq"));
-                    } catch (Throwable t) {
-                        param.setResult(0);
-                    }
+                        seq = ref.call(msg, "getRequestSsoSeq");
+                    } catch (Throwable ignore) {}
+                    param.setResult(coerceNumber(returnType, seq));
                 }
             });
             hookMsfSend = 1;
@@ -627,6 +667,369 @@ public final class AntiDetect {
         try { ref.call(msg, "setBusinessFailCode", 0); } catch (Throwable ignore) {}
     }
 
+    /** Java checks covered by QQEnhancedBypass in addition to QSec's own probes. */
+    private void hookVendorRootChecks() {
+        hookBooleanFalse("org.light.device.LightDeviceUtils", "isRooted");
+        hookBooleanFalse("com.tenpay.charge.v2.util.ChargeV2Utils", "isDeviceRooted");
+        hookBooleanFalse("com.tencent.gathererga.core.UserInfoImpl", "isRooted");
+
+        try {
+            Class<?> wlogin = ref.clsOrNull("oicq.wlogin_sdk.request.w");
+            if (wlogin == null) return;
+            for (Method m : wlogin.getDeclaredMethods()) {
+                if (!"h".equals(m.getName())) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        L.d("AntiDetect: Wlogin device probe observed");
+                    }
+                });
+                HARDENING_HOOKS.incrementAndGet();
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.wloginRoot", t);
+        }
+    }
+
+    private void hookBooleanFalse(String className, String methodName) {
+        try {
+            Class<?> cls = ref.clsOrNull(className);
+            if (cls == null) return;
+            int hooked = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!methodName.equals(m.getName()) || m.getReturnType() != boolean.class) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(false));
+                hooked++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (hooked > 0) L.i("AntiDetect: root check " + className + "." + methodName);
+        } catch (Throwable t) {
+            L.e("AntiDetect.root " + className, t);
+        }
+    }
+
+    /** Covers Java readers of proc status files; native readers are handled by MapsHide. */
+    private void hookProcTextReads() {
+        try {
+            XposedBridge.hookAllMethods(BufferedReader.class, "readLine", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    Object value = p.getResult();
+                    if (!(value instanceof String)) return;
+                    String line = (String) value;
+                    if (line.startsWith("TracerPid:")) p.setResult("TracerPid:\t0");
+                    else if (line.startsWith("NoNewPrivs:")) p.setResult("NoNewPrivs:\t0");
+                    else if (shouldHideProcMapLine(line)) p.setResult("");
+                }
+            });
+            HARDENING_HOOKS.incrementAndGet();
+            L.i("AntiDetect: proc status text filter");
+        } catch (Throwable t) {
+            L.e("AntiDetect.procText", t);
+        }
+    }
+
+    private void hookStackAndLoader() {
+        try {
+            XposedBridge.hookAllMethods(Throwable.class, "getStackTrace", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    Object value = p.getResult();
+                    if (!(value instanceof StackTraceElement[])) return;
+                    StackTraceElement[] src = (StackTraceElement[]) value;
+                    ArrayList<StackTraceElement> out = new ArrayList<>(src.length);
+                    for (StackTraceElement e : src) {
+                        if (e != null && !frameworkText(e.getClassName())) out.add(e);
+                    }
+                    if (out.size() != src.length) p.setResult(out.toArray(new StackTraceElement[0]));
+                }
+            });
+            XposedBridge.hookAllMethods(ClassLoader.class, "toString", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    if (p.getResult() instanceof String)
+                        p.setResult(sanitizeFrameworkText((String) p.getResult()));
+                }
+            });
+            HARDENING_HOOKS.addAndGet(2);
+            L.i("AntiDetect: stack and class-loader filter");
+        } catch (Throwable t) {
+            L.e("AntiDetect.stack", t);
+        }
+    }
+
+    private void hookDeviceIdentity() {
+        hookStringResult("android.telephony.TelephonyManager",
+                new String[]{"getImei", "getDeviceId", "getMeid"}, fakeImei);
+        hookStringResult("android.telephony.TelephonyManager",
+                new String[]{"getSimSerialNumber"}, fakeSerial);
+        hookStringResult("android.os.Build", new String[]{"getSerial"}, fakeSerial);
+        hookStringResult("com.tencent.qmethod.pandoraex.monitor.DeviceInfoMonitor",
+                new String[]{"getImei"}, fakeImei);
+
+        if (!fakeAndroidId.isEmpty()) {
+            try {
+                Class<?> secure = ref.clsOrNull("android.provider.Settings$Secure");
+                if (secure != null) {
+                    XposedBridge.hookAllMethods(secure, "getString", new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            if (p.args != null && p.args.length >= 2
+                                    && "android_id".equals(p.args[1])) p.setResult(fakeAndroidId);
+                        }
+                    });
+                    HARDENING_HOOKS.incrementAndGet();
+                }
+            } catch (Throwable t) {
+                L.e("AntiDetect.androidId", t);
+            }
+        }
+        hookDetectionProperties();
+        hookVoidMethods("com.tencent.qmethod.pandoraex.core.MonitorReporter",
+                new String[]{"report"}, "Pandora reports");
+    }
+
+    private void hookStringResult(String className, String[] names, final String value) {
+        if (value == null || value.isEmpty()) return;
+        try {
+            Class<?> cls = ref.clsOrNull(className);
+            if (cls == null) return;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (m.getReturnType() != String.class || !containsName(names, m.getName())) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) { p.setResult(value); }
+                });
+                HARDENING_HOOKS.incrementAndGet();
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.identity " + className, t);
+        }
+    }
+
+    private void hookDetectionProperties() {
+        try {
+            Class<?> sp = ref.clsOrNull("android.os.SystemProperties");
+            if (sp == null) return;
+            XposedBridge.hookAllMethods(sp, "get", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (p.args == null || p.args.length < 1 || !(p.args[0] instanceof String)) return;
+                    String key = (String) p.args[0];
+                    String safe = safeStringProperty(key, fakeSerial);
+                    if (safe != null) p.setResult(safe);
+                }
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    if (p.args == null || p.args.length < 1
+                            || !"ro.product.device".equals(p.args[0])
+                            || !(p.getResult() instanceof String)) return;
+                    String value = ((String) p.getResult()).toLowerCase(Locale.ROOT);
+                    if ("goldfish".equals(value) || "vbox86".equals(value)) p.setResult("unknown");
+                }
+            });
+            XposedBridge.hookAllMethods(sp, "getInt", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (p.args == null || p.args.length < 1 || !(p.args[0] instanceof String)) return;
+                    Integer safe = safeIntProperty((String) p.args[0]);
+                    if (safe != null) p.setResult(safe);
+                }
+            });
+            XposedBridge.hookAllMethods(sp, "getBoolean", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (p.args == null || p.args.length < 1 || !(p.args[0] instanceof String)) return;
+                    Boolean safe = safeBooleanProperty((String) p.args[0]);
+                    if (safe != null) p.setResult(safe);
+                }
+            });
+            HARDENING_HOOKS.addAndGet(3);
+            L.i("AntiDetect: debug, emulator and serial properties");
+        } catch (Throwable t) {
+            L.e("AntiDetect.properties", t);
+        }
+    }
+
+    /** Observe Pandora's command wrappers; Runtime/ProcessBuilder hooks do the neutralisation. */
+    private void hookRuntimeMonitor() {
+        hookObserveMethods("com.tencent.qmethod.pandoraex.monitor.RuntimeMonitor",
+                new String[]{"exec", "execute"});
+        hookObserveMethods("com.tencent.qmethod.pandoraex.monitor.RuntimeMonitor$IPProcessor",
+                new String[]{"transform"});
+        hookObserveMethods("com.tencent.qmethod.pandoraex.monitor.RuntimeMonitor$PackageManagerProcessor",
+                new String[]{"transform"});
+        hookObserveMethods("com.tencent.qmethod.pandoraex.monitor.RuntimeMonitor$PropProcessor",
+                new String[]{"transform"});
+    }
+
+    private void hookObserveMethods(String className, String[] names) {
+        try {
+            Class<?> cls = ref.clsOrNull(className);
+            if (cls == null) return;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!containsName(names, m.getName())) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (p.args == null) return;
+                        for (Object arg : p.args) {
+                            String s = commandText(arg);
+                            if (cmdDenied(s)) L.d("AntiDetect: Pandora root command blocked downstream");
+                        }
+                    }
+                });
+                HARDENING_HOOKS.incrementAndGet();
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.runtimeMonitor " + className, t);
+        }
+    }
+
+    /** Turing entry points from QQEnhancedBypass, with exact return-type defaults. */
+    private void hookTuringSdk() {
+        if (!blockTuringRisk) return;
+        String[] entryClasses = {
+                "com.tencent.turingfd.sdk.xq.Pomegranate",
+                "com.tencent.tfd.sdk.wxa.Pomegranate",
+                "com.tencent.turingfd.sdk.xq.Blueberry",
+                "com.tencent.tfd.sdk.wxa.Blueberry",
+                "com.tencent.turingcam.oqKCa"
+        };
+        for (String cls : entryClasses) {
+            hookSafeDefaults(cls, new String[]{"a"}, true, "Turing entry");
+            hookSafeDefaults(cls, new String[]{"b"}, false, "Turing debug");
+        }
+    }
+
+    private void hookQQDetectionPatch() {
+        if (blockServerKick)
+            hookVoidMethods("com.tencent.mobileqq.kick.NTKickProcessor",
+                    new String[]{"b"}, "server kick handler");
+
+        hookVoidMethods("com.tencent.mobileqq.msf.core.MsfCore", new String[]{
+                "doReportOnInitComplete", "reportMsfCoreInit", "tryReportJobAlive",
+                "tryReportLoadCfgTempFile", "tryReportMSFAlive", "tryReportSoLoadUseTxlib"
+        }, "MSF telemetry");
+        hookVoidMethods("com.tencent.mobileqq.dt.model.TuringWrapper",
+                new String[]{"b", "c"}, "Turing wrapper");
+        hookVoidMethods("com.tencent.mobileqq.channel.ChannelManager",
+                new String[]{"checkMethod"}, "channel report setup");
+
+        if (!blockTuringRisk) return;
+        for (String cls : new String[]{
+                "com.tencent.tfd.sdk.wxa.TuringRiskService",
+                "com.tencent.turingfd.sdk.xq.TuringRiskService"}) {
+            hookSafeDefaults(cls, new String[]{"reqRiskDetectV2"}, true, "Turing risk");
+        }
+        for (String cls : new String[]{
+                "com.tencent.tfd.sdk.wxa.TuringIDService",
+                "com.tencent.turingfd.sdk.xq.TuringIDService"}) {
+            hookSafeDefaults(cls,
+                    new String[]{"getTuringDID", "getTuringDIDAsync", "getTuringDIDCached"},
+                    true, "Turing DID");
+        }
+    }
+
+    /** The reference native hook only observed this value. Xposed can cover the Java native bridge. */
+    private void hookQimeiObserver() {
+        try {
+            Class<?> cls = ref.clsOrNull("com.tencent.mobileqq.msfcore.MSFKernelBridge$CppProxy");
+            if (cls == null) return;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!"native_setQimei36".equals(m.getName())) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        L.d("AntiDetect: qimei36 bridge observed (value redacted)");
+                    }
+                });
+                HARDENING_HOOKS.incrementAndGet();
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.qimei", t);
+        }
+    }
+
+    private void hookVoidMethods(String className, String[] names, String label) {
+        try {
+            Class<?> cls = ref.clsOrNull(className);
+            if (cls == null) return;
+            int hooked = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!containsName(names, m.getName()) || m.getReturnType() != void.class) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(null));
+                hooked++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (hooked > 0) L.i("AntiDetect: blocked " + label + " (" + hooked + ")");
+        } catch (Throwable t) {
+            L.e("AntiDetect." + label, t);
+        }
+    }
+
+    private void hookSafeDefaults(String className, String[] names, boolean allowObjects,
+                                  String label) {
+        try {
+            Class<?> cls = ref.clsOrNull(className);
+            if (cls == null) return;
+            int hooked = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!containsName(names, m.getName())) continue;
+                Object value = safeDefault(m.getReturnType(), allowObjects);
+                if (value == UNSUPPORTED) continue;
+                m.setAccessible(true);
+                final Object replacement = value;
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        p.setResult(replacement == VOID_VALUE ? null : replacement);
+                    }
+                });
+                hooked++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (hooked > 0) L.i("AntiDetect: blocked " + label + " @ " + className
+                    + " (" + hooked + ")");
+        } catch (Throwable t) {
+            L.e("AntiDetect." + label + " " + className, t);
+        }
+    }
+
+    private static final Object UNSUPPORTED = new Object();
+    private static final Object VOID_VALUE = new Object();
+
+    private static Object safeDefault(Class<?> type, boolean allowObjects) {
+        if (type == void.class) return VOID_VALUE;
+        if (type == boolean.class) return Boolean.FALSE;
+        if (type == byte.class) return Byte.valueOf((byte) 0);
+        if (type == short.class) return Short.valueOf((short) 0);
+        if (type == int.class) return Integer.valueOf(0);
+        if (type == long.class) return Long.valueOf(0L);
+        if (type == float.class) return Float.valueOf(0F);
+        if (type == double.class) return Double.valueOf(0D);
+        if (type == char.class) return Character.valueOf('\0');
+        return allowObjects ? null : UNSUPPORTED;
+    }
+
+    private static Object coerceNumber(Class<?> type, Object value) {
+        Number n = value instanceof Number ? (Number) value : Integer.valueOf(0);
+        if (type == int.class) return Integer.valueOf(n.intValue());
+        if (type == long.class) return Long.valueOf(n.longValue());
+        if (type == short.class) return Short.valueOf(n.shortValue());
+        if (type == byte.class) return Byte.valueOf(n.byteValue());
+        if (type == float.class) return Float.valueOf(n.floatValue());
+        if (type == double.class) return Double.valueOf(n.doubleValue());
+        if (type == void.class) return null;
+        if (value == null || type.isInstance(value)) return value;
+        return null;
+    }
+
+    private static boolean containsName(String[] names, String name) {
+        for (String n : names) if (n.equals(name)) return true;
+        return false;
+    }
+
+    private static String commandText(Object arg) {
+        if (arg == null) return "";
+        if (arg instanceof String[]) return join((String[]) arg);
+        if (arg instanceof List) return String.valueOf(arg);
+        return String.valueOf(arg);
+    }
+
     private void hookPackageManager() {
         try {
             XC_MethodHook hide = new XC_MethodHook() {
@@ -639,6 +1042,7 @@ public final class AntiDetect {
                 @Override protected void afterHookedMethod(MethodHookParam p) {
                     if (p.getThrowable() != null) return;
                     stripXposedMeta(p.getResult());
+                    clearDebuggableFlag(p.getResult());
                 }
             };
             Class<?> appPm = ref.clsOrNull("android.app.ApplicationPackageManager");
@@ -731,6 +1135,19 @@ public final class AntiDetect {
         } catch (Throwable ignore) {}
     }
 
+    private static void clearDebuggableFlag(Object result) {
+        if (result == null) return;
+        try {
+            Object ai = result;
+            try { ai = result.getClass().getField("applicationInfo").get(result); }
+            catch (Throwable ignore) {}
+            if (ai instanceof android.content.pm.ApplicationInfo) {
+                android.content.pm.ApplicationInfo info = (android.content.pm.ApplicationInfo) ai;
+                info.flags &= ~android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE;
+            }
+        } catch (Throwable ignore) {}
+    }
+
     private void hookRuntimeExec() {
         try {
             XposedBridge.hookAllMethods(Runtime.class, "exec", new XC_MethodHook() {
@@ -807,6 +1224,8 @@ public final class AntiDetect {
             XposedBridge.hookAllMethods(java.io.File.class, "isDirectory", denyTrue);
             XposedBridge.hookAllMethods(android.os.Debug.class, "isDebuggerConnected",
                     XC_MethodReplacement.returnConstant(false));
+            XposedBridge.hookAllMethods(android.os.Debug.class, "waitingForDebugger",
+                    XC_MethodReplacement.returnConstant(false));
             L.i("AntiDetect: File + debugger probes");
         } catch (Throwable t) {
             L.e("AntiDetect.fileProbes", t);
@@ -870,6 +1289,83 @@ public final class AntiDetect {
         return null;
     }
 
+    public static String safeStringProperty(String name, String serial) {
+        if (name == null) return null;
+        String adb = adbPropSafe(name);
+        if (adb != null) return adb;
+        if ("ro.debuggable".equals(name) || "ro.kernel.qemu".equals(name)) return "0";
+        if ("ro.secure".equals(name)) return "1";
+        if (("ro.boot.serialno".equals(name) || "gsm.serial".equals(name))
+                && serial != null && !serial.isEmpty()) return serial;
+        return null;
+    }
+
+    public static Integer safeIntProperty(String name) {
+        if ("ro.debuggable".equals(name) || "ro.kernel.qemu".equals(name)) return 0;
+        if ("ro.secure".equals(name)) return 1;
+        return null;
+    }
+
+    public static Boolean safeBooleanProperty(String name) {
+        if ("ro.debuggable".equals(name) || "ro.kernel.qemu".equals(name)) return false;
+        if ("ro.secure".equals(name)) return true;
+        return null;
+    }
+
+    static boolean frameworkText(String text) {
+        if (text == null) return false;
+        String value = stripIgnorable(text).toLowerCase(Locale.ROOT);
+        return value.contains("xposed") || value.contains("lsposed")
+                || value.contains("edxposed") || value.contains("lsplant")
+                || value.contains("com.satori.qq");
+    }
+
+    public static String sanitizeFrameworkText(String text) {
+        if (text == null || text.isEmpty()) return text;
+        String out = text;
+        String[] words = {"lsposed", "edxposed", "xposed", "lsplant", "com.satori.qq"};
+        for (String word : words) out = replaceIgnoreCase(out, word, "dalvik");
+        return out;
+    }
+
+    public static boolean shouldHideProcMapLine(String line) {
+        if (line == null || line.isEmpty()) return false;
+        int dash = line.indexOf('-');
+        int space = line.indexOf(' ');
+        if (dash <= 0 || space <= dash) return false;
+        for (int i = 0; i < dash; i++) {
+            char c = line.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+                    || (c >= 'A' && c <= 'F'))) return false;
+        }
+        String value = stripIgnorable(line).toLowerCase(Locale.ROOT);
+        String[] words = {"xposed", "lsposed", "edxposed", "zygisk", "riru", "magisk",
+                "mapshide", "com.satori.qq", "kernelsu", "ksud", "frida", "substrate",
+                "lsplant", "shamiko"};
+        for (String word : words) if (value.contains(word)) return true;
+        return false;
+    }
+
+    private static String replaceIgnoreCase(String value, String needle, String replacement) {
+        String lower = value.toLowerCase(Locale.ROOT);
+        String target = needle.toLowerCase(Locale.ROOT);
+        int at = lower.indexOf(target);
+        if (at < 0) return value;
+        StringBuilder out = new StringBuilder(value.length());
+        int from = 0;
+        while (at >= 0) {
+            out.append(value, from, at).append(replacement);
+            from = at + needle.length();
+            at = lower.indexOf(target, from);
+        }
+        out.append(value, from, value.length());
+        return out.toString();
+    }
+
+    private static String cleanFake(String value) {
+        return value == null ? "" : value.trim();
+    }
+
     private static boolean hiddenPackage(String pkg) {
         if (pkg == null) return false;
         String p = stripIgnorable(pkg).toLowerCase();
@@ -915,8 +1411,12 @@ public final class AntiDetect {
         if (cmd == null) return false;
         String c = collapsePath(stripIgnorable(cmd).toLowerCase());
         if (c.contains("magisk") || c.contains("ksud") || c.contains("apatch")
-                || c.contains("which su")) return true;
-        return c.equals("su") || c.startsWith("su ") || c.endsWith("/su") || c.contains("/su ");
+                || c.contains("supersu") || c.contains("superuser") || c.contains("busybox")
+                || c.contains("which su") || c.contains("type su")
+                || c.contains("command -v su")) return true;
+        return c.equals("su") || c.startsWith("su ") || c.endsWith("/su")
+                || c.contains("/su ") || c.contains("/su/bin")
+                || c.contains("/data/local/su");
     }
 
     private static String join(String[] parts) {

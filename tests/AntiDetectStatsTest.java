@@ -19,6 +19,8 @@ public final class AntiDetectStatsTest {
         check(AntiDetect.isEnvReportCmd("trpc.o3.report.Report.SsoEventReport"), "event report");
         check(AntiDetect.isEnvReportCmd("trpc.o3.mobile_security.MobileSecurity.SsoCheckSwitch"), "mobile security");
         check(AntiDetect.isEnvReportCmd("trpc.gc_indust.device_report.SsoHome.SsoHomeReport"), "device report");
+        check(AntiDetect.isEnvReportCmd("trpc.ilive_cdn.report.StreamReport"), "cdn report");
+        check(AntiDetect.isEnvReportCmd("OidbSvc.0xd79"), "oidb device report");
         check(!AntiDetect.isEnvReportCmd("trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess"), "keep ecdh");
         check(!AntiDetect.isEnvReportCmd("trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey"), "keep sharekey");
         check(!AntiDetect.isEnvReportCmd("trpc.o3.guard.GuardHello"), "keep other o3");
@@ -39,7 +41,8 @@ public final class AntiDetectStatsTest {
                 "inbound drop prefix");
         JSONObject hooks = env.getJSONObject("hooks");
         check(hooks.has("channel_send") && hooks.has("channel_in")
-                && hooks.has("msf_send") && hooks.has("msf_in"), "hook counters");
+                && hooks.has("msf_send") && hooks.has("msf_in")
+                && hooks.has("hardening"), "hook counters");
         check(env.has("intercepts_ready"), "intercept readiness");
         check("main".equals(env.getString("process")), "process key");
         check(AntiDetect.isDeniedPath("/data/adb/magisk"), "adb magisk");
@@ -50,6 +53,8 @@ public final class AntiDetectStatsTest {
         check(!AntiDetect.isDeniedPath("/data/data/com.tencent.mobileqq"), "keep qq data");
         check(AntiDetect.isDeniedCommand("su"), "bare su");
         check(AntiDetect.isDeniedCommand("/system/bin/su 0"), "su with args");
+        check(AntiDetect.isDeniedCommand("/system/bin/sh -c type su"), "type su");
+        check(AntiDetect.isDeniedCommand("sh -c command -v su"), "command -v su");
         check(!AntiDetect.isDeniedCommand("id"), "keep id");
         check(AntiDetect.isHiddenInstalledPackage("com.satori.qq"), "hide module from lists");
         check(!AntiDetect.isHiddenPointQueryPackage("com.satori.qq"), "keep module point query");
@@ -63,6 +68,23 @@ public final class AntiDetectStatsTest {
         check(!AntiDetect.isXposedMetaKey("android.app.lib_name"), "keep other meta");
         check("mtp".equals(AntiDetect.adbPropSafe("persist.sys.usb.config")), "usb config");
         check(AntiDetect.adbPropSafe("ro.build.type") == null, "keep build type");
+        check("0".equals(AntiDetect.safeStringProperty("ro.debuggable", "")), "debug property");
+        check("1".equals(AntiDetect.safeStringProperty("ro.secure", "")), "secure property");
+        check("serial-1".equals(AntiDetect.safeStringProperty("ro.boot.serialno", "serial-1")),
+                "serial property");
+        check(Integer.valueOf(0).equals(AntiDetect.safeIntProperty("ro.kernel.qemu")),
+                "emulator int property");
+        check(Boolean.FALSE.equals(AntiDetect.safeBooleanProperty("ro.debuggable")),
+                "debug boolean property");
+        check("Path dalvik bridge dalvik".equals(
+                AntiDetect.sanitizeFrameworkText("Path LSPosed bridge com.satori.qq")),
+                "framework text");
+        check(AntiDetect.shouldHideProcMapLine(
+                "7000-8000 r-xp 0 00:00 0 /data/app/com.satori.qq/libmapshide.so"),
+                "java maps line");
+        check(!AntiDetect.shouldHideProcMapLine(
+                "7000-8000 r-xp 0 00:00 0 /apex/com.android.art/lib64/libart.so"),
+                "keep java maps line");
         System.out.println("AntiDetectStatsTest OK");
     }
 

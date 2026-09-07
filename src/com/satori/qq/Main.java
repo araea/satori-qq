@@ -30,7 +30,9 @@ public final class Main implements IXposedHookLoadPackage {
             if (cfg.antiDetect) {
                 try {
                     new AntiDetect(lp.classLoader, cfg.blockQsecTasks, cfg.blockQsecReports,
-                            cfg.observeFekitAttach, cfg.blockO3Report).install();
+                            cfg.observeFekitAttach, cfg.blockO3Report, cfg.blockTuringRisk,
+                            cfg.blockServerKick, cfg.fakeImei, cfg.fakeAndroidId,
+                            cfg.fakeSerial).install();
                 } catch (Throwable t) { L.e("AntiDetect install failed", t); }
             }
             if (!mainProcess) {

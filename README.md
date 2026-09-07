@@ -5,7 +5,7 @@ satori-qq
 
 本机 QQ 的 Satori v1 实现端。任何 Satori 协议客户端均可连接（如 Koishi `adapter-satori`）。
 
-当前按 QQ 9.3.60.40970（NT）核验。
+当前按 QQ 9.3.55、9.3.60.40970（NT）核验。
 
 ## 使用
 
@@ -28,6 +28,18 @@ plugins:
     endpoint: 'http://127.0.0.1:3001'
     token: ''
 ```
+
+## 过检测
+
+`anti_detect` 与 `maps_hide` 默认开启，覆盖 Root / Xposed / 调试器探测、包与堆栈扫描、
+QSec / Turing / Pandora、环境上报，以及检测库对 `/proc`、属性、命令、符号和网络发送的
+读取。Java hook 按返回类型安装，Native hook 仅修改检测库的 GOT。
+
+`block_turing_risk` 与 `block_server_kick` 默认开启。服务端已撤销会话时仍需重新登录。
+`fake_imei`、`fake_android_id`、`fake_serial` 留空即使用真实值；需要伪装时应一并设置，
+避免多条取值路径互相矛盾。
+
+实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)，感谢其公开研究。
 
 ## 常驻与通知
 

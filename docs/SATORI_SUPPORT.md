@@ -1,6 +1,6 @@
 # Satori v1（QQ 9.3.60.40970）
 
-`adapter-satori` 连 `http://127.0.0.1:3001`。
+Satori 客户端连 `http://127.0.0.1:3001`（HTTP + WebSocket）。
 
 - HTTP：`POST /v1/{resource}.{method}`，JSON 请求体，成功 200；`upload.create` 使用 multipart。
 - 事件：`GET /v1/events` 升级为 WebSocket；10s 内 `IDENTIFY`，回复 `READY`，之后推 `EVENT`。省略 `sn` 表示新会话；显式 `sn=0` 回放缓冲区内 `sn > 0` 的事件。
@@ -129,10 +129,12 @@ const context = await bot.internal.messageContext({
 媒体 `src` 可以是 http(s)、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，或本端 `http://127.0.0.1:3001/v1/assets/{id}`。
 
 - `login.user.avatar` / 成员 `user.avatar` 为 QQ 头像 CDN（`q.qlogo.cn`，spec=640）。
-- 入站图片优先给出 `/v1/assets/{id}`（GET 无需 Bearer，供 Koishi / puppeteer `<img>` 渲染）；过期的 qpic 直链不再优先。
+- 入站图片优先给出 `/v1/assets/{id}`（GET 无需 Bearer，便于客户端或浏览器 `<img>` 直接引用）；过期的 qpic 直链不再优先。
 - 出站：`data:` 与 `base64://` 会落盘；HTTP 按魔数识别 png/jpeg/gif/webp（RIFF+WEBP 不再误判成 wav）。
 
-## Koishi
+## 客户端对接
+
+任何 Satori v1 客户端均可连接。Koishi `adapter-satori` 注意事项：
 
 `selfUrl` 须与 `server.port` 一致，否则 assets 会变成 QQ 进程读不到的 `file://` 路径。
 

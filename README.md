@@ -3,7 +3,7 @@ satori-qq
 
 [<img alt="github" src="https://img.shields.io/badge/github-araea/satori--qq-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/araea/satori-qq)
 
-本机 QQ 的 Satori v1 实现端，供 Koishi `adapter-satori` 连接。
+本机 QQ 的 Satori v1 实现端。任何 Satori 协议客户端均可连接（如 Koishi `adapter-satori`）。
 
 当前按 QQ 9.3.60.40970（NT）核验。
 
@@ -13,11 +13,10 @@ satori-qq
 2. 反检测加固（可选，针对 Duck Detector 类包扫描）：启用成功后执行
    `pm install -r -d build/SatoriQQ.stealth.apk`。该变体清单不含任何
    `xposed*` meta-data，跨应用包扫描（`getInstalledApplications(GET_META_DATA)`）
-   不再能把它识别为模块；LSPosed 守护进程对已启用模块只认
-   `assets/xposed_init`，覆盖安装与后续升级均照常加载。改作用域时先装回
-   引导包再操作。
+   无法将其识别为模块；LSPosed 加载已启用模块只依赖 `assets/xposed_init`，
+   覆盖安装与升级照常生效。需要改作用域时，先装回引导包再操作。
 3. 重启 QQ。
-4. Koishi 配置 `adapter-satori`，`endpoint` 指向 `http://127.0.0.1:3001`。
+4. 客户端连接 `http://127.0.0.1:3001`。Koishi 配置示例：
 
 ```yaml
 plugins:
@@ -32,25 +31,19 @@ plugins:
 
 ## 常驻与通知
 
-**常驻(合作式保活)。** 服务在线时,模块把 QQ 主进程提升为**前台服务**(复用 QQ 自身
-一个声明了 `dataSync` 的 service),进程随即进入前台服务优先级档,系统的低内存回收与
-OEM 后台冻结默认放过它——像 VPN 一样「开着就一直连着」。这不是反复拉起进程的看门狗:
-**用户强停或划掉 QQ,服务就随之干净断开、不复活**,控制权在用户手里。首次在线若未加
-电池优化白名单,会弹一次系统「忽略电池优化」对话框申请 Doze 豁免(授予后后台保活更稳)。
-`foreground_keepalive: false` 可关,`request_battery_exemption: false` 可只关一次性申请。
-
-**状态通知。** 前台服务的通知即一条静默常驻通知,随状态切换「运行中 / 等待登录 /
-服务异常」,显示账号、端口、连接数与在线时长。以 QQ 自身身份发出,模块不声明任何权限;
-需 QQ 具备通知权限(Android 13+ 的 `POST_NOTIFICATIONS`,默认已授予)。
-`status_notification: false` 可关闭独立通知(开启保活时它仍作为前台服务通知存在)。
-
-**唤醒锁开关。** 仿 Termux,常驻通知上带一个「获取唤醒锁 / 释放唤醒锁」动作按钮。点一下
-获取,模块以 QQ 身份持有一枚 `PARTIAL_WAKE_LOCK`(外加一枚高性能 Wi-Fi 锁),让 CPU 与网卡
-在 Doze 下也不休眠,进一步加强保活;再点一下释放、恢复省电。默认不持有,由用户按需开关;
-无需模块声明权限(QQ 已持 `WAKE_LOCK`)。`wake_lock_control: false` 可移除该按钮。
-
-另有本地免鉴权探针 `GET http://127.0.0.1:3001/healthz`,返回 `online`/`listening`/
-在线时长与 `keepalive`/`notice`/`wakelock` 诊断,机器可读地区分「真在线」与「端口在听但内核离线」。
+- **前台保活**（`foreground_keepalive`，默认开）：服务在线时将 QQ 主进程提升为
+  前台服务，降低被系统低内存回收与后台冻结的概率。用户强停或划掉 QQ 后服务随之
+  断开，不会自动复活。首次在线若未加入电池优化白名单，会弹出一次「忽略电池优化」
+  授权对话框（`request_battery_exemption: false` 可关闭该申请）。
+- **状态通知**（`status_notification`，默认开）：以 QQ 身份显示一条静默常驻通知，
+  随状态切换「运行中 / 等待登录 / 服务异常」，含账号、端口、连接数与在线时长。
+  关闭后若保活开启，仍保留前台服务通知。
+- **唤醒锁开关**（`wake_lock_control`，默认开）：常驻通知上带「获取 / 释放唤醒锁」
+  按钮。持锁期间以 QQ 身份持有 `PARTIAL_WAKE_LOCK` 与高性能 Wi-Fi 锁，避免 Doze 下
+  CPU 与网卡休眠；默认不持有，由用户按需开关。
+- **健康检查**：`GET http://127.0.0.1:3001/healthz`，本地免鉴权，返回 `online` /
+  `listening` / 在线时长与 `keepalive` / `notice` / `wakelock` 状态，用于区分
+  「真在线」与「端口在听但内核离线」。
 
 ## 构建
 
@@ -70,6 +63,12 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 
 `./test.sh` 跑 JVM 单元测试，覆盖不碰 QQ 内核的纯逻辑部分。真机行为另见
 `tests/ws-health.js` 与 `scripts/` 下的现场脚本。
+
+## 发布
+
+APK 与版本记录统一发布在模块市场
+[Xposed-Modules-Repo/com.satori.qq](https://github.com/Xposed-Modules-Repo/com.satori.qq)，
+本仓库不维护 release。
 
 ## 文档
 

@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Persist session samples across Cursor terminals. Does not stop QQ or touch scope.
 # start from service.d; samples every 120s into session-observe-YYYYMMDD.log.
-# Version / pid / account_kicks changes also go to observe-events.log.
+# Version / pid changes also go to observe-events.log.
 
 STATE_DIR="${SATORI_OBSERVE_STATE_DIR:-/data/adb/satori-qq}"
 ENABLED="$STATE_DIR/observe.enabled"
@@ -17,13 +17,11 @@ EXPOSURE_AUDIT="$STATE_DIR/qq-satori-exposure-audit.sh"
 mkdir -p "$STATE_DIR"
 
 last_version=
-last_kicks=
 last_qq_pid=
 
 load_state() {
     [ -f "$STATE_FILE" ] || return 0
     last_version="$(sed -n 's/^last_version=//p' "$STATE_FILE" | tail -n 1)"
-    last_kicks="$(sed -n 's/^last_kicks=//p' "$STATE_FILE" | tail -n 1)"
     last_qq_pid="$(sed -n 's/^last_qq_pid=//p' "$STATE_FILE" | tail -n 1)"
 }
 
@@ -31,7 +29,6 @@ save_state() {
     state_tmp="$STATE_FILE.$$"
     {
         echo "last_version=${last_version}"
-        echo "last_kicks=${last_kicks}"
         echo "last_qq_pid=${last_qq_pid}"
         echo "updated_epoch=$(date +%s)"
     } > "$state_tmp" && mv "$state_tmp" "$STATE_FILE"
@@ -60,10 +57,6 @@ sample_once() {
         summary="ws-health-missing"
     fi
     echo "$summary" >> "$log"
-    kicks="$(sed -n 's/^account_kicks=//p' "$STATE_DIR/watchdog.counters" 2>/dev/null | tail -n 1)"
-    echo "account_kicks=${kicks:-}" >> "$log"
-    wd_state="$(sed -n 's/^state=//p' "$STATE_DIR/watchdog.status" 2>/dev/null | tail -n 1)"
-    echo "watchdog_state=${wd_state:-}" >> "$log"
     qq_pid="$(pidof com.tencent.mobileqq 2>/dev/null | awk '{print $1}')"
     echo "qq_pid=${qq_pid:-0}" >> "$log"
 
@@ -77,15 +70,6 @@ sample_once() {
             "$EXPOSURE_AUDIT" snapshot --quiet "observe-${last_version}-to-${version}" >/dev/null 2>&1 &
         fi
     fi
-    if [ -n "$last_kicks" ] && [ -n "$kicks" ]; then
-        case "$kicks" in *[!0-9]*) ;; *)
-            case "$last_kicks" in *[!0-9]*) ;; *)
-                if [ "$kicks" -gt "$last_kicks" ]; then
-                    emit_event "account_kicks ${last_kicks} -> ${kicks} qq_pid=${qq_pid:-0}"
-                fi
-            ;; esac
-        ;; esac
-    fi
     if [ -n "$last_qq_pid" ]; then
         cur_pid="${qq_pid:-0}"
         if [ "$cur_pid" != "$last_qq_pid" ]; then
@@ -96,7 +80,6 @@ sample_once() {
         emit_event "ws-unhealthy last_version=${last_version:-none} last_pid=${last_qq_pid}"
     fi
     [ -n "$version" ] && last_version="$version"
-    [ -n "$kicks" ] && last_kicks="$kicks"
     if [ -n "$qq_pid" ]; then
         last_qq_pid="$qq_pid"
     else
@@ -144,7 +127,7 @@ case "${1:-run}" in
     status)
         old_pid="$(cat "$PID_FILE" 2>/dev/null)"
         if [ -f "$ENABLED" ] && [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-            echo "enabled running pid=$old_pid last_version=$(sed -n 's/^last_version=//p' "$STATE_FILE" 2>/dev/null | tail -n 1) last_kicks=$(sed -n 's/^last_kicks=//p' "$STATE_FILE" 2>/dev/null | tail -n 1)"
+            echo "enabled running pid=$old_pid last_version=$(sed -n 's/^last_version=//p' "$STATE_FILE" 2>/dev/null | tail -n 1)"
         elif [ -f "$ENABLED" ]; then
             echo "enabled not-running"
             exit 1

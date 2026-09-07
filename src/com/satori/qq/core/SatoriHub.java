@@ -4831,7 +4831,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private void scheduleRestart(int delayMs) {
         Thread t = new Thread(() -> {
             try { Thread.sleep(delayMs); } catch (InterruptedException ignore) { return; }
-            L.i("restart requested; exiting QQ for external watchdog recovery");
+            L.i("restart requested; exiting QQ process (reopen to bring the service back)");
             StatusNotice n = notice;
             if (n != null) n.cancel(); // drop the stale "running" entry before the process dies
             Runtime.getRuntime().exit(0);

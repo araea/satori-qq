@@ -2,12 +2,25 @@
 
 针对「锁屏后图片/合并转发发不出去，纯文字却正常」这一类深夜定时推送翻车的问题。
 
-成因：息屏后 Wi-Fi 进入省电节奏（本机实测到 AP 的 RTT 从 4ms 劣化到平均 27ms、峰值 48ms，链路本身
-再差一点就会 DATA_STALL 到断连）。文字消息顺着已建立的 MSF 长连接一个包就出去了，而 QQ 内核在
-`sendMsg` 里同步完成的富媒体上传需要新建连接和持续吞吐，是最先失败的一环，回调
-`code=-1 / rich media transfer failed`。
+**成因（请先看这段，本版的代码改动只是兜底）**：厂商 ROM 的「睡眠待机优化 / 深度睡眠」会在夜间
+预测的睡眠窗口里**直接切断数据通路**——不是限速，是关网。ColorOS 的实现在
+`/data/user_de/0/com.oplus.battery/shared_prefs/DeepSleepSharepref.xml`：
+`deep_sleep_is_disable_net_allowed=true`、`deepsleep_network_switch=3`（3 = Wi-Fi 与移动数据
+一起关，所以**换成移动数据同样复现**），另有 `com.oplus.deepsleep.RestoreNetworkReceiver` 负责
+事后恢复。实测一晚的时间线：预测窗口 23:30→07:43，01:49 首次进入失败、02:33 进入「等待流量停止」、
+03:37 真正进入深度睡眠、03:53:25 退出——QQ 积压一小时的消息正是 03:53:27 一次性涌进来的。
 
-- **Wi-Fi 锁模式改回 `WIFI_MODE_FULL_HIGH_PERF`**。0.8.9.23 在 API 29+ 用的是
+为什么偏偏是图片和合并转发：文字一个包顺着已建立的 MSF 长连接就出去了；而 QQ 内核的富媒体上传是在
+`sendMsg` 里同步完成的，要新建连接 + 持续吞吐，断网时第一个失败，回调
+`code=-1 / rich media transfer failed`。合并转发同理（native 路径先把内层消息发进自己的私聊，
+再 `multiForwardMsg`）。
+
+> **因此：真正的修复是去系统设置里关掉「睡眠待机优化 / 深度睡眠」。** 若整机流量走本地代理 / VPN
+> （Clash 之类），那个应用也要加进电池优化白名单——它被限制时所有应用一起断网。本版的重试与自动
+> 持锁只能提高成功率，断网期间照样发不出去，区别是不会再一次失败就静默降级成纯文字。
+
+- **Wi-Fi 锁模式改回 `WIFI_MODE_FULL_HIGH_PERF`**（次要因素：息屏 Wi-Fi 省电把到 AP 的 RTT 从
+  4ms 抬到平均 27ms / 峰值 48ms，实测）。0.8.9.23 在 API 29+ 用的是
   `WIFI_MODE_FULL_LOW_LATENCY`，而框架只在**亮屏且持锁应用在前台**时才激活低延迟锁
   （`WifiLockManager.getStrongestLockMode`），息屏时等同于「没有任何锁」。高性能锁是唯一会被映射
   成「关闭省电」的模式。**但要说清楚它能买到什么**：Android 14+ 会把高性能请求重映射成低延迟

@@ -65,11 +65,24 @@ VPN 式保活,不是反复拉起进程。服务在线时,把 QQ 主进程里一�
   (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`);授予后后台启动 FGS 始终放行。
 - 开关:`foreground_keepalive` / `request_battery_exemption`;通知另由 `status_notification`。
 - **唤醒锁开关(仿 Termux)**:常驻通知带「获取/释放唤醒锁」动作按钮。以 QQ 身份持有
-  `PARTIAL_WAKE_LOCK` + 高性能 Wi-Fi 锁,让 CPU/网卡在 Doze 下不休眠——FGS 保进程常驻,
-  唤醒锁再保其不被打盹冻住网络。按钮 PendingIntent 发一条自寻址、NOT_EXPORTED 的广播到运行时
-  注册的接收器,每点一下翻转状态并重绘通知;默认不持有,由用户按需开关。开关:`wake_lock_control`。
-- 局限:FGS 大幅降低被杀/冻结概率但非绝对;ColorOS 等激进省电下仍建议保留 Doze 白名单
-  (即上面的一次性授权)。QQ targetSdk 34,不受 Android 15+ `dataSync` 6 小时上限约束。
+  `PARTIAL_WAKE_LOCK` + 高性能 Wi-Fi 锁——FGS 保进程常驻,唤醒锁再保其不被打盹冻住网络。
+  按钮 PendingIntent 发一条自寻址、NOT_EXPORTED 的广播到运行时注册的接收器,每点一下翻转
+  状态并重绘通知。手动持有默认关;此外**每个 mutation 自动持锁**(`guarded()` 里 begin/end,
+  自动锁带 3 分钟超时),`wifi_sustain` 则在有客户端连着时长期持 Wi-Fi 锁。
+  开关:`wake_lock_control` / `wifi_sustain`。
+- 局限一(进程):FGS 大幅降低被杀/冻结概率但非绝对;ColorOS 等激进省电下仍建议保留 Doze
+  白名单(即上面的一次性授权)。QQ targetSdk 34,不受 Android 15+ `dataSync` 6 小时上限约束。
+- **局限二(网络,应用层无解)**:厂商 ROM 的「睡眠待机优化 / 深度睡眠」会在夜间预测窗口里
+  **直接切断数据通路**,不是限速。ColorOS 的实现见 `com.oplus.battery` 的
+  `DeepSleepSharepref.xml`(`deep_sleep_is_disable_net_allowed`、`deepsleep_network_switch`
+  = 3 表示 Wi-Fi + 移动数据一起关,故换网络也复现)与 `com.oplus.deepsleep.RestoreNetworkReceiver`。
+  症状形状很特征:**纯文字正常、图片/合并转发失败**——文字一个包顺着已建立的 MSF 长连接就
+  出去了,而富媒体上传在 `sendMsg` 内同步进行,要新建连接与持续吞吐,断网时第一个失败
+  (`code=-1 / rich media transfer failed`)。模块侧只能兜底(`sendMedia()` 重试 + 发送期持锁),
+  真正的修复是设备侧关掉该优化;整机流量若走本地代理/VPN,那个应用也要进电池优化白名单。
+  次要因素:息屏 Wi-Fi 省电把到 AP 的 RTT 从 ~4ms 抬到 ~27ms,同样应用层管不了——Android 14+
+  把 `WIFI_MODE_FULL_HIGH_PERF` 重映射成低延迟锁,而低延迟锁只在亮屏且持锁应用前台时激活,
+  只有设备侧 `cmd wifi force-hi-perf-mode` 能强制(需要至少一把锁存在才生效)。
 
 ## 可观测性
 

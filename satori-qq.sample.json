@@ -8,6 +8,7 @@
   "foreground_keepalive": true,
   "request_battery_exemption": true,
   "wake_lock_control": true,
+  "wifi_sustain": true,
   "anti_detect": true,
   "maps_hide": true,
   "verbose_logs": false,
@@ -22,6 +23,9 @@
   "outbound_max_per_minute": 20,
   "outbound_failure_threshold": 3,
   "outbound_circuit_open_ms": 120000,
+  "media_retry_attempts": 2,
+  "media_retry_backoff_ms": 4000,
+  "media_retry_budget_ms": 45000,
   "manual_self_messages": true,
   "manual_self_user_id": "",
   "forward_mode": "auto"

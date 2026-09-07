@@ -14,14 +14,16 @@ import com.satori.qq.L;
  * POST_NOTIFICATIONS grant — the module declares no notification permission of its own.
  * A single low-importance (silent) channel carries one ongoing entry whose text tracks the
  * live service state, giving the operator a human-readable "is the bot alive" indicator that
- * mirrors the machine-readable {@code GET /healthz} line. It is not a foreground service and
- * grants no keep-alive priority; process residency is out of this module's scope.
+ * mirrors the machine-readable {@code GET /healthz} line. When foreground keepalive is on the
+ * same {@link Notification} is handed to {@code startForeground} (see {@code Keepalive}); this
+ * class only builds and posts it, it grants no keep-alive priority by itself.
  */
 public final class StatusNotice {
     private static final String CHANNEL_ID = "satori-qq-status";
     private static final String CHANNEL_NAME = "Satori 服务状态";
-    // Stable id so every update() replaces the same entry in place rather than stacking.
-    private static final int NOTIFY_ID = 0x5A710001;
+    // Stable id so every update() replaces the same entry in place, and so startForeground()
+    // and notify() address one and the same notification.
+    public static final int NOTIFY_ID = 0x5A710001;
 
     private static final int COLOR_ONLINE = 0xFF2E7D32;   // green — running normally
     private static final int COLOR_WAIT = 0xFFF9A825;     // amber — waiting for login
@@ -71,39 +73,72 @@ public final class StatusNotice {
         }
     }
 
+    private static final class View {
+        String title, text, big, key;
+        int color;
+    }
+
+    private View render(boolean online, boolean listening, String uin, String nick,
+                        int port, int connections, long onlineSinceMs) {
+        View v = new View();
+        if (online && listening) {
+            v.title = "Satori QQ · 运行中";
+            StringBuilder who = new StringBuilder(uin == null || uin.isEmpty() ? "未知账号" : uin);
+            if (nick != null && !nick.isEmpty()) who.append(" (").append(nick).append(')');
+            v.text = who + " · 端口 " + port + " · 连接 " + connections;
+            v.color = COLOR_ONLINE;
+        } else if (!online) {
+            v.title = "Satori QQ · 等待登录";
+            v.text = "服务就绪，等待 QQ 登录";
+            v.color = COLOR_WAIT;
+        } else {
+            v.title = "Satori QQ · 服务异常";
+            v.text = "本地端口 " + port + " 未监听";
+            v.color = COLOR_DEGRADED;
+        }
+        v.big = v.text;
+        String coarse = "";
+        if (online && listening && onlineSinceMs > 0) {
+            long up = System.currentTimeMillis() - onlineSinceMs;
+            coarse = String.valueOf(up / 60000L); // minute granularity for dedupe
+            v.big = v.text + "\n在线 " + humanUptime(up);
+        }
+        v.key = v.title + '|' + v.text + '|' + coarse;
+        return v;
+    }
+
+    private Notification notif(View v) {
+        return new Notification.Builder(ctx, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setContentTitle(v.title)
+                .setContentText(v.text)
+                .setStyle(new Notification.BigTextStyle().bigText(v.big))
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .setColor(v.color)
+                .build();
+    }
+
+    /** Build the current-state notification (channel ensured), for handing to startForeground(). */
+    public Notification build(boolean online, boolean listening, String uin, String nick,
+                              int port, int connections, long onlineSinceMs) {
+        if (nm == null) return null;
+        ensureChannel();
+        try {
+            return notif(render(online, listening, uin, nick, port, connections, onlineSinceMs));
+        } catch (Throwable t) {
+            L.e("notice: build", t);
+            return null;
+        }
+    }
+
     /** Refresh the resident notification. Cheap to call every tick: rebuilds only on a visible change. */
     public void update(boolean online, boolean listening, String uin, String nick,
                        int port, int connections, long onlineSinceMs) {
         if (nm == null) return;
-        String title;
-        String text;
-        int color;
-        if (online && listening) {
-            title = "Satori QQ · 运行中";
-            StringBuilder who = new StringBuilder(uin == null || uin.isEmpty() ? "未知账号" : uin);
-            if (nick != null && !nick.isEmpty()) who.append(" (").append(nick).append(')');
-            text = who + " · 端口 " + port + " · 连接 " + connections;
-            color = COLOR_ONLINE;
-        } else if (!online) {
-            title = "Satori QQ · 等待登录";
-            text = "服务就绪，等待 QQ 登录";
-            color = COLOR_WAIT;
-        } else {
-            title = "Satori QQ · 服务异常";
-            text = "本地端口 " + port + " 未监听";
-            color = COLOR_DEGRADED;
-        }
-
-        String big = text;
-        String coarseUptime = "";
-        if (online && listening && onlineSinceMs > 0) {
-            long up = System.currentTimeMillis() - onlineSinceMs;
-            coarseUptime = String.valueOf(up / 60000L); // minute granularity for dedupe
-            big = text + "\n在线 " + humanUptime(up);
-        }
-        // Skip the notify() when nothing the user would see has changed (title/text/minute).
-        String key = title + '|' + text + '|' + coarseUptime;
-        if (key.equals(lastKey)) return;
+        View v = render(online, listening, uin, nick, port, connections, onlineSinceMs);
+        if (v.key.equals(lastKey)) return;
 
         // The post is dropped silently when QQ lacks POST_NOTIFICATIONS (the user disabled QQ
         // notifications, or Android 13+ hasn't granted it). Don't cache the key then, so the entry
@@ -113,17 +148,8 @@ public final class StatusNotice {
 
         ensureChannel();
         try {
-            Notification.Builder b = new Notification.Builder(ctx, CHANNEL_ID)
-                    .setSmallIcon(android.R.drawable.stat_notify_sync)
-                    .setContentTitle(title)
-                    .setContentText(text)
-                    .setStyle(new Notification.BigTextStyle().bigText(big))
-                    .setOngoing(true)
-                    .setOnlyAlertOnce(true)
-                    .setShowWhen(false)
-                    .setColor(color);
-            nm.notify(NOTIFY_ID, b.build());
-            if (enabled) lastKey = key;
+            nm.notify(NOTIFY_ID, notif(v));
+            if (enabled) lastKey = v.key;
         } catch (Throwable t) {
             L.e("notice: notify", t);
         }

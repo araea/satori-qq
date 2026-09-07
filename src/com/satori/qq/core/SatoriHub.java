@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.21";
+    public static final String APP_VERSION = "0.8.9.22";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -43,6 +43,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final OutboundGuard outboundGuard;
     private HttpServer server;
     private volatile StatusNotice notice;
+    private volatile com.satori.qq.qq.Keepalive keepalive;
     private volatile long onlineSinceMs;
     private final Set<WsConn> identified = ConcurrentHashMap.newKeySet();
     private final AtomicLong eventSn = new AtomicLong();
@@ -90,11 +91,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         startStatusMonitor();
     }
 
-    /** Push the current service state into the resident notification. No-op when disabled.
-     *  The notifier is created lazily: at hub start QQ's Application (and thus its Context) is not
-     *  ready yet, so we keep retrying each monitor tick until getMobileQQ() yields a real Context. */
+    /** Refresh the resident notification and drive foreground-service keepalive. No-op when both are
+     *  disabled. The Context-bound helpers are created lazily: at hub start QQ's Application (and thus
+     *  its Context) is not ready yet, so we keep retrying each monitor tick until it is. */
     private void refreshNotice() {
-        if (!cfg.statusNotification) return;
+        if (!cfg.statusNotification && !cfg.foregroundKeepalive) return;
         StatusNotice n = notice;
         if (n == null || !n.available()) {
             android.content.Context ctx = qq.appContext();
@@ -104,12 +105,45 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             notice = created;
             n = created;
         }
+        boolean online, listening;
         try {
-            boolean online = qq.isOnline();
-            boolean listening = server != null && server.isListening();
-            n.update(online, listening, qq.selfUin(), qq.selfNick(),
-                    cfg.port, server == null ? 0 : server.connectionCount(), onlineSinceMs);
+            online = qq.isOnline();
+            listening = server != null && server.isListening();
+        } catch (Throwable t) { return; }
+        int conns = server == null ? 0 : server.connectionCount();
+        String uin = qq.selfUin(), nick = qq.selfNick();
+
+        // Human-readable status entry (also the FGS notification when keepalive is on).
+        try {
+            n.update(online, listening, uin, nick, cfg.port, conns, onlineSinceMs);
         } catch (Throwable t) { L.e("status notice refresh", t); }
+
+        if (cfg.foregroundKeepalive) {
+            try { driveKeepalive(n, online, listening, uin, nick, conns); }
+            catch (Throwable t) { L.e("keepalive tick", t); }
+        }
+    }
+
+    /** VPN-style keepalive: while online, hold QQ's main process as a foreground service whose
+     *  notification is the same status entry. Stops with the process when the user closes QQ. */
+    private void driveKeepalive(StatusNotice n, boolean online, boolean listening,
+                                String uin, String nick, int conns) {
+        com.satori.qq.qq.Keepalive k = keepalive;
+        if (k == null) {
+            android.content.Context ctx = qq.appContext();
+            if (ctx == null) return;
+            k = new com.satori.qq.qq.Keepalive(qq.ref.cl, ctx, StatusNotice.NOTIFY_ID);
+            k.install();
+            keepalive = k;
+        }
+        if (!k.hooked()) return;
+        k.setNotification(n.build(online, listening, uin, nick, cfg.port, conns, onlineSinceMs));
+        if (online) {
+            if (!k.started()) k.enable();
+            if (cfg.requestBatteryExemption) k.requestBatteryExemptionOnce();
+        } else {
+            k.markStopped();
+        }
     }
 
     private long selfUin() { try { return Long.parseLong(qq.selfUin()); } catch (Throwable t) { return 0; } }
@@ -188,6 +222,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("online_since_epoch_ms", onlineSinceMs)
                         .put("connections", server == null ? 0 : server.connectionCount())
                         .put("notice", noticeDiag())
+                        .put("keepalive", keepaliveDiag())
                         .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");
@@ -4682,6 +4717,14 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         StatusNotice n = notice;
         if (n == null) return "pending-context";
         try { return n.diag(); } catch (Throwable t) { return "err:" + t; }
+    }
+
+    private String keepaliveDiag() {
+        if (!cfg.foregroundKeepalive) return "off";
+        com.satori.qq.qq.Keepalive k = keepalive;
+        if (k == null) return "pending-context";
+        return (k.hooked() ? "hooked" : "no-hook") + "/fgs=" + (k.started() ? "on" : "off")
+                + "/" + k.info();
     }
 
     private JSONObject status(boolean online) throws Exception {

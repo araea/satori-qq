@@ -5,6 +5,8 @@
   "heartbeat": true,
   "heartbeat_ms": 15000,
   "status_notification": true,
+  "foreground_keepalive": true,
+  "request_battery_exemption": true,
   "anti_detect": true,
   "maps_hide": true,
   "verbose_logs": false,

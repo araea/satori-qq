@@ -45,18 +45,35 @@ QQ 9.3.60 移除了 `MsgRecord.senderRoleType` 及 `RevokeElement.senderUid`；�
 JNI 类、方法签名、元素字段和 QSec 命令白名单。新版 `MsgRecord.roleType/roleId`
 不是群成员身份，群消息角色从 `getAllMemberList` 缓存解析。
 
+## 常驻（合作式前台服务）
+
+VPN 式保活,不是反复拉起进程。服务在线时,把 QQ 主进程里一个已声明
+`foregroundServiceType` 的 service 提升为**真正的前台服务**,进程即进入 FGS 优先级档
+(实测 `oom_score_adj` 从 ~450 降到 ~50,后台时依然),系统低内存回收与 OEM 后台冻结
+默认放过它——像 VPN/音乐应用一样一直活着。
+
+- 宿主 service:`com.qq.background.task.service.QQDataSyncService`(主进程,声明
+  `dataSync`,免运行时权限;QQ 持有 `FOREGROUND_SERVICE_DATA_SYNC`)。以自定义 action
+  启动,在 before-hook 里 `startForeground` 并短路其 `onStartCommand`,QQ 自身对该
+  service 的使用不受影响。`onStartCommand` 实际声明在基类 `QQBackgroundService`,安装
+  hook 时逐级向上找到声明处。
+- 通知即 FGS 通知(与状态通知同一条、同 id),绿色「运行中」。
+- **合作、非对抗**:用户强停 / 划掉 QQ → service 随进程死 → Satori 断开,**不复活**。
+  这正是与「monkey 反复拉起、跟 cgroup freezer 硬掰、改系统名单」的看门狗相反的取舍:
+  开着就保活,关了就干净断开,把控制权交回用户。
+- **一次性授权**:首次在线且未加 Doze 白名单时,弹一次系统「忽略电池优化」对话框
+  (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`);授予后后台启动 FGS 始终放行。
+- 开关:`foreground_keepalive` / `request_battery_exemption`;通知另由 `status_notification`。
+- 局限:FGS 大幅降低被杀/冻结概率但非绝对;ColorOS 等激进省电下仍建议保留 Doze 白名单
+  (即上面的一次性授权)。QQ targetSdk 34,不受 Android 15+ `dataSync` 6 小时上限约束。
+
 ## 可观测性
 
-进程内不做保活，只做自愈与状态上报：
-
-- HTTP accept 循环自带 3s 重绑，端口丢失可自愈；Satori HTTP/WS 只绑 `127.0.0.1`，
+- HTTP accept 循环自带 3s 重绑,端口丢失可自愈;Satori HTTP/WS 只绑 `127.0.0.1`,
   无对外连接。
-- 以前"在线"只能从端口 + activity dump 反推，正是本文提到的"端口在听却 `isOnline()`
-  恒 false"盲区。现补两个同源状态出口：
-  - `GET /healthz`（本地免鉴权）直吐 `online` / `listening` / `self_id` / 在线时长，
-    机器可读，把"真在线"与"端口在听但内核离线"分开。
-  - QQ 通知栏常驻一条静默（`IMPORTANCE_LOW`）通知，随状态切换 运行中 / 等待登录 /
-    服务异常，人可读。以 QQ 自身 `Context` + 通知权限发出，模块不声明任何权限；它不是
-    前台服务、不提供保活权重，只作状态指示。可用 `status_notification: false` 关闭。
-    发出需 QQ 具备通知权限（Android 13+ 的 `POST_NOTIFICATIONS`，默认已授予；若手动
-    关闭了 QQ 通知则不显示）。
+- `GET /healthz`(本地免鉴权)直吐 `online` / `listening` / `self_id` / 在线时长,以及
+  `notice`(通知投递状态)与 `keepalive`(FGS 状态)诊断,机器可读,把「真在线」与
+  「端口在听但内核离线」分开。
+- QQ 通知栏常驻一条静默(`IMPORTANCE_LOW`)通知,随状态切换 运行中 / 等待登录 /
+  服务异常,人可读。需 QQ 具备通知权限(Android 13+ 的 `POST_NOTIFICATIONS`,默认已授予;
+  开启前台保活时它同时作为 FGS 通知)。

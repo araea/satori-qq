@@ -1,14 +1,21 @@
 # satori-qq
 
-本机 QQ 的 Satori v1 实现端。任何 Satori 协议客户端均可连接（如 Koishi `adapter-satori`）。
+在 Android QQ 进程内提供本机 Satori v1 服务，供 Koishi `adapter-satori` 等客户端连接。
+服务仅监听 `127.0.0.1`。
 
-当前按 QQ 9.3.55、9.3.60.40970（NT）核验。
+已核验 QQ 9.3.55 与 9.3.60.40970（NT），要求 Android 8.0 及以上。
 
-## 使用
+## 安装
 
-1. 在 vector 启用本模块，作用域勾选 QQ（`com.tencent.mobileqq`）。
-2. 安装后重启 QQ。
-3. 客户端连接 `http://127.0.0.1:3001`。Koishi 配置示例：
+1. 安装 `SatoriQQ.apk`。
+2. 在 Xposed 兼容框架中启用模块，并将 QQ 加入作用域。
+3. 重启 QQ。
+4. 访问 `http://127.0.0.1:3001/healthz`，确认 `online` 为 `true`。
+
+需要隐藏模块清单标记时，先用普通 APK 完成启用和作用域设置，再覆盖安装同版本的
+`SatoriQQ.stealth.apk`。调整作用域前应先装回普通 APK。
+
+## 连接
 
 ```yaml
 plugins:
@@ -17,41 +24,25 @@ plugins:
     token: ''
 ```
 
-## 过检测
+默认端口为 `3001`，默认不要求令牌。配置文件可放在：
 
-Java 与 Native 加固默认开启，覆盖 Root / Xposed / 调试器探测、包与堆栈扫描、
-QSec / Turing / Pandora、环境上报及检测库的 `/proc`、命令、符号和网络发送路径。
-设备标识伪装为可选项，留空时使用真实值。
+```text
+/sdcard/Android/data/com.tencent.mobileqq/files/satori-qq.json
+```
 
-实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)，感谢其公开研究。
+## 功能
 
-## 常驻与通知
+- 消息收发、撤回、历史记录与事件推送
+- 群、成员、好友、表态、群文件及合并转发操作
+- 图片、语音、视频和文件处理
+- 前台保活、状态通知、唤醒锁与富媒体重试
+- 默认启用的 Java 与 Native 环境检测处理
 
-- **前台保活**（`foreground_keepalive`，默认开）：服务在线时将 QQ 提升为前台服务，
-  降低被系统回收与冻结的概率；强停或划掉 QQ 即断开，不自动复活。首次在线会申请
-  一次电池优化豁免。
-- **状态通知**（`status_notification`，默认开）：以 QQ 身份显示静默常驻通知，随状态
-  切换「运行中 / 等待登录 / 服务异常」。
-- **唤醒锁开关**（`wake_lock_control`，默认开）：常驻通知带「获取 / 释放唤醒锁」按钮。
-  手动持有默认关闭，但每次发送都会自动持锁（带超时兜底）。
-- **Wi-Fi 常驻锁**（`wifi_sustain`，默认开）：有客户端连着就长期持有 Wi-Fi 锁，
-  收消息同样会被息屏省电拖住。
-- **富媒体重试**（`media_retry_attempts`，默认 2）：图片上传由 QQ 内核在 `sendMsg` 里
-  同步完成，是网络变差时最先失败的一环；失败发生在消息投递之前，重试不会重复发送。
-- **健康检查**：`GET http://127.0.0.1:3001/healthz`，本地免鉴权，返回在线状态与
-  保活诊断。
+完整接口与配置见[源码文档](https://github.com/araea/satori-qq)。
 
-## 系统省电策略（重要）
+## 排障
 
-**建议关闭厂商 ROM 的「睡眠待机优化 / 深度睡眠」。** ColorOS 等国产 ROM 会在夜间预测的
-睡眠窗口里直接切断数据通路——不是限速是关网，Wi-Fi 与移动数据一起关，换网络也复现。
+强停或划掉 QQ 会停止服务。若锁屏后文字正常而图片或合并转发失败，应关闭系统的
+“睡眠待机优化”或“深度睡眠”，并将 QQ 及所用代理或 VPN 加入电池优化白名单。
 
-典型症状：**纯文字正常，图片和合并转发失败**。文字一个包顺着已建立的长连接就出去了，
-富媒体上传要新建连接 + 持续吞吐，断网时第一个失败。深夜定时推送最容易撞上，白天手动发
-一切正常。整机流量走本地代理 / VPN 的话，那个应用也要一并加进电池优化白名单。
-
-详见[源码仓库 README](https://github.com/araea/satori-qq#系统省电策略重要)。
-
-## 源码
-
-https://github.com/araea/satori-qq
+过检测实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)。

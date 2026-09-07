@@ -15,7 +15,7 @@ import com.satori.qq.L;
  * A single low-importance (silent) channel carries one ongoing entry whose text tracks the
  * live service state, giving the operator a human-readable "is the bot alive" indicator that
  * mirrors the machine-readable {@code GET /healthz} line. It is not a foreground service and
- * grants no keep-alive priority; process residency stays the watchdog's job.
+ * grants no keep-alive priority; process residency is out of this module's scope.
  */
 public final class StatusNotice {
     private static final String CHANNEL_ID = "satori-qq-status";

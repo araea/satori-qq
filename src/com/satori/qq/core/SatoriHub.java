@@ -177,7 +177,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 return serveProxy(path.substring("/v1/proxy/".length()));
             }
             if ("GET".equals(req.method) && "/healthz".equals(path)) {
-                // Unauthenticated, local-only liveness the watchdog/operator can poll to tell a
+                // Unauthenticated, local-only liveness an operator/tooling can poll to tell a
                 // truly-online hub from "port up but kernel offline" without an activity dump.
                 boolean online = qq.isOnline();
                 return HttpServer.HttpResult.json(online ? 200 : 503, new JSONObject()

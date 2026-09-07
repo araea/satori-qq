@@ -85,7 +85,7 @@ QQ 无消息编辑、多频道、自定义群角色或清空他人表态时，�
 | `qzone.list` | 列说说（含仅自己可见）。`limit?` |
 | `qzone.clear` / `qzone.delete_all` / `qzone.delete-all` | 清空全部说说 |
 | `qzone.auth` | 调试 QZone 鉴权（pskey 等） |
-| `restart` / `clean_cache` | 退出 QQ 等 watchdog 拉起；清临时文件 |
+| `restart` / `clean_cache` | 退出 QQ 进程（需外部拉起）；清临时文件 |
 
 所有内部写操作经过串行、限频与熔断保护。
 

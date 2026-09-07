@@ -92,6 +92,12 @@ public final class HttpServer {
 
     public int connectionCount() { return conns.size(); }
 
+    /** True while the accept loop holds an open, bound socket on the Satori port. */
+    public boolean isListening() {
+        ServerSocket s = server;
+        return running && s != null && s.isBound() && !s.isClosed();
+    }
+
     public void broadcast(String text) {
         for (WsConn c : conns) c.send(text);
     }

@@ -275,6 +275,9 @@ protect_qq() {
     /system/bin/cmd activity set-bg-restriction-level --user 0 "$QQ_PACKAGE" unrestricted >/dev/null 2>&1
     /system/bin/cmd appops set --user 0 "$QQ_PACKAGE" RUN_ANY_IN_BACKGROUND allow >/dev/null 2>&1
     /system/bin/cmd appops set --user 0 "$QQ_PACKAGE" RUN_IN_BACKGROUND allow >/dev/null 2>&1
+    # Satori posts its resident status notification under QQ's identity; on Android 13+ that needs
+    # POST_NOTIFICATIONS. Grant it so the status entry shows even when QQ notifications were off.
+    /system/bin/pm grant "$QQ_PACKAGE" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1
     # QQ's own CoreService keeps the UI process at SVC (adj~450) instead of
     # cached (~905). Do not write oom_score_adj: fekit reads it.
     /system/bin/am startservice -n "$QQ_PACKAGE/.app.CoreService" >/dev/null 2>&1

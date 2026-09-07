@@ -357,6 +357,15 @@ public final class QQClient {
         return "";
     }
 
+    /** QQ's own Application as a Context, for posting notifications under QQ's identity. */
+    public android.content.Context appContext() {
+        try {
+            Object app = ref.callS(MOBILEQQ, "getMobileQQ");
+            if (app instanceof Context) return (Context) app;
+        } catch (Throwable t) { L.e("appContext", t); }
+        return null;
+    }
+
     /** True only when the current account, NT session, message service and receive listener are ready. */
     public boolean isOnline() {
         Object s = session;

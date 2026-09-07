@@ -44,3 +44,30 @@ QQ 9.3.60 移除了 `MsgRecord.senderRoleType` 及 `RevokeElement.senderUid`；�
 `Ref.getOrNull` 探测，不能让缺字段中断整条消息事件。升级 QQ 后需重新核验上述
 JNI 类、方法签名、元素字段和 QSec 命令白名单。新版 `MsgRecord.roleType/roleId`
 不是群成员身份，群消息角色从 `getAllMemberList` 缓存解析。
+
+## 常驻 / 防杀 / 网络保持（分层评估）
+
+分层清晰，各司其职，改进只补短板、不越界：
+
+- **进程存活 / 防后台杀**：交给外部 root 看门狗（`scripts/qq-satori-watchdog.sh`，
+  KernelSU/Magisk `service.d` 起）。这是唯一有效的层级——国产 ROM 的后台冻结
+  （ColorOS `OplusHansManager` cgroup v2 freezer）与 o-stop 杀进程只有 root 能对抗：
+  1s 解冻循环写 `uid_*/cgroup.freeze` 及 `pid_*` 子组、`bpm.xml`/`key_proc.xml` 持久
+  白名单、deviceidle/standby/appops 放行、进程死后 monkey 拉起。进程内任何"保活"技巧
+  都打不过内核级冻结，故不重复造轮子；也刻意不写 `oom_score_adj`（fekit 会读）。
+- **网络保持**：Satori HTTP/WS 只绑 `127.0.0.1`，无对外连接可掉；真正的长连是 QQ 自身
+  的 MSF，由看门狗解冻 + CoreService/MsfService 保活维系。HTTP accept 循环自带 3s 重绑，
+  端口丢失可自愈（除非宿主进程被杀——那是看门狗的活）。
+- **可观测性**（本版新增，补"隐性离线"盲区）：以前"在线"只能从端口 + activity dump
+  反推，正是本文反复提到的"端口在听却 `isOnline()` 恒 false"盲区。现补两个同源状态出口：
+  - `GET /healthz`（本地免鉴权）直吐 `online` / `listening` / `self_id` / 在线时长，
+    机器可读，看门狗与运维可据此把"真在线"与"端口在听但内核离线"分开。
+  - QQ 通知栏常驻一条静默（`IMPORTANCE_LOW`）通知，随状态切换 运行中 / 等待登录 /
+    服务异常，人可读。以 QQ 自身 `Context` + 通知权限发出，模块不声明任何权限；它不是
+    前台服务、不提供保活权重，只作状态指示。可用 `status_notification: false` 关闭。
+    发出需 QQ 的 `POST_NOTIFICATIONS`（看门狗 `protect_qq` 自动 `pm grant`）；且 QQ 被
+    ColorOS 后台冻结时系统会丢弃其通知投递——故这条通知能否显示，本身就是"看门狗是否
+    在解冻 QQ"的粗粒度信号，与 `/healthz` 互为人/机读双证。
+
+结论：把只有 root 能做的重活外置于脚本、进程内只做自愈与状态上报，是合理且优雅的分层。
+本版改进集中在补齐可观测性，而非新增易被检测、又打不过内核冻结的进程内保活。

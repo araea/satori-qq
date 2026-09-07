@@ -13,6 +13,8 @@ public final class Cfg {
     public volatile String token = "";        // empty => no auth required
     public volatile boolean heartbeat = true;
     public volatile int heartbeatMs = 15000;
+    /** Post a resident status notification (in QQ's notification shade) while the service runs. */
+    public volatile boolean statusNotification = true;
     public volatile boolean antiDetect = true;   // Java-level anti-detection (see AntiDetect)
     public volatile boolean mapsHide = true;     // native /proc/self/maps filter (v3)
     public volatile boolean verboseLogs = false; // verbose logcat/Xposed logs are observable; opt in for debugging
@@ -60,6 +62,7 @@ public final class Cfg {
                 c.token = o.optString("token", c.token);
                 c.heartbeat = o.optBoolean("heartbeat", c.heartbeat);
                 c.heartbeatMs = o.optInt("heartbeat_ms", c.heartbeatMs);
+                c.statusNotification = o.optBoolean("status_notification", c.statusNotification);
                 c.antiDetect = o.optBoolean("anti_detect", c.antiDetect);
                 c.mapsHide = o.optBoolean("maps_hide", c.mapsHide);
                 c.verboseLogs = o.optBoolean("verbose_logs", c.verboseLogs);

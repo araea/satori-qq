@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.19";
+    public static final String APP_VERSION = "0.8.9.21";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -42,6 +42,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final Convert conv;
     private final OutboundGuard outboundGuard;
     private HttpServer server;
+    private volatile StatusNotice notice;
     private volatile long onlineSinceMs;
     private final Set<WsConn> identified = ConcurrentHashMap.newKeySet();
     private final AtomicLong eventSn = new AtomicLong();
@@ -85,7 +86,30 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         server = new HttpServer(cfg, this);
         server.start();
         qq.setListener(this);
+        refreshNotice(); // usually a no-op this early (QQ Application not up yet); the monitor retries
         startStatusMonitor();
+    }
+
+    /** Push the current service state into the resident notification. No-op when disabled.
+     *  The notifier is created lazily: at hub start QQ's Application (and thus its Context) is not
+     *  ready yet, so we keep retrying each monitor tick until getMobileQQ() yields a real Context. */
+    private void refreshNotice() {
+        if (!cfg.statusNotification) return;
+        StatusNotice n = notice;
+        if (n == null || !n.available()) {
+            android.content.Context ctx = qq.appContext();
+            if (ctx == null) return; // Application not created yet; try again next tick
+            StatusNotice created = new StatusNotice(ctx);
+            if (!created.available()) return;
+            notice = created;
+            n = created;
+        }
+        try {
+            boolean online = qq.isOnline();
+            boolean listening = server != null && server.isListening();
+            n.update(online, listening, qq.selfUin(), qq.selfNick(),
+                    cfg.port, server == null ? 0 : server.connectionCount(), onlineSinceMs);
+        } catch (Throwable t) { L.e("status notice refresh", t); }
     }
 
     private long selfUin() { try { return Long.parseLong(qq.selfUin()); } catch (Throwable t) { return 0; } }
@@ -151,6 +175,20 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             }
             if ("GET".equals(req.method) && path.startsWith("/v1/proxy/")) {
                 return serveProxy(path.substring("/v1/proxy/".length()));
+            }
+            if ("GET".equals(req.method) && "/healthz".equals(path)) {
+                // Unauthenticated, local-only liveness the watchdog/operator can poll to tell a
+                // truly-online hub from "port up but kernel offline" without an activity dump.
+                boolean online = qq.isOnline();
+                return HttpServer.HttpResult.json(online ? 200 : 503, new JSONObject()
+                        .put("name", APP_NAME).put("version", APP_VERSION)
+                        .put("online", online)
+                        .put("listening", server != null && server.isListening())
+                        .put("self_id", selfUin())
+                        .put("online_since_epoch_ms", onlineSinceMs)
+                        .put("connections", server == null ? 0 : server.connectionCount())
+                        .put("notice", noticeDiag())
+                        .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");
             if ("GET".equals(req.method) && "/".equals(path)) {
@@ -4616,6 +4654,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     if (cfg.heartbeat && now >= nextHeartbeat) {
                         nextHeartbeat = now + interval;
                     }
+                    refreshNotice();
                 } catch (InterruptedException ie) { return; }
                 catch (Throwable ignore) {}
             }
@@ -4636,6 +4675,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         } catch (Throwable t) {
             L.e("login-updated", t);
         }
+    }
+
+    private String noticeDiag() {
+        if (!cfg.statusNotification) return "off";
+        StatusNotice n = notice;
+        if (n == null) return "pending-context";
+        try { return n.diag(); } catch (Throwable t) { return "err:" + t; }
     }
 
     private JSONObject status(boolean online) throws Exception {
@@ -4743,6 +4789,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         Thread t = new Thread(() -> {
             try { Thread.sleep(delayMs); } catch (InterruptedException ignore) { return; }
             L.i("restart requested; exiting QQ for external watchdog recovery");
+            StatusNotice n = notice;
+            if (n != null) n.cancel(); // drop the stale "running" entry before the process dies
             Runtime.getRuntime().exit(0);
         }, "pool-5-thread-2");
         t.setDaemon(true);

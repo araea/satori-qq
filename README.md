@@ -77,8 +77,19 @@ curl http://127.0.0.1:3001/healthz
 ```
 
 强停或划掉 QQ 会同时停止服务。前台服务和唤醒锁可降低进程被回收或冻结的概率，但无法阻止
-厂商系统在深度睡眠期间关闭网络。若锁屏后文字可发送而图片或合并转发失败，应关闭系统的
-“睡眠待机优化”或“深度睡眠”，并将 QQ 及所用代理或 VPN 加入电池优化白名单。
+系统在息屏期间关闭网络。若锁屏后文字可发送而图片或合并转发失败，是网络而非模块的问题：
+文字只需在既有长连接上发一个包，而富媒体上传在 `sendMsg` 内同步进行，需要新建连接与持续
+吞吐，会先失败。
+
+依次排除两层。厂商层：关闭“睡眠待机优化”或“深度睡眠”——ColorOS 的开关未必会写回配置，
+需确认 `deep_sleep_is_disable_net_allowed` 与 `deepsleep_network_switch` 已归零。系统层：
+**整机流量经 VPN/TUN 转发时，把相关应用加入电池优化白名单并不够**——实测 Doze 进入
+`IDLE` 后，即便 QQ、Termux 与代理应用全部豁免，经 TUN 的流量仍全部中断，而链路、上游与
+代理进程本身均正常；`dumpsys deviceidle disable` 后立即恢复。Doze 无 UI 开关，可用
+[`scripts/99-no-doze.sh`](scripts/99-no-doze.sh) 开机关闭，代价是待机功耗上升。
+
+分不清断在哪一层时用 [`scripts/netwatch.sh`](scripts/netwatch.sh)：每 60 秒分别记录物理
+链路、本地代理、经 TUN 出站、模块状态与电源状态各自的结果。
 
 协议方法、事件和消息元素见 [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)；内部结构与
 升级检查项见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。

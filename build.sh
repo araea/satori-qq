@@ -48,7 +48,7 @@ fi
 
 echo "== 3. aapt package =="
 rm -f $APK_UNSIGNED $OUT/satori-qq.aligned.apk
-$AAPT package -f -M $R/AndroidManifest.xml -I $FRAMEWORK -A $R/assets -F $APK_UNSIGNED
+$AAPT package -f -M $R/AndroidManifest.xml -I $FRAMEWORK -A $R/assets -S $R/res -F $APK_UNSIGNED
 ( cd $OUT/dex && $AAPT add $APK_UNSIGNED classes.dex >/dev/null )
 if [ -f $OUT/lib/arm64-v8a/libmapshide.so ]; then ( cd $OUT && $AAPT add $APK_UNSIGNED lib/arm64-v8a/libmapshide.so >/dev/null ) && echo "   packaged libmapshide.so"; fi
 
@@ -76,7 +76,7 @@ echo "== 6. stealth variant (no Xposed meta-data) =="
 rm -f $APK_STEALTH
 rm -rf $OUT/stealth && mkdir -p $OUT/stealth
 cp $R/AndroidManifest.stealth.xml $OUT/stealth/AndroidManifest.xml
-$AAPT package -f -M $OUT/stealth/AndroidManifest.xml -I $FRAMEWORK -A $R/assets -F $APK_STEALTH_UNSIGNED
+$AAPT package -f -M $OUT/stealth/AndroidManifest.xml -I $FRAMEWORK -A $R/assets -S $R/res -F $APK_STEALTH_UNSIGNED
 ( cd $OUT/dex && $AAPT add $APK_STEALTH_UNSIGNED classes.dex >/dev/null )
 if [ -f $OUT/lib/arm64-v8a/libmapshide.so ]; then ( cd $OUT && $AAPT add $APK_STEALTH_UNSIGNED lib/arm64-v8a/libmapshide.so >/dev/null ); fi
 $ZIPALIGN -f -p 4 $APK_STEALTH_UNSIGNED $OUT/satori-qq.stealth.aligned.apk

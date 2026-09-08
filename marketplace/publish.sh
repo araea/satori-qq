@@ -7,7 +7,15 @@ PKG=com.satori.qq
 ORG_REPO="Xposed-Modules-Repo/$PKG"
 GH=/data/data/com.termux/files/usr/bin/gh
 APK="$ROOT/build/SatoriQQ.apk"
-TAG="63-0.8.9.28"
+APK_STEALTH="$ROOT/build/SatoriQQ.stealth.apk"
+TAG="64-0.8.9.29"
+
+for artifact in "$APK" "$APK_STEALTH"; do
+  if [ ! -f "$artifact" ]; then
+    echo "missing $artifact - run ./build.sh first"
+    exit 1
+  fi
+done
 
 if ! "$GH" api "repos/$ORG_REPO" --jq .name >/dev/null 2>&1; then
   echo "Marketplace repo not ready yet: $ORG_REPO"
@@ -25,14 +33,13 @@ git add SUMMARY README.md SOURCE_URL ic_launcher.png
 if git diff --cached --quiet; then
   echo "Metadata already up to date"
 else
-  git commit -m "Add marketplace metadata for satori-qq"
+  git commit -m "Update satori-qq icon for 0.8.9.29"
   git push origin HEAD
 fi
 
-"$GH" release create "$TAG" "$APK" \
+"$GH" release create "$TAG" "$APK" "$APK_STEALTH" \
   --repo "$ORG_REPO" \
-  --title "0.8.9.28" \
-  --notes-file "$MP/CHANGELOG-0.8.9.28.md" 2>/dev/null || \
-  echo "Release $TAG may already exist"
+  --title "0.8.9.29" \
+  --notes-file "$MP/CHANGELOG-0.8.9.29.md"
 
 echo "Published to https://github.com/$ORG_REPO"

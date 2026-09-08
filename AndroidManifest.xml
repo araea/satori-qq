@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.satori.qq"
-    android:versionCode="63"
-    android:versionName="0.8.9.28">
+    android:versionCode="64"
+    android:versionName="0.8.9.29">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <application
         android:label="Kernel Bridge"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:hasCode="true"
         android:extractNativeLibs="true">
         <meta-data android:name="xposedmodule" android:value="true" />

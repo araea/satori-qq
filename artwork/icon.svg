@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="18 18 72 72" role="img" aria-labelledby="title desc">
+  <title id="title">Satori QQ</title>
+  <desc id="desc">双向对话交织成连接，代表 QQ 与 Satori 客户端之间的消息桥梁。</desc>
+  <defs>
+    <linearGradient id="base" x1="22" y1="18" x2="88" y2="94" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5368E8"/><stop offset="1" stop-color="#272C78"/></linearGradient>
+    <linearGradient id="mint" x1="44" y1="48" x2="76" y2="78" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#AAFAEB"/><stop offset="1" stop-color="#57D8CE"/></linearGradient>
+    <clipPath id="mask"><rect x="18" y="18" width="72" height="72" rx="16"/></clipPath>
+  </defs>
+  <g clip-path="url(#mask)">
+  <g id="background">
+    <path fill="url(#base)" d="M0 0H108V108H0Z"/>
+    <path fill="#FFFFFF" fill-opacity="0.045" d="M0 0H108V25C76 19 60 50 0 60Z"/>
+  </g>
+  <g id="foreground">
+    <path fill="#12194F" fill-opacity="0.18" d="M42 32H59C67 32 72 37 72 45V49H66V45C66 40 64 38 59 38H42C37 38 35 40 35 45V49C35 54 37 56 42 56H52V62H43L33 69V59C30 57 29 53 29 49V45C29 37 34 32 42 32Z"/>
+    <path fill="#F7FAFF" d="M42 29H59C67 29 72 34 72 42V46H66V42C66 37 64 35 59 35H42C37 35 35 37 35 42V46C35 51 37 53 42 53H52V59H43L33 66V56C30 54 29 50 29 46V42C29 34 34 29 42 29Z"/>
+    <path fill="#12194F" fill-opacity="0.18" d="M56 50H66C74 50 79 55 79 63V67C79 71 78 75 75 77V84L65 80H56C48 80 43 75 43 67V63H49V67C49 72 51 74 56 74H66C71 74 73 72 73 67V63C73 58 71 56 66 56H56Z"/>
+    <path fill="url(#mint)" d="M56 47H66C74 47 79 52 79 60V64C79 68 78 72 75 74V81L65 77H56C48 77 43 72 43 64V60H49V64C49 69 51 71 56 71H66C71 71 73 69 73 64V60C73 55 71 53 66 53H56Z"/>
+    <path fill="#FFFFFF" fill-opacity="0.8" d="M42 41H58C59.66 41 61 42.34 61 44C61 45.66 59.66 47 58 47H42C40.34 47 39 45.66 39 44C39 42.34 40.34 41 42 41Z"/>
+    <path fill="#B7FFF0" d="M57 59H65C66.66 59 68 60.34 68 62C68 63.66 66.66 65 65 65H57C55.34 65 54 63.66 54 62C54 60.34 55.34 59 57 59Z"/>
+  </g>
+  </g>
+</svg>

@@ -1,5 +1,7 @@
 # satori-qq
 
+<img src="artwork/icon.svg" width="96" height="96" alt="软件图标" />
+
 在 Android QQ 进程内提供 Satori v1 HTTP 与 WebSocket 服务。服务默认监听
 `127.0.0.1:3001`，可供 Koishi `adapter-satori` 等客户端连接。
 

@@ -41,6 +41,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final MsgStore store;
     private final Convert conv;
     private final OutboundGuard outboundGuard;
+    private final MessageFreshness messageFreshness = new MessageFreshness();
+    private final Object eventEmitLock = new Object();
+    // HTTP requests run on separate threads; never share a send condition between callers.
+    private final ThreadLocal<MessageFreshness.Condition> sendCondition = new ThreadLocal<>();
     private HttpServer server;
     private volatile StatusNotice notice;
     private volatile com.satori.qq.qq.Keepalive keepalive;
@@ -1510,28 +1514,40 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         boolean group = !Codec.isPrivateChannel(channelId);
         long peer = Codec.channelPeer(channelId);
         if (peer == 0) throw new ApiError(1400, "invalid channel_id");
-        java.util.List<java.util.List<Elements.El>> batches = splitMessages(Elements.parse(content));
+        MessageFreshness.Condition condition;
+        try { condition = MessageFreshness.condition(p); }
+        catch (IllegalArgumentException e) { throw new ApiError(1400, e.getMessage()); }
+        sendCondition.set(condition);
         JSONArray result = new JSONArray();
-        for (java.util.List<Elements.El> batch : batches) {
-            String sentContent = Elements.stringify(batch);
-            resolveInternalResources(batch);
-            JSONArray segs = segmentsForBatch(batch);
-            if (segs.length() == 0) continue;
-            JSONObject sent;
-            if (looksLikeForward(segs)) {
-                sent = group ? sendForward(peer, 0, segs) : sendForward(0, peer, segs);
-            } else {
-                sent = group ? sendGroup(peer, segs, sentContent) : sendPrivate(peer, segs, sentContent);
+        try {
+            messageFreshness.check(condition); // after OutboundGuard's queue and minimum interval
+            java.util.List<java.util.List<Elements.El>> batches = splitMessages(Elements.parse(content));
+            for (java.util.List<Elements.El> batch : batches) {
+                messageFreshness.check(condition);
+                String sentContent = Elements.stringify(batch);
+                resolveInternalResources(batch);
+                JSONArray segs = segmentsForBatch(batch);
+                if (segs.length() == 0) continue;
+                JSONObject sent;
+                if (looksLikeForward(segs)) {
+                    sent = group ? sendForward(peer, 0, segs) : sendForward(0, peer, segs);
+                } else {
+                    sent = group ? sendGroup(peer, segs, sentContent) : sendPrivate(peer, segs, sentContent);
+                }
+                JSONObject msg = new JSONObject();
+                String mid = Codec.publicMessageId(sent);
+                msg.put("id", mid.isEmpty() ? String.valueOf(sent.opt("message_id")) : mid);
+                msg.put("content", sentContent);
+                msg.put("channel", Codec.channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, ""));
+                if (group) msg.put("guild", Codec.guild(peer, ""));
+                msg.put("user", Codec.user(selfUin(), qq.selfNick(), ""));
+                msg.put("created_at", System.currentTimeMillis());
+                result.put(msg);
             }
-            JSONObject msg = new JSONObject();
-            String mid = Codec.publicMessageId(sent);
-            msg.put("id", mid.isEmpty() ? String.valueOf(sent.opt("message_id")) : mid);
-            msg.put("content", sentContent);
-            msg.put("channel", Codec.channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, ""));
-            if (group) msg.put("guild", Codec.guild(peer, ""));
-            msg.put("user", Codec.user(selfUin(), qq.selfNick(), ""));
-            msg.put("created_at", System.currentTimeMillis());
-            result.put(msg);
+        } catch (MessageFreshness.Stale ignored) {
+            L.d("message.create: skipped stale conditional send");
+        } finally {
+            sendCondition.remove();
         }
         return result;
     }
@@ -2776,6 +2792,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private QQClient.SendResult sendTracked(int chatType, String peer, java.util.ArrayList<Object> els) {
+        // Conversion/downloads and retry backoff can take time after leaving the queue.
+        messageFreshness.check(sendCondition.get());
         return qq.sendMsg(chatType, peer, els, this::rememberOutboundMsgId);
     }
 
@@ -4656,21 +4674,26 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private void emitObEvent(JSONObject obEvent) {
-        try {
-            attachGroupName(obEvent);
-            long sn = eventSn.incrementAndGet();
-            JSONObject body = Codec.toSatoriEvent(obEvent, loginSlim(), sn, assetBase());
-            if (body == null) return;
-            emitSatoriEvent(body);
-        } catch (Throwable t) {
-            L.e("emit event", t);
+        synchronized (eventEmitLock) {
+            try {
+                attachGroupName(obEvent);
+                long sn = eventSn.incrementAndGet();
+                JSONObject body = Codec.toSatoriEvent(obEvent, loginSlim(), sn, assetBase());
+                if (body == null) return;
+                emitSatoriEvent(body);
+            } catch (Throwable t) {
+                L.e("emit event", t);
+            }
         }
     }
 
     private void emitSatoriEvent(JSONObject body) throws Exception {
-        rememberEvent(body);
-        String payload = opJson(OP_EVENT, body).toString();
-        for (WsConn c : identified) c.send(payload);
+        synchronized (eventEmitLock) {
+            messageFreshness.observe(body);
+            rememberEvent(body);
+            String payload = opJson(OP_EVENT, body).toString();
+            for (WsConn c : identified) c.send(payload);
+        }
     }
 
     private void rememberEvent(JSONObject body) {

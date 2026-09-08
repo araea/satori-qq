@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.27";
+    public static final String APP_VERSION = "0.8.9.28";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -854,7 +854,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 return dispatchGroupFile(params);
             case "get-forward":
             case "get_forward":
-                return satoriGetForward(params.optString("id", params.optString("message_id", "")));
+                return satoriGetForward(params);
             case "message-context":
             case "message_context":
             case "message.context":
@@ -1890,8 +1890,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return data;
     }
 
-    private JSONObject satoriGetForward(String id) throws Exception {
-        if (id != null && id.startsWith("native:")) return satoriGetNativeForward(id);
+    private JSONObject satoriGetForward(JSONObject p) throws Exception {
+        String id = p == null ? "" : p.optString("id", p.optString("message_id", ""));
+        if (id != null && id.startsWith("native:")) return satoriGetNativeForward(id, p);
         JSONObject ob = getForwardMsg(id);
         JSONArray messages = ob.optJSONArray("messages");
         JSONArray data = new JSONArray();
@@ -1917,15 +1918,30 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return new JSONObject().put("data", data);
     }
 
-    private JSONObject satoriGetNativeForward(String id) throws Exception {
+    /**
+     * The kernel copy of a merge-forward: real per-node ids, images and timestamps, unlike the
+     * resId path whose fake-node protocol drops NT media entirely. `getMultiMsg` only needs the
+     * contact plus the parent msgId, so a caller that knows the channel can still reach it after
+     * our own LRU dropped the parent (module restart, or just an old message).
+     */
+    private JSONObject satoriGetNativeForward(String id, JSONObject p) throws Exception {
         long kernelMsgId = parseLongQuiet(id.substring("native:".length()));
         if (kernelMsgId == 0) throw new ApiError(1400, "invalid native forward id");
         MsgStore.Rec parent = store.getByMsgId(kernelMsgId);
-        if (parent == null) throw new ApiError(1404, "native forward is no longer cached");
-        String peer = parent.peerUid;
-        if ((peer == null || peer.isEmpty()) && parent.chatType == QQClient.CT_GROUP)
+        int chatType = parent == null ? 0 : parent.chatType;
+        String peer = parent == null ? null : parent.peerUid;
+        if (parent != null && (peer == null || peer.isEmpty()) && parent.chatType == QQClient.CT_GROUP)
             peer = String.valueOf(parent.peerUin);
-        QQClient.MsgListResult result = qq.getMultiMsg(parent.chatType, peer, kernelMsgId);
+        if (peer == null || peer.isEmpty()) {
+            String channelId = p == null ? "" : p.optString("channel_id", "");
+            long peerUin = Codec.channelPeer(channelId);
+            if (peerUin == 0)
+                throw new ApiError(1404, "native forward is not cached; pass channel_id");
+            boolean group = !Codec.isPrivateChannel(channelId);
+            chatType = group ? QQClient.CT_GROUP : QQClient.CT_C2C;
+            peer = group ? String.valueOf(peerUin) : uidFor(0, peerUin);
+        }
+        QQClient.MsgListResult result = qq.getMultiMsg(chatType, peer, kernelMsgId);
         if (!result.ok()) throw new ApiError(1500, "get native forward failed: " + result.describe());
         if (result.records == null || result.records.isEmpty())
             throw new ApiError(1404, "native forward is empty");

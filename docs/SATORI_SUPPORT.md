@@ -45,6 +45,11 @@ QQ 没有等价能力的方法返回 404。事件仅通过 WebSocket 提供。�
 | `message.update` / `channel.create` / `channel.delete` | 不支持 | 返回 404 |
 | `reaction.clear` / `guild.role.create/update/delete` | 不支持 | 返回 404 |
 
+`internal/get_forward` 的 `id` 有两种：转发卡片里的 resId，或 `native:<父消息 ID>`。
+resId 走伪造节点协议，NT 客户端发的图片在那条路上会整段丢失；`native:` 走 QQ 内核，
+图片、逐条消息 ID 和时间都在，建议优先用它。`native:` 需要知道会话，父消息不在模块
+缓存里（模块重启或消息较旧）时，附带 `channel_id` 即可继续读取。
+
 `message.create` 的 `forward_mode` 可设为 `auto`、`native` 或 `fake`。`auto` 优先使用 QQ 原生
 合并转发；原生结果返回可撤回的真实 `msgId`。`channel.update.data.avatar` 接受本地路径、
 `file:`、`http(s):`、`data:` 和 `internal:`。全员禁言的自动解除计时不会跨 QQ 进程重启保留。
@@ -92,6 +97,7 @@ QQ 发送失败或触发熔断。多条拆分发送只返回已发送部分。
 | 联系人 | `contact_search` | 按号码、昵称、备注或群名搜索好友与群 |
 | 群文件 | `group_file` | 查询、上传、移动、重命名或删除群文件和目录 |
 | 消息读取 | `get_forward` / `get_resource` | 读取合并转发或已登记资源 |
+
 | 消息查询 | `message_context` / `message_search` | 查询消息上下文或近期本地历史 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳 |
 | 能力查询 | `capabilities` / `help` | 返回扩展动作和参数清单 |

@@ -56,6 +56,7 @@ public final class OutboundGuard {
     private final Deque<Long> admittedAtMs = new ArrayDeque<>();
     private long succeeded;
     private long failed;
+    private long transportFailed;
     private long rateRejected;
     private long circuitRejected;
     private long circuitOpened;
@@ -140,6 +141,7 @@ public final class OutboundGuard {
                 out.put("used_last_minute", admittedAtMs.size())
                         .put("succeeded", succeeded)
                         .put("failed", failed)
+                        .put("transport_failed", transportFailed)
                         .put("rate_rejected", rateRejected)
                         .put("circuit_rejected", circuitRejected)
                         .put("circuit_opened", circuitOpened)
@@ -186,7 +188,7 @@ public final class OutboundGuard {
         return "closed";
     }
 
-    private void release(boolean success) {
+    private void release(boolean success, boolean countsTowardCircuit) {
         long now = System.currentTimeMillis();
         synchronized (stateLock) {
             if (success) {
@@ -194,6 +196,10 @@ public final class OutboundGuard {
                 consecutiveFailures = 0;
                 circuitOpenUntilMs = 0;
                 halfOpen = false;
+            } else if (!countsTowardCircuit) {
+                // Recorded, but it says nothing about the kernel's health — see Lease.fail().
+                failed++;
+                transportFailed++;
             } else {
                 failed++;
                 consecutiveFailures++;
@@ -211,12 +217,32 @@ public final class OutboundGuard {
     public static final class Lease implements AutoCloseable {
         private OutboundGuard owner;
         private Lease(OutboundGuard owner) { this.owner = owner; }
+
         public void complete(boolean success) {
+            finish(success, true);
+        }
+
+        /**
+         * Report a failure that says nothing about QQ's health, so it must not trip the breaker.
+         *
+         * <p>The breaker exists to stop hammering a kernel that is refusing work. A rich-media
+         * upload that timed out is a <em>transport</em> condition affecting one class of payload:
+         * on the very same connection a plain text message usually still goes out, and that text
+         * is the fallback a caller reaches for the moment the picture fails. Counting these opens
+         * the circuit and then refuses the fallback too, turning a degraded-but-usable link into a
+         * total outage that outlives the network glitch by the full {@code circuitOpenMs}.
+         */
+        public void failTransport() {
+            finish(false, false);
+        }
+
+        private void finish(boolean success, boolean countsTowardCircuit) {
             OutboundGuard current = owner;
             if (current == null) return;
             owner = null;
-            current.release(success);
+            current.release(success, countsTowardCircuit);
         }
+
         @Override public void close() {
             complete(true);
         }

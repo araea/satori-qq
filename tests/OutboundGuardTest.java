@@ -69,6 +69,32 @@ public final class OutboundGuardTest {
         try (OutboundGuard.Lease ignored = circuit.acquire("message.create")) {}
         check("closed".equals(circuit.stats().getString("circuit_state")), "half-open success closes");
 
+        // A media-upload failure is a transport condition, not the kernel refusing work: it must
+        // leave the breaker closed so the caller's text fallback still gets a lane.
+        OutboundGuard transport = new OutboundGuard(0, 1000, 2, 20, 2, 20);
+        for (int i = 0; i < 5; i++) {
+            OutboundGuard.Lease lease = transport.acquire("message.create");
+            lease.failTransport();
+        }
+        check("closed".equals(transport.stats().getString("circuit_state")),
+                "transport failures leave the circuit closed");
+        check(transport.stats().getLong("transport_failed") == 5, "transport failures counted");
+        check(transport.stats().getLong("consecutive_failures") == 0,
+                "transport failures do not accumulate toward the threshold");
+        try (OutboundGuard.Lease fallback = transport.acquire("message.create")) {
+            check(fallback != null, "text fallback still admitted after media failures");
+        }
+
+        // Mixing them still trips on the real failures alone.
+        OutboundGuard mixed = new OutboundGuard(0, 1000, 2, 20, 2, 20);
+        mixed.acquire("message.create").failTransport();
+        mixed.acquire("message.create").complete(false);
+        mixed.acquire("message.create").failTransport();
+        check("closed".equals(mixed.stats().getString("circuit_state")),
+                "one real failure below threshold keeps the circuit closed");
+        mixed.acquire("message.create").complete(false);
+        expectBusy(() -> mixed.acquire("message.create"), "two real failures still open the circuit");
+
         System.out.println("OutboundGuardTest OK");
     }
 

@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.25";
+    public static final String APP_VERSION = "0.8.9.26";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -523,6 +523,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private Object guarded(String method, Work work) throws Exception {
         OutboundGuard.Lease lease = null;
         boolean ok = false;
+        boolean transportOnly = false;
         com.satori.qq.qq.WakeLockCtl w = wakeLock;
         // QQ's kernel uploads media inline while sendMsg runs; on a locked screen a parked CPU
         // and Wi-Fi radio make that transfer fail while plain text still rides the live socket.
@@ -538,10 +539,29 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             Object data = work.run();
             ok = true;
             return data;
+        } catch (Throwable t) {
+            // A failed media upload must not open the breaker: the caller's very next move is the
+            // text fallback on the same connection, and that one usually still gets through.
+            transportOnly = isTransportFailure(t);
+            throw t;
         } finally {
-            if (lease != null) lease.complete(ok);
+            if (lease != null) {
+                if (!ok && transportOnly) lease.failTransport(); else lease.complete(ok);
+            }
             if (w != null) w.end();
         }
+    }
+
+    /** True for an error whose cause is the network under one payload, not QQ refusing to work. */
+    private static boolean isTransportFailure(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            String m = c.getMessage();
+            if (m == null) continue;
+            String lower = m.toLowerCase(java.util.Locale.ROOT);
+            if (lower.contains("rich media") || lower.contains("media transfer")
+                    || lower.contains("富媒体")) return true;
+        }
+        return false;
     }
 
     private Object dispatch(String method, JSONObject p) throws Exception {

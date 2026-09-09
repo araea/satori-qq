@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.28";
+    public static final String APP_VERSION = "0.8.9.30";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -826,11 +826,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     return new JSONObject();
                 });
             case "dice":
-                return guarded("internal.dice", () -> sendSpecialFace(params, 358, "dice"));
+                return guarded("internal.dice", () -> sendSpecialFace(params, Codec.DICE_FACE, "dice"));
             case "rps":
             case "rock-paper-scissors":
             case "rock_paper_scissors":
-                return guarded("internal.rps", () -> sendSpecialFace(params, 359, "rps"));
+                return guarded("internal.rps", () -> sendSpecialFace(params, Codec.RPS_FACE, "rps"));
             case "capabilities":
             case "help":
                 return internalCapabilities();
@@ -1016,7 +1016,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("info").put("list").put("url").put("upload")
                         .put("create_folder").put("rename_folder").put("delete_folder")
                         .put("rename_file").put("move_file").put("delete_file"))
-                .put("special_faces", new JSONObject().put("dice", 358).put("rps", 359))
+                .put("special_faces", new JSONObject().put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE))
                 .put("read_actions", new JSONArray()
                         .put("group_extra").put("group_overview").put("group_member_search")
                         .put("contact_search").put("group_active").put("member_info")

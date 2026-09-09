@@ -9,6 +9,7 @@ public final class ElementsTest {
         malformedAndEntities();
         atAndQuote();
         standardFallbacks();
+        specialFaces();
         forwardNodes();
         channelIds();
         eventMapping();
@@ -25,6 +26,22 @@ public final class ElementsTest {
                 "formatting whitespace and comments are ignored");
         eq("🙂", Elements.joinText(Elements.parse("&#x1F642;")), "unicode code point entity");
         eq("<Bad>", Elements.joinText(Elements.parse("<Bad>")), "invalid uppercase tag is text");
+    }
+
+    /**
+     * `<dice/>` / `<rps/>` used to fall through to the default branch, which drops an empty
+     * unknown element entirely: the caller got an empty send and no error at all.
+     */
+    private static void specialFaces() throws Exception {
+        JSONArray dice = Codec.toSegments("<dice/>");
+        eq(1, dice.length(), "dice produces one segment");
+        eq("face", dice.getJSONObject(0).getString("type"), "dice is a face segment");
+        eq(String.valueOf(Codec.DICE_FACE), dice.getJSONObject(0).getJSONObject("data")
+                .getString("id"), "dice face id");
+        JSONArray mixed = Codec.toSegments("\u770b\u8fd0\u6c14<rps/>");
+        eq(2, mixed.length(), "text keeps its own segment next to rps");
+        eq(String.valueOf(Codec.RPS_FACE), mixed.getJSONObject(1).getJSONObject("data")
+                .getString("id"), "rps face id");
     }
 
     private static void parseRoundtrip() {

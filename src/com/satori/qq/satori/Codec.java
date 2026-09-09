@@ -14,6 +14,10 @@ import java.util.List;
 public final class Codec {
     private Codec() {}
 
+    /** QQ 的骰子与猜拳没有独立元素，它们是这两个「魔法表情」。 */
+    public static final int DICE_FACE = 358;
+    public static final int RPS_FACE = 359;
+
     /**
      * Legacy CQ text -> internal segments.
      *
@@ -259,6 +263,13 @@ public final class Codec {
                 case "json":
                     d.put("data", first(el.attr("data"), Elements.joinText(el.children)));
                     segs.put(seg("json", d));
+                    break;
+                case "dice":
+                case "rps":
+                    // QQ 有骰子和猜拳，但它们是两个魔法表情，没有独立元素。不认下来就会
+                    // 落进 default 分支被整段丢掉：调用方收到空回执，消息却从没发出去。
+                    segs.put(seg("face", new JSONObject()
+                            .put("id", String.valueOf("dice".equals(t) ? DICE_FACE : RPS_FACE))));
                     break;
                 case "mface":
                     copyAttrs(el, d);

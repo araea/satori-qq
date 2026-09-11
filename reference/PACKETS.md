@@ -14,7 +14,32 @@
 ### 戳一戳 poke  cmd=0xED3 sub=1
 body `{uin:target, ext:0, groupUin或friendUin:peer}`（群传 groupUin，私聊传 friendUin；字段号去 NapCat proto/oidb/Oidb.0xED3.ts 核对）
 ### send_like（点赞资料卡）
-安卓 QQ 9.3.50 **无 ProfileLikeService 内核服务**，必须走封包。命令号见 NapCat `action/user/SendLike.ts` / Lagrange。
+安卓 QQ 9.3.55 **无 ProfileLikeService 内核服务**，且**不能**照搬桌面端的
+`OidbSvcTrpcTcp.0x7E5_104`：服务端把该 rule 绑定在桌面 appid 上，手机 appid 发过去
+一律回 `oidb=319 "[oidb] rule type not match appid"`（换 source 值无效，且不是包格式问题——
+命令号错会回 236 `cmd not found`）。手机客户端走的是**老式 WUP**：`VisitorSvc.ReqFavorite`。
+已实现于 `qq/LegacySvc.java`，真机 QQ 9.3.55 回包成功。
+
+发送：构造 `ToServiceMsg("mobileqq.service", selfUin, "VisitorSvc.ReqFavorite")`，
+`extraData` 填 `selfUin`(long) / `targetUin`(long) / `favoriteSource`(int) / `iCount`(int) /
+`from`(int)，交给 `AppInterface#sendToService`。QQ 的 `MobileQQServiceBase` 会用
+`com.tencent.mobileqq.app.ch#g` 编码 `QQService.ReqFavorite`（JCE，非 protobuf）并签名，
+无需手工拼包。字段号（`ReqFavorite`）：
+
+```
+0 stHeader: ReqHead{lUIN(long), shVersion(short=1), iSeq(int), bReqType(byte=1), bTriggered(byte=0), vCookies(bytes|可选)}
+1 lMID        目标 uin (long)
+2 cOpType     0
+3 emSource    来源；资料卡点赞=66，ZPlan 换装=70（客户端 VoteHelper / ZPlanProfileLikeManager）
+4 iCount      次数
+5 iHasZplanAvatar 0
+```
+
+接收：hook `MobileQQServiceBase.dispatchToHandler`，回包已被 LBS coder 解成
+`QQService.RespFavorite` 放在 `FromServiceMsg` 的 `"result"` 属性里，按 `lMID` 关联目标。
+判据同客户端 `com.tencent.mobileqq.app.ch#a`：`stHeader.iReplyCode == 0` 为成功
+（`FromServiceMsg.getResultCode()` 业务层为 1000）。实测错误码：
+`10003` 对方权限设置不允许点赞；`54` 禁止给自己点赞。`iKoiLikeCount`(field 4) 可读点赞后计数。
 ### 合并转发上传  cmd=`trpc.group.long_msg_interface.MsgService.SsoSendLongMsg`（非OIDB，直接 trpc 服务）
 流程(NapCat message/UploadForwardMsg.ts)：
 1. buildFakeMsg：把每个伪造节点拼成 im_msg_body 的 MsgRecord protobuf（参考 reference/qqhap-proto/im_msg_body.proto）

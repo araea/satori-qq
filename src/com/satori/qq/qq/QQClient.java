@@ -61,6 +61,7 @@ public final class QQClient {
 
     public final Ref ref;
     private final PacketSvc packetSvc;
+    private final LegacySvc legacySvc;
     private volatile Object session;        // IQQNTWrapperSession
     private volatile boolean listenerRegistered;
     private volatile Object listenerSession;
@@ -86,6 +87,7 @@ public final class QQClient {
         this.ref = new Ref(cl);
         this.mainProcess = mainProcess;
         this.packetSvc = new PacketSvc(this);
+        this.legacySvc = new LegacySvc(this);
     }
 
     public void setListener(Listener l) { this.listener = l; }
@@ -93,6 +95,7 @@ public final class QQClient {
     /** Install hooks that capture the live kernel session as soon as QQ creates it. */
     public void installHooks() {
         packetSvc.installHooks();
+        legacySvc.installHooks();
         try {
             Class<?> sc = ref.cls(SESSION_CPP);
             XposedBridge.hookAllConstructors(sc, new XC_MethodHook() {
@@ -177,7 +180,7 @@ public final class QQClient {
 
     public Object getSession() { return session; }
     public PacketSvc packets() { return packetSvc; }
-
+    public LegacySvc legacy() { return legacySvc; }
     /** Current QQ AppRuntime, or null while logged out / before account startup. */
     public Object appRuntime() {
         try {

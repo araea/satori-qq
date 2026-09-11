@@ -11,6 +11,7 @@ import com.satori.qq.packet.Pb;
 import com.satori.qq.qq.Convert;
 import com.satori.qq.qq.AntiDetect;
 import com.satori.qq.qq.Media;
+import com.satori.qq.qq.LegacySvc;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.QzoneSvc;
 import com.satori.qq.qq.Ref;
@@ -29,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.30";
+    public static final String APP_VERSION = "0.8.9.31";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -4096,29 +4097,24 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         qq.getAllMembers(groupId, true);
     }
 
-    /** OidbSvcTrpcTcp.0x7E5_104: like a user's profile card `times` times (server caps daily total). */
     /**
-     * OidbSvcTrpcTcp.0x7E5_104: like a user's profile card `times` times.
-     * Body per LagrangeGo: 11=targetUid(str), 12=source(71), 13=count; envelope isReserved=0.
+     * Like a user's profile card {@code times} times (the server caps the daily total).
      *
-     * <p>Device note (QQ 9.3.50, 2026-08): the transport reaches the server and the command routes
-     * to the like service, but the server rejects it with oidb=319 "[oidb] rule type not match
-     * appid" for every source value. This is Tencent's appid/rule gating (the same 319 seen across
-     * clients since ~2026-08), not a packet-format bug — a wrong command number would return 236
-     * "cmd not found" instead. It may also compound with this account's existing risk-control state.
-     * Left as the protocol-correct implementation; it should succeed once the appid is un-gated or on
-     * a non-restricted account.</p>
+     * <p>Android QQ has no profile-like kernel service and does not accept the desktop
+     * {@code OidbSvcTrpcTcp.0x7E5_104} command — the server answers {@code oidb=319
+     * "[oidb] rule type not match appid"} for every source because that rule is gated to
+     * the desktop appid. The mobile client likes a card through the legacy
+     * {@code VisitorSvc.ReqFavorite} WUP call, so we drive that same path through
+     * {@link LegacySvc} and report the server's own reply code.</p>
      */
     private void sendLike(long userId, int times) throws Exception {
         if (userId == 0) throw new ApiError(1400, "missing user_id");
         if (times < 1) times = 1;
-        String uid = qq.resolveUid(userId);
-        if (uid == null || uid.isEmpty()) throw new ApiError(1404, "cannot resolve uid for user " + userId);
-        store.learnUid(userId, uid);
-        byte[] body = Pb.w().string(11, uid).varint(12, 71).varint(13, times).toByteArray();
-        PacketSvc.Result result = qq.packets().sendOidb(0x7E5, 104, body, false);
-        if (!result.ok()) {
-            throw new ApiError(1500, "send_like failed: " + result.describe());
+        LegacySvc legacy = qq.legacy();
+        if (!legacy.isReady()) throw new ApiError(1500, "send_like failed: legacy service not ready");
+        LegacySvc.Outcome outcome = legacy.likeProfile(userId, LegacySvc.SOURCE_CARD, times);
+        if (!outcome.success) {
+            throw new ApiError(1500, "send_like failed: " + outcome.describe());
         }
     }
 

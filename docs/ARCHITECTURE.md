@@ -17,6 +17,8 @@
 
 主进程与 `:MSF` 进程均加载 `AntiDetect` 与 `MapsHide`；HTTP 服务、消息监听与保活组件只在主进程运行。
 
+`qq/ExtraSvc` 承载扩展动作所需的内核服务调用：个人资料、群设置、好友关系与最近联系人。这些服务都是主线程亲和的，从 HTTP 工作线程直接调用会立即返回但回调永不触发，因此 `ExtraSvc` 统一把调用投递到主 Looper，再由工作线程等待 `onResult(int, String, Object)` 并取出 payload。`IKernelGroupService`、`IKernelBuddyService`、`IKernelProfileService` 与 `IKernelRecentContactService` 都走这条路径；部分方法（例如 `getGroupShutUpMemberList`）在 QQ 9.3.55 上不回调，改用同类替代方法（`queryGroupMuteMemberList`、`getRecentContactInfos`）。`packet` 只在协议需要直接发包时使用，不要与内核服务混用。
+
 ## 消息链路
 
 - 接收：`IKernelMsgListener.onRecvMsg` → 元素转换 → `message-created`

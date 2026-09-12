@@ -19,6 +19,13 @@ public final class InternalActionsTest {
         JSONObject message = new JSONObject().put("user", new JSONObject().put("id", "12345"));
         eq(12345L, SatoriHub.messageUserId(message), "nested Satori user id");
         eq(0L, SatoriHub.messageUserId(new JSONObject()), "missing user id");
+        eq("get", SatoriHub.internalOp(new JSONObject(), "get"), "op default");
+        eq("set", SatoriHub.internalOp(new JSONObject().put("op", "Set"), "get"),
+                "op case fold");
+        eq("se_t", SatoriHub.internalOp(new JSONObject().put("action", "se-t"), "get"),
+                "op hyphen fold");
+        eq("get", SatoriHub.internalOp(new JSONObject().put("op", "  "), "get"),
+                "blank op falls back");
         System.out.println("InternalActionsTest OK");
     }
 

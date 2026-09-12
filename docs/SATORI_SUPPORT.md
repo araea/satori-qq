@@ -87,6 +87,19 @@ QQ 没有等价能力的方法返回 404，事件仅通过 WebSocket 提供。�
 | 消息读取 | `get_forward` / `get_resource` | 读取合并转发或已登记资源 |
 | 消息查询 | `message_context` / `message_search` | 查询消息上下文或近期本地历史 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳 |
+| 个人资料 | `profile_set_signature` / `profile_set_nickname` | 修改个性签名或昵称 |
+| 个人资料 | `profile_set_avatar` | 修改头像，接受本地路径、`file:`、`http(s):`、`data:` 与 `internal:` |
+| 个人资料 | `profile_self` | 读取自己的资料、个性签名与在线状态 |
+| 群设置 | `group_msg_mask` | 设置群消息提醒方式：`notify`、`assistant`、`shield`、`receive` |
+| 群查询 | `group_shut_up_list` | 查询群内被禁言的成员 |
+| 群查询 | `group_honor` | 查询群荣誉 |
+| 好友 | `friend_remark` | 查询或设置好友备注 |
+| 好友 | `friend_top` | 置顶或取消置顶与好友的会话 |
+| 好友 | `friend_msg_notify` | 开启或关闭单个好友的消息提醒 |
+| 好友 | `friend_block` | 拉黑或取消拉黑好友 |
+| 好友 | `friend_relation` | 查询是否为好友、是否已拉黑及备注 |
+| 好友 | `friend_add` | 发送好友申请 |
+| 联系人 | `recent_contacts` | 查询最近联系人及未读数 |
 | 能力查询 | `capabilities` / `help` | 返回扩展动作与参数清单 |
 | 状态查询 | `status` / `version` | 返回健康状态或版本 |
 | QQ 空间 | `qzone.publish` / `qzone.create` | 发布说说 |
@@ -96,6 +109,10 @@ QQ 没有等价能力的方法返回 404，事件仅通过 WebSocket 提供。�
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程或清理临时文件 |
 
 完整参数可通过 `capabilities` 或 `help` 查询。`group_member_search.next` 可直接用于下一次扩展调用，`next_offset` 可供 HTTP 客户端分页。
+
+个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值都取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑。`friend_remark` 在带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 的 `mask` 之外也接受 `shield` 布尔简写。这些动作都能回读：`friend_relation` 会带回备注，`profile_self` 会带回个性签名与当前在线状态。
+
+QQ 的内核服务是主线程亲和的：从 HTTP 工作线程直接调用会立刻返回，但回调永不触发。模块统一把调用投递到主 Looper，再由工作线程等待回调，因此这些动作可用，但仍受 QQ 自身权限与账号状态限制。
 
 ## 事件
 

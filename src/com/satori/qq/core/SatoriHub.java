@@ -10,6 +10,7 @@ import com.satori.qq.packet.PacketSvc;
 import com.satori.qq.packet.Pb;
 import com.satori.qq.qq.Convert;
 import com.satori.qq.qq.AntiDetect;
+import com.satori.qq.qq.ExtraSvc;
 import com.satori.qq.qq.Media;
 import com.satori.qq.qq.LegacySvc;
 import com.satori.qq.qq.QQClient;
@@ -30,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.31";
+    public static final String APP_VERSION = "0.8.9.32";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -137,16 +138,21 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     /** Lazily create the Termux-style wake-lock toggle and hang it on the resident notification, so
      *  its acquire/release action button rides the same entry. A tap redraws the notice via refresh. */
     private void ensureWakeLock(StatusNotice n) {
-        com.satori.qq.qq.WakeLockCtl w = wakeLock;
-        if (w == null) {
-            android.content.Context ctx = qq.appContext();
-            if (ctx == null) return;
-            w = new com.satori.qq.qq.WakeLockCtl(ctx, this::refreshNotice);
-            wakeLock = w;
-        }
+        com.satori.qq.qq.WakeLockCtl w = ensureWakeLockController();
         // The notification button only appears when the operator toggle itself is enabled;
         // wifi_sustain alone needs the controller, not the button.
-        if (cfg.wakeLockControl) n.setWake(w);
+        if (w != null && n != null && cfg.wakeLockControl) n.setWake(w);
+    }
+
+    /** Create the wake-lock controller on first use. Acquires the lock itself when wake_lock_auto. */
+    private com.satori.qq.qq.WakeLockCtl ensureWakeLockController() {
+        com.satori.qq.qq.WakeLockCtl w = wakeLock;
+        if (w != null) return w;
+        android.content.Context ctx = qq.appContext();
+        if (ctx == null) return null;
+        w = new com.satori.qq.qq.WakeLockCtl(ctx, cfg.wakeLockAuto, this::refreshNotice);
+        wakeLock = w;
+        return w;
     }
 
     /** Keep the radio out of screen-off power save while a client is actually attached to us. */
@@ -832,6 +838,65 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "rock-paper-scissors":
             case "rock_paper_scissors":
                 return guarded("internal.rps", () -> sendSpecialFace(params, Codec.RPS_FACE, "rps"));
+            case "profile-set-signature":
+            case "profile_set_signature":
+            case "signature":
+                return profileSetSignature(params);
+            case "profile-set-nickname":
+            case "profile_set_nickname":
+            case "nickname":
+                return profileSetNickname(params);
+            case "profile-set-avatar":
+            case "profile_set_avatar":
+            case "set-avatar":
+            case "set_avatar":
+                return profileSetAvatar(params);
+            case "profile-self":
+            case "profile_self":
+            case "profile.self":
+                return profileSelf();
+            case "group-msg-mask":
+            case "group_msg_mask":
+            case "group.msg_mask":
+                return groupMsgMask(params);
+            case "group-shut-up-list":
+            case "group_shut_up_list":
+            case "group.mute_list":
+            case "mute-list":
+            case "mute_list":
+                return groupShutUpList(params);
+            case "group-honor":
+            case "group_honor":
+            case "group.honor":
+                return groupHonor(params);
+            case "friend-remark":
+            case "friend_remark":
+            case "friend.remark":
+                return friendRemark(params);
+            case "friend-top":
+            case "friend_top":
+            case "friend.top":
+                return friendTop(params);
+            case "friend-msg-notify":
+            case "friend_msg_notify":
+            case "friend.msg_notify":
+                return friendMsgNotify(params);
+            case "friend-block":
+            case "friend_block":
+            case "friend.block":
+                return friendBlock(params);
+            case "friend-relation":
+            case "friend_relation":
+            case "friend.relation":
+                return friendRelation(params);
+            case "friend-add":
+            case "friend_add":
+            case "friend.add":
+                return friendAdd(params);
+            case "recent-contacts":
+            case "recent_contacts":
+            case "recent.contacts":
+                return recentContacts(params);
             case "capabilities":
             case "help":
                 return internalCapabilities();
@@ -994,6 +1059,259 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return sent;
     }
 
+    // ---------------------------------------------- personal profile / groups / buddies
+
+    /** Shared op selector for multi-mode extension actions. */
+    static String internalOp(JSONObject p, String def) {
+        String op = p.optString("op", p.optString("action", def)).trim()
+                .toLowerCase(java.util.Locale.ROOT).replace('-', '_');
+        return op.isEmpty() ? def : op;
+    }
+
+    private Object profileSetSignature(JSONObject p) throws Exception {
+        final String signature = p.has("signature") ? p.optString("signature", "")
+                : p.optString("text", p.optString("content", ""));
+        return guarded("internal.profile_set_signature", () -> {
+            ExtraSvc.Result res = qq.extra().setSignature(signature);
+            if (!res.ok()) throw new ApiError(1500, "set signature: " + res.describe());
+            return new JSONObject().put("signature", signature).put("result", res.describe());
+        });
+    }
+
+    private Object profileSetNickname(JSONObject p) throws Exception {
+        final String nickname = p.has("nickname") ? p.optString("nickname", "")
+                : p.optString("nick", p.optString("name", ""));
+        return guarded("internal.profile_set_nickname", () -> {
+            ExtraSvc.Result res = qq.extra().setNickname(nickname);
+            if (!res.ok()) throw new ApiError(1500, "set nickname: " + res.describe());
+            return new JSONObject().put("nickname", nickname).put("result", res.describe());
+        });
+    }
+
+    private Object profileSetAvatar(JSONObject p) throws Exception {
+        String spec = firstNonEmpty(p.optString("file", ""), firstNonEmpty(
+                p.optString("avatar", ""), p.optString("url", "")));
+        if (spec.isEmpty()) throw new ApiError(1400, "missing file/avatar");
+        java.io.File file = resolveAvatarFile(spec);
+        return guarded("internal.profile_set_avatar", () -> {
+            ExtraSvc.Result res = qq.extra().setAvatar(file.getAbsolutePath());
+            if (!res.ok()) throw new ApiError(1500, "set avatar: " + res.describe());
+            return new JSONObject().put("file", file.getAbsolutePath()).put("result", res.describe());
+        });
+    }
+
+    private Object profileSelf() throws Exception {
+        JSONObject out = new JSONObject().put("user_id", selfUin()).put("nick", qq.selfNick());
+        Object core = qq.extra().selfCoreInfo();
+        if (core != null) out.put("core", toJson(core));
+        ExtraSvc.Result status = qq.extra().getSelfStatus();
+        out.put("status_result", status.describe());
+        if (status.payload != null) out.put("status", toJson(status.payload));
+        return out;
+    }
+
+    /** Group message mask: notify / assistant / shield / receive. */
+    private Object groupMsgMask(JSONObject p) throws Exception {
+        final long groupId = guildIdOf(p);
+        String mask = firstNonEmpty(p.optString("mask", ""), p.optString("mode", ""));
+        if (mask.isEmpty()) {
+            if (p.has("shield")) mask = p.optBoolean("shield", false) ? "SHIELD" : "NOTIFY";
+            else if (p.has("enable")) mask = p.optBoolean("enable", true) ? "SHIELD" : "NOTIFY";
+            else throw new ApiError(1400, "missing mask");
+        }
+        final String value = mask.trim().toUpperCase(java.util.Locale.ROOT);
+        return guarded("internal.group_msg_mask", () -> {
+            ExtraSvc.Result res = qq.extra().setGroupMsgMask(groupId, value);
+            if (!res.ok()) throw new ApiError(1500, "set group msg mask: " + res.describe());
+            return new JSONObject().put("guild_id", String.valueOf(groupId))
+                    .put("mask", value).put("result", res.describe());
+        });
+    }
+
+    private Object groupShutUpList(JSONObject p) throws Exception {
+        long groupId = guildIdOf(p);
+        ExtraSvc.Result res = qq.extra().getGroupShutUpList(groupId);
+        JSONObject out = new JSONObject().put("guild_id", String.valueOf(groupId))
+                .put("ok", res.ok()).put("result", res.describe());
+        if (res.payload != null) out.put("members", toJson(res.payload));
+        return out;
+    }
+
+    private Object groupHonor(JSONObject p) throws Exception {
+        long groupId = guildIdOf(p);
+        ExtraSvc.Result res = qq.extra().getGroupHonor(groupId);
+        JSONObject out = new JSONObject().put("guild_id", String.valueOf(groupId))
+                .put("ok", res.ok()).put("result", res.describe());
+        if (res.payload != null) out.put("honor", toJson(res.payload));
+        return out;
+    }
+
+    private Object friendRemark(JSONObject p) throws Exception {
+        long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) throw new ApiError(1400, "missing user_id");
+        String op = internalOp(p, p.has("remark") ? "set" : "get");
+        if ("get".equals(op) || "query".equals(op)) {
+            return new JSONObject().put("user_id", String.valueOf(uin))
+                    .put("remark", qq.extra().getBuddyRemark(uin));
+        }
+        final String remark = p.optString("remark", "");
+        return guarded("internal.friend_remark", () -> {
+            ExtraSvc.Result res = qq.extra().setBuddyRemark(uin, remark);
+            if (!res.ok()) throw new ApiError(1500, "set friend remark: " + res.describe());
+            return new JSONObject().put("user_id", String.valueOf(uin))
+                    .put("remark", remark).put("result", res.describe());
+        });
+    }
+
+    private Object friendTop(JSONObject p) throws Exception {
+        final long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) throw new ApiError(1400, "missing user_id");
+        final boolean top = p.has("top") ? p.optBoolean("top", true)
+                : p.optBoolean("enable", true);
+        return guarded("internal.friend_top", () -> {
+            ExtraSvc.Result res = qq.extra().setBuddyTop(uin, top);
+            if (!res.ok()) throw new ApiError(1500, "set friend top: " + res.describe());
+            return new JSONObject().put("user_id", String.valueOf(uin))
+                    .put("top", top).put("result", res.describe());
+        });
+    }
+
+    private Object friendMsgNotify(JSONObject p) throws Exception {
+        final long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) throw new ApiError(1400, "missing user_id");
+        final boolean notify = p.has("notify") ? p.optBoolean("notify", true)
+                : !p.optBoolean("mute", p.optBoolean("enable", false));
+        return guarded("internal.friend_msg_notify", () -> {
+            ExtraSvc.Result res = qq.extra().setBuddyMsgNotify(uin, notify);
+            if (!res.ok()) throw new ApiError(1500, "set friend notify: " + res.describe());
+            return new JSONObject().put("user_id", String.valueOf(uin))
+                    .put("notify", notify).put("result", res.describe());
+        });
+    }
+
+    private Object friendBlock(JSONObject p) throws Exception {
+        final long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) throw new ApiError(1400, "missing user_id");
+        final boolean block = p.has("block") ? p.optBoolean("block", true)
+                : p.optBoolean("enable", true);
+        return guarded("internal.friend_block", () -> {
+            ExtraSvc.Result res = qq.extra().setBuddyBlock(uin, block);
+            if (!res.ok()) throw new ApiError(1500, "set friend block: " + res.describe());
+            return new JSONObject().put("user_id", String.valueOf(uin))
+                    .put("block", block).put("result", res.describe());
+        });
+    }
+
+    private Object friendRelation(JSONObject p) throws Exception {
+        long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) throw new ApiError(1400, "missing user_id");
+        return new JSONObject().put("user_id", String.valueOf(uin))
+                .put("is_friend", qq.extra().isBuddy(uin))
+                .put("is_blocked", qq.extra().isBlocked(uin))
+                .put("remark", qq.extra().getBuddyRemark(uin));
+    }
+
+    private Object friendAdd(JSONObject p) throws Exception {
+        final long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) throw new ApiError(1400, "missing user_id");
+        final String verify = firstNonEmpty(p.optString("verify", ""), firstNonEmpty(
+                p.optString("message", ""), p.optString("comment", "")));
+        final String remark = p.optString("remark", "");
+        final int source = p.optInt("source", 0);
+        return guarded("internal.friend_add", () -> {
+            ExtraSvc.Result res = qq.extra().addFriend(uin, verify, remark, source);
+            if (!res.ok()) throw new ApiError(1500, "add friend: " + res.describe());
+            return new JSONObject().put("user_id", String.valueOf(uin)).put("result", res.describe());
+        });
+    }
+
+    private Object recentContacts(JSONObject p) throws Exception {
+        int limit = Math.max(0, Math.min(200, p.optInt("limit", 20)));
+        ExtraSvc.Result res = qq.extra().recentContacts();
+        if (!res.ok()) throw new ApiError(1500, "recent contacts: " + res.describe());
+        Object payload = res.payload;
+        JSONObject out = new JSONObject();
+        Object list = payload;
+        if (!(list instanceof java.util.List) && payload != null) {
+            Object changed = qq.ref.getOrNull(payload, "changedList");
+            if (changed instanceof java.util.List) list = changed;
+        }
+        if (list instanceof java.util.List) {
+            JSONArray arr = new JSONArray();
+            int cap = limit > 0 ? limit : 50;
+            int n = 0;
+            for (Object info : (java.util.List<?>) list) {
+                if (info == null) continue;
+                if (n++ >= cap) break;
+                arr.put(new JSONObject()
+                        .put("chat_type", qq.ref.getLong(info, "chatType"))
+                        .put("peer_uin", String.valueOf(qq.ref.getLong(info, "peerUin")))
+                        .put("peer_name", firstNonEmpty(
+                                Ref.asStr(qq.ref.getOrNull(info, "peerName")),
+                                Ref.asStr(qq.ref.getOrNull(info, "sendNickName"))))
+                        .put("remark", Ref.asStr(qq.ref.getOrNull(info, "remark")))
+                        .put("msg_time", qq.ref.getLong(info, "msgTime"))
+                        .put("unread", qq.ref.getLong(info, "unreadCnt"))
+                        .put("msg_id", String.valueOf(qq.ref.getLong(info, "msgId"))));
+            }
+            out.put("contacts", arr);
+        } else if (payload != null) {
+            out.put("raw", toJson(payload));
+        } else {
+            out.put("contacts", new JSONArray());
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /** Reflect a kernel payload into JSON so read actions stay tolerant of QQ's field churn. */
+    private static Object toJson(Object v) throws Exception {
+        return toJson(v, 4, 50);
+    }
+
+    private static Object toJson(Object v, int depth, int listCap) throws Exception {
+        if (v == null) return JSONObject.NULL;
+        if (v instanceof String || v instanceof Number || v instanceof Boolean) return v;
+        if (v instanceof byte[]) return "bytes:" + ((byte[]) v).length;
+        if (v instanceof Character) return String.valueOf(v);
+        if (v.getClass().isEnum()) return String.valueOf(v);
+        if (depth <= 0) return String.valueOf(v);
+        if (v instanceof java.util.Map) {
+            JSONObject o = new JSONObject();
+            int n = 0;
+            for (java.util.Map.Entry<?, ?> e : ((java.util.Map<?, ?>) v).entrySet()) {
+                if (n++ >= 200) break;
+                putQuiet(o, String.valueOf(e.getKey()), toJson(e.getValue(), depth - 1, listCap));
+            }
+            return o;
+        }
+        if (v instanceof java.util.Collection) {
+            JSONArray a = new JSONArray();
+            int n = 0;
+            for (Object e : (java.util.Collection<?>) v) {
+                if (n++ >= listCap) { a.put("..."); break; }
+                a.put(toJson(e, depth - 1, listCap));
+            }
+            return a;
+        }
+        JSONObject o = new JSONObject();
+        for (Class<?> c = v.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                try {
+                    f.setAccessible(true);
+                    putQuiet(o, f.getName(), toJson(f.get(v), depth - 1, listCap));
+                } catch (Throwable ignore) {}
+            }
+        }
+        return o;
+    }
+
+    private static void putQuiet(JSONObject o, String k, Object val) {
+        try { o.put(k, val); } catch (Throwable ignore) {}
+    }
+
     /** Machine-readable inventory for clients that want QQ-only extensions. */
     private JSONObject internalCapabilities() throws Exception {
         return new JSONObject()
@@ -1010,6 +1328,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("group_file").put("get_forward").put("get_resource")
                         .put("message_context").put("message_search")
                         .put("dice").put("rps")
+                        .put("profile_set_signature").put("profile_set_nickname")
+                        .put("profile_set_avatar").put("profile_self")
+                        .put("group_msg_mask")
+                        .put("group_shut_up_list").put("group_honor")
+                        .put("friend_remark").put("friend_top").put("friend_msg_notify")
+                        .put("friend_block").put("friend_relation").put("friend_add")
+                        .put("recent_contacts")
                         .put("qzone.publish").put("qzone.delete").put("qzone.list")
                         .put("qzone.clear").put("status").put("version")
                         .put("clean_cache").put("restart"))
@@ -1018,18 +1343,27 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("create_folder").put("rename_folder").put("delete_folder")
                         .put("rename_file").put("move_file").put("delete_file"))
                 .put("special_faces", new JSONObject().put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE))
+                .put("group_msg_masks", new JSONArray()
+                        .put("notify").put("assistant").put("shield").put("receive"))
                 .put("read_actions", new JSONArray()
                         .put("group_extra").put("group_overview").put("group_member_search")
                         .put("contact_search").put("group_active").put("member_info")
                         .put("random_member").put("random_team").put("group_anniversary")
                         .put("message_context").put("message_search")
                         .put("get_forward").put("get_resource").put("qzone.list")
+                        .put("profile_self").put("group_shut_up_list")
+                        .put("group_honor").put("friend_remark").put("friend_relation")
+                        .put("recent_contacts")
                         .put("status").put("version").put("capabilities"))
                 .put("write_actions", new JSONArray()
                         .put("poke").put("like").put("invite").put("card")
                         .put("special_title").put("title_display").put("honor_display")
                         .put("sign").put("essence").put("group_remark").put("group_refresh")
                         .put("group_leave").put("group_file").put("dice").put("rps")
+                        .put("profile_set_signature").put("profile_set_nickname")
+                        .put("profile_set_avatar").put("group_msg_mask")
+                        .put("friend_remark").put("friend_top").put("friend_msg_notify")
+                        .put("friend_block").put("friend_add")
                         .put("qzone.publish").put("qzone.delete").put("qzone.clear")
                         .put("clean_cache").put("restart"));
     }
@@ -4841,6 +5175,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     if (cfg.heartbeat && now >= nextHeartbeat) {
                         nextHeartbeat = now + interval;
                     }
+                    // Hold the wake lock from startup even when the status notification is off.
+                    if (cfg.wakeLockControl || cfg.wifiSustain) ensureWakeLockController();
                     refreshNotice();
                 } catch (InterruptedException ie) { return; }
                 catch (Throwable ignore) {}

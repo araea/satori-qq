@@ -22,6 +22,8 @@ public final class Cfg {
     public volatile boolean requestBatteryExemption = true;
     /** Termux-style acquire/release wake-lock toggle on the resident notification (opt-in per tap). */
     public volatile boolean wakeLockControl = true;
+    /** Take the wake-lock hold automatically at startup instead of waiting for the first tap. */
+    public volatile boolean wakeLockAuto = true;
     /** Hold a high-performance Wi-Fi lock while a Satori client is attached, so screen-off power
      *  save cannot park the radio under an outbound upload or delay inbound events. */
     public volatile boolean wifiSustain = true;
@@ -90,6 +92,7 @@ public final class Cfg {
                 c.foregroundKeepalive = o.optBoolean("foreground_keepalive", c.foregroundKeepalive);
                 c.requestBatteryExemption = o.optBoolean("request_battery_exemption", c.requestBatteryExemption);
                 c.wakeLockControl = o.optBoolean("wake_lock_control", c.wakeLockControl);
+                c.wakeLockAuto = o.optBoolean("wake_lock_auto", c.wakeLockAuto);
                 c.wifiSustain = o.optBoolean("wifi_sustain", c.wifiSustain);
                 c.antiDetect = o.optBoolean("anti_detect", c.antiDetect);
                 c.mapsHide = o.optBoolean("maps_hide", c.mapsHide);

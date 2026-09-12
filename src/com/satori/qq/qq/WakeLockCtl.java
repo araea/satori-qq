@@ -73,9 +73,23 @@ public final class WakeLockCtl {
     private volatile boolean registered;
 
     public WakeLockCtl(Context ctx, Runnable onChange) {
+        this(ctx, false, onChange);
+    }
+
+    /**
+     * @param autoAcquire take the operator-level hold immediately, so the module boots with the
+     *                    CPU already locked instead of waiting for the first outbound mutation.
+     */
+    public WakeLockCtl(Context ctx, boolean autoAcquire, Runnable onChange) {
         this.ctx = ctx;
         this.onChange = onChange;
         register();
+        if (autoAcquire) {
+            synchronized (lock) {
+                userWants = true;
+                apply();
+            }
+        }
     }
 
     /** Operator intent, not the OS-level state: the button names the action to take next. */

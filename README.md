@@ -57,6 +57,7 @@ plugins:
 | `foreground_keepalive` | `true` | 在线时以前台服务保持 QQ 主进程 |
 | `request_battery_exemption` | `true` | 首次在线时申请电池优化豁免 |
 | `wake_lock_control` | `true` | 在通知中提供唤醒锁开关，写操作期间自动持锁 |
+| `wake_lock_auto` | `true` | 启动时自动获取唤醒锁，无需点按通知按钮 |
 | `wifi_sustain` | `true` | 有客户端连接时保持 Wi-Fi 锁 |
 | `media_retry_attempts` | `2` | 富媒体上传失败后的额外尝试次数 |
 | `anti_detect` | `true` | Java 层环境检测处理 |

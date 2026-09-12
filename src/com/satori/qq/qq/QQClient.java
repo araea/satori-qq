@@ -62,6 +62,7 @@ public final class QQClient {
     public final Ref ref;
     private final PacketSvc packetSvc;
     private final LegacySvc legacySvc;
+    private final ExtraSvc extraSvc;
     private volatile Object session;        // IQQNTWrapperSession
     private volatile boolean listenerRegistered;
     private volatile Object listenerSession;
@@ -88,6 +89,7 @@ public final class QQClient {
         this.mainProcess = mainProcess;
         this.packetSvc = new PacketSvc(this);
         this.legacySvc = new LegacySvc(this);
+        this.extraSvc = new ExtraSvc(this);
     }
 
     public void setListener(Listener l) { this.listener = l; }
@@ -181,6 +183,7 @@ public final class QQClient {
     public Object getSession() { return session; }
     public PacketSvc packets() { return packetSvc; }
     public LegacySvc legacy() { return legacySvc; }
+    public ExtraSvc extra() { return extraSvc; }
     /** Current QQ AppRuntime, or null while logged out / before account startup. */
     public Object appRuntime() {
         try {

@@ -8,6 +8,7 @@
   "foreground_keepalive": true,
   "request_battery_exemption": true,
   "wake_lock_control": true,
+  "wake_lock_auto": true,
   "wifi_sustain": true,
   "anti_detect": true,
   "maps_hide": true,

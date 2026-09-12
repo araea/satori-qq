@@ -59,6 +59,12 @@ Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
 | maps/tcp/environ 泄漏 | 0 | 0 |
 | 进程内 maps 里的模块痕迹 | 0 | 0 |
 
+## 诊断口径
+
+`envProcessKey` 把除 `:MSF` 之外的进程都记成 `main`。`:qzone`、`:gameservice` 这类子进程与主进程共用同一份 `qk_env_*.json`，后启动的会覆盖先写的，所以 `/healthz` 里的 `maps.patched` 不一定来自主进程。实测一次主进程是 62，`:qzone` 起来后覆盖成 36。
+
+对齐办法：`qk_env_main.json` 有 `pid` 字段，与 `ps -A | grep mobileqq` 里的主进程 pid 比对；或在重启 QQ 后立刻读一次，此时只有主进程写过。`qk_env_maps_main.json` 由 native 层写，没有 pid 字段，只能靠时机判断。外部的 `scripts/qq-satori-exposure-audit.sh` 取的是主进程 pid 的 `/proc/<pid>/maps`，不受这份文件影响。
+
 ## 挡不住的部分
 
 这些不在模块里做，因为做了要么伤自己，要么反而暴露。列出来是为了知道边界。

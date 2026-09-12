@@ -82,7 +82,7 @@ curl http://127.0.0.1:3001/healthz
 
 分不清断在哪一层时用 [`scripts/netwatch.sh`](scripts/netwatch.sh)：每 60 秒分别记录物理链路、本地代理、经 TUN 出站、模块状态与电源状态的结果。
 
-协议方法、事件与消息元素见 [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)，内部结构与升级检查项见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+协议方法、事件与消息元素见 [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)，内部结构与升级检查项见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，QQ 检测面、逐项对应与边界见 [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md)。
 
 ## 构建与测试
 
@@ -99,6 +99,6 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 
 ## 致谢与许可
 
-过检测实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)。
+过检测实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)。模块清单的 stealth 变体是为避开 [Duck Detector](https://github.com/eltavine/Duck-Detector-Refactoring) 的安装包元数据检查而加。
 
 本项目可按 [Apache-2.0](LICENSE-APACHE) 或 [MIT](LICENSE-MIT) 许可证使用。

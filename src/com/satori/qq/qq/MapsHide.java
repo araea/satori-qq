@@ -22,6 +22,9 @@ import com.satori.qq.L;
  * v5.10 (0.8.8): locate so beside the module APK first; retry transient PM misses.
  * v5.11 (0.8.9): ZWSP path match + detector usb.config rewrite.
  * v5.12 (0.8.9.25): detector-scoped native command, symbol and Turing report filtering.
+ * v5.13 (0.8.9.33): sendmsg risk egress; stat64/lstat64/fstat/fstat64/fstatat path probes;
+ * non-self /proc/<pid>/cmdline content filter; debug/emulator properties read natively;
+ * libmsfbootV2 joins the detector set.
  */
 public final class MapsHide {
     public static native int install();   // returns #GOT slots patched

@@ -52,3 +52,15 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 echo "== DONE: $total passed =="
+
+echo "== 3. native filter =="
+# mapshide-filter-test.c includes native/mapshide.c and exercises its static parsers on-device
+# (raw_svc is aarch64 svc, so this runs under Termux, not on a build host).
+CLANG=/data/data/com.termux/files/usr/bin/clang
+if [ -x "$CLANG" ]; then
+  "$CLANG" -O0 -o "$OUT/mapshide-filter-test" "$R/tests/mapshide-filter-test.c" -llog
+  "$OUT/mapshide-filter-test"
+  echo "   ok   mapshide filter"
+else
+  echo "   skip native filter test (clang not found)"
+fi

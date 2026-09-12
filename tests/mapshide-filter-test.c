@@ -36,9 +36,12 @@ int main(void) {
     if ((rc = expect(is_detector_path("/data/app/x/libturingxq.so"), 1, 8))) return rc;
     if ((rc = expect(is_detector_path("/data/app/x/libfekit.so"), 1, 9))) return rc;
     if ((rc = expect(is_detector_path("/data/app/x/libQSec.so"), 1, 58))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/libmsfbootV2.so"), 1, 64))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/libMSFKernel.so"), 0, 65))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/self/status"), 1, 10))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/mounts"), 1, 11))) return rc;
-    if ((rc = expect(is_proc_exposure_path("/proc/self/cmdline"), 0, 12))) return rc;
+    if ((rc = expect(is_proc_exposure_path("/proc/self/cmdline"), 1, 12))) return rc;
+    if ((rc = expect(is_proc_exposure_path("/proc/1234/cmdline"), 1, 63))) return rc;
     if ((rc = expect(line_blocked(ksu, sizeof(ksu) - 1), 1, 13))) return rc;
     if ((rc = expect(line_blocked(turing, sizeof(turing) - 1), 0, 14))) return rc;
     if ((rc = expect(path_denied("/data/adb/modules/foo"), 1, 15))) return rc;
@@ -92,15 +95,23 @@ int main(void) {
         if ((rc = expect(path_denied("/data/data/com.tencent.mobileqq"), 0, 51))) return rc;
         if ((rc = expect(path_denied("/data/app/de.robv.android.xposed.installer"), 1, 52)))
             return rc;
+        if ((rc = expect(path_denied("/data/data/com.koushikdutta.superuser"), 1, 66))) return rc;
+        if ((rc = expect(path_denied("/system/etc/install-recovery.sh"), 1, 67))) return rc;
         const char zwsp[] = "/data/ad" "\xE2\x80\x8B" "b/magisk";
         if ((rc = expect(path_denied(zwsp), 1, 53))) return rc;
         const char shy[] = "/data/adb/mag\xC2\xADisk";
         if ((rc = expect(path_denied(shy), 1, 54))) return rc;
         char usb[16];
-        if ((rc = expect(adb_prop_safe_copy("persist.sys.usb.config", usb) == 3, 1, 55)))
+        if ((rc = expect(prop_safe_copy("persist.sys.usb.config", usb) == 3, 1, 55)))
             return rc;
         if ((rc = expect(strcmp(usb, "mtp") == 0, 1, 56))) return rc;
-        if ((rc = expect(adb_prop_safe_copy("ro.build.type", usb), 0, 57))) return rc;
+        if ((rc = expect(prop_safe_copy("ro.build.type", usb), 0, 57))) return rc;
+        if ((rc = expect(prop_safe_copy("ro.debuggable", usb) == 1, 1, 68))) return rc;
+        if ((rc = expect(strcmp(usb, "0") == 0, 1, 69))) return rc;
+        if ((rc = expect(prop_safe_copy("ro.kernel.qemu", usb) == 1, 1, 70))) return rc;
+        if ((rc = expect(strcmp(usb, "0") == 0, 1, 71))) return rc;
+        if ((rc = expect(prop_safe_copy("ro.secure", usb) == 1, 1, 72))) return rc;
+        if ((rc = expect(strcmp(usb, "1") == 0, 1, 73))) return rc;
     }
     {
         const char report[] = "prefix DeviceTokenV3 suffix";
@@ -109,6 +120,14 @@ int main(void) {
         if ((rc = expect(risk_payload(safe, sizeof(safe) - 1), 0, 60))) return rc;
         if ((rc = expect(symbol_denied("bytehook_get_mode"), 1, 61))) return rc;
         if ((rc = expect(symbol_denied("malloc"), 0, 62))) return rc;
+    }
+    {
+        /* /proc/<pid>/cmdline arrives as one NUL-joined line; the line filter drops a
+         * root-manager cmdline and keeps QQ's own. */
+        const char cmdlineRoot[] = "com.topjohnwu.magisk\0";
+        const char cmdlineQq[] = "com.tencent.mobileqq\0";
+        if ((rc = expect(line_blocked(cmdlineRoot, sizeof(cmdlineRoot) - 1), 1, 74))) return rc;
+        if ((rc = expect(line_blocked(cmdlineQq, sizeof(cmdlineQq) - 1), 0, 75))) return rc;
     }
     return 0;
 }

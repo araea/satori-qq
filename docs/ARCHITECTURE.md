@@ -47,14 +47,14 @@
 
 ## 过检测
 
-Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与环境上报。Native 层只修补检测库的 GOT，并过滤文件、属性、命令、符号、目录、进程映射与风险上报。QSec 的 `getSign` 保持原样，`getFeKitAttach` 只记录计数。
+Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与环境上报。Native 层只修补检测库的 GOT，并过滤文件、属性、命令、符号、目录、进程映射与风险上报。QSec 的 `getSign` 保持原样，`getFeKitAttach` 只记录计数。检测面、逐项对应与挡不住的部分见 [`ANTIDETECT.md`](ANTIDETECT.md)。
 
 模块提供两份清单：
 
 - `AndroidManifest.xml` 含 Xposed 元数据，用于首次注册与设置作用域
 - `AndroidManifest.stealth.xml` 不含 `xposed*` 元数据，用于启用后的覆盖安装
 
-`build.sh` 同时生成两份 APK，并检查两份清单的包名、版本与元数据数量。
+`build.sh` 同时生成两份 APK，并检查两份清单的包名、版本与元数据数量。`test.sh` 在 JVM 单测之后编译并运行 `tests/mapshide-filter-test.c`，校验 native 过滤器的路径黑名单、`/proc` 路径分类与属性改写。
 
 ## 常驻与诊断
 
@@ -70,5 +70,6 @@ Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与�
 2. 消息元素常量与可选字段
 3. `IKernelMsgListener` 回调集合
 4. OIDB 命令号、子命令与响应字段
-5. QSec、Turing 与环境上报的命令白名单
+5. QSec、Turing 与环境上报的命令白名单，以及 QSec 检测入口的类名与方法签名
 6. 主进程与 MSF 进程的 `/healthz` hook 计数及 `loop_ok`
+7. `libfekit.so`、`libturingxq.so`、`libmsfbootV2.so` 导出的 libc 符号与路径字符串（见 `ANTIDETECT.md` 的复现审计）

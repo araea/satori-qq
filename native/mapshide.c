@@ -1,5 +1,12 @@
 // mapshide.c — detector-lib GOT filter + in-process seccomp for bare svc.
 //
+// v5.13 (0.8.9.33): close the channels libfekit/libturingxq/libturingmfa still
+// import but that v5.12 left alone — sendmsg (risk egress), stat64/lstat64/
+// fstat/fstat64/fstatat (path probes), non-self /proc/<pid>/cmdline (process
+// scan), and the debug/emulator properties read through __system_property_get.
+// libmsfbootV2 joins the patched detector set; com.koushikdutta.superuser and
+// install-recovery.sh join the path blacklist (both strings ship inside
+// libfekit.so). Rollback 0.8.9.32.
 // v5.12 (0.8.9.25): detector-scoped system/strstr/send/sendto interception,
 // /proc/self/exe normalization, and case-insensitive QSec library matching.
 // v5.11 (0.8.9): strip ZWSP/soft-hyphen before path match (CVE-2024-43093);
@@ -73,6 +80,7 @@ extern void* opendir(const char* path);
 extern int snprintf(char* buf, size_t n, const char* fmt, ...);
 extern int stat(const char* path, void* st);
 extern int lstat(const char* path, void* st);
+extern int fstat(int fd, void* st);
 extern int statfs(const char* path, void* st);
 extern int dladdr(const void* addr, void* info);
 extern void* dlopen(const char* filename, int flags);
@@ -81,9 +89,23 @@ extern int __system_property_get(const char* name, char* value);
 extern const void* __system_property_find(const char* name);
 extern void* readdir(void* dirp);
 struct sockaddr;
+struct iovec_min {
+    void* iov_base;
+    size_t iov_len;
+};
+struct msghdr_min {
+    void* msg_name;
+    unsigned int msg_namelen;
+    struct iovec_min* msg_iov;
+    size_t msg_iovlen;
+    void* msg_control;
+    size_t msg_controllen;
+    int msg_flags;
+};
 extern long send(int sockfd, const void* buf, size_t len, int flags);
 extern long sendto(int sockfd, const void* buf, size_t len, int flags,
         const struct sockaddr* dest_addr, unsigned int addrlen);
+extern long sendmsg(int sockfd, const struct msghdr_min* msg, int flags);
 
 #define LOGI(...) __android_log_print(4, "Q.Maps", __VA_ARGS__)
 #define LOGW(...) __android_log_print(5, "Q.Maps", __VA_ARGS__)
@@ -160,6 +182,7 @@ static const char* BLOCK[] = {
     "debug_ramdisk", "/system/bin/su", "/system/xbin/su", "kernelsu", "ksud",
     "apatch", "shamiko", "com.topjohnwu", "me.weishu.kernelsu",
     "me.bmax.apatch", "com.noshufou", "eu.chainfire.supersu",
+    "com.koushikdutta.superuser", "install-recovery.sh",
     "zygisk_vector", "libvector", "JingMatrix", "frida", "gadget",
     "linjector", "lsplant", 0
 };
@@ -336,6 +359,7 @@ static int is_proc_exposure_path(const char* p) {
             || ends_with(p, "/mountinfo") || ends_with(p, "/mounts")
             || ends_with(p, "/status")
             || ends_with(p, "/environ")
+            || ends_with(p, "/cmdline")
             || ends_with(p, "/tcp") || ends_with(p, "/tcp6");
 }
 
@@ -445,7 +469,8 @@ static int is_detector_path(const char* p) {
     size_t n = strlen(p);
     return contains_ci(p, n, "fekit") || contains_ci(p, n, "ckguard")
             || contains_ci(p, n, "wtecdh") || contains_ci(p, n, "turing")
-            || contains_ci(p, n, "libqsec") || contains_ci(p, n, "dandelion");
+            || contains_ci(p, n, "libqsec") || contains_ci(p, n, "dandelion")
+            || contains_ci(p, n, "msfboot");
 }
 
 /* openat(dirfd, "maps") bypasses a path-only /proc filter. Resolve dirfd. */
@@ -746,6 +771,32 @@ static int my_lstat(const char* path, void* st) {
     return lstat(path, st);
 }
 
+/* fstat already holds an fd; resolve it back to a path before deciding. */
+static int my_fstat(int fd, void* st) {
+    if (fd >= 0) {
+        char link[64];
+        char base[512];
+        if (snprintf(link, sizeof(link), "/proc/self/fd/%d", fd) > 0) {
+            long n = raw_svc(SYS_readlinkat, (long)AT_FDCWD, (long)link, (long)base,
+                    (long)(sizeof(base) - 1), 0, 0);
+            if (n > 0) {
+                unsigned bi = (unsigned)n;
+                if (bi >= sizeof(base)) bi = sizeof(base) - 1;
+                base[bi] = 0;
+                if (path_denied(base) || path_denied(link)) return -ENOENT;
+            }
+        }
+    }
+    return fstat(fd, st);
+}
+
+static int my_fstatat(int dirfd, const char* path, void* st, int flags) {
+    char resolved[768];
+    const char* ep = effective_path(dirfd, path, resolved, sizeof(resolved));
+    if (path_denied(ep) || path_denied(path)) return -ENOENT;
+    return (int)raw_svc(SYS_newfstatat, (long)dirfd, (long)path, (long)st, (long)flags, 0, 0);
+}
+
 static int my_statfs(const char* path, void* st) {
     if (path_denied(path)) return -ENOENT;
     return statfs(path, st);
@@ -808,6 +859,26 @@ static long my_sendto(int sockfd, const void* buf, size_t len, int flags,
     return sendto(sockfd, buf, len, flags, dest_addr, addrlen);
 }
 
+/* libfekit imports sendmsg (scatter/gather) as well as send/sendto. Turing risk
+ * payloads can leave through it, so scan every iovec and fake the byte count. */
+static long my_sendmsg(int sockfd, const struct msghdr_min* msg, int flags) {
+    if (msg && msg->msg_iov) {
+        long total = 0;
+        int drop = 0;
+        for (size_t i = 0; i < msg->msg_iovlen; i++) {
+            const struct iovec_min* v = &msg->msg_iov[i];
+            total += (long)v->iov_len;
+            if (risk_payload(v->iov_base, v->iov_len)) drop = 1;
+        }
+        /* Report the whole message as written so the reporter does not retry it. */
+        if (drop) {
+            g_risk_blocks++;
+            return total;
+        }
+    }
+    return sendmsg(sockfd, msg, flags);
+}
+
 typedef struct {
     const char* dli_fname;
     void* dli_fbase;
@@ -833,12 +904,17 @@ static void* my_dlopen(const char* filename, int flags) {
     return dlopen(filename, flags);
 }
 
-static int adb_prop_safe_copy(const char* name, char* value) {
+static int prop_safe_copy(const char* name, char* value) {
     if (!name) return 0;
     const char* safe = 0;
     if (strcmp(name, "persist.sys.usb.config") == 0 || strcmp(name, "sys.usb.config") == 0)
         safe = "mtp";
     else if (strcmp(name, "init.svc.adbd") == 0) safe = "stopped";
+    /* Match the Java SystemProperties hook so a native reader cannot see a
+     * different value than a Java reader for the same key. */
+    else if (strcmp(name, "ro.debuggable") == 0 || strcmp(name, "ro.kernel.qemu") == 0)
+        safe = "0";
+    else if (strcmp(name, "ro.secure") == 0) safe = "1";
     if (!safe) return 0;
     if (!value) return 1;
     unsigned i = 0;
@@ -852,7 +928,7 @@ static int my_sysprop_get(const char* name, char* value) {
         if (value) value[0] = 0;
         return 0;
     }
-    int n = adb_prop_safe_copy(name, value);
+    int n = prop_safe_copy(name, value);
     if (n) return n;
     return __system_property_get(name, value);
 }
@@ -948,8 +1024,11 @@ static void* my_dlsym(void* handle, const char* symbol) {
     if (strcmp(symbol, "faccessat") == 0) return (void*)my_faccessat;
     if (strcmp(symbol, "readlink") == 0) return (void*)my_readlink;
     if (strcmp(symbol, "readlinkat") == 0) return (void*)my_readlinkat;
-    if (strcmp(symbol, "stat") == 0) return (void*)my_stat;
-    if (strcmp(symbol, "lstat") == 0) return (void*)my_lstat;
+    if (strcmp(symbol, "stat") == 0 || strcmp(symbol, "stat64") == 0) return (void*)my_stat;
+    if (strcmp(symbol, "lstat") == 0 || strcmp(symbol, "lstat64") == 0) return (void*)my_lstat;
+    if (strcmp(symbol, "fstat") == 0 || strcmp(symbol, "fstat64") == 0) return (void*)my_fstat;
+    if (strcmp(symbol, "fstatat") == 0 || strcmp(symbol, "fstatat64") == 0)
+        return (void*)my_fstatat;
     if (strcmp(symbol, "statfs") == 0) return (void*)my_statfs;
     if (strcmp(symbol, "opendir") == 0) return (void*)my_opendir;
     if (strcmp(symbol, "popen") == 0) return (void*)my_popen;
@@ -957,6 +1036,7 @@ static void* my_dlsym(void* handle, const char* symbol) {
     if (strcmp(symbol, "strstr") == 0) return (void*)my_strstr;
     if (strcmp(symbol, "send") == 0) return (void*)my_send;
     if (strcmp(symbol, "sendto") == 0) return (void*)my_sendto;
+    if (strcmp(symbol, "sendmsg") == 0) return (void*)my_sendmsg;
     if (strcmp(symbol, "dladdr") == 0) return (void*)my_dladdr;
     if (strcmp(symbol, "dlopen") == 0) return (void*)my_dlopen;
     if (strcmp(symbol, "dlsym") == 0) return (void*)my_dlsym;
@@ -982,6 +1062,8 @@ typedef struct {
     void* my_readlinkat;
     void* my_stat;
     void* my_lstat;
+    void* my_fstat;
+    void* my_fstatat;
     void* my_statfs;
     void* my_opendir;
     void* my_popen;
@@ -989,6 +1071,7 @@ typedef struct {
     void* my_strstr;
     void* my_send;
     void* my_sendto;
+    void* my_sendmsg;
     void* my_dladdr;
     void* my_dlopen;
     void* my_sysprop_get;
@@ -1054,8 +1137,11 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
             else if (strcmp(nm, "faccessat") == 0) repl = ctx->my_faccessat;
             else if (strcmp(nm, "readlink") == 0) repl = ctx->my_readlink;
             else if (strcmp(nm, "readlinkat") == 0) repl = ctx->my_readlinkat;
-            else if (strcmp(nm, "stat") == 0) repl = ctx->my_stat;
-            else if (strcmp(nm, "lstat") == 0) repl = ctx->my_lstat;
+            else if (strcmp(nm, "stat") == 0 || strcmp(nm, "stat64") == 0) repl = ctx->my_stat;
+            else if (strcmp(nm, "lstat") == 0 || strcmp(nm, "lstat64") == 0) repl = ctx->my_lstat;
+            else if (strcmp(nm, "fstat") == 0 || strcmp(nm, "fstat64") == 0) repl = ctx->my_fstat;
+            else if (strcmp(nm, "fstatat") == 0 || strcmp(nm, "fstatat64") == 0)
+                repl = ctx->my_fstatat;
             else if (strcmp(nm, "statfs") == 0) repl = ctx->my_statfs;
             else if (strcmp(nm, "opendir") == 0) repl = ctx->my_opendir;
             else if (strcmp(nm, "popen") == 0) repl = ctx->my_popen;
@@ -1063,6 +1149,7 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
             else if (strcmp(nm, "strstr") == 0) repl = ctx->my_strstr;
             else if (strcmp(nm, "send") == 0) repl = ctx->my_send;
             else if (strcmp(nm, "sendto") == 0) repl = ctx->my_sendto;
+            else if (strcmp(nm, "sendmsg") == 0) repl = ctx->my_sendmsg;
             else if (strcmp(nm, "dladdr") == 0) repl = ctx->my_dladdr;
             else if (strcmp(nm, "dlopen") == 0) repl = ctx->my_dlopen;
             else if (strcmp(nm, "__system_property_get") == 0) repl = ctx->my_sysprop_get;
@@ -1538,6 +1625,8 @@ int Java_com_satori_qq_qq_MapsHide_install(void* env, void* clazz) {
     ctx.my_readlinkat = (void*)my_readlinkat;
     ctx.my_stat = (void*)my_stat;
     ctx.my_lstat = (void*)my_lstat;
+    ctx.my_fstat = (void*)my_fstat;
+    ctx.my_fstatat = (void*)my_fstatat;
     ctx.my_statfs = (void*)my_statfs;
     ctx.my_opendir = (void*)my_opendir;
     ctx.my_popen = (void*)my_popen;
@@ -1545,6 +1634,7 @@ int Java_com_satori_qq_qq_MapsHide_install(void* env, void* clazz) {
     ctx.my_strstr = (void*)my_strstr;
     ctx.my_send = (void*)my_send;
     ctx.my_sendto = (void*)my_sendto;
+    ctx.my_sendmsg = (void*)my_sendmsg;
     ctx.my_dladdr = (void*)my_dladdr;
     ctx.my_dlopen = (void*)my_dlopen;
     ctx.my_sysprop_get = (void*)my_sysprop_get;

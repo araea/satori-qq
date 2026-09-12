@@ -62,6 +62,14 @@ public final class AntiDetectStatsTest {
         check(AntiDetect.isHiddenPointQueryPackage("org.lsposed.manager"), "hide lsposed point");
         check(AntiDetect.isDeniedPath("/data/ad\u200bb/magisk"), "zwsp adb");
         check(AntiDetect.isDeniedPath("/data/adb/mag\u00adisk"), "soft-hyphen magisk");
+        check(AntiDetect.isDeniedPath("/data/data/com.koushikdutta.superuser"), "koushikdutta path");
+        check(AntiDetect.isDeniedPath("/system/etc/install-recovery.sh"), "install-recovery path");
+        check(AntiDetect.isHiddenPointQueryPackage("com.koushikdutta.superuser"), "hide koushikdutta");
+        check(AntiDetect.frameworkSocketDenied("lsposed"), "socket lsposed");
+        check(AntiDetect.frameworkSocketDenied("shamiko"), "socket shamiko");
+        check(AntiDetect.frameworkSocketDenied("com.tencent.zygisk"), "socket zygisk");
+        check(!AntiDetect.frameworkSocketDenied("com.tencent.mobileqq"), "keep qq socket");
+        check(!AntiDetect.frameworkSocketDenied(null), "null socket");
         check(AntiDetect.isHiddenPointQueryPackage("com.resukisu.resukisu"), "hide resukisu");
         check(AntiDetect.isHiddenPointQueryPackage("com.tsng.hidemyapplist"), "hide hma");
         check(AntiDetect.isXposedMetaKey("xposedmodule"), "xposed meta");

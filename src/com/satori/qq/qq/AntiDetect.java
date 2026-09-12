@@ -106,6 +106,7 @@ public final class AntiDetect {
         hookTuringSdk();
         hookQQDetectionPatch();
         hookQimeiObserver();
+        hookSocketProbe();
         if (blockTasks) hookIntMethod("execTasks", 2);
         if (blockReports) hookIntMethod("reportLog", 4);
         if (observeFekitAttach) hookFekitAttachObserver();
@@ -924,6 +925,41 @@ public final class AntiDetect {
         }
     }
 
+    /**
+     * QSec ships SocketStatus.checkSocket(name): it connects to an abstract local socket and
+     * returns 1 when the socket exists (or is permission-denied), 0 when it is absent. That is a
+     * direct probe for LSPosed / Zygisk / Shamiko / Frida style daemons. Only names that carry a
+     * framework token are answered as absent; every other name is passed through untouched.
+     */
+    private void hookSocketProbe() {
+        try {
+            Class<?> cls = ref.clsOrNull("com.tencent.mobileqq.qsec.qsecurity.utils.SocketStatus");
+            if (cls == null) return;
+            Method m = findMethod(cls, "checkSocket", 1);
+            if (m == null || m.getReturnType() != int.class) return;
+            XposedBridge.hookMethod(m, new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (p.args == null || p.args.length < 1 || !(p.args[0] instanceof String)) return;
+                    if (frameworkSocketDenied((String) p.args[0])) p.setResult(0);
+                }
+            });
+            HARDENING_HOOKS.incrementAndGet();
+            L.i("AntiDetect: QSec socket probe neutralised");
+        } catch (Throwable t) {
+            L.e("AntiDetect.socketProbe", t);
+        }
+    }
+
+    public static boolean frameworkSocketDenied(String name) {
+        if (name == null || name.isEmpty()) return false;
+        String n = name.toLowerCase(Locale.ROOT);
+        return n.contains("lspd") || n.contains("lsposed") || n.contains("xposed")
+                || n.contains("zygisk") || n.contains("riru") || n.contains("magisk")
+                || n.contains("shamiko") || n.contains("kernelsu") || n.contains("apatch")
+                || n.contains("frida") || n.contains("substrate") || n.contains("lsplant")
+                || n.contains("satori");
+    }
+
     /** The reference native hook only observed this value. Xposed can cover the Java native bridge. */
     private void hookQimeiObserver() {
         try {
@@ -1392,6 +1428,7 @@ public final class AntiDetect {
                 || p.contains("lsposed")
                 || p.contains("xposed")
                 || p.contains("magisk")
+                || p.contains("koushikdutta")
                 || p.contains("kernelsu")
                 || p.contains("resukisu")
                 || p.contains("sukisu")
@@ -1487,7 +1524,8 @@ public final class AntiDetect {
                 || p.equals("su") || p.endsWith("/su") || p.contains("/system/xbin/su")
                 || p.contains("xposed") || p.contains("edposed") || p.contains("riru")
                 || p.contains("apatch") || p.contains("shamiko") || p.contains("ksud")
-                || p.contains("frida") || p.contains("lsplant");
+                || p.contains("frida") || p.contains("lsplant")
+                || p.contains("koushikdutta") || p.contains("install-recovery.sh");
     }
 
     public static boolean isDeniedPath(String path) { return deniedPath(path); }

@@ -1,6 +1,6 @@
 # 架构
 
-记录维护模块所需的结构、QQ 接口与升级检查项。当前实现按 QQ 9.3.55 与 9.3.60.40970（NT）核验。
+记录维护模块所需的结构、QQ 接口与升级检查项。按 QQ 9.3.55 与 9.3.60.40970（NT）核验。
 
 ## 进程与组件
 
@@ -15,9 +15,9 @@
 | `packet` | OIDB、长消息与群文件封包 |
 | `native` | 检测库 GOT、`/proc` 与直接系统调用过滤 |
 
-主进程与 `:MSF` 进程均加载 `AntiDetect` 与 `MapsHide`；HTTP 服务、消息监听与保活组件只在主进程运行。
+主进程与 `:MSF` 进程都加载 `AntiDetect` 与 `MapsHide`。HTTP 服务、消息监听与保活组件只在主进程运行。
 
-`qq/ExtraSvc` 承载扩展动作所需的内核服务调用：个人资料、群设置、好友关系与最近联系人。这些服务都是主线程亲和的，从 HTTP 工作线程直接调用会立即返回但回调永不触发，因此 `ExtraSvc` 统一把调用投递到主 Looper，再由工作线程等待回调。`IOperateCallback` 是 `onResult(int, String)`，不带结果；需要返回结构的读取要用各自的回调接口（`IGroupMemberHonorCallback`、`IKernelRecentGetContactCallback` 等，第三个参数才是 payload）。`IKernelGroupService`、`IKernelBuddyService`、`IKernelProfileService` 与 `IKernelRecentContactService` 都走这条路径；部分方法（例如 `getGroupShutUpMemberList`）在 QQ 9.3.55 上不回调，改用同类替代方法（`queryGroupMuteMemberList`、`getRecentContactInfos`）。`packet` 只在协议需要直接发包时使用，不要与内核服务混用。
+`qq/ExtraSvc` 承载扩展动作的内核服务调用：个人资料、群设置、好友关系与最近联系人。这些服务是主线程亲和的。从 HTTP 工作线程直接调用会立即返回，回调永不触发，因此 `ExtraSvc` 把调用投递到主 Looper，再由工作线程等待回调。`IOperateCallback` 的签名是 `onResult(int, String)`，不带结果；需要返回结构的读取要用各自的回调接口，例如 `IGroupMemberHonorCallback`、`IKernelRecentGetContactCallback`，第三个参数才是 payload。部分方法在 9.3.55 上不回调，例如 `getGroupShutUpMemberList`，改用同类替代方法（`queryGroupMuteMemberList`、`getRecentContactInfos`）。`packet` 只在协议需要直接发包时使用，不与内核服务混用。
 
 ## 消息链路
 
@@ -43,7 +43,7 @@
 | 富媒体 | `IRichMediaService` |
 | UIN 转 UID | `getUidByUin` |
 
-私聊 `Contact` 使用 UID，群聊使用群号。可选字段必须通过 `Ref.getOrNull` 探测；QQ 9.3.60 已移除 `MsgRecord.senderRoleType` 与 `RevokeElement.senderUid`。群成员角色来自 `getAllMemberList` 缓存，不使用 `MsgRecord.roleType` 或 `roleId`。
+私聊 `Contact` 使用 UID，群聊使用群号。可选字段必须通过 `Ref.getOrNull` 探测。QQ 9.3.60 已移除 `MsgRecord.senderRoleType` 与 `RevokeElement.senderUid`。群成员角色来自 `getAllMemberList` 缓存，不使用 `MsgRecord.roleType` 或 `roleId`。
 
 ## 过检测
 
@@ -54,7 +54,7 @@ Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与�
 - `AndroidManifest.xml` 含 Xposed 元数据，用于首次注册与设置作用域
 - `AndroidManifest.stealth.xml` 不含 `xposed*` 元数据，用于启用后的覆盖安装
 
-`build.sh` 同时生成两份 APK，并检查两份清单的包名、版本与元数据数量。`test.sh` 在 JVM 单测之后编译并运行 `tests/mapshide-filter-test.c`，校验 native 过滤器的路径黑名单、`/proc` 路径分类与属性改写。
+`build.sh` 同时生成两份 APK，并检查两份清单的包名、版本与元数据数量。
 
 ## 常驻与诊断
 
@@ -72,4 +72,4 @@ Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与�
 4. OIDB 命令号、子命令与响应字段
 5. QSec、Turing 与环境上报的命令白名单，以及 QSec 检测入口的类名与方法签名
 6. 主进程与 MSF 进程的 `/healthz` hook 计数及 `loop_ok`
-7. `libfekit.so`、`libturingxq.so`、`libmsfbootV2.so` 导出的 libc 符号与路径字符串（见 `ANTIDETECT.md` 的复现审计）
+7. `libfekit.so`、`libturingxq.so`、`libmsfbootV2.so` 导出的 libc 符号与路径字符串，见 [`ANTIDETECT.md`](ANTIDETECT.md)

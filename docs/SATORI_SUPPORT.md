@@ -13,7 +13,7 @@
 - 消息 ID 使用 QQ NT `msgId` 字符串，历史游标使用 `message_seq`
 - `<quote>` 与 `[CQ:reply]` 的 `id` 可直接用于 `message.get` 与 `message.delete`
 
-QQ 没有等价能力的方法返回 404，事件仅通过 WebSocket 提供。下表中「受限」表示本地调用正确，但结果可能受 QQ 服务端权限或风控限制。
+QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调用正确，结果可能受 QQ 服务端权限或风控限制。
 
 ## 标准方法
 
@@ -43,13 +43,13 @@ QQ 没有等价能力的方法返回 404，事件仅通过 WebSocket 提供。�
 | `message.update` / `channel.create` / `channel.delete` | 不支持 | 返回 404 |
 | `reaction.clear` / `guild.role.create` / `update` / `delete` | 不支持 | 返回 404 |
 
-`internal/get_forward` 的 `id` 有两种：转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片在那条路上会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，建议优先使用。`native:` 需要知道会话，父消息不在模块缓存里（模块重启或消息较旧）时，附带 `channel_id` 即可继续读取。
+`internal/get_forward` 的 `id` 有两种：转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。`native:` 需要知道会话，父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取。
 
-`message.create` 的 `forward_mode` 可设为 `auto`、`native` 或 `fake`。`auto` 优先使用 QQ 原生合并转发，原生结果返回可撤回的真实 `msgId`。`channel.update.data.avatar` 接受本地路径、`file:`、`http(s):`、`data:` 与 `internal:`。全员禁言的自动解除计时不跨 QQ 进程重启保留。
+`message.create` 的 `forward_mode` 可设为 `auto`、`native` 或 `fake`，`auto` 优先使用 QQ 原生合并转发。`channel.update.data.avatar` 接受本地路径、`file:`、`http(s):`、`data:` 与 `internal:`。全员禁言的自动解除计时不跨 QQ 进程重启保留。
 
 ### 有时效的消息
 
-`message.create` 可选的 `satori_qq` 扩展用于复读等允许丢弃的即时回复：
+`message.create` 的 `satori_qq` 扩展用于复读等允许丢弃的即时回复：
 
 ```json
 {
@@ -62,13 +62,13 @@ QQ 没有等价能力的方法返回 404，事件仅通过 WebSocket 提供。�
 }
 ```
 
-两个字段必须一起提供：`expires_at` 为 Unix 毫秒截止时间，`if_latest_message_id` 必须仍是本进程最近向应用推送的该频道消息 ID。实现端在取得出站队列发送权后，以及媒体转换、重试等待后交给 QQ 内核前检查条件。任意新消息（包括相同文本）都会让旧条件失效；过期、频道状态未知或已被淘汰时也跳过发送并返回 `[]`，不计作 QQ 发送失败或触发熔断。多条拆分发送只返回已发送的部分。
+两个字段必须一起提供。`expires_at` 为 Unix 毫秒截止时间，`if_latest_message_id` 必须仍是本进程最近向应用推送的该频道消息 ID。取得出站队列发送权后，以及媒体转换、重试等待后交给 QQ 内核前，各检查一次条件。任意新消息都会让旧条件失效，过期、频道状态未知或已被淘汰时跳过发送并返回 `[]`，不计作 QQ 发送失败，不触发熔断。多条拆分发送只返回已发送的部分。
 
-该扩展不改变普通消息的排队或限速，也无法撤回已交给 QQ 内核的发送。调用方与实现端的系统时钟应保持一致。频道状态最多保留 4096 项，历史回放不更新频道状态。
+调用方与实现端的系统时钟应保持一致。频道状态最多保留 4096 项，历史回放不更新频道状态。
 
 ## QQ 扩展方法
 
-扩展方法使用 `POST /v1/internal/{name}`。写操作按顺序执行，并受限频与熔断保护。
+`POST /v1/internal/{name}`。写操作按顺序执行，受限频与熔断保护。
 
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
@@ -108,11 +108,9 @@ QQ 没有等价能力的方法返回 404，事件仅通过 WebSocket 提供。�
 | QQ 空间 | `qzone.auth` | 读取调试用鉴权信息 |
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程或清理临时文件 |
 
-完整参数可通过 `capabilities` 或 `help` 查询。`group_member_search.next` 可直接用于下一次扩展调用，`next_offset` 可供 HTTP 客户端分页。
+完整参数用 `capabilities` 或 `help` 查询。`group_member_search.next` 可直接用于下一次扩展调用，`next_offset` 供 HTTP 客户端分页。
 
-个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值都取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑。`friend_remark` 在带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 的 `mask` 之外也接受 `shield` 布尔简写。这些动作都能回读：`friend_relation` 会带回备注，`profile_self` 会带回个性签名与当前在线状态。
-
-QQ 的内核服务是主线程亲和的：从 HTTP 工作线程直接调用会立刻返回，但回调永不触发。模块统一把调用投递到主 Looper，再由工作线程等待回调，因此这些动作可用，但仍受 QQ 自身权限与账号状态限制。
+个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 除 `mask` 外也接受 `shield` 布尔简写。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态。这些动作受 QQ 自身权限与账号状态限制。
 
 ## 事件
 
@@ -136,10 +134,10 @@ QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，
 | 发送 | `text` `at` `sharp` `quote` `emoji` `a` `br` `p` `img` `audio` `video` `file`、修饰元素与 `<message>`；兼容 `face` `json` `mface` `poke` |
 | 接收 | `text` `at` `quote` `emoji` `img` `audio` `video` `file`；合并转发为 `<message forward id="resid"/>` |
 
-媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，以及本端的 `/v1/assets/{id}`。入站图片优先返回无需 Bearer 令牌的本地资源地址；头像使用 QQ 头像 CDN。
+媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，以及本端的 `/v1/assets/{id}`。入站图片优先返回无需 Bearer 令牌的本地资源地址，头像使用 QQ 头像 CDN。
 
 ## 客户端注意事项
 
-- Koishi 的 `server.selfUrl` 须与 `server.port` 一致，确保 QQ 进程可读取资源地址
-- `manual_self_messages=true` 时会投递 QQ 客户端手动发送的消息，`manual_self_user_id` 可覆盖其虚拟作者 ID
+- Koishi 的 `server.selfUrl` 须与 `server.port` 一致，QQ 进程才读得到资源地址
+- `manual_self_messages=true` 时投递 QQ 客户端手动发送的消息，`manual_self_user_id` 可覆盖其虚拟作者 ID
 - 私聊自己产生的消息不投递

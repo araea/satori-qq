@@ -24,7 +24,7 @@ body `{uin:target, ext:0, groupUin或friendUin:peer}`。群传 groupUin，私聊
 
 ### send_like（点赞资料卡）
 
-安卓 QQ 9.3.55 没有 ProfileLikeService 内核服务，也不能照搬桌面端的 `OidbSvcTrpcTcp.0x7E5_104`：服务端把该 rule 绑定在桌面 appid 上，手机 appid 发过去一律回 `oidb=319 "[oidb] rule type not match appid"`（换 source 值无效，也不是包格式问题——命令号错会回 236 `cmd not found`）。手机客户端走的是老式 WUP：`VisitorSvc.ReqFavorite`，已实现于 `qq/LegacySvc.java`，真机 QQ 9.3.55 回包成功。
+安卓 QQ 9.3.55 没有 ProfileLikeService 内核服务，也不能照搬桌面端的 `OidbSvcTrpcTcp.0x7E5_104`：服务端把该 rule 绑定在桌面 appid 上，手机 appid 发过去一律回 `oidb=319 "[oidb] rule type not match appid"`（换 source 值无效，也不是包格式问题；命令号错会回 236 `cmd not found`）。手机客户端走的是老式 WUP：`VisitorSvc.ReqFavorite`，已实现于 `qq/LegacySvc.java`，真机 QQ 9.3.55 回包成功。
 
 发送：构造 `ToServiceMsg("mobileqq.service", selfUin, "VisitorSvc.ReqFavorite")`，`extraData` 填 `selfUin`(long)、`targetUin`(long)、`favoriteSource`(int)、`iCount`(int)、`from`(int)，交给 `AppInterface#sendToService`。QQ 的 `MobileQQServiceBase` 会用 `com.tencent.mobileqq.app.ch#g` 编码 `QQService.ReqFavorite`（JCE，非 protobuf）并签名，无需手工拼包。`ReqFavorite` 字段号：
 

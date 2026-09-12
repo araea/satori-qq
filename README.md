@@ -75,9 +75,9 @@ plugins:
 curl http://127.0.0.1:3001/healthz
 ```
 
-强停或划掉 QQ 会停止服务。前台服务与唤醒锁可降低进程被回收或冻结的概率，但无法阻止系统在息屏期间关闭网络。锁屏后文字能发而图片或合并转发失败，属于网络而非模块问题：文字只需在既有长连接上发一个包，而富媒体上传在 `sendMsg` 内同步进行，需要新建连接与持续吞吐，会先失败。
+强停或划掉 QQ 会停止服务。前台服务与唤醒锁可降低进程被回收或冻结的概率，但无法阻止系统在息屏期间关闭网络。锁屏后文字能发而图片或合并转发失败，是网络问题，不是模块问题：文字只需在既有长连接上发一个包，而富媒体上传在 `sendMsg` 内同步进行，需要新建连接并持续传输，会先失败。
 
-按两层排查。厂商层：关闭「睡眠待机优化」或「深度睡眠」，ColorOS 的开关未必会写回配置，需确认 `deep_sleep_is_disable_net_allowed` 与 `deepsleep_network_switch` 已归零。系统层：整机流量经 VPN/TUN 转发时，把相关应用加入电池优化白名单并不够——实测 Doze 进入 `IDLE` 后，即便 QQ、Termux 与代理应用全部豁免，经 TUN 的流量仍全部中断，而链路、上游与代理进程本身均正常；`dumpsys deviceidle disable` 后立即恢复。Doze 无 UI 开关，可用 [`scripts/99-no-doze.sh`](scripts/99-no-doze.sh) 开机关闭，代价是待机功耗上升。
+按两层排查。厂商层：关闭「睡眠待机优化」或「深度睡眠」，ColorOS 的开关未必会写回配置，需确认 `deep_sleep_is_disable_net_allowed` 与 `deepsleep_network_switch` 已归零。系统层：整机流量经 VPN/TUN 转发时，把相关应用加入电池优化白名单并不够。实测 Doze 进入 `IDLE` 后，即便 QQ、Termux 与代理应用全部豁免，经 TUN 的流量仍全部中断，而链路、上游与代理进程本身均正常；`dumpsys deviceidle disable` 后立即恢复。Doze 无 UI 开关，可用 [`scripts/99-no-doze.sh`](scripts/99-no-doze.sh) 开机关闭，代价是待机功耗上升。
 
 分不清断在哪一层时用 [`scripts/netwatch.sh`](scripts/netwatch.sh)：每 60 秒分别记录物理链路、本地代理、经 TUN 出站、模块状态与电源状态的结果。
 

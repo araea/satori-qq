@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.33";
+    public static final String APP_VERSION = "0.8.9.34";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -53,6 +53,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private volatile com.satori.qq.qq.WakeLockCtl wakeLock;
     private volatile long onlineSinceMs;
     private final Set<WsConn> identified = ConcurrentHashMap.newKeySet();
+    // Clients that identified before QQ had an account to name. READY is what hands a client the
+    // login it latches onto, so it waits here until selfUin() resolves; see handleIdentify.
+    private final ConcurrentHashMap<WsConn, JSONObject> awaitingReady = new ConcurrentHashMap<>();
     private final AtomicLong eventSn = new AtomicLong();
     private final Object recentEventsLock = new Object();
     private final java.util.ArrayDeque<JSONObject> recentEvents = new java.util.ArrayDeque<>();
@@ -303,7 +306,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     @Override public void onWsOpen(WsConn conn) {
         Thread t = new Thread(() -> {
             try { Thread.sleep(10_000); } catch (InterruptedException e) { return; }
-            if (!identified.contains(conn)) conn.close();
+            if (!identified.contains(conn) && !awaitingReady.containsKey(conn)) conn.close();
         }, "pool-5-thread-3");
         t.setDaemon(true);
         t.start();
@@ -317,20 +320,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (body == null) body = new JSONObject();
         try {
             if (op == OP_IDENTIFY) {
-                if (cfg.token != null && !cfg.token.isEmpty()
-                        && !cfg.token.equals(body.optString("token", ""))) {
-                    conn.close();
-                    return;
-                }
-                identified.add(conn);
-                conn.send(opJson(OP_READY, new JSONObject()
-                        .put("logins", new JSONArray().put(loginFull()))
-                        .put("proxy_urls", new JSONArray())).toString());
-                if (Protocol.shouldReplay(body)) replayEvents(conn, body.optLong("sn", 0));
-                replayPendingRequests(conn);
+                handleIdentify(conn, body);
                 return;
             }
-            if (!identified.contains(conn)) return;
+            if (!identified.contains(conn) && !awaitingReady.containsKey(conn)) return;
             if (op == OP_PING) {
                 conn.send(opJson(OP_PONG, new JSONObject()).toString());
             }
@@ -339,8 +332,41 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }
     }
 
+    /**
+     * Answer IDENTIFY with READY, but only once the login is nameable.
+     *
+     * <p>READY carries the login a client latches onto and echoes back as {@code Satori-User-ID} on
+     * every later request. Emitting it while QQ's account is still unknown advertises id {@code 0},
+     * which the client then holds for the life of the connection; {@link #validateLoginHeaders}
+     * rejects every such request as addressed to a login we do not serve, so nothing can be sent
+     * until the client reconnects. Hold READY until an account exists — it goes out on the next
+     * status tick (see {@code startStatusMonitor}).
+     */
+    private void handleIdentify(WsConn conn, JSONObject body) throws Exception {
+        if (cfg.token != null && !cfg.token.isEmpty()
+                && !cfg.token.equals(body.optString("token", ""))) {
+            conn.close();
+            return;
+        }
+        if (selfUin() == 0) {
+            awaitingReady.put(conn, body);
+            return;
+        }
+        identified.add(conn);
+        sendReady(conn, body);
+    }
+
+    private void sendReady(WsConn conn, JSONObject identifyBody) throws Exception {
+        conn.send(opJson(OP_READY, new JSONObject()
+                .put("logins", new JSONArray().put(loginFull()))
+                .put("proxy_urls", new JSONArray())).toString());
+        if (Protocol.shouldReplay(identifyBody)) replayEvents(conn, identifyBody.optLong("sn", 0));
+        replayPendingRequests(conn);
+    }
+
     @Override public void onWsClose(WsConn conn) {
         identified.remove(conn);
+        awaitingReady.remove(conn);
     }
 
     private boolean httpAuth(HttpServer.HttpReq req) {
@@ -454,9 +480,22 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String userId = req.header("satori-user-id");
         if (!platform.isEmpty() && !PLATFORM.equals(platform))
             throw new ApiError(1404, "unknown Satori-Platform: " + platform);
-        long self = selfUin();
-        if (!userId.isEmpty() && self != 0 && !String.valueOf(self).equals(userId))
+        if (isForeignLogin(userId, selfUin()))
             throw new ApiError(1404, "unknown Satori-User-ID: " + userId);
+    }
+
+    /**
+     * Whether a {@code Satori-User-ID} names a login we do not serve.
+     *
+     * <p>An absent selector is not a foreign one. Neither is {@code 0}: that is the placeholder this
+     * hub used to advertise in READY before QQ's account was known, and a client that connected
+     * then keeps echoing it for the life of its connection. Treating it as foreign rejects every
+     * request from that client, and since nothing about the selector ever changes on its own, the
+     * client stays mute until it reconnects. Anything else really is another login.
+     */
+    public static boolean isForeignLogin(String userId, long selfUin) {
+        if (userId == null || userId.isEmpty() || "0".equals(userId)) return false;
+        return selfUin != 0 && !String.valueOf(selfUin).equals(userId);
     }
 
     private JSONObject uploadCreate(HttpServer.HttpReq req) throws Exception {
@@ -5175,6 +5214,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     if (cfg.heartbeat && now >= nextHeartbeat) {
                         nextHeartbeat = now + interval;
                     }
+                    flushAwaitingReady();
                     // Hold the wake lock from startup even when the status notification is off.
                     if (cfg.wakeLockControl || cfg.wifiSustain) ensureWakeLockController();
                     refreshNotice();
@@ -5184,6 +5224,18 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }, "pool-5-thread-1");
         t.setDaemon(true);
         t.start();
+    }
+
+    /** Deliver READY to the clients that identified before QQ could name its account. */
+    private void flushAwaitingReady() {
+        if (awaitingReady.isEmpty() || selfUin() == 0) return;
+        for (java.util.Map.Entry<WsConn, JSONObject> e : awaitingReady.entrySet()) {
+            WsConn conn = e.getKey();
+            if (!awaitingReady.remove(conn, e.getValue())) continue;
+            identified.add(conn);
+            try { sendReady(conn, e.getValue()); }
+            catch (Throwable t) { L.e("deferred READY", t); }
+        }
     }
 
     private void emitLoginUpdated() {

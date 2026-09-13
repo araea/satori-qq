@@ -5,7 +5,9 @@
 ## 连接约定
 
 - HTTP：`POST /v1/{resource}.{method}`，请求体为 JSON，`upload.create` 使用 multipart
+  - 请求头 `Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时都按未指定处理，照常应答；只有明确指向另一账号（平台不是 `red`，账号不是本机 QQ 号）的选择器才回 404
 - 事件：`GET /v1/events` 升级为 WebSocket。客户端须在 10 秒内发送 `IDENTIFY`，服务端随后发送 `READY` 与 `EVENT`。省略 `sn` 创建新会话，显式指定 `sn=0` 可回放缓冲区内 `sn > 0` 的事件
+  - `READY` 里的登录账号就是客户端之后每个请求要带回来的 `Satori-User-ID`。QQ 账号尚未可知时不发 `READY`，等账号可知（每秒轮询）后补发，不把占位账号发给客户端
 - 元信息：`POST /v1/meta`；资源代理：`GET /v1/proxy/{url}`
 - 平台为 `red`，适配器为 `satori-qq`
 - 群频道的 `channel.id` 与 `guild.id` 均为群号，`channel.type=0`

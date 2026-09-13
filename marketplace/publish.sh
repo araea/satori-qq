@@ -11,7 +11,7 @@ ORG_REPO="Xposed-Modules-Repo/$PKG"
 GH=/data/data/com.termux/files/usr/bin/gh
 APK="$ROOT/build/SatoriQQ.apk"
 APK_STEALTH="$ROOT/build/SatoriQQ.stealth.apk"
-TAG="68-0.8.9.33"
+TAG="69-0.8.9.34"
 
 for artifact in "$APK" "$APK_STEALTH"; do
   if [ ! -f "$artifact" ]; then
@@ -36,7 +36,7 @@ git add SUMMARY README.md SOURCE_URL ic_launcher.png
 if git diff --cached --quiet; then
   echo "Metadata already up to date"
 else
-  git commit -m "Update metadata for 0.8.9.33"
+  git commit -m "Update metadata for 0.8.9.34"
   git push origin HEAD
 fi
 
@@ -47,7 +47,7 @@ fi
 
 "$GH" release create "$TAG" "$APK" "$APK_STEALTH" \
   --repo "$ORG_REPO" \
-  --title "0.8.9.33" \
-  --notes-file "$MP/CHANGELOG-0.8.9.33.md"
+  --title "0.8.9.34" \
+  --notes-file "$MP/CHANGELOG-0.8.9.34.md"
 
 echo "Published to https://github.com/$ORG_REPO"

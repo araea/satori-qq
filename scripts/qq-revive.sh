@@ -110,6 +110,7 @@ while true; do
         # 端口不通：模块没起来，或者 QQ 进程不在了。
         offline=$((offline + 1))
         stale=0
+        log "offline: /healthz 无响应 ${offline}/${OFFLINE_LIMIT}"
         if [ "$offline" -ge "$OFFLINE_LIMIT" ]; then
             if pgrep -f "com.tencent.mobileqq" >/dev/null 2>&1; then
                 restart_qq "模块端口不通 ${offline} 轮，QQ 进程还在"

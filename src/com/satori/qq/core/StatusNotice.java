@@ -3,7 +3,10 @@ package com.satori.qq.core;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
 
 import com.satori.qq.L;
 
@@ -17,6 +20,10 @@ import com.satori.qq.L;
  * mirrors the machine-readable {@code GET /healthz} line. When foreground keepalive is on the
  * same {@link Notification} is handed to {@code startForeground} (see {@code Keepalive}); this
  * class only builds and posts it, it grants no keep-alive priority by itself.
+ *
+ * <p>Tapping the entry opens QQ. The module runs under QQ's identity, so the host package is QQ
+ * itself and its launcher activity is the tap target. The {@link PendingIntent} is resolved once
+ * and cached — this notification is rebuilt on every monitor tick.
  */
 public final class StatusNotice {
     private static final String CHANNEL_ID = "satori-qq-status";
@@ -24,6 +31,7 @@ public final class StatusNotice {
     // Stable id so every update() replaces the same entry in place, and so startForeground()
     // and notify() address one and the same notification.
     public static final int NOTIFY_ID = 0x5A710001;
+    private static final int REQ_OPEN_APP = 0x5A710003;
 
     private static final int COLOR_ONLINE = 0xFF2E7D32;   // green — running normally
     private static final int COLOR_WAIT = 0xFFF9A825;     // amber — waiting for login
@@ -35,6 +43,10 @@ public final class StatusNotice {
     private volatile String lastKey = "";
     // Optional user-toggled wake lock, surfaced as a notification action button (Termux-style).
     private volatile com.satori.qq.qq.WakeLockCtl wake;
+    // Tap target, resolved once (see openAppIntent); openAppTried keeps a failed lookup from
+    // repeating a package query on every rebuild.
+    private volatile PendingIntent openApp;
+    private volatile boolean openAppTried;
 
     public StatusNotice(Context ctx) {
         this.ctx = ctx;
@@ -124,8 +136,40 @@ public final class StatusNotice {
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
                 .setColor(v.color);
+        PendingIntent open = openAppIntent();
+        if (open != null) b.setContentIntent(open);
         addWakeAction(b);
         return b.build();
+    }
+
+    /**
+     * PendingIntent that brings QQ to the front when the entry is tapped.
+     *
+     * <p>The host package is QQ itself, so its launcher activity is the tap target; the launcher
+     * Intent already carries {@code FLAG_ACTIVITY_NEW_TASK}, which reuses the running task instead
+     * of stacking a second one. Resolved once and cached: an unresolvable launcher activity leaves
+     * the entry tappable but inert, which is the behaviour without this method.
+     */
+    private PendingIntent openAppIntent() {
+        PendingIntent cached = openApp;
+        if (cached != null || openAppTried) return cached;
+        openAppTried = true;
+        try {
+            Intent it = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+            if (it == null) {
+                L.e("notice: no launcher activity for " + ctx.getPackageName(), null);
+                return null;
+            }
+            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= 31) flags |= PendingIntent.FLAG_IMMUTABLE;
+            L.i("notice: tap opens " + it.getComponent());
+            openApp = PendingIntent.getActivity(ctx, REQ_OPEN_APP, it, flags);
+            return openApp;
+        } catch (Throwable t) {
+            L.e("notice: open app intent", t);
+            return null;
+        }
     }
 
     /** Termux-style acquire/release wake-lock button. Silently skipped when no controller is set. */

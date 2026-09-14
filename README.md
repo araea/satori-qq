@@ -53,7 +53,7 @@ plugins:
 | --- | --- | --- |
 | `port` | `3001` | 本地服务端口 |
 | `token` | 空 | HTTP 与 WebSocket 鉴权令牌 |
-| `status_notification` | `true` | 显示运行状态通知 |
+| `status_notification` | `true` | 显示运行状态通知，点击切换到 QQ |
 | `foreground_keepalive` | `true` | 在线时以前台服务保持 QQ 主进程 |
 | `request_battery_exemption` | `true` | 首次在线时申请电池优化豁免 |
 | `wake_lock_control` | `true` | 在通知中提供唤醒锁开关 |

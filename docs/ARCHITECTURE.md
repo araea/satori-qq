@@ -60,6 +60,8 @@ Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与�
 
 在线时，模块使用 QQ 已声明的 `QQDataSyncService` 启动 `dataSync` 前台服务。强停或划掉 QQ 会结束服务，不自动拉起。写操作期间自动持有 CPU 与 Wi-Fi 锁，有客户端连接时可长期持有 Wi-Fi 锁。
 
+状态通知的点击目标是宿主包的 launcher activity，也就是 QQ 自己。`PendingIntent` 用 `getLaunchIntentForPackage` 解析一次后缓存，返回的 Intent 带 `FLAG_ACTIVITY_NEW_TASK`，QQ 在后台时回到原任务而不是新建。
+
 `GET /healthz` 返回登录、监听、保活、唤醒锁、环境上报与 Native 隐藏自检状态。Native 自检结果写入 QQ 外部文件目录，主进程可同时读取主进程与 MSF 进程状态。
 
 ## QQ 升级检查

@@ -93,6 +93,14 @@ public final class AntiDetectStatsTest {
         check(!AntiDetect.shouldHideProcMapLine(
                 "7000-8000 r-xp 0 00:00 0 /apex/com.android.art/lib64/libart.so"),
                 "keep java maps line");
+
+        // 被拦下的服务端踢线：计数与内容会进 /healthz，外部看守靠它重启 QQ。
+        int kicks = AntiDetect.blockedKicks();
+        AntiDetect.noteBlockedKick("type=KKICKBYMULTIINST security=0 sameDevice=false");
+        eq(kicks + 1, AntiDetect.blockedKicks(), "blocked kick counted");
+        check(AntiDetect.lastKick().contains("KKICKBYMULTIINST"), "blocked kick detail");
+        check(AntiDetect.lastKickMs() > 0, "blocked kick time");
+
         System.out.println("AntiDetectStatsTest OK");
     }
 

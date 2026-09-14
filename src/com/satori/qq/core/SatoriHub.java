@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.34";
+    public static final String APP_VERSION = "0.8.9.35";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -266,6 +266,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("notice", noticeDiag())
                         .put("keepalive", keepaliveDiag())
                         .put("wakelock", wakeLockDiag())
+                        // A blocked server kick leaves a session that still reports online but
+                        // receives nothing, so the count is what a watchdog keys its restart on.
+                        .put("blocked_kicks", AntiDetect.blockedKicks())
+                        .put("kick_hook", AntiDetect.serverKickHooks())
+                        .put("last_kick_epoch_ms", AntiDetect.lastKickMs())
+                        .put("last_kick", AntiDetect.lastKick())
                         .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");

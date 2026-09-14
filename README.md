@@ -80,6 +80,8 @@ plugins:
 
 分不清断在哪一层时用 [`scripts/netwatch.sh`](scripts/netwatch.sh)，每 60 秒记录物理链路、本地代理、经 TUN 出站、模块状态与电源状态。
 
+模块自报在线、消息却一条收不到，多半是被服务端踢线了。`block_server_kick` 挡掉了 QQ 处理踢线的唯一入口，好处是不被踢下线，代价是会话已经作废但本机不会重连，只能重启 QQ。`/healthz` 的 `blocked_kicks` 一涨就是这种情况，`kick_hook` 为 0 表示这一版没拦住踢线。用 [`scripts/qq-revive.sh`](scripts/qq-revive.sh) 看守：它按「MSF 进程没有上游连接」与被拦踢线计数判断，必要时重启 QQ，装法见 [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh) 开头。
+
 ## 构建与测试
 
 首次构建需准备 Android 35 平台、R8 与 `org.json`：

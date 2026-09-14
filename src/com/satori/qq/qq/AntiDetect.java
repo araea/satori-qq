@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -62,6 +63,19 @@ public final class AntiDetect {
     private static volatile int hookMsfIn;
     private static final AtomicLong HARDENING_HOOKS = new AtomicLong();
     private final java.util.Set<String> hookedSendClasses = ConcurrentHashMap.newKeySet();
+
+    /** 被拦下的服务端踢线。挡掉之后服务端会话已经作废、本地还报在线，这个计数是外部看守
+     *  判断「要不要重启 QQ」的信号，所以单独记一份，不进 verbose 开关。 */
+    private static final AtomicInteger BLOCKED_KICKS = new AtomicInteger();
+    private static volatile long lastKickMs;
+    private static volatile String lastKick = "";
+    /** 踢线处理入口的 hook 数；0 表示这个版本没拦住踢线，被踢会正常退出登录。 */
+    private static volatile int serverKickHookCount;
+
+    public static int blockedKicks() { return BLOCKED_KICKS.get(); }
+    public static long lastKickMs() { return lastKickMs; }
+    public static String lastKick() { return lastKick; }
+    public static int serverKickHooks() { return serverKickHookCount; }
 
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
                       boolean observeFekitAttach) {
@@ -222,7 +236,8 @@ public final class AntiDetect {
                 .put("channel_in", hookChannelIn)
                 .put("msf_send", hookMsfSend)
                 .put("msf_in", hookMsfIn)
-                .put("hardening", HARDENING_HOOKS.get());
+                .put("hardening", HARDENING_HOOKS.get())
+                .put("server_kick", serverKickHookCount);
     }
 
     private static boolean interceptsReady(String process) {
@@ -898,8 +913,7 @@ public final class AntiDetect {
 
     private void hookQQDetectionPatch() {
         if (blockServerKick)
-            hookVoidMethods("com.tencent.mobileqq.kick.NTKickProcessor",
-                    new String[]{"b"}, "server kick handler");
+            hookServerKick("com.tencent.mobileqq.kick.NTKickProcessor", new String[]{"b"});
 
         hookVoidMethods("com.tencent.mobileqq.msf.core.MsfCore", new String[]{
                 "doReportOnInitComplete", "reportMsfCoreInit", "tryReportJobAlive",
@@ -996,6 +1010,67 @@ public final class AntiDetect {
         } catch (Throwable t) {
             L.e("AntiDetect." + label, t);
         }
+    }
+
+    /**
+     * 服务端踢线（别处登录、改密码、版本过低）时 QQ 唯一的处理入口：{@code NTKickProcessor.b}
+     * 会退出登录并跳回登录页。挡掉它，本机就不会被踢下线；但服务端会话已经作废，本机会停在
+     * 「自己报在线、消息一条收不到、也不会自己重连」的状态，只有重启 QQ 才能恢复。
+     * 所以这里拦下之后必须留下痕迹：计数与最近一次的内容进 {@code /healthz}，看守靠它动手。
+     */
+    private void hookServerKick(String className, String[] names) {
+        try {
+            Class<?> cls = ref.clsOrNull(className);
+            if (cls == null) return;
+            int hooked = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!containsName(names, m.getName()) || m.getReturnType() != void.class) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        recordBlockedKick(describeKick(p == null ? null : p.args));
+                        if (p != null) p.setResult(null);
+                    }
+                });
+                hooked++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (hooked > 0) {
+                serverKickHookCount = hooked;
+                L.i("AntiDetect: blocked server kick handler (" + hooked + ")");
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.serverKick", t);
+        }
+    }
+
+    /** 把一次踢线的参数整理成一行可读文本。 */
+    private String describeKick(Object[] args) {
+        StringBuilder sb = new StringBuilder();
+        Object info = args != null && args.length > 1 ? args[1] : null;
+        if (info != null) {
+            sb.append("type=").append(String.valueOf(ref.get(info, "kickedType")));
+            sb.append(" security=").append(String.valueOf(ref.get(info, "securityKickedType")));
+            sb.append(" sameDevice=").append(String.valueOf(ref.get(info, "sameDevice")));
+            String title = Ref.asStr(ref.get(info, "tipsTitle"));
+            if (title != null && !title.isEmpty()) sb.append(" tips=").append(title);
+        }
+        if (args != null && args.length > 2 && args[2] != null)
+            sb.append(" reason=").append(args[2]);
+        return sb.toString();
+    }
+
+    /** 记下这次踢线。日志走 L.e，不开 verbose 也要能在 logcat 里看到。 */
+    public static void recordBlockedKick(String detail) {
+        noteBlockedKick(detail);
+        L.e("AntiDetect: server kick blocked #" + BLOCKED_KICKS.get() + " " + lastKick, null);
+    }
+
+    /** 只更新状态、不落日志。单测跑在 JVM 上，碰 android.util.Log 会撞上桩实现。 */
+    public static void noteBlockedKick(String detail) {
+        lastKick = detail == null ? "" : detail;
+        lastKickMs = System.currentTimeMillis();
+        BLOCKED_KICKS.incrementAndGet();
     }
 
     private void hookSafeDefaults(String className, String[] names, boolean allowObjects,

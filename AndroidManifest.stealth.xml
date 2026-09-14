@@ -11,8 +11,8 @@
      versionCode and versionName in sync (tests enforce this). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.satori.qq"
-    android:versionCode="71"
-    android:versionName="0.8.9.36">
+    android:versionCode="72"
+    android:versionName="0.8.9.37">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <application
         android:label="Kernel Bridge"

@@ -69,12 +69,16 @@ public final class AntiDetect {
     private static final AtomicInteger BLOCKED_KICKS = new AtomicInteger();
     private static volatile long lastKickMs;
     private static volatile String lastKick = "";
+    /** 命中的是哪个踢线入口（nt-kick / ticket-refresh / uid-fail）。三个入口的处置不同，
+     *  只有知道是谁拦下的，才能判断这次踢线是不是真风控。 */
+    private static volatile String lastKickSource = "";
     /** 踢线处理入口的 hook 数；0 表示这个版本没拦住踢线，被踢会正常退出登录。 */
     private static volatile int serverKickHookCount;
 
     public static int blockedKicks() { return BLOCKED_KICKS.get(); }
     public static long lastKickMs() { return lastKickMs; }
     public static String lastKick() { return lastKick; }
+    public static String lastKickSource() { return lastKickSource; }
     public static int serverKickHooks() { return serverKickHookCount; }
 
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
@@ -137,6 +141,26 @@ public final class AntiDetect {
         persistEnvReport(true);
     }
 
+    /**
+     * QQ 9.3.60.40970 给 libfekit 换上了 QSec_Channel 上报器（二进制里带
+     * channel/src/reporter/{async,delay,high_reliability,super}_reporter.cpp、"QSec_Channel report retry"
+     * 与 HighReliabilityReporter saveToDisk/loadFromDisk，报不通会落盘重试 3 次）。它比旧的
+     * SsoReport 通道抗丢包，命令名也换了。0x9c00/0x9c01/0x9c02/0x9c0c 只出现在 libfekit，
+     * 0x9cdf 与 libMSFKernel 共用。旧版 libfekit 的 312 条命令表里没有这 5 条。
+     */
+    private static final String[] FEKIT_CHANNEL_REPORT_CMDS = {
+            "OidbSvcTrpcTcp.0x9c00_", "OidbSvcTrpcTcp.0x9c01_", "OidbSvcTrpcTcp.0x9c02_",
+            "OidbSvcTrpcTcp.0x9c0c_", "OidbSvcTrpcTcp.0x9cdf_",
+    };
+
+    public static boolean isFekitChannelReportCmd(String cmd) {
+        if (cmd == null || cmd.isEmpty()) return false;
+        for (String prefix : FEKIT_CHANNEL_REPORT_CMDS) {
+            if (cmd.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
     /** QSec / ChannelManager environment reports. Never matches ecdh_access (login). */
     public static boolean isEnvReportCmd(String cmd) {
         if (cmd == null || cmd.isEmpty()) return false;
@@ -149,7 +173,8 @@ public final class AntiDetect {
                 || cmd.equals("trpc.ilive_cdn.report")
                 || cmd.startsWith("trpc.ilive_cdn.report.")
                 || cmd.equals("OidbSvc.0xd79")
-                || cmd.startsWith("OidbSvc.0xd79_");
+                || cmd.startsWith("OidbSvc.0xd79_")
+                || isFekitChannelReportCmd(cmd);
     }
 
     public static void recordEnvReportDrop(String cmd) {
@@ -176,7 +201,7 @@ public final class AntiDetect {
             out.put("intercepts_ready", !enabled || interceptsReady(envProcessKey()));
             JSONObject msf = readEnvFile("msf");
             if (msf != null) out.put("msf", msf);
-            JSONObject maps = readEnvFile("maps_main");
+            JSONObject maps = readMapsFile("maps_main");
             if (maps != null) out.put("maps", maps);
             JSONObject mapsMsf = readEnvFile("maps_msf");
             if (mapsMsf != null) out.put("maps_msf", mapsMsf);
@@ -184,14 +209,37 @@ public final class AntiDetect {
         return out;
     }
 
+    /**
+     * 进程键，决定 {@code qk_env_*.json} 的文件名。只有裸包名才是主进程。
+     *
+     * <p>此前除 :MSF 之外一律记成 main，于是 :qzone 这类子进程写完就把主进程的数字覆盖掉，
+     * 从状态接口上看不出这是谁的数据。现在按冒号后的进程名分开写，子进程再启动也不会动主进程那份。
+     */
     private static String envProcessKey() {
         try {
             Method m = Class.forName("android.app.ActivityThread")
                     .getDeclaredMethod("currentProcessName");
-            String n = (String) m.invoke(null);
-            if (n != null && n.contains(":MSF")) return "msf";
+            Object value = m.invoke(null);
+            if (value instanceof String) {
+                String n = (String) value;
+                int colon = n.lastIndexOf(':');
+                if (colon >= 0 && colon + 1 < n.length()) {
+                    return sanitizeProcessKey(n.substring(colon + 1));
+                }
+            }
         } catch (Throwable ignore) {}
         return "main";
+    }
+
+    private static String sanitizeProcessKey(String name) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < name.length() && sb.length() < 24; i++) {
+            char c = name.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) sb.append(c);
+            else if (c >= 'A' && c <= 'Z') sb.append((char) (c - 'A' + 'a'));
+            else sb.append('_');
+        }
+        return sb.length() == 0 ? "main" : sb.toString();
     }
 
     private static synchronized void persistEnvReport(boolean force) {
@@ -244,6 +292,25 @@ public final class AntiDetect {
         return "msf".equals(process)
                 ? hookMsfSend > 0 && hookMsfIn > 0
                 : hookChannelSend > 0 && hookChannelIn > 0;
+    }
+
+    /**
+     * native 层把除 :MSF 之外的进程都写成 {@code qk_env_maps_main.json}，后启动的进程会覆盖先写的，
+     * 所以直接读到的数字可能来自 :qzone 而不是主进程（实测主进程的 libfekit GOT 已全量补丁，
+     * 文件里却是 :qzone 的 21，看起来像过检测退化）。比对 pid，并明确标出这份数据是谁写的。
+     */
+    private static JSONObject readMapsFile(String key) {
+        JSONObject stats = readEnvFile(key);
+        if (stats == null) return null;
+        try {
+            if (stats.has("pid")) {
+                int owner = stats.getInt("pid");
+                if (owner != android.os.Process.myPid()) {
+                    stats.put("owner", "pid " + owner + " (not this process)");
+                }
+            }
+        } catch (Throwable ignore) {}
+        return stats;
     }
 
     private static JSONObject readEnvFile(String key) {
@@ -912,8 +979,20 @@ public final class AntiDetect {
     }
 
     private void hookQQDetectionPatch() {
-        if (blockServerKick)
-            hookServerKick("com.tencent.mobileqq.kick.NTKickProcessor", new String[]{"b"});
+        if (blockServerKick) {
+            hookServerKick("com.tencent.mobileqq.kick.NTKickProcessor",
+                    new String[]{"b"}, "nt-kick", true);
+            // NTLoginTicketManager。登录后刷新票据失败时，错误码落在
+            // 140022014/140022015/140022016 或 refreshMethodNeedKick 为真，会走到 f(int,String)：
+            // 里面先 ntTriggerLogout(expired)，再拿 LoginActivity 发 ACTION_KICK_TO_LOGIN，
+            // 界面表现为「刚登录就被弹回登录页」。NTKickProcessor 不经过这里。
+            hookServerKick("com.tencent.mobileqq.login.ntlogin.ao",
+                    new String[]{"f"}, "ticket-refresh", false);
+            // UidServiceImpl。拿不到 UID 时 startRequestUid 先 logoutWhenReqUidFail()，
+            // 再 kickToLoginPage() 跳到 /base/login。
+            hookServerKick("com.tencent.mobileqq.login.api.impl.UidServiceImpl",
+                    new String[]{"kickToLoginPage"}, "uid-fail", false);
+        }
 
         hookVoidMethods("com.tencent.mobileqq.msf.core.MsfCore", new String[]{
                 "doReportOnInitComplete", "reportMsfCoreInit", "tryReportJobAlive",
@@ -1018,7 +1097,8 @@ public final class AntiDetect {
      * 「自己报在线、消息一条收不到、也不会自己重连」的状态，只有重启 QQ 才能恢复。
      * 所以这里拦下之后必须留下痕迹：计数与最近一次的内容进 {@code /healthz}，看守靠它动手。
      */
-    private void hookServerKick(String className, String[] names) {
+    private void hookServerKick(String className, String[] names, String source,
+            boolean kickedInfoArgs) {
         try {
             Class<?> cls = ref.clsOrNull(className);
             if (cls == null) return;
@@ -1028,7 +1108,8 @@ public final class AntiDetect {
                 m.setAccessible(true);
                 XposedBridge.hookMethod(m, new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
-                        recordBlockedKick(describeKick(p == null ? null : p.args));
+                        recordBlockedKick(source,
+                                describeArgs(p == null ? null : p.args, kickedInfoArgs));
                         if (p != null) p.setResult(null);
                     }
                 });
@@ -1036,12 +1117,25 @@ public final class AntiDetect {
                 HARDENING_HOOKS.incrementAndGet();
             }
             if (hooked > 0) {
-                serverKickHookCount = hooked;
-                L.i("AntiDetect: blocked server kick handler (" + hooked + ")");
+                serverKickHookCount += hooked;
+                L.i("AntiDetect: blocked server kick handler " + source + " (" + hooked + ")");
             }
         } catch (Throwable t) {
             L.e("AntiDetect.serverKick", t);
         }
+    }
+
+    /** 踢线入口的参数形状不一：NTKickProcessor 带 KickedInfo，其余入口按原样记。 */
+    private String describeArgs(Object[] args, boolean kickedInfoArgs) {
+        if (kickedInfoArgs) return describeKick(args);
+        if (args == null || args.length == 0) return "no-args";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < args.length; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(args[i] == null ? "null" : String.valueOf(args[i]));
+        }
+        String text = sb.toString().replace('\n', ' ').replace('\r', ' ');
+        return text.length() > 160 ? text.substring(0, 160) : text;
     }
 
     /** 把一次踢线的参数整理成一行可读文本。 */
@@ -1061,13 +1155,19 @@ public final class AntiDetect {
     }
 
     /** 记下这次踢线。日志走 L.e，不开 verbose 也要能在 logcat 里看到。 */
-    public static void recordBlockedKick(String detail) {
-        noteBlockedKick(detail);
-        L.e("AntiDetect: server kick blocked #" + BLOCKED_KICKS.get() + " " + lastKick, null);
+    public static void recordBlockedKick(String source, String detail) {
+        noteBlockedKick(source, detail);
+        L.e("AntiDetect: server kick blocked #" + BLOCKED_KICKS.get()
+                + " [" + lastKickSource + "] " + lastKick, null);
     }
 
     /** 只更新状态、不落日志。单测跑在 JVM 上，碰 android.util.Log 会撞上桩实现。 */
     public static void noteBlockedKick(String detail) {
+        noteBlockedKick(lastKickSource, detail);
+    }
+
+    public static void noteBlockedKick(String source, String detail) {
+        lastKickSource = source == null ? "" : source;
         lastKick = detail == null ? "" : detail;
         lastKickMs = System.currentTimeMillis();
         BLOCKED_KICKS.incrementAndGet();

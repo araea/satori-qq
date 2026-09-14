@@ -21,6 +21,15 @@ public final class AntiDetectStatsTest {
         check(AntiDetect.isEnvReportCmd("trpc.gc_indust.device_report.SsoHome.SsoHomeReport"), "device report");
         check(AntiDetect.isEnvReportCmd("trpc.ilive_cdn.report.StreamReport"), "cdn report");
         check(AntiDetect.isEnvReportCmd("OidbSvc.0xd79"), "oidb device report");
+        // QQ 9.3.60.40970 起 libfekit 的 QSec_Channel 上报器换用这组命令，旧版命令表里没有。
+        check(AntiDetect.isEnvReportCmd("OidbSvcTrpcTcp.0x9c00_0"), "fekit channel 0x9c00");
+        check(AntiDetect.isEnvReportCmd("OidbSvcTrpcTcp.0x9c01_0"), "fekit channel 0x9c01");
+        check(AntiDetect.isEnvReportCmd("OidbSvcTrpcTcp.0x9c02_0"), "fekit channel 0x9c02");
+        check(AntiDetect.isEnvReportCmd("OidbSvcTrpcTcp.0x9c0c_0"), "fekit channel 0x9c0c");
+        check(AntiDetect.isEnvReportCmd("OidbSvcTrpcTcp.0x9cdf_1"), "fekit channel 0x9cdf");
+        check(!AntiDetect.isEnvReportCmd("OidbSvcTrpcTcp.0x9b80_1"), "keep neighbouring oidb");
+        check(!AntiDetect.isEnvReportCmd("OidbSvcTrpcTcp.0x9c19_0"), "keep neighbouring oidb 2");
+        check(!AntiDetect.isFekitChannelReportCmd(null), "null fekit channel cmd");
         check(!AntiDetect.isEnvReportCmd("trpc.o3.ecdh_access.EcdhAccess.SsoSecureAccess"), "keep ecdh");
         check(!AntiDetect.isEnvReportCmd("trpc.o3.ecdh_access.EcdhAccess.SsoEstablishShareKey"), "keep sharekey");
         check(!AntiDetect.isEnvReportCmd("trpc.o3.guard.GuardHello"), "keep other o3");
@@ -100,6 +109,13 @@ public final class AntiDetectStatsTest {
         eq(kicks + 1, AntiDetect.blockedKicks(), "blocked kick counted");
         check(AntiDetect.lastKick().contains("KKICKBYMULTIINST"), "blocked kick detail");
         check(AntiDetect.lastKickMs() > 0, "blocked kick time");
+
+        // 三个踢线入口共用一个计数，但必须分得清是谁拦下的。
+        AntiDetect.noteBlockedKick("ticket-refresh", "140022014 当前登录环境存在风险");
+        check("ticket-refresh".equals(AntiDetect.lastKickSource()), "kick source label");
+        check(AntiDetect.lastKick().contains("140022014"), "kick source detail");
+        AntiDetect.noteBlockedKick("uid-fail", "no-args");
+        check("uid-fail".equals(AntiDetect.lastKickSource()), "kick source replaced");
 
         System.out.println("AntiDetectStatsTest OK");
     }

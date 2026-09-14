@@ -1443,16 +1443,38 @@ static int install_seccomp(void) {
     return 1;
 }
 
-static int cmdline_is_msf(void) {
+/*
+ * 进程键，决定 qk_env_maps_<key>.json 的文件名。
+ *
+ * 旧写法把除 :MSF 之外的进程一律记成 main，于是 :qzone 写完就覆盖主进程那份：实测主进程的
+ * libfekit 已全量补丁，文件里却是 :qzone 的 patched=21/dlsym=0，看着像过检测退化。
+ * 只有 cmdline 就是裸包名（没有冒号）才是主进程。
+ */
+static const char* process_key(void) {
+    static char key[32];
+    if (key[0] != 0) return key;
+    char buf[128];
+    buf[0] = 0;
     long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)"/proc/self/cmdline",
             (long)O_RDONLY, 0L, 0L, 0L);
-    if (fd < 0) return 0;
-    char buf[128];
-    long n = raw_svc(SYS_read, fd, (long)buf, 127, 0, 0, 0);
-    raw_svc(SYS_close, fd, 0, 0, 0, 0, 0);
-    if (n <= 0) return 0;
-    buf[n < 127 ? (int)n : 127] = 0;
-    return strstr(buf, ":MSF") != 0;
+    if (fd >= 0) {
+        long n = raw_svc(SYS_read, fd, (long)buf, 127, 0, 0, 0);
+        raw_svc(SYS_close, fd, 0, 0, 0, 0, 0);
+        if (n <= 0) buf[0] = 0;
+        else buf[n < 127 ? (int)n : 127] = 0;
+    }
+    const char* colon = 0;
+    for (const char* p = buf; *p; p++) if (*p == ':') colon = p;
+    const char* name = colon ? colon + 1 : "main";
+    unsigned i = 0;
+    for (; name[i] && i + 1 < sizeof(key); i++) {
+        char c = name[i];
+        key[i] = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ? c
+                : (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : '_';
+    }
+    key[i] = 0;
+    if (i == 0) { key[0] = 'm'; key[1] = 'a'; key[2] = 'i'; key[3] = 'n'; key[4] = 0; }
+    return key;
 }
 
 #define AUDIT_MAPS 0
@@ -1553,19 +1575,21 @@ static void run_hide_audit(int* leak_maps, int* leak_tcp, int* leak_env) {
 
 static void persist_maps_stats(int patched, int dlsym_n, int readdir_n,
         int getenv_n, int freopen_n, int leak_maps, int leak_tcp, int leak_env) {
-    const char* key = cmdline_is_msf() ? "msf" : "main";
+    const char* key = process_key();
     char path[192];
     if (snprintf(path, sizeof(path),
             "/storage/emulated/0/Android/data/com.tencent.mobileqq/files/qk_env_maps_%s.json",
             key) <= 0)
         return;
     int ok = hide_loop_ok(leak_maps, leak_tcp, leak_env, dlsym_n);
-    char json[448];
+    /* 文件名按 process_key() 分进程；pid 让读侧能再确认一次这份数据是不是自己写的。 */
+    char json[512];
     int len = snprintf(json, sizeof(json),
-            "{\"patched\":%d,\"dlsym\":%d,\"readdir\":%d,\"seccomp\":%d,"
+            "{\"pid\":%d,\"patched\":%d,\"dlsym\":%d,\"readdir\":%d,\"seccomp\":%d,"
             "\"named_rx\":%d,\"tcp\":1,\"getenv\":%d,\"freopen\":%d,\"environ\":1,"
             "\"risk_blocks\":%d,\"system_blocks\":%d,"
             "\"leak_maps\":%d,\"leak_tcp\":%d,\"leak_env\":%d,\"loop_ok\":%d}\n",
+            (int)raw_svc(SYS_getpid, 0, 0, 0, 0, 0, 0),
             patched, dlsym_n, readdir_n, g_seccomp_on, g_named_rx, getenv_n, freopen_n,
             g_risk_blocks, g_system_blocks, leak_maps, leak_tcp, leak_env, ok);
     if (len <= 0) return;

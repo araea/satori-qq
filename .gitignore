@@ -10,7 +10,8 @@ libs/*.jar
 # os cruft
 .DS_Store
 libs/arm64-v8a/
-lib/
+# 锚定到仓库根：裸 lib/ 会连 tests/lib/ 这类同名目录一起忽略掉
+/lib/
 
 # private protocol dumps / live account traffic
 tests/protocol-full-test.js

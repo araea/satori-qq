@@ -117,7 +117,7 @@ capture() {
         echo "suspicious_thread_names=$suspicious_threads"
         echo "legacy_log_fingerprints=$legacy_logs"
         echo "neutral_error_lines=$neutral_errors"
-        maps_json="/storage/emulated/0/Android/data/com.tencent.mobileqq/files/qk_env_maps_main.json"
+        maps_json="/data/data/com.tencent.mobileqq/files/qk_env_maps_main.json"
         if [ -f "$maps_json" ]; then
             echo "hide_loop_json=$(tr -d '\n' < "$maps_json")"
             echo "hide_loop_ok=$(sed -n 's/.*"loop_ok":\([01]\).*/\1/p' "$maps_json")"

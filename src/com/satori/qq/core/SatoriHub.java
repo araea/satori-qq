@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.38";
+    public static final String APP_VERSION = "0.8.9.39";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -209,6 +209,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         login.put("adapter", ADAPTER);
         login.put("platform", PLATFORM);
         login.put("status", online ? 1 : 0);
+        login.put("hidden", false);
+        login.put("self_id", String.valueOf(selfUin()));
         login.put("user", Codec.user(selfUin(), qq.selfNick(), ""));
         JSONArray features = new JSONArray()
                 .put("guild.plain")
@@ -262,6 +264,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             if ("GET".equals(req.method) && path.startsWith("/v1/proxy/")) {
                 return serveProxy(path.substring("/v1/proxy/".length()));
             }
+            if (path.startsWith("/v1/internal/") && "GET".equals(req.method)) {
+                return serveInternalResource(path);
+            }
             if ("GET".equals(req.method) && "/healthz".equals(path)) {
                 // Unauthenticated, local-only liveness an operator/tooling can poll to tell a
                 // truly-online hub from "port up but kernel offline" without an activity dump.
@@ -301,8 +306,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             validateLoginHeaders(req, method);
             if ("upload.create".equals(method)) return jsonResult(uploadCreate(req));
             if (method.startsWith("internal/")) {
-                return jsonResult(dispatchInternal(method.substring("internal/".length()),
-                        parseInternalBody(req)));
+                return jsonResult(internalPg(req, dispatchInternal(method.substring("internal/".length()),
+                        parseInternalBody(req))));
             }
             JSONObject body = parseBody(req);
             if (OutboundGuard.isMutation(method)) return jsonResult(guarded(method, () -> dispatch(method, body)));
@@ -411,9 +416,23 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         catch (Exception e) { throw new ApiError(1400, "malformed JSON request body"); }
     }
 
-    /** Koishi's Satori internal proxy encodes method arguments as a JSON array. */
+    /**
+     * Koishi's Satori internal proxy encodes method arguments as a JSON array, sent as JSON when
+     * nothing is a blob and as {@code multipart/form-data} with the array under the field
+     * {@code $} when something is. Both shapes arrive here.
+     */
     private JSONObject parseInternalBody(HttpServer.HttpReq req) {
         String text = req.bodyText();
+        String ctype = req.header("content-type");
+        if (ctype != null && ctype.toLowerCase(java.util.Locale.ROOT).startsWith("multipart/form-data")) {
+            try {
+                for (Multipart.Part part : Multipart.parse(req.body, ctype)) {
+                    if ("$".equals(part.name)) text = new String(part.data, "UTF-8");
+                }
+            } catch (Exception e) {
+                throw new ApiError(1400, "malformed internal multipart body");
+            }
+        }
         if (text == null || text.trim().isEmpty()) return new JSONObject();
         String value = text.trim();
         try {
@@ -426,6 +445,24 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         } catch (Exception e) {
             throw new ApiError(1400, "malformed internal request body");
         }
+    }
+
+    /**
+     * Honour {@code Satori-Pagination: true}, which the client sends when it is going to drive
+     * {@code for await}. It only accepts an object with a {@code data} array, so wrap a bare array
+     * (our list-shaped actions return one) and leave an already-paginated result alone. Actions
+     * return everything in one page; the client then stops on the missing {@code next}.
+     */
+    private Object internalPg(HttpServer.HttpReq req, Object data) throws Exception {
+        String header = req.header("satori-pagination");
+        if (header == null || !"true".equalsIgnoreCase(header.trim())) return data;
+        if (data instanceof JSONArray) return new JSONObject().put("data", (JSONArray) data);
+        if (data instanceof JSONObject) {
+            JSONObject o = (JSONObject) data;
+            if (o.optJSONArray("data") != null) return o;
+            return new JSONObject().put("data", new JSONArray().put(o));
+        }
+        return new JSONObject().put("data", new JSONArray());
     }
 
     private HttpServer.HttpResult jsonResult(Object data) {
@@ -483,6 +520,25 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (id.isEmpty() || id.indexOf('/') >= 0 || id.indexOf('\\') >= 0)
             return HttpServer.HttpResult.text(400, "invalid internal resource");
         return serveAsset(id);
+    }
+
+    /**
+     * The Satori client's login-scoped internal route, {@code /v1/internal/{platform}/{selfId}/…}.
+     *
+     * <p>Resource ids that {@code upload.create} hands out are written as
+     * {@code internal:{platform}/{selfId}/_tmp/{id}}. A client resolving one of those goes through
+     * its own internal router and comes back here as a plain GET, so without this route the id we
+     * just returned cannot be read. Local-only and unauthenticated for the same reason
+     * {@code /v1/assets/{id}} is: the fetch carries no token.
+     */
+    private HttpServer.HttpResult serveInternalResource(String path) {
+        String[] parts = path.substring("/v1/internal/".length()).split("/", 3);
+        if (parts.length < 3 || parts[2].isEmpty()) return HttpServer.HttpResult.text(404, "not found");
+        if (!PLATFORM.equals(parts[0]) || isForeignLogin(parts[1], selfUin()))
+            return HttpServer.HttpResult.json(404, errorJson("internal login not found"));
+        if (parts[2].startsWith("_tmp/")) return serveAsset(parts[2].substring("_tmp/".length()));
+        // _api is POST-only; anything else under a login is not a resource we publish.
+        return HttpServer.HttpResult.text(404, "not found");
     }
 
     private JSONObject meta() throws Exception {
@@ -1133,8 +1189,341 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "qzone.clear":
                 return guarded("internal.qzone.clear", () -> qzone.deleteAll());
             default:
+                return extendedInternal(name, params);
+        }
+    }
+
+    /**
+     * Kernel actions added after the first extension pass. Kept out of the main switch so the two
+     * read differently: the switch follows Satori's own method table, this one follows the QQNT
+     * service interfaces. Every read is a single kernel call; the group-scoped ones answer with the
+     * shared {@link #kernelRead} envelope.
+     */
+    private Object extendedInternal(String name, JSONObject p) throws Exception {
+        switch (name) {
+            // ------------------------------------------------------------ group
+            case "group_join_link":
+            case "group.join_link":
+                return kernelRead(guildIdOf(p), "link", qq.extra().joinGroupLink(
+                        guildIdOf(p), p.optInt("src_id", 0), p.optBoolean("short_url", false),
+                        p.optString("extra", "")));
+            case "group_member_card":
+            case "group.member_card": {
+                long g = guildIdOf(p);
+                long u = parseId(p.optString("user_id", ""));
+                if (u == 0) throw new ApiError(1400, "missing user_id");
+                return kernelRead(g, "card", qq.extra().memberCard(g, u));
+            }
+            case "group_related":
+            case "group.related": {
+                long g = guildIdOf(p);
+                String op = internalOp(p, "related");
+                if ("sub".equals(op) || "subgroup".equals(op)) return kernelRead(g, "sub", qq.extra().subGroupInfo(g));
+                return kernelRead(g, "related",
+                        qq.extra().relatedGroups(g, p.optInt("only_number", 0)));
+            }
+            case "group_apps":
+            case "group.apps":
+                return kernelRead(guildIdOf(p), "apps", qq.extra().groupApps(
+                        guildIdOf(p), p.optInt("page", 1), p.optInt("count", 20),
+                        p.optString("keyword", "")));
+            case "group_illegal":
+            case "group.illegal":
+                return kernelRead(guildIdOf(p), "members", qq.extra().illegalMembers(guildIdOf(p)));
+            case "group_msg_limit":
+            case "group.msg_limit":
+                return kernelRead(guildIdOf(p), "limit", qq.extra().groupMsgLimit(guildIdOf(p)));
+            case "group_capacity":
+            case "group.capacity":
+                return kernelRead(guildIdOf(p), "capacity",
+                        qq.extra().groupMemberMax(guildIdOf(p), p.optInt("level", 0)));
+            case "group_notify":
+            case "group.notify": {
+                // 未读群通知是账号级的，不带群号也要能读。
+                long g = p.optLong("guild_id", p.optLong("group_id", 0));
+                return kernelRead(g, "unread",
+                        qq.extra().groupNotifiesUnread(p.optBoolean("force", false)));
+            }
+            case "group_check_member":
+            case "group.check_member": {
+                long g = guildIdOf(p);
+                java.util.List<Long> uins = uinsOf(p);
+                if (uins.isEmpty()) throw new ApiError(1400, "missing user_id or user_ids");
+                ExtraSvc.Result res = qq.extra().cachedMembers(uins);
+                JSONObject out = new JSONObject().put("guild_id", String.valueOf(g))
+                        .put("ok", res.ok()).put("result", res.describe())
+                        .put("cached", toJson(res.payload));
+                return out;
+            }
+            case "group_signin_status":
+            case "group.signin_status":
+                return kernelRead(guildIdOf(p), "status",
+                        qq.extra().signInStatus(guildIdOf(p)));
+            case "group_transfer":
+            case "group.transfer": {
+                long g = guildIdOf(p);
+                long u = parseId(p.optString("user_id", ""));
+                if (u == 0) throw new ApiError(1400, "missing user_id");
+                if (!p.optBoolean("confirm", false))
+                    throw new ApiError(1400, "group_transfer needs confirm=true");
+                final String msg = p.optString("message", "");
+                return guarded("internal.group_transfer", () -> {
+                    ExtraSvc.Result res = qq.extra().transferGroup(g, u, msg);
+                    if (!res.ok()) throw new ApiError(1500, "transfer group: " + res.describe());
+                    return new JSONObject().put("guild_id", String.valueOf(g))
+                            .put("user_id", String.valueOf(u)).put("result", res.describe());
+                });
+            }
+            case "group_destroy":
+            case "group.destroy": {
+                long g = guildIdOf(p);
+                if (!p.optBoolean("confirm", false))
+                    throw new ApiError(1400, "group_destroy needs confirm=true");
+                return guarded("internal.group_destroy", () -> {
+                    ExtraSvc.Result res = qq.extra().destroyGroup(g);
+                    if (!res.ok()) throw new ApiError(1500, "destroy group: " + res.describe());
+                    return new JSONObject().put("guild_id", String.valueOf(g))
+                            .put("result", res.describe());
+                });
+            }
+
+            // ---------------------------------------------------------- message
+            case "message_by_id":
+            case "message.by_id": {
+                Object contact = contactForChannel(channelOf(p));
+                java.util.List<Long> ids = msgIdsOf(p);
+                if (ids.isEmpty()) throw new ApiError(1400, "missing message_id or message_ids");
+                return kernelRead(guildIdOf(p), "messages", qq.extra().msgsByMsgId(contact, ids));
+            }
+            case "recall_history":
+            case "recall.history": {
+                Object contact = contactForChannel(channelOf(p));
+                java.util.List<Long> ids = msgIdsOf(p);
+                if (ids.isEmpty()) throw new ApiError(1400, "missing message_id or message_ids");
+                return kernelRead(guildIdOf(p), "messages", qq.extra().recalledMsgs(contact, ids));
+            }
+            case "first_unread":
+            case "message.first_unread":
+                return kernelRead(guildIdOf(p), "seq",
+                        qq.extra().firstUnreadSeq(contactForChannel(channelOf(p))));
+            case "hidden_session":
+            case "session.hidden": {
+                String op = internalOp(p, "get");
+                if ("set".equals(op) || "hide".equals(op) || "unhide".equals(op)) {
+                    String channelId = channelOf(p);
+                    boolean group = !Codec.isPrivateChannel(channelId);
+                    long peer = Codec.channelPeer(channelId);
+                    if (peer == 0) throw new ApiError(1400, "invalid channel_id: " + channelId);
+                    final boolean hidden = "unhide".equals(op) ? false
+                            : "hide".equals(op) || p.optBoolean("hidden", true);
+                    final String uid = group ? String.valueOf(peer) : uidFor(0, peer);
+                    final int chatType = group ? QQClient.CT_GROUP : QQClient.CT_C2C;
+                    return guarded("internal.hidden_session", () -> {
+                        ExtraSvc.Result res = qq.extra().setHiddenSession(chatType, uid,
+                                String.valueOf(peer), hidden);
+                        if (!res.ok()) throw new ApiError(1500, "hidden session: " + res.describe());
+                        return new JSONObject().put("channel_id", channelId)
+                                .put("hidden", hidden).put("result", res.describe());
+                    });
+                }
+                return kernelRead(0, "sessions", qq.extra().hiddenSessions());
+            }
+            case "draft":
+            case "message.draft": {
+                Object contact = contactForChannel(channelOf(p));
+                String op = internalOp(p, "get");
+                if ("delete".equals(op) || "clear".equals(op)) {
+                    return guarded("internal.draft", () -> {
+                        ExtraSvc.Result res = qq.extra().deleteDraft(contact);
+                        if (!res.ok()) throw new ApiError(1500, "delete draft: " + res.describe());
+                        return new JSONObject().put("result", res.describe());
+                    });
+                }
+                return kernelRead(guildIdOf(p), "draft", qq.extra().draft(contact));
+            }
+            case "fav_emoji_write":
+            case "emoji.fav_write": {
+                String op = internalOp(p, "add");
+                if ("desc".equals(op) || "describe".equals(op)) {
+                    final String desc = p.optString("description", p.optString("desc", ""));
+                    final int emojiId = p.optInt("emoji_id", 0);
+                    final String md5 = p.optString("md5", "");
+                    final String resId = p.optString("res_id", "");
+                    return guarded("internal.fav_emoji_write", () -> {
+                        ExtraSvc.Result r = qq.extra().modifyFavEmojiDesc(emojiId, md5, resId, desc);
+                        if (!r.ok()) throw new ApiError(1500, "emoji desc: " + r.describe());
+                        return new JSONObject().put("emoji_id", emojiId).put("result", r.describe());
+                    });
+                }
+                final String spec = p.optString("file", p.optString("url", p.optString("path", "")));
+                if (spec.isEmpty()) throw new ApiError(1400, "missing file");
+                final java.io.File local = resolveAvatarFile(spec);
+                if (local == null || !local.isFile())
+                    throw new ApiError(1404, "file not found: " + spec);
+                final boolean markFace = p.optBoolean("mark_face", false);
+                return guarded("internal.fav_emoji_write", () -> {
+                    ExtraSvc.Result r = qq.extra().addFavEmoji(local.getAbsolutePath(),
+                            local.getName(), local.length(), p.optString("md5", ""), markFace);
+                    if (!r.ok()) throw new ApiError(1500, "add favourite emoji: " + r.describe());
+                    return new JSONObject().put("file", local.getName()).put("result", r.describe());
+                });
+            }
+            case "temp_chat":
+            case "message.temp_chat": {
+                String channelId = channelOf(p);
+                boolean group = !Codec.isPrivateChannel(channelId);
+                long peer = Codec.channelPeer(channelId);
+                if (peer == 0) throw new ApiError(1400, "invalid channel_id: " + channelId);
+                String uid = group ? String.valueOf(peer) : uidFor(0, peer);
+                return kernelRead(group ? peer : 0, "info",
+                        qq.extra().tempChatInfo(group ? QQClient.CT_GROUP : QQClient.CT_C2C, uid));
+            }
+            case "recent_faces":
+            case "emoji.recent_faces":
+                return kernelRead(0, "faces",
+                        qq.extra().recentFaces(p.optInt("count", 20)));
+            case "emoji_likes":
+            case "reaction.likes": {
+                Object contact = contactForChannel(channelOf(p));
+                MsgStore.Rec rec = requireMessage(p.optString("message_id", ""), p);
+                validateMessageChannel(p, rec.id);
+                return kernelRead(guildIdOf(p), "users", qq.extra().emojiLikes(contact,
+                        rec.msgId, p.optString("emoji_id", ""), p.optInt("count", 20)));
+            }
+            case "msg_abstract":
+            case "message.abstract": {
+                Object contact = contactForChannel(channelOf(p));
+                MsgStore.Rec rec = requireMessage(p.optString("message_id", ""), p);
+                validateMessageChannel(p, rec.id);
+                return kernelRead(guildIdOf(p), "abstract",
+                        qq.extra().msgAbstract(contact, rec.msgId));
+            }
+
+            // ------------------------------------------------------------ media
+            case "media_dir":
+            case "media.dir": {
+                JSONObject out = new JSONObject();
+                Object dir = qq.extra().richMediaFileDir(p.optInt("chat_type", QQClient.CT_GROUP),
+                        p.optInt("biz_type", 0), p.optBoolean("year_folder", false));
+                out.put("dir", dir == null ? "" : String.valueOf(dir));
+                for (String kind : new String[]{"pic", "ptt", "video", "file"}) {
+                    out.put(kind, new JSONArray(qq.extra().richMediaTmpPaths(kind)));
+                }
+                return out;
+            }
+            case "batch_file_count":
+            case "group_file.count": {
+                java.util.List<Long> groups = new java.util.ArrayList<>();
+                JSONArray arr = p.optJSONArray("guild_ids");
+                if (arr != null) for (int i = 0; i < arr.length(); i++) groups.add(arr.optLong(i));
+                else {
+                    long g = guildIdOf(p);
+                    if (g != 0) groups.add(g);
+                }
+                if (groups.isEmpty()) throw new ApiError(1400, "missing guild_id or guild_ids");
+                return kernelRead(0, "counts", qq.extra().batchGroupFileCount(groups));
+            }
+
+            // ---------------------------------------------------------- profile
+            // ----------------------------------------------------- recent contact
+            case "recent_snapshot":
+            case "recent.snapshot":
+                return kernelRead(0, "contacts",
+                        qq.extra().recentSnapshot(p.optInt("count", 20)));
+            case "unread_details":
+            case "recent.unread_details":
+                return kernelRead(0, "unread", qq.extra().unreadDetails());
+            case "session_top":
+            case "session.top": {
+                boolean top = !"off".equals(internalOp(p, "on"))
+                        && p.optBoolean("top", p.optBoolean("enable", true));
+                java.util.List<Integer> chatTypes = new java.util.ArrayList<>();
+                java.util.List<String> uids = new java.util.ArrayList<>();
+                for (String channelId : channelsOf(p)) {
+                    boolean group = !Codec.isPrivateChannel(channelId);
+                    long peer = Codec.channelPeer(channelId);
+                    if (peer == 0) throw new ApiError(1400, "invalid channel_id: " + channelId);
+                    chatTypes.add(group ? QQClient.CT_GROUP : QQClient.CT_C2C);
+                    uids.add(group ? String.valueOf(peer) : uidFor(0, peer));
+                }
+                if (chatTypes.isEmpty()) throw new ApiError(1400, "missing channel_id or channel_ids");
+                final boolean finalTop = top;
+                return guarded("internal.session_top", () -> {
+                    ExtraSvc.Result res = qq.extra().setSessionTop(finalTop, chatTypes, uids);
+                    if (!res.ok()) throw new ApiError(1500, "session top: " + res.describe());
+                    return new JSONObject().put("top", finalTop).put("result", res.describe());
+                });
+            }
+
+            // ------------------------------------------------------------ robot
+            case "robot_list":
+            case "robot.list":
+                return kernelRead(0, "robots", qq.extra().groupRobotsForCreate());
+            case "robot_owned":
+            case "robot.owned":
+                return kernelRead(guildIdOf(p), "robots",
+                        qq.extra().memberOwnedRobots(guildIdOf(p), uinsOf(p)));
+
+            default:
                 throw new NotImplemented("internal/" + name);
         }
+    }
+
+    /** Channel selector shared by the extended actions; `channel_id` first, then a group number. */
+    private String channelOf(JSONObject p) throws Exception {
+        String channelId = p.optString("channel_id", "");
+        if (!channelId.isEmpty()) return channelId;
+        long group = p.optLong("guild_id", p.optLong("group_id", 0));
+        if (group != 0) return String.valueOf(group);
+        long user = parseId(p.optString("user_id", ""));
+        if (user != 0) return "private:" + user;
+        throw new ApiError(1400, "missing channel_id, guild_id, or user_id");
+    }
+
+    /** `channel_id` / `channel_ids`, de-duplicated. */
+    private java.util.List<String> channelsOf(JSONObject p) {
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        String single = p.optString("channel_id", "");
+        if (!single.isEmpty()) out.add(single);
+        for (String key : new String[]{"channel_ids", "guild_ids"}) {
+            JSONArray arr = p.optJSONArray(key);
+            if (arr == null) continue;
+            for (int i = 0; i < arr.length(); i++) {
+                String v = arr.optString(i, "");
+                if (!v.isEmpty()) out.add(v);
+            }
+        }
+        return new java.util.ArrayList<>(out);
+    }
+
+    /** `user_id` / `user_ids` as uins, de-duplicated. */
+    private java.util.List<Long> uinsOf(JSONObject p) {
+        java.util.LinkedHashSet<Long> out = new java.util.LinkedHashSet<>();
+        long single = parseId(p.optString("user_id", ""));
+        if (single != 0) out.add(single);
+        JSONArray arr = p.optJSONArray("user_ids");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                long v = parseId(arr.optString(i, ""));
+                if (v != 0) out.add(v);
+            }
+        }
+        return new java.util.ArrayList<>(out);
+    }
+
+    /** `message_id` / `message_ids` as QQ msgIds. */
+    private java.util.List<Long> msgIdsOf(JSONObject p) {
+        java.util.LinkedHashSet<Long> out = new java.util.LinkedHashSet<>();
+        long single = parseId(p.optString("message_id", ""));
+        if (single != 0) out.add(single);
+        JSONArray arr = p.optJSONArray("message_ids");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                long v = parseId(arr.optString(i, ""));
+                if (v != 0) out.add(v);
+            }
+        }
+        return new java.util.ArrayList<>(out);
     }
 
     /** Accept both direct internal/name URLs and the official adapter's login-scoped proxy URL. */
@@ -1937,6 +2326,17 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("profile_set_birthday")
                         .put("voice_to_text").put("fav_emoji").put("auto_reply")
                         .put("unread_summary").put("mark_read")
+                        .put("group_join_link").put("group_member_card").put("group_related")
+                        .put("group_apps").put("group_illegal").put("group_msg_limit")
+                        .put("group_capacity").put("group_notify").put("group_check_member")
+                        .put("group_signin_status")
+                        .put("group_transfer").put("group_destroy")
+                        .put("message_by_id").put("recall_history").put("first_unread")
+                        .put("hidden_session").put("draft").put("fav_emoji_write")
+                        .put("emoji_likes").put("msg_abstract")
+                        .put("media_dir").put("batch_file_count")
+                        .put("recent_snapshot").put("unread_details").put("session_top")
+                        .put("robot_list").put("robot_owned")
                         .put("qzone.publish").put("qzone.delete").put("qzone.list")
                         .put("qzone.clear").put("status").put("version")
                         .put("clean_cache").put("restart"))
@@ -1974,7 +2374,36 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("fav_emoji", "无（内核只开放最近使用表情）")
                         .put("auto_reply", "无")
                         .put("unread_summary", "channel_id|channel_ids")
-                        .put("mark_read", "channel_id"))
+                        .put("mark_read", "channel_id")
+                        .put("group_join_link", "guild_id, src_id?, short_url?, extra?")
+                        .put("group_member_card", "guild_id, user_id")
+                        .put("group_related", "guild_id, op?=related|sub, only_number?")
+                        .put("group_apps", "guild_id, page?, count?, keyword?")
+                        .put("group_illegal", "guild_id")
+                        .put("group_msg_limit", "guild_id")
+                        .put("group_capacity", "guild_id, level?")
+                        .put("group_notify", "force?")
+                        .put("group_check_member", "guild_id, user_id|user_ids")
+                        .put("group_signin_status", "guild_id")
+                        .put("group_transfer", "guild_id, user_id, message?, confirm=true")
+                        .put("group_destroy", "guild_id, confirm=true")
+                        .put("message_by_id", "channel_id|guild_id, message_id|message_ids")
+                        .put("recall_history", "channel_id|guild_id, message_id|message_ids")
+                        .put("first_unread", "channel_id|guild_id")
+                        .put("hidden_session", "op?=get|set|hide|unhide, channel_id?, hidden?")
+                        .put("draft", "op?=get|delete, channel_id|guild_id")
+                        .put("fav_emoji_write", "op?=add|desc, file?|path?, description?, emoji_id?, md5?, res_id?, mark_face?")
+                        .put("temp_chat", "channel_id|guild_id")
+                        .put("recent_faces", "count?")
+                        .put("emoji_likes", "channel_id|guild_id, message_id, emoji_id?, count?")
+                        .put("msg_abstract", "channel_id|guild_id, message_id")
+                        .put("media_dir", "chat_type?, biz_type?, year_folder?")
+                        .put("batch_file_count", "guild_id|guild_ids")
+                        .put("recent_snapshot", "count?")
+                        .put("unread_details", "无")
+                        .put("session_top", "channel_id|channel_ids, op?=on|off, top?")
+                        .put("robot_list", "无")
+                        .put("robot_owned", "guild_id, user_id|user_ids"))
                 .put("read_actions", new JSONArray()
                         .put("group_extra").put("group_overview").put("group_member_search")
                         .put("contact_search").put("group_active").put("member_info")
@@ -1995,6 +2424,15 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("profile_intimate").put("profile_relation_flag")
                         .put("voice_to_text").put("fav_emoji").put("auto_reply")
                         .put("unread_summary")
+                        .put("group_join_link").put("group_member_card").put("group_related")
+                        .put("group_apps").put("group_illegal").put("group_msg_limit")
+                        .put("group_capacity").put("group_notify").put("group_check_member")
+                        .put("group_signin_status")
+                        .put("message_by_id").put("recall_history").put("first_unread")
+                        .put("emoji_likes").put("msg_abstract")
+                        .put("media_dir").put("batch_file_count")
+                        .put("recent_snapshot").put("unread_details")
+                        .put("robot_list").put("robot_owned")
                         .put("status").put("version").put("capabilities"))
                 .put("write_actions", new JSONArray()
                         .put("poke").put("like").put("invite").put("card")
@@ -2008,6 +2446,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("buddy_category").put("special_care").put("add_me_setting")
                         .put("doubt_buddy").put("profile_set_birthday")
                         .put("mark_read")
+                        .put("group_transfer").put("group_destroy")
+                        .put("hidden_session").put("draft").put("fav_emoji_write")
+                        .put("session_top")
                         .put("qzone.publish").put("qzone.delete").put("qzone.clear")
                         .put("clean_cache").put("restart"));
     }

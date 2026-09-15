@@ -222,6 +222,11 @@ public final class QQClient {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getRichMediaService"); } catch (Throwable t) { return null; }
     }
+    /** The robot service is only reachable on builds that registered it; null is normal. */
+    public Object getRobotService() {
+        Object s = session; if (s == null) return null;
+        try { return ref.call(s, "getRobotService"); } catch (Throwable t) { return null; }
+    }
     public Object getRecentContactService() {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getRecentContactService"); } catch (Throwable t) { return null; }
@@ -706,6 +711,10 @@ public final class QQClient {
             sb.append(describeRecord(rec));
         } else sb.append("no record\n");
         L.e("dumpSent " + sb.toString().replace("\n", " | "), null);
+        // The logcat line above is the diagnostic; the file was a second copy of it. Writing it
+        // costs a read+rewrite per send and leaves a file named after the module in Android/data,
+        // so it is verbose-only now.
+        if (!L.verbose()) return;
         try {
             String pre = "";
             java.io.File dump = new java.io.File(LAST_SEND_DUMP);
@@ -1425,7 +1434,8 @@ public final class QQClient {
         if (!r.texts.isEmpty()) trace.append(" texts=").append(r.texts.size());
         r.trace = trace.toString();
         L.e(r.trace, null);
-        try {
+        // Same reasoning as dumpSent: the trace belongs in logcat, not in a file in Android/data.
+        if (L.verbose()) try {
             java.io.File f = new java.io.File(
                     "/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-history.txt");
             try (java.io.FileWriter w = new java.io.FileWriter(f, false)) { w.write(r.trace); }

@@ -93,7 +93,16 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 ./test.sh
 ```
 
-产物为 `build/SatoriQQ.apk` 与 `build/SatoriQQ.stealth.apk`。`test.sh` 先跑 JVM 单测，再编译运行 `tests/mapshide-filter-test.c`。版本 APK 与变更记录发布在[模块市场](https://github.com/Xposed-Modules-Repo/com.satori.qq)。
+产物为 `build/SatoriQQ.apk` 与 `build/SatoriQQ.stealth.apk`。`test.sh` 先跑 JVM 单测，再编译运行 `tests/mapshide-filter-test.c`。真机巡检脚本（需要 QQ 已上线）：
+
+```sh
+node tests/ws-health.js            # 健康与自检
+node tests/ws-kernel-extras.js     # 扩展读取动作
+node tests/ws-kernel-writes.js     # 扩展写入动作，自带清理
+node tests/internal-kernel-probe.js # 官方 internal 路由 + 0.8.9.39 新增动作
+```
+
+版本 APK 与变更记录发布在[模块市场](https://github.com/Xposed-Modules-Repo/com.satori.qq)。
 
 ## 文档
 

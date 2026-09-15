@@ -17,7 +17,25 @@
 
 主进程与 `:MSF` 进程都加载 `AntiDetect` 与 `MapsHide`。HTTP 服务、消息监听与保活组件只在主进程运行。
 
-`qq/ExtraSvc` 承载扩展动作的内核服务调用：个人资料、群设置、好友关系与最近联系人。这些服务是主线程亲和的。从 HTTP 工作线程直接调用会立即返回，回调永不触发，因此 `ExtraSvc` 把调用投递到主 Looper，再由工作线程等待回调。`IOperateCallback` 的签名是 `onResult(int, String)`，不带结果；需要返回结构的读取要用各自的回调接口，例如 `IGroupMemberHonorCallback`、`IKernelRecentGetContactCallback`，第三个参数才是 payload。部分方法在 9.3.55 上不回调，例如 `getGroupShutUpMemberList`，改用同类替代方法（`queryGroupMuteMemberList`、`getRecentContactInfos`）。`packet` 只在协议需要直接发包时使用，不与内核服务混用。
+## HTTP 路由
+
+三条通道各自独立，都在 `core/SatoriHub` 的 `onHttp` 里分派：
+
+| 路径 | 鉴权 | 用途 |
+| --- | --- | --- |
+| `POST /v1/{resource}.{method}` | 需要（配了 token 时） | Satori 标准方法 |
+| `POST /v1/internal/{name}` | 需要 | 模块自身的 QQ 扩展简写，`name` 可用 `.`/`_`/`-` 分隔，也接受 camelCase |
+| `POST /v1/internal/{platform}/{selfId}/_api/{name}` | 需要 | `@satorijs/adapter-satori` 的 `bot.internal.*` 走法，参数按 `JsonForm` 编码，`Satori-Pagination: true` 时回 `{data, …}` |
+| `GET /v1/internal/{platform}/{selfId}/_tmp/{id}` | 免 | `upload.create` 返回的 `internal:` 资源回落地址 |
+| `GET /v1/assets/{id}` | 免 | 无令牌可达的本地图片资源（Koishi 渲染 `<img>` 用） |
+| `GET /v1/proxy/{url}` | 免 | 只代理本机登录自己的 `internal:` 资源 |
+| `GET /healthz` | 免 | 运维探针 |
+
+免鉴权的三条只服务本机登录自己、且只认模块签发的不透明 id；请求指向别的 platform 或 selfId 一律 404。
+
+`qq/ExtraSvc` 承载扩展动作的内核服务调用：个人资料、群设置、好友关系、最近联系人、富媒体与机器人。这些服务是主线程亲和的。从 HTTP 工作线程直接调用会立即返回，回调永不触发，因此 `ExtraSvc` 把调用投递到主 Looper，再由工作线程等待回调。`IOperateCallback` 的签名是 `onResult(int, String)`，不带结果；需要返回结构的读取要用各自的回调接口，例如 `IGroupMemberHonorCallback`、`IKernelRecentGetContactCallback`，第三个参数才是 payload。部分方法在 9.3.55 上不回调，例如 `getGroupShutUpMemberList`，改用同类替代方法（`queryGroupMuteMemberList`、`getRecentContactInfos`）。`packet` 只在协议需要直接发包时使用，不与内核服务混用。
+
+新增动作前先核三件事：接口在不在（`~/tmpqq/dexindex.txt` 查类名）、参数结构体的字段名（`~/tmpqq/dec_class.sh` 单类反编译）、**这个入口会不会回调**（现场探测，不回调的一律不进模块，否则调用方白等 15 秒）。`getOnLineDev`、`getNextMemberList`、`prepareRegionConfig` 就是这样被排除的，逐条记在 [`SATORI_SUPPORT.md`](SATORI_SUPPORT.md#内核可用性)。
 
 ## 消息链路
 
@@ -66,7 +84,7 @@ Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与�
 
 状态通知的点击目标是宿主包的 launcher activity，也就是 QQ 自己。`PendingIntent` 用 `getLaunchIntentForPackage` 解析一次后缓存，返回的 Intent 带 `FLAG_ACTIVITY_NEW_TASK`，QQ 在后台时回到原任务而不是新建。
 
-`GET /healthz` 返回登录、监听、保活、唤醒锁、环境上报与 Native 隐藏自检状态。Native 自检结果写入 QQ 外部文件目录，主进程可同时读取主进程与 MSF 进程状态。
+`GET /healthz` 返回登录、监听、保活、唤醒锁、环境上报与 Native 隐藏自检状态。Native 自检结果写入 QQ 的**应用私有**目录 `/data/data/com.tencent.mobileqq/files/`（0.8.9.39 之前写在外部 `Android/data`，会留下可被枚举的残留），主进程可同时读取主进程与 MSF 进程状态。
 
 ## QQ 升级检查
 
@@ -80,3 +98,5 @@ Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与�
 6. 主进程与 MSF 进程的 `/healthz` hook 计数及 `loop_ok`
 7. `libfekit.so`、`libturingxq.so`、`libmsfbootV2.so` 导出的 libc 符号与路径字符串，见 [`ANTIDETECT.md`](ANTIDETECT.md)
 8. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（用 `internal/*` 逐个打一遍，`/healthz` 之外还要看 logcat 的 `Q.Kernel`，需先开 `verbose_logs`）
+9. 检测库 import 的字符串搜索符号有没有变（`llvm-nm -D lib*.so | grep ' U '` 看是否新增 `strcasecmp`/`strnstr` 一类），变了就把 `native/mapshide.c` 的 `BLOCK` 判定接到同一个入口上，见 [`ANTIDETECT.md`](ANTIDETECT.md)
+10. Turing 的 POSIX ERE 黑名单（进程名/线程名/路径）有没有新增模式

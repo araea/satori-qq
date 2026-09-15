@@ -6,15 +6,20 @@
 # 也不会自己重连，直到有人重启 QQ。2026-09-13 22:10 就这么静默了 24 分钟。
 #
 # 判据（每轮 60 秒）：
-#   upstream  MSF 进程到服务端的存活 TCP 连接数，回环不算。健康时常驻 1 条。
+#   upstream  MSF 进程到服务端的存活 TCP 连接数，回环不算。健康时常驻 1 条以上。
 #   online    /healthz 自报的内核在线状态。
 #   kicks     /healthz 的被拦踢线计数，一旦增长说明这轮僵尸是踢线造成的。
+#   age       QQ 主进程已经跑了多久；刚起来的前 GRACE 秒不做僵尸判定。
 #
 # 动作：
 #   kicks 增长                -> 立刻重启 QQ（会话已作废，等下去不会好）
-#   online 且 upstream=0      -> 连续 STALE_LIMIT 轮后重启
+#   online 且 upstream=0      -> 连续 STALE_LIMIT 轮且进程已过宽限期，重启
 #   端口一直不通              -> 连续 OFFLINE_LIMIT 轮后拉起 QQ（进程没了/没起来）
 #   设备自己没网              -> 只记一行，不动 QQ（重启也连不上）
+#
+# 宽限期的来由：2026-09-15 实测，force-stop 后拉起 QQ 到 MSF 重新连上要 5 分钟左右
+# （流量走 TUN 时更慢）。原来的 STALE_LIMIT=3 会在这段时间里判定成僵尸、把 QQ 再杀一次，
+# 于是每 3 分钟重启一轮，永远等不到连接。真僵尸不会自己好，多等几分钟没有代价。
 #
 # 停止：kill $(cat $QQ_REVIVE_PIDFILE)；或注释掉 service.d 里的启动行。
 set -u
@@ -23,15 +28,19 @@ export PATH=/data/data/com.termux/files/usr/bin:/system/bin:/system/xbin:${PATH:
 PKG=${QQ_REVIVE_PKG:-com.tencent.mobileqq}
 PORT=${QQ_REVIVE_PORT:-3001}
 INTERVAL=${QQ_REVIVE_INTERVAL:-60}
-STALE_LIMIT=${QQ_REVIVE_STALE_LIMIT:-3}
+STALE_LIMIT=${QQ_REVIVE_STALE_LIMIT:-5}
 OFFLINE_LIMIT=${QQ_REVIVE_OFFLINE_LIMIT:-5}
+GRACE=${QQ_REVIVE_GRACE:-300}
 PING_HOST=${QQ_REVIVE_PING_HOST:-223.5.5.5}
 RECOVER_WAIT=${QQ_REVIVE_RECOVER_WAIT:-90}
 MAX_LOG_BYTES=${QQ_REVIVE_MAX_LOG_BYTES:-2000000}
 
+# 日志与 pid 放在 /data/adb/satori-qq 下（root 可读，普通应用读不到）。
+# 不要放到 /data/local/tmp：那个目录普通应用能进，libfekit 里也带着这个路径字符串。
+RUNDIR=${QQ_REVIVE_RUNDIR:-/data/adb/satori-qq}
 if [ -z "${QQ_REVIVE_LOG:-}" ]; then
     case "${HOME:-}" in
-        ""|/) LOG=/data/local/tmp/qq-revive.log ;;
+        ""|/|/data/adb/satori-qq*) LOG=$RUNDIR/qq-revive.log ;;
         *)    LOG=$HOME/qq-revive.log ;;
     esac
 else
@@ -41,7 +50,7 @@ PIDFILE=${QQ_REVIVE_PIDFILE:-${LOG%.log}.pid}
 
 log() {
     printf '%s %s\n' "$(date +%FT%T)" "$*" >> "$LOG" 2>/dev/null
-    chmod 0644 "$LOG" 2>/dev/null
+    chmod 0600 "$LOG" 2>/dev/null
     size=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
     if [ "$size" -gt "$MAX_LOG_BYTES" ]; then
         tail -n 500 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
@@ -73,6 +82,20 @@ upstream_links() {
 
 device_online() { ping -c 1 -W 3 "$PING_HOST" >/dev/null 2>&1; }
 
+# QQ 主进程已经跑了多少秒；进程不在时回 -1。用 /proc/<pid>/stat 的 starttime（第 22 字段，
+# 单位是时钟滴答）配 /proc/uptime，免得依赖 ps 的 etime 格式。
+main_age() {
+    local pid hz up st
+    pid=$(pgrep -f "^$PKG$" 2>/dev/null | head -1)
+    [ -n "$pid" ] || pid=$(pgrep -f "$PKG" 2>/dev/null | grep -v ':MSF' | head -1)
+    [ -n "$pid" ] || { printf '%s' -1; return; }
+    hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+    st=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)
+    up=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+    [ -n "$st" ] && [ -n "$up" ] || { printf '%s' -1; return; }
+    awk -v u="$up" -v s="$st" -v h="$hz" 'BEGIN{printf "%d", u - s/h}'
+}
+
 restart_qq() {
     log "restart: $1"
     am force-stop "$PKG" >/dev/null 2>&1
@@ -86,6 +109,7 @@ if [ "${1:-}" = "--check" ]; then
     hz=$(healthz)
     links=$(upstream_links)
     echo "upstream_links: $links"
+    echo "main_age: $(main_age)s (grace ${GRACE}s)"
     if [ -n "$hz" ]; then
         echo "healthz: online=$(field "$hz" online) blocked_kicks=$(field "$hz" blocked_kicks) kick_hook=$(field "$hz" kick_hook) self_id=$(field "$hz" self_id)"
     else
@@ -96,6 +120,7 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 echo $$ > "$PIDFILE" 2>/dev/null
+chmod 0600 "$PIDFILE" 2>/dev/null
 log "watchdog start pid=$$ pkg=$PKG interval=${INTERVAL}s stale_limit=$STALE_LIMIT"
 
 stale=0
@@ -140,8 +165,16 @@ while true; do
     last_kicks=$kicks
 
     if [ "$online" = "true" ] && [ "$links" -eq 0 ]; then
+        age=$(main_age)
+        if [ "$age" -ge 0 ] && [ "$age" -lt "$GRACE" ]; then
+            # 刚拉起来的 QQ 还没连上，这不算僵尸；只在刚开始宽限时记一行。
+            if [ "$stale" -eq 0 ]; then log "grace: QQ 主进程 ${age}s < ${GRACE}s，本轮不判僵尸"; fi
+            stale=0
+            sleep "$INTERVAL"
+            continue
+        fi
         stale=$((stale + 1))
-        log "stale: online 但 MSF 无上游连接 ${stale}/${STALE_LIMIT}"
+        log "stale: online 但 MSF 无上游连接 ${stale}/${STALE_LIMIT} (pid_age=${age}s)"
         if [ "$stale" -ge "$STALE_LIMIT" ]; then
             stale=0
             if device_online; then

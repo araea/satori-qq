@@ -57,11 +57,68 @@ Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
 - 用 seccomp 对模块自身文本段里的裸 svc 做 TRAP 兜底，覆盖 openat、openat2、faccessat、faccessat2、newfstatat、statx、readlinkat、getdents64
 - 装完后自己再读一遍 maps、tcp、environ，把 `leak_*` 与 `loop_ok` 落盘自证
 
-清单分两份：`AndroidManifest.xml` 带 Xposed 元数据用于注册，`AndroidManifest.stealth.xml` 不带，启用后覆盖安装 stealth 版本。按安装包元数据里有没有 `xposed*` 键判定模块的工具，看到的是 stealth 版本。
+0.8.9.39 起 token 扫描按「符号集合」而不是单个符号接管。libfekit 同时 import `strstr`、`strcasestr`、`memmem`，此前只接管了 `strstr`，而且只在 needle 恰好等于黑名单里的某个词时才返回 NULL：`strstr(maps_line, "com.topjohnwu.magisk-1.2")` 这类更长的 needle 会照常命中。现在三个入口共用一条规则——**needle 里只要出现 `BLOCK` 表中任一条（子串、大小写不敏感），就返回未找到**，判定集与 `path_denied` 完全一致。实测主进程补丁数 63 → 65，MSF 40 → 42。
 
-真机实测（16070）：主进程 libfekit 的 GOT 逐槽核对全部指向 libmapshide 的包装（`dlsym`/`open`/`fopen`/`getenv`/`readdir`/`freopen` 六个槽都在），MSF 进程 40 个 slot，maps、tcp、environ 泄漏 0。
+检测库自己扫字符串的入口不止这三个。libturingxq 还 `regcomp`/`regexec` 一批 POSIX ERE，用在进程名、线程名与路径上：
+
+```text
+^/system/xbin/ku[.]sud$   ^daemonsu:   ^kworker/[1-9][0-9]*:[0-9]+$
+^kr_worker/…  ^km_worker/…  ^tworker/…  ^tu_worker/…  ^tq_worker/…
+^permmgrd$   ^360sguard$   ^/data/data/[[:alnum:]_.-]+/   ^/system/bin/[.]   ^[.]
+```
+
+这些正则不走 libc 字符串函数，模块的 `strstr` 家族接管不到。目前靠「别撞上」：模块自己起的线程名是 `pool-N-thread-M`（JVM 默认风格），路径不带 `sator-`/`magisk`/`kworker` 之类字样，所以没有一条能匹配。**改动线程名、临时文件名或模块目录名时要照这份清单核一遍**。
+
+清单分两份：`AndroidManifest.xml` 带 Xposed 元数据用于注册，`AndroidManifest.stealth.xml` 不带，启用后覆盖安装 stealth 版本。按安装包元数据里有没有 `xposed*` 键判定模块的工具，看到的是 stealth 版本。Duck Detector 的 LSPosed 卡片就是按这条查的：同一台机器上它扫出了便签模块与「雹」的 `xposedmodule` 元数据，而已覆盖安装 stealth 变体的本模块不在那张清单里。
+
+真机实测（16070，0.8.9.39）：主进程 libfekit 的 GOT 逐槽核对全部指向 libmapshide 的包装（`dlsym`/`open`/`fopen`/`getenv`/`readdir`/`freopen`/`strcasestr`/`memmem` 等），主进程 65 个 slot、MSF 42 个，maps、tcp、environ 泄漏 0，`loop_ok=1`。
+
+### 模块自己在盘上留下的东西
+
+过检测不只是拦读取，模块自己写下的文件同样是暴露面。0.8.9.39 收了三处：
+
+| 东西 | 原来在哪 | 现在在哪 | 为什么 |
+| --- | --- | --- | --- |
+| `qk_env_*.json` 自检 | `/storage/emulated/0/Android/data/com.tencent.mobileqq/files` | `/data/data/com.tencent.mobileqq/files`（0600） | 外部存储的 `Android/data` 有绕过存储沙箱的枚举手法，而这份文件的字段名直接写着模块做了什么。升级后首次写盘会把旧位置的同名文件删掉 |
+| 看守日志与 pid | `/data/local/tmp`（0771，libfekit 二进制里带着这个路径字符串） | `/data/adb/satori-qq/`（0600，普通应用进不去） | 文件名与内容能反推模块 |
+| `satori-last-send.txt`、`satori-history.txt` | 每次发消息、每次查历史都重写 | 只在 `verbose_logs=true` 时写 | 逐次 I/O 与残留；诊断信息在 logcat 的 `Q.Kernel` 里仍然有 |
+
+配置文件 `satori-qq.json` 仍留在外部目录：它要能被人直接编辑，这是必要暴露；换到只有 root 能改的路径，维护成本高过收益。
+
+## 与公开检测器逐项对照
+
+拿 [Duck Detector](https://github.com/eltavine/Duck-Detector-Refactoring) 的源码逐项过了一遍，只挑**在目标进程内部成立**的检查（也就是 QQ 自己可以照抄的那部分），看模块挡不挡得住。
+
+模块挡得住的（都是「靠读文本、认名字」这一类）：
+
+| 检测方做的事 | 模块的对策 |
+| --- | --- |
+| `maps`/`heap` 里找 lsposed、libxposed、xposedbridge、lsplant、lspatch 等关键字 | 模块的 `.so` 不带自己的路径，Java 侧类名不进 maps；`BLOCK` 表覆盖这些词，检测库读到的 maps 行被丢掉 |
+| 认模块自己的路径或库名（`libmapshide.so`、`/data/adb/...`、模块包名） | GOT 接管 `open`/`read`/`readlink`/`getdents64`/`dl_iterate_phdr`，命中即 `ENOENT` 或从列表里去掉 |
+| `TracerPid`、`/proc/*/task/*/comm` 里的 zygisk/magisk/riru | 模块线程名是 `pool-N-thread-M`；`status` 里的 `Seccomp_filters`/`NoNewPrivs` 被改写 |
+| 环境变量 `TMP_PATH` 带 `/data/adb` + zygisk | `scrub_environ` 把命中黑名单的变量从本进程环境里删掉 |
+| 内核关键字（`kallsyms`/`modules`/`uname` 里的 ksu_/apatch/magisk） | 本机内核没这些字样；即便有，命中 `BLOCK` 的行也会被过滤 |
+| root 属性残留、`/data/local/tmp` 里的临时提权产物 | `prop_denied` 直接吞掉这些读；看守日志已迁出 `/data/local/tmp` |
+| 属性四源交叉（reflection / `getprop` 子进程 / `System.getProperty` / native `__system_property_get`） | 只在配置了假值时改写，且 Java 与 native 两条路径给同一个值 |
+| 可执行映射里出现第二个 `jit-cache` memfd（加载器藏在 memfd 的判据） | 模块的 memfd 改名为 `dalvik-jit-code-cache`，ART 自己的 `jit-cache` 仍是唯一一个 |
+| 用 `dladdr` 反查函数地址属于哪个模块 | `my_dladdr` 把模块自己的名字换成 `[anon:dalvik-jit-code-cache]` |
+| 数 `/proc/<pid>/mem` 里的 dalvik 堆窗口找关键字 | 0.8.9.39 起 `/proc/*/mem`、`/proc/*/pagemap`、`/proc/kcore` 直接 `ENOENT`（偏移读没法行过滤） |
+
+挡不住的，以及为什么：
+
+| 检测方做的事 | 为什么挡不住 |
+| --- | --- |
+| 自己装 seccomp TRAP 探钩子、`setresuid` 的 SIGKILL 语义、`/dev/pts` 的 uid 与 xattr、KSU supercall 的 ioctl 返回值 | 都是内核侧语义的结果，不是文本；模块只能保证自己不去伪造 |
+| 用裸 syscall 或多后端（libc / syscall / asm）交叉读同一个东西 | 裸 svc 不过 GOT，多后端一对比就露出被改写的那一条 |
+| 直接扫描自己进程的堆或栈内存找 Xposed 类名 | Xposed 模块必须引用 `de.robv.android.xposed.**`，类名一定在堆里；读内存不是读文件，过滤器管不到 |
+| TEE / attestation / bootloader 属性 | 见下面「挡不住的部分」，属设备层 |
+| 服务端按行为与设备指纹打分 | 客户端拦得再干净也不影响这一层 |
+
+最后一条里的「堆关键字扫描」值得单独说：本模块在 QQ 进程里是 Xposed 模块，`XposedHelpers`、`XposedBridge` 这些类名天然存在于堆中，任何在**自己进程内**扫内存的检测都能找到。这不是实现缺陷，是这种模块形态的下限。
 
 ## 诊断口径
+
+自检文件在 `/data/data/com.tencent.mobileqq/files/qk_env_*.json`（0.8.9.39 之前写在外部 `Android/data`，已迁走；root 才能读，模块自己读自己的）。
 
 `envProcessKey` 把除 `:MSF` 之外的进程都记成 `main`。`:qzone`、`:gameservice` 这类子进程与主进程共用同一份 `qk_env_*.json`，后启动的会覆盖先写的，`/healthz` 里的 `maps.patched` 不一定来自主进程。
 
@@ -80,6 +137,8 @@ Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
 - 内核与挂载命名空间。Magisk、KernelSU、APatch 的挂载点由内核层暴露。模块只在检测库进程内过滤 maps 与 mountinfo，检测方换一条模块没接管的通道，或直接读内核，就绕开了。对比：在进程内和进程外各读一次 `/proc/self/mountinfo`。
 - ArtMethod 完整性。`libfekit.so` 带 `parse_libart.cpp` 与整套 `art::CheckJNI` 符号，可以对比运行时方法入口与磁盘上的 `libart.so`。Xposed 与 LSPlant 的 ArtMethod 改写不在本模块覆盖范围。核实：`strings -a libfekit.so | grep -E 'CheckJNI|parse_libart'`。
 - 服务端风控。客户端拦得再干净，腾讯仍按历史行为、设备指纹变化与网络环境打分。
+- 进程内内存关键字扫描。检测方读自己进程的堆/栈（`memchr` 扫一段内存），模块引用的 Xposed 类名就在里面；这条路不经过文件，GOT 与 `/proc` 过滤都用不上。`/proc/*/mem` 那条读法已经堵掉，直接扫内存堵不掉。
+- 多后端交叉校验。同一个事实用 libc、裸 syscall、汇编三种方式各读一次再比对，模块只改得了其中 libc 那条。libfekit 现在只用 libc，一旦它照着这个思路改，`/proc` 文本过滤的收益会明显下降。
 
 ## 复现审计
 

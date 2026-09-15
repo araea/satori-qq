@@ -6,7 +6,8 @@ import com.satori.qq.L;
  * Loads the native /proc/self/maps filter (libmapshide.so) into QQ's process and installs it.
  * Full-stack default ON (config maps_hide). v3 locates libfekit via /proc/self/maps (cross linker
  * namespace) and patches open/openat/fopen/syscall/dl_iterate_phdr GOT slots.
- * v4: memfd load as jit-cache, GOT also covers access/faccessat/readlink,
+ * v4: memfd load as an ART-named region (not "jit-cache", which ART already uses), GOT also
+ * covers access/faccessat/readlink,
  * v5: also GOT-patches libturingxq; resolves openat dirfd; cloaks /proc status
  * Seccomp_filters; covers opendir/popen/stat/dladdr/__system_property_get.
  * Loaded in every QQ process (main + MSF). Re-patches until ckguard/ZRes appears.
@@ -120,7 +121,10 @@ public final class MapsHide {
         try {
             java.lang.reflect.Method memfd = android.system.Os.class.getMethod(
                     "memfd_create", String.class, int.class);
-            keepMemfd = (java.io.FileDescriptor) memfd.invoke(null, "jit-cache", 0);
+            // 名字不能是 "jit-cache"：ART 自己就用这个名字建 memfd，同进程里出现两个不同 inode
+            // 的 /memfd:jit-cache 是「加载器藏在 memfd 里」的判据之一（Duck Detector 的 vmap_probe
+            // 就数这个）。用 ART 给匿名 JIT 区起的名字，maps 里看着像同一个东西。
+            keepMemfd = (java.io.FileDescriptor) memfd.invoke(null, "dalvik-jit-code-cache", 0);
             java.lang.reflect.Field desc = java.io.FileDescriptor.class.getDeclaredField("descriptor");
             desc.setAccessible(true);
             int n = desc.getInt(keepMemfd);

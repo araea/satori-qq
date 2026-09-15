@@ -50,7 +50,15 @@ public final class AntiDetect {
     private static final AtomicLong FEKIT_ATTACH_LAST_LENGTH = new AtomicLong(-1);
     private static final ConcurrentHashMap<String, AtomicLong> FEKIT_ATTACH_BY_COMMAND =
             new ConcurrentHashMap<>();
-    private static final String ENV_DIR =
+    /**
+     * Self-check output. This is diagnostics the module writes for its own {@code /healthz}, so it
+     * belongs in the app-private files dir: the external {@code Android/data} directory is
+     * enumerable by tools that work around the storage sandbox, and a file named
+     * {@code qk_env_maps_main.json} carrying patch counts is a direct description of the module.
+     */
+    private static final String ENV_DIR = "/data/data/com.tencent.mobileqq/files";
+    /** Where earlier versions wrote the same files; swept on first use. */
+    private static final String ENV_DIR_LEGACY =
             "/storage/emulated/0/Android/data/com.tencent.mobileqq/files";
     private static final AtomicLong ENV_REPORT_DROPPED = new AtomicLong();
     private static final ConcurrentHashMap<String, AtomicLong> ENV_REPORT_BY_CMD =
@@ -242,6 +250,24 @@ public final class AntiDetect {
         return sb.length() == 0 ? "main" : sb.toString();
     }
 
+    private static volatile boolean legacySwept;
+
+    /** Delete the {@code qk_env_*} files older versions left on external storage. */
+    private static void sweepLegacyEnvDir() {
+        if (legacySwept) return;
+        legacySwept = true;
+        try {
+            File dir = new File(ENV_DIR_LEGACY);
+            File[] files = dir.listFiles();
+            if (files == null) return;
+            for (File f : files) {
+                String n = f.getName();
+                if (n.startsWith("qk_env_") && (n.endsWith(".json") || n.endsWith(".json.tmp")))
+                    f.delete();
+            }
+        } catch (Throwable ignore) {}
+    }
+
     private static synchronized void persistEnvReport(boolean force) {
         try {
             long now = System.currentTimeMillis();
@@ -249,6 +275,7 @@ public final class AntiDetect {
             if (!force && previous != 0 && now - previous < ENV_PERSIST_INTERVAL_MS) return;
             File dir = new File(ENV_DIR);
             if (!dir.isDirectory()) return;
+            sweepLegacyEnvDir();
             ENV_LAST_PERSIST_MS.set(now);
             String process = envProcessKey();
             JSONObject o = new JSONObject()

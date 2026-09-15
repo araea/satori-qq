@@ -9,6 +9,10 @@
 - 事件：`GET /v1/events` 升级为 WebSocket。客户端须在 10 秒内发送 `IDENTIFY`，服务端随后发送 `READY` 与 `EVENT`。省略 `sn` 创建新会话，显式指定 `sn=0` 可回放缓冲区内 `sn > 0` 的事件
   - `READY` 里的登录账号就是客户端之后每个请求要带回来的 `Satori-User-ID`。QQ 账号尚未可知时不发 `READY`，等账号可知（每秒轮询）后补发，不把占位账号发给客户端
 - 元信息：`POST /v1/meta`；资源代理：`GET /v1/proxy/{url}`
+- 官方客户端的登录域内路由：`POST /v1/internal/{platform}/{selfId}/_api/{name}` 与 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`。
+  前者是 `@satorijs/adapter-satori` 的 `bot.internal.*` 走法（参数按 `JsonForm` 编码，纯 JSON 时是数组，带文件时是 `multipart/form-data` 且 JSON 在 `$` 字段；
+  带 `Satori-Pagination: true` 时回 `{data, …}`），后者是 `upload.create` 返回的 `internal:{platform}/{selfId}/_tmp/{id}` 被客户端解析后回落到的地址。
+  这两条只服务本机登录自身的资源与动作，`_tmp` 与 `/v1/assets/{id}` 一样不带令牌，其他登录回 404。`POST /v1/internal/{name}` 仍可用，是模块自己的简写。
 - 分页：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next}`。不带 `next` 与 `limit` 时返回完整结果；带 `limit` 或 `next` 时按偏移分页，`next` 为下一次要传回的偏移量。`message.list` 是双向分页，另见下表
 - 平台为 `red`，适配器为 `satori-qq`
 - 群频道的 `channel.id` 与 `guild.id` 均为群号，`channel.type=0`
@@ -105,6 +109,15 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 群详情 | `group_essence_list` | 按页读取精华消息 |
 | 群详情 | `group_statistic` / `group_member_level` | 群统计与成员等级刻度 |
 | 群详情 | `group_avatar_wall` / `group_medal` | 群头像墙与群勋章（见限制） |
+| 群详情 | `group_capacity` / `group_msg_limit` | 群成员上限与发言频率限制 |
+| 群详情 | `group_join_link` | 群分享/加群链接，`short_url` 取短链 |
+| 群详情 | `group_apps` | 群应用中心列表 |
+| 群详情 | `group_related` | `op=related` 关联群、`op=sub` 子群（见限制） |
+| 群详情 | `group_illegal` | 违规成员名单 |
+| 群详情 | `group_notify` | 未读群通知数，`force=true` 先向服务端要一次 |
+| 群详情 | `group_signin_status` | 本号在群里的签到状态 |
+| 群管理 | `group_transfer` / `group_destroy` | 转让群、解散群，都必须带 `confirm=true` |
+| 群成员 | `group_member_card` / `group_check_member` | 成员群名片；或校验一批成员是否已在本地缓存 |
 | 群成员 | `member_identity` | 成员群身份：等级、头衔、互动与业务标签 |
 | 群成员 | `member_common` | 成员缓存之外的扩展字段 |
 | 好友 | `friend_remark` | 查询或设置好友备注 |
@@ -130,6 +143,19 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 消息 | `auto_reply` | 读取自动回复文本 |
 | 消息 | `unread_summary` | 查询指定频道的未读数 |
 | 消息 | `mark_read` | 将会话标记为已读 |
+| 消息 | `message_by_id` / `recall_history` | 按消息 ID 批量取消息；取被撤回的消息 |
+| 消息 | `msg_abstract` / `reaction.likes` | 消息摘要行；某个表态的操作者名单 |
+| 消息 | `first_unread` | 会话首条未读的序号 |
+| 消息 | `draft` | 会话草稿，`op=delete` 清除（无草稿时内核回 `code=4 Data Not Existed!`） |
+| 消息 | `temp_chat` | 临时会话信息（群会话回 `code=5 :no temp chat info`） |
+| 消息 | `recent_faces` | 最近使用过的 QQ 表情 |
+| 消息 | `fav_emoji_write` | 收藏表情：`op=add` 加本地文件，`op=desc` 改描述 |
+| 会话 | `hidden_session` | `op=get` 读隐藏会话，`op=hide` / `op=unhide` 隐藏或恢复 |
+| 会话 | `session_top` | 置顶或取消置顶会话 |
+| 会话 | `recent_snapshot` / `unread_details` | 最近联系人快照；会话未读明细 |
+| 媒体 | `media_dir` | 富媒体落盘目录与图片/语音/视频/文件的临时目录 |
+| 媒体 | `batch_file_count` | 批量查群文件数量 |
+| 机器人 | `robot_list` / `robot_owned` | 可加入群创建的机器人列表；群成员各自拥有的机器人 |
 | 联系人 | `recent_contacts` | 查询最近联系人及未读数 |
 | 能力查询 | `capabilities` / `help` | 返回扩展动作与参数清单 |
 | 状态查询 | `status` / `version` | 返回健康状态或版本 |
@@ -155,6 +181,12 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 修改性别 | `setGander` 回 `code=-1 暂未实现`，未提供该动作 |
 | `getGroupExtList` | 两个刷新标志都不回调，未提供对应动作 |
 | `searchGroupFile` / `searchGroupFileByWord` | 前者同步返回 -1，后者不回调，未提供群文件搜索动作 |
+| `getOnLineDev`（在线设备） | 接受调用但不回调，未提供对应动作 |
+| `getNextMemberList` / `getPrevMemberList`（成员翻页） | 要先 `createMemberListScene` 建场景；实测各游标都回空页（`finish=true`、无成员），未提供对应动作，成员列表用 `guild.member.list` |
+| `enumProvinceOptions` 等地区枚举 | 内核地区表要 `prepareRegionConfig` 先准备好，而该入口不回调（15 秒超时），枚举一律回空表，未提供对应动作 |
+| `getRelatedGroup`（关联群） | 链路通，服务端回 `code=10014 AuthInfo not found`，属风控/权限限制 |
+| `destroyGroup` / `transferGroupV2` | 只有群主可用；模块要求 `confirm=true` 才发出去 |
+| `getGroupNotifiesUnreadCount` | 账号级未读，不带群号也能读（早期实现要求 `guild_id`，0.8.9.39 起不必） |
 
 个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑，`special_care` 缺省开启。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 不带 `mask` 时读取当前设置，除 `mask` 外也接受 `shield` 布尔简写。`buddy_category` 的写操作会先拉取一次分组成员表再返回，否则调用方会看到写入成功而列表里没有新分组。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态，`profile_relation_flag` 带回拉黑与特别关心标志。这些动作受 QQ 自身权限与账号状态限制。
 
@@ -172,6 +204,10 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | `login-updated` | QQ 内核上线或离线 |
 
 QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，并在 `satori_qq.manual_self` 中携带实际身份；机器人 API 的发送回声会去重。登录期间的群列表同步不生成群变更事件。
+
+每个事件的顶层都带 `sn`、`type`、`timestamp`、`login`，以及 `self_id` 与 `platform`（`Event` 类型里与 `login` 并列的扁平字段；只有 `login` 时客户端也能工作，但按协议类型实现的一方读的是扁平字段）。`login.get` 与 `READY` 里的 login 带 `sn`、`adapter`、`platform`、`self_id`、`hidden`、`status`、`user` 与 `features`。
+
+表态事件用 `reaction-added` / `reaction-removed`，与 `@satorijs/core` 声明的 `Events` 一致；`@satorijs/protocol` 的 `EventName` 写的是 `reaction-deleted`，Discord、Kook 两个官方适配器用的是后者，QQ 适配器用的是前者。模块跟随核心事件表，不两头发。
 
 ## 消息元素与媒体
 

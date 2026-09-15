@@ -93,6 +93,11 @@ int main(void) {
         if ((rc = expect(path_denied("/sbin/su"), 1, 49))) return rc;
         if ((rc = expect(path_denied("su"), 1, 50))) return rc;
         if ((rc = expect(path_denied("/data/data/com.tencent.mobileqq"), 0, 51))) return rc;
+        if ((rc = expect(path_denied("/proc/self/mem"), 1, 87))) return rc;
+        if ((rc = expect(path_denied("/proc/1234/mem"), 1, 88))) return rc;
+        if ((rc = expect(path_denied("/proc/self/pagemap"), 1, 89))) return rc;
+        if ((rc = expect(path_denied("/proc/kcore"), 1, 90))) return rc;
+        if ((rc = expect(path_denied("/data/data/com.tencent.mobileqq/files/mem"), 0, 91))) return rc;
         if ((rc = expect(path_denied("/data/app/de.robv.android.xposed.installer"), 1, 52)))
             return rc;
         if ((rc = expect(path_denied("/data/data/com.koushikdutta.superuser"), 1, 66))) return rc;
@@ -128,6 +133,28 @@ int main(void) {
         const char cmdlineQq[] = "com.tencent.mobileqq\0";
         if ((rc = expect(line_blocked(cmdlineRoot, sizeof(cmdlineRoot) - 1), 1, 74))) return rc;
         if ((rc = expect(line_blocked(cmdlineQq, sizeof(cmdlineQq) - 1), 0, 75))) return rc;
+    }
+    {
+        /* Detector token scans. The needle decides, not the symbol: a search for a
+         * blacklist name hidden inside a longer string must come back empty on every
+         * search primitive libfekit imports. */
+        const char hay[] = "11 r-xp /data/app/~~x==/com.topjohnwu.magisk-abc==/base.apk";
+        const char probe[] = "/data/app/~~x==/com.topjohnwu.magisk-abc==/base.apk";
+        const char okProbe[] = "/data/app/~~x==/com.tencent.mobileqq-abc==/base.apk";
+        const char okHay[] = "/system/lib64/libc.so";
+        if ((rc = expect(my_strstr(hay, "magisk") == 0, 1, 76))) return rc;
+        if ((rc = expect(my_strstr(hay, probe) == 0, 1, 77))) return rc;
+        if ((rc = expect(my_strstr(hay, okHay) == 0, 1, 78))) return rc;
+        /* A search for the bare word is answered too: that is how a detector looks up its
+         * own blacklist catalog, so it must find nothing. */
+        if ((rc = expect(my_strstr(hay, "magisk") == 0, 1, 79))) return rc;
+        if ((rc = expect(my_strcasestr("MAPS: LSPOSED", "lsposed") == 0, 1, 80))) return rc;
+        if ((rc = expect(my_strcasestr("maps", "/data/adb/modules/zygisk") == 0, 1, 81))) return rc;
+        if ((rc = expect(my_strcasestr("maps: LIBC.so", "libc") != 0, 1, 82))) return rc;
+        if ((rc = expect(my_memmem(hay, sizeof(hay) - 1, "zygisk", 6) == 0, 1, 83))) return rc;
+        if ((rc = expect(my_memmem(hay, sizeof(hay) - 1, "base.apk", 8) != 0, 1, 84))) return rc;
+        if ((rc = expect(needle_blocked("com.topjohnwu.magisk", 22), 1, 85))) return rc;
+        if ((rc = expect(needle_blocked("com.tencent.mobileqq", 20), 0, 86))) return rc;
     }
     return 0;
 }

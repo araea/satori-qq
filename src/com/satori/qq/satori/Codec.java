@@ -555,6 +555,14 @@ public final class Codec {
         long ts = eventTime(ob);
         ev.put("timestamp", (ts > 0 ? ts : System.currentTimeMillis() / 1000) * 1000);
         ev.put("login", loginSlim);
+        // Satori's Event carries the login selector twice: once as the full `login` object and
+        // once as flat `self_id` / `platform`. The Satori client falls back to `login`, but
+        // anything built straight off the protocol's Event type reads the flat pair.
+        if (loginSlim != null) {
+            ev.put("platform", loginSlim.optString("platform", ""));
+            JSONObject loginUser = loginSlim.optJSONObject("user");
+            if (loginUser != null) ev.put("self_id", loginUser.optString("id", ""));
+        }
         if ("message".equals(post)) return messageCreated(ob, ev, assetBase);
         if ("notice".equals(post)) return noticeEvent(ob, ev);
         if ("request".equals(post)) return requestEvent(ob, ev);

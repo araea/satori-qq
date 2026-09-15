@@ -1,5 +1,15 @@
 // mapshide.c — detector-lib GOT filter + in-process seccomp for bare svc.
 //
+// v5.15 (0.8.9.39): /proc/<pid>/mem、/proc/<pid>/pagemap、/proc/kcore 直接拒掉
+// （偏移读没法做行过滤，而堆关键字扫描正是走这条路）；模块自己的 memfd 不再叫
+// jit-cache——ART 已经用了这个名字，同进程出现第二个同名的 memfd inode 是
+// 「加载器藏在 memfd」的判据。Rollback 0.8.9.38。
+// v5.14 (0.8.9.39): the token-scan channel is now closed as a set rather than
+// by symbol. libfekit imports strstr, strcasestr and memmem; only strstr was
+// taken over, and it answered NULL only when the needle was exactly one word of
+// the blacklist. All three now share one rule (needle contains any BLOCK entry,
+// case-insensitive), so `strstr(line, "com.topjohnwu.magisk-1.2")` no longer
+// slips past. Rollback 0.8.9.38.
 // v5.13 (0.8.9.33): close the channels libfekit/libturingxq/libturingmfa still
 // import but that v5.12 left alone — sendmsg (risk egress), stat64/lstat64/
 // fstat/fstat64/fstatat (path probes), non-self /proc/<pid>/cmdline (process
@@ -64,6 +74,8 @@ extern int __android_log_print(int prio, const char* tag, const char* fmt, ...);
 extern int mprotect(void* addr, size_t len, int prot);
 extern long sysconf(int name);
 extern char* strstr(const char* h, const char* n);
+extern char* strcasestr(const char* h, const char* n);
+extern void* memmem(const void* h, size_t hn, const void* n, size_t nn);
 extern int strcmp(const char* a, const char* b);
 extern size_t strlen(const char* s);
 
@@ -408,6 +420,13 @@ static int path_denied(const char* p) {
         if (contains_ci(q, n, BLOCK[i])) return 1;
     }
     if (strcmp(q, "su") == 0 || ends_with(q, "/su")) return 1;
+    /*
+     * /proc/<pid>/mem 按偏移读，行过滤对它无效，唯一能做的就是不给出这个文件。检测这样做是拿
+     * dalvik 堆窗口搜关键字（Duck Detector 的 heap_probe 就是），而模块引用的 Xposed 类名就在
+     * 堆里，腾不出空间。pagemap 与 kcore 同理，没有正当用途。
+     */
+    if (strstr(q, "/proc/")
+            && (ends_with(q, "/mem") || ends_with(q, "/pagemap") || ends_with(q, "/kcore"))) return 1;
     return 0;
 }
 
@@ -827,19 +846,34 @@ static int my_system(const char* cmd) {
     return system(cmd);
 }
 
-static char* my_strstr(const char* haystack, const char* needle) {
-    char* found = strstr(haystack, needle);
-    if (!found || !needle) return found;
-    const char* words[] = {
-        "lsposed", "xposed", "riru", "zygisk", "magisk", "frida",
-        "kernelsu", "ksu", "substrate", "mapshide", "satori", 0
-    };
-    size_t n = strlen(needle);
-    for (int i = 0; words[i]; i++) {
-        size_t wn = strlen(words[i]);
-        if (n == wn && contains_ci(needle, n, words[i])) return 0;
+/*
+ * Detector libraries scan content for root-framework tokens themselves, and they do it with
+ * whichever search primitive they prefer. libfekit imports strstr, strcasestr and memmem;
+ * hooking only strstr left the other two as a way around this filter. All three now share one
+ * rule: a needle that names any entry of BLOCK (as a substring, case-insensitive) finds nothing.
+ */
+static int needle_blocked(const void* needle, size_t n) {
+    if (!needle || n == 0) return 0;
+    const char* p = (const char*)needle;
+    for (int i = 0; BLOCK[i]; i++) {
+        if (contains_ci(p, n, BLOCK[i])) return 1;
     }
-    return found;
+    return 0;
+}
+
+static char* my_strstr(const char* haystack, const char* needle) {
+    if (needle_blocked(needle, needle ? strlen(needle) : 0)) return 0;
+    return strstr(haystack, needle);
+}
+
+static char* my_strcasestr(const char* haystack, const char* needle) {
+    if (needle_blocked(needle, needle ? strlen(needle) : 0)) return 0;
+    return strcasestr(haystack, needle);
+}
+
+static void* my_memmem(const void* haystack, size_t hn, const void* needle, size_t nn) {
+    if (needle_blocked(needle, nn)) return 0;
+    return memmem(haystack, hn, needle, nn);
 }
 
 static long my_send(int sockfd, const void* buf, size_t len, int flags) {
@@ -1034,6 +1068,8 @@ static void* my_dlsym(void* handle, const char* symbol) {
     if (strcmp(symbol, "popen") == 0) return (void*)my_popen;
     if (strcmp(symbol, "system") == 0) return (void*)my_system;
     if (strcmp(symbol, "strstr") == 0) return (void*)my_strstr;
+    if (strcmp(symbol, "strcasestr") == 0) return (void*)my_strcasestr;
+    if (strcmp(symbol, "memmem") == 0) return (void*)my_memmem;
     if (strcmp(symbol, "send") == 0) return (void*)my_send;
     if (strcmp(symbol, "sendto") == 0) return (void*)my_sendto;
     if (strcmp(symbol, "sendmsg") == 0) return (void*)my_sendmsg;
@@ -1069,6 +1105,8 @@ typedef struct {
     void* my_popen;
     void* my_system;
     void* my_strstr;
+    void* my_strcasestr;
+    void* my_memmem;
     void* my_send;
     void* my_sendto;
     void* my_sendmsg;
@@ -1147,6 +1185,8 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
             else if (strcmp(nm, "popen") == 0) repl = ctx->my_popen;
             else if (strcmp(nm, "system") == 0) repl = ctx->my_system;
             else if (strcmp(nm, "strstr") == 0) repl = ctx->my_strstr;
+            else if (strcmp(nm, "strcasestr") == 0) repl = ctx->my_strcasestr;
+            else if (strcmp(nm, "memmem") == 0) repl = ctx->my_memmem;
             else if (strcmp(nm, "send") == 0) repl = ctx->my_send;
             else if (strcmp(nm, "sendto") == 0) repl = ctx->my_sendto;
             else if (strcmp(nm, "sendmsg") == 0) repl = ctx->my_sendmsg;
@@ -1577,8 +1617,10 @@ static void persist_maps_stats(int patched, int dlsym_n, int readdir_n,
         int getenv_n, int freopen_n, int leak_maps, int leak_tcp, int leak_env) {
     const char* key = process_key();
     char path[192];
+    /* App-private dir on purpose: Android/data is enumerable by tools that work around the
+     * storage sandbox, and this file names the filter and its patch counts. */
     if (snprintf(path, sizeof(path),
-            "/storage/emulated/0/Android/data/com.tencent.mobileqq/files/qk_env_maps_%s.json",
+            "/data/data/com.tencent.mobileqq/files/qk_env_maps_%s.json",
             key) <= 0)
         return;
     int ok = hide_loop_ok(leak_maps, leak_tcp, leak_env, dlsym_n);
@@ -1656,6 +1698,8 @@ int Java_com_satori_qq_qq_MapsHide_install(void* env, void* clazz) {
     ctx.my_popen = (void*)my_popen;
     ctx.my_system = (void*)my_system;
     ctx.my_strstr = (void*)my_strstr;
+    ctx.my_strcasestr = (void*)my_strcasestr;
+    ctx.my_memmem = (void*)my_memmem;
     ctx.my_send = (void*)my_send;
     ctx.my_sendto = (void*)my_sendto;
     ctx.my_sendmsg = (void*)my_sendmsg;

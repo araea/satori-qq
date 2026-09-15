@@ -9,6 +9,8 @@ public final class L {
     private static volatile boolean verbose;
     private L() {}
     public static void configure(boolean enableVerbose) { verbose = enableVerbose; }
+    /** True when verbose logging is on. Gates diagnostics that cost I/O or leave files behind. */
+    public static boolean verbose() { return verbose; }
     public static void i(String m) {
         if (!verbose) return;
         Log.i(TAG, m);

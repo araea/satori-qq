@@ -25,7 +25,12 @@ public final class Protocol {
 
     public static JSONObject eventLogin(long sn, String platform, JSONObject user) throws Exception {
         JSONObject out = new JSONObject().put("sn", sn).put("platform", platform == null ? "" : platform);
-        if (user != null) out.put("user", user);
+        if (user != null) {
+            out.put("user", user);
+            // `selfId` is deprecated in favour of `login.user.id`, but clients still read it.
+            String id = user.optString("id", "");
+            if (!id.isEmpty()) out.put("self_id", id);
+        }
         return out;
     }
 }

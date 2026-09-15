@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.37";
+    public static final String APP_VERSION = "0.8.9.38";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -82,6 +82,14 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final java.util.ArrayList<HistRow> lastHistRows = new java.util.ArrayList<>();
     /** Replay storage only; events are broadcast before this method returns and are never batched. */
     private static final int EVENT_BUFFER = 4096;
+    /**
+     * All-member mute has no duration in QQ's kernel call, only a boolean, so the module owns the
+     * timer. An `enable: true` request without an explicit duration therefore means "until turned
+     * off"; 30 days is QQ's own ceiling for a timed mute and doubles as "no deadline" here.
+     */
+    private static final long DEFAULT_CHANNEL_MUTE_MS = 30L * 24 * 3600 * 1000;
+    /** Page size used when a caller passes `next` without `limit`. */
+    private static final int PAGE_DEFAULT = 200;
 
     public SatoriHub(Cfg cfg, QQClient qq, MsgStore store) {
         this.cfg = cfg; this.qq = qq; this.store = store;
@@ -222,9 +230,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("guild.member.mute")
                 .put("guild.member.role.set")
                 .put("guild.member.role.unset")
+                .put("guild.member.role.list")
                 .put("guild.role.list")
                 .put("reaction.create")
                 .put("reaction.delete")
+                .put("reaction.clear")
                 .put("reaction.list")
                 .put("user.get")
                 .put("friend.list")
@@ -298,7 +308,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             if (OutboundGuard.isMutation(method)) return jsonResult(guarded(method, () -> dispatch(method, body)));
             return jsonResult(dispatch(method, body));
         } catch (NotImplemented ni) {
-            return HttpServer.HttpResult.text(404, ni.getMessage());
+            // 404, not 501: every method here is one QQ has no equivalent for at all. The body
+            // stays JSON like every other error so a client can parse it uniformly.
+            return HttpServer.HttpResult.json(404, errorJson(ni.getMessage()));
         } catch (ApiError e) {
             int http = e.code == 1400 ? 400 : e.code == 1404 ? 404 : 500;
             return HttpServer.HttpResult.json(http, errorJson(e.getMessage()));
@@ -643,9 +655,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "channel.list": return satoriChannelList(p);
             case "channel.update": return satoriChannelUpdate(p);
             case "channel.mute": {
-                long gid = guildIdOf(p);
-                if (p.has("duration")) muteChannel(gid, Math.max(0, p.optLong("duration", 0)));
-                else requireOp(qq.wholeBan(gid, p.optBoolean("enable", true)));
+                muteChannel(guildIdOf(p), resolveChannelMuteMs(p));
                 return new JSONObject();
             }
             case "user.channel.create": {
@@ -654,9 +664,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 return Codec.channel(QQClient.CT_C2C, uid, "");
             }
             case "guild.get": return satoriGuildGet(p);
-            case "guild.list": return listWrap(satoriGuildList());
+            case "guild.list": return pagedList(satoriGuildList(), p);
             case "guild.member.get": return satoriMember(p);
-            case "guild.member.list": return listWrap(satoriMemberList(p));
+            case "guild.member.list": return pagedList(satoriMemberList(p), p);
             case "guild.member.kick": {
                 long g = guildIdOf(p), u = parseId(p.optString("user_id", ""));
                 requireOp(qq.kickMember(g, uidFor(g, u), p.optBoolean("permanent", false)));
@@ -679,12 +689,15 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 requireOp(qq.setAdmin(g, uidFor(g, u), method.endsWith(".set")));
                 return new JSONObject();
             }
+            case "guild.member.role.list": {
+                long g = guildIdOf(p), u = parseId(p.optString("user_id", ""));
+                if (u == 0) throw new ApiError(1400, "missing user_id");
+                JSONObject member = memberToSatori(getGroupMemberInfo(g, u));
+                JSONArray roles = member.optJSONArray("roles");
+                return pagedList(roles == null ? new JSONArray() : roles, p);
+            }
             case "guild.role.list":
-                guildIdOf(p); // validate that the request identifies a guild
-                return listWrap(new JSONArray()
-                        .put(new JSONObject().put("id", "owner").put("name", "owner"))
-                        .put(new JSONObject().put("id", "admin").put("name", "admin"))
-                        .put(new JSONObject().put("id", "member").put("name", "member")));
+                return pagedList(guildRoles(guildIdOf(p)), p);
             case "reaction.create": {
                 String emojiRaw = p.optString("emoji_id", "");
                 int messageId = requireMessage(p.optString("message_id", ""), p).id;
@@ -702,6 +715,32 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 setEmojiLike(messageId, parseEmoji(emojiRaw), emojiRaw, false);
                 return new JSONObject();
             }
+            case "reaction.clear": {
+                String emojiRaw = p.optString("emoji_id", "");
+                int messageId = requireMessage(p.optString("message_id", ""), p).id;
+                validateMessageChannel(p, messageId);
+                if (!emojiRaw.trim().isEmpty()) {
+                    setEmojiLike(messageId, parseEmoji(emojiRaw), emojiRaw, false);
+                    return new JSONObject();
+                }
+                // QQ has no "drop every reaction on this message" call. The kernel can only
+                // withdraw the ones this login set, so enumerate those and remove each.
+                java.util.List<String> keys = reactionEmojiKeys(messageId);
+                if (keys.isEmpty())
+                    throw new ApiError(1404, "no reaction set by this login on the message");
+                String lastError = "";
+                int cleared = 0;
+                for (String key : keys) {
+                    try {
+                        setEmojiLike(messageId, parseEmoji(key), key, false);
+                        cleared++;
+                    } catch (ApiError e) {
+                        lastError = e.getMessage();
+                    }
+                }
+                if (cleared == 0) throw new ApiError(1500, "reaction clear failed: " + lastError);
+                return new JSONObject().put("cleared", cleared);
+            }
             case "reaction.list": {
                 String emojiRaw = p.optString("emoji_id", "");
                 int messageId = requireMessage(p.optString("message_id", ""), p).id;
@@ -710,7 +749,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         p.optString("next", ""));
             }
             case "user.get": return satoriUser(p);
-            case "friend.list": return listWrap(satoriFriendList());
+            case "friend.list": return pagedList(satoriFriendList(), p);
             case "friend.delete": {
                 long friend = parseId(p.optString("user_id", ""));
                 if (friend == 0) throw new ApiError(1400, "missing user_id");
@@ -915,6 +954,111 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "group_honor":
             case "group.honor":
                 return groupHonor(params);
+            case "group-detail":
+            case "group_detail":
+            case "group.detail":
+                return groupDetail(params);
+            case "group-all-info":
+            case "group_all_info":
+                return groupAllInfo(params);
+            case "group-bulletin":
+            case "group_bulletin":
+            case "group.bulletin":
+                return groupBulletin(params);
+            case "group-essence-list":
+            case "group_essence_list":
+            case "group.essence_list":
+            case "group-essence-msg":
+                return groupEssenceList(params);
+            case "group-statistic":
+            case "group_statistic":
+            case "group.statistic":
+                return groupStatistic(params);
+            case "group-member-level":
+            case "group_member_level":
+            case "group.member_level":
+                return groupMemberLevel(params);
+            case "group-avatar-wall":
+            case "group_avatar_wall":
+            case "group.avatar_wall":
+                return groupAvatarWall(params);
+            case "group-medal":
+            case "group_medal":
+            case "group.medal":
+                return groupMedal(params);
+            case "member-identity":
+            case "member_identity":
+            case "member.identity":
+                return memberIdentity(params);
+            case "member-common":
+            case "member_common":
+            case "member.common":
+                return memberCommon(params);
+            case "buddy-category":
+            case "buddy_category":
+            case "buddy.category":
+                return buddyCategory(params);
+            case "buddy-nick":
+            case "buddy_nick":
+            case "buddy.nick":
+                return buddyNick(params);
+            case "special-care":
+            case "special_care":
+            case "buddy.special_care":
+                return specialCare(params);
+            case "add-me-setting":
+            case "add_me_setting":
+            case "buddy.add_me_setting":
+                return addMeSetting(params);
+            case "doubt-buddy":
+            case "doubt_buddy":
+            case "buddy.doubt_request":
+                return doubtBuddy(params);
+            case "buddy-req-unread":
+            case "buddy_req_unread":
+                return kernelRead(0, "unread", qq.extra().buddyReqUnread());
+            case "user-detail":
+            case "user_detail":
+            case "profile.detail":
+                return userDetail(params);
+            case "vas-info":
+            case "vas_info":
+            case "profile.vas":
+                return vasInfo(params);
+            case "profile-status":
+            case "profile_status":
+            case "profile.status":
+                return profileStatus(params);
+            case "profile-intimate":
+            case "profile_intimate":
+            case "intimate":
+                return intimateRelation(params);
+            case "profile-relation-flag":
+            case "profile_relation_flag":
+            case "relation-flag":
+                return relationFlag(params);
+            case "profile-set-birthday":
+            case "profile_set_birthday":
+                return profileSetBirthday(params);
+            case "voice-to-text":
+            case "voice_to_text":
+            case "ptt-to-text":
+                return voiceToText(params);
+            case "fav-emoji":
+            case "fav_emoji":
+            case "emoji.favorite":
+            case "recent-emoji":
+            case "emoji_tray":
+                return favEmoji(params);
+            case "auto-reply":
+            case "auto_reply":
+                return autoReply(params);
+            case "unread-summary":
+            case "unread_summary":
+                return unreadSummary(params);
+            case "mark-read":
+            case "mark_read":
+                return markRead(params);
             case "friend-remark":
             case "friend_remark":
             case "friend.remark":
@@ -1160,6 +1304,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private Object groupMsgMask(JSONObject p) throws Exception {
         final long groupId = guildIdOf(p);
         String mask = firstNonEmpty(p.optString("mask", ""), p.optString("mode", ""));
+        String op = internalOp(p, mask.isEmpty() && !p.has("shield") && !p.has("enable")
+                ? "get" : "set");
+        if ("get".equals(op) || "query".equals(op)) {
+            return kernelRead(groupId, "mask", qq.extra().groupMsgMask());
+        }
         if (mask.isEmpty()) {
             if (p.has("shield")) mask = p.optBoolean("shield", false) ? "SHIELD" : "NOTIFY";
             else if (p.has("enable")) mask = p.optBoolean("enable", true) ? "SHIELD" : "NOTIFY";
@@ -1190,6 +1339,401 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("ok", res.ok()).put("result", res.describe());
         if (res.payload != null) out.put("honor", toJson(res.payload));
         return out;
+    }
+
+    /**
+     * Shared envelope for the kernel read actions. {@code IOperateCallback} payloads are usually
+     * JSON text for these calls, so a string that parses is unwrapped instead of double-encoded.
+     */
+    private static JSONObject kernelRead(long groupId, String key, ExtraSvc.Result res)
+            throws Exception {
+        JSONObject out = new JSONObject();
+        if (groupId != 0) out.put("guild_id", String.valueOf(groupId));
+        out.put("ok", res.ok()).put("result", res.describe());
+        Object payload = res.payload;
+        if (payload == null) return out;
+        if (payload instanceof String) {
+            String text = ((String) payload).trim();
+            if (text.startsWith("{") || text.startsWith("[")) {
+                try {
+                    out.put(key, text.startsWith("[") ? new JSONArray(text) : new JSONObject(text));
+                    return out;
+                } catch (Exception ignore) {}
+            }
+            if (!text.isEmpty()) out.put(key, text);
+            return out;
+        }
+        out.put(key, toJson(payload));
+        return out;
+    }
+
+    /** Full group profile. `source` picks the big-data entry (`KDATACARD` by default). */
+    private Object groupDetail(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        return kernelRead(gid, "detail",
+                qq.extra().groupDetail(gid, p.optString("source", "")));
+    }
+
+    private Object groupAllInfo(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        return kernelRead(gid, "detail", qq.extra().groupAllInfo(gid));
+    }
+
+    /** Pinned bulletin by default; `op=list` (or `start`/`count`) reads the paged list instead. */
+    private Object groupBulletin(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        String op = internalOp(p, "");
+        boolean list = "list".equals(op) || p.has("start") || p.has("count");
+        if (list) {
+            return kernelRead(gid, "bulletins", qq.extra().groupBulletinList(gid,
+                    p.optInt("start", 0), p.optInt("count", p.optInt("limit", 20))));
+        }
+        return kernelRead(gid, "bulletin", qq.extra().groupBulletin(gid));
+    }
+
+    private Object groupEssenceList(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        return kernelRead(gid, "messages", qq.extra().groupEssence(gid,
+                p.optInt("start", 0), p.optInt("limit", 20)));
+    }
+
+    private Object groupStatistic(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        return kernelRead(gid, "statistic", qq.extra().groupStatistic(gid));
+    }
+
+    private Object groupMemberLevel(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        return kernelRead(gid, "level", qq.extra().groupMemberLevel(gid));
+    }
+
+    private Object groupAvatarWall(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        return kernelRead(gid, "wall", qq.extra().groupAvatarWall(gid));
+    }
+
+    private Object groupMedal(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        return kernelRead(gid, "medals", qq.extra().groupMedalList(gid));
+    }
+
+    /** One member's group identity (群身份): level, titles, interaction and app tags. */
+    private Object memberIdentity(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) uin = selfUin();
+        JSONObject out = kernelRead(gid, "identity", qq.extra().memberIdentity(gid, uin));
+        out.put("user_id", String.valueOf(uin));
+        return out;
+    }
+
+    /** Extra per-member fields the ordinary member cache does not carry. */
+    private Object memberCommon(JSONObject p) throws Exception {
+        long gid = guildIdOf(p);
+        java.util.List<Long> uins = new java.util.ArrayList<>();
+        long single = parseId(p.optString("user_id", ""));
+        if (single != 0) uins.add(single);
+        JSONArray many = p.optJSONArray("user_ids");
+        if (many != null) {
+            for (int i = 0; i < many.length(); i++) {
+                long u = parseId(many.optString(i, ""));
+                if (u != 0) uins.add(u);
+            }
+        }
+        JSONObject out = kernelRead(gid, "members",
+                qq.extra().memberCommon(gid, uins, p.optString("start_uin", "")));
+        out.put("queried", uins.size());
+        return out;
+    }
+
+    /** Resolve the target accounts of a per-user read to kernel uids. Defaults to the login. */
+    private java.util.List<String> targetUids(JSONObject p) throws Exception {
+        java.util.List<String> uids = new java.util.ArrayList<>();
+        java.util.List<Long> uins = new java.util.ArrayList<>();
+        long single = parseId(p.optString("user_id", ""));
+        if (single != 0) uins.add(single);
+        JSONArray many = p.optJSONArray("user_ids");
+        if (many != null) {
+            for (int i = 0; i < many.length(); i++) {
+                long u = parseId(many.optString(i, ""));
+                if (u != 0) uins.add(u);
+            }
+        }
+        if (uins.isEmpty()) uins.add(selfUin());
+        for (long uin : uins) {
+            if (uin == 0) continue;
+            String uid = uidFor(0, uin);
+            if (uid != null && !uid.isEmpty() && !uids.contains(uid)) uids.add(uid);
+        }
+        return uids;
+    }
+
+    /** One member's friend categories, or the write ops against them. */
+    private Object buddyCategory(JSONObject p) throws Exception {
+        String op = internalOp(p, "get");
+        if ("get".equals(op) || "query".equals(op) || "list".equals(op))
+            return buddyCategoryList(false);
+        if ("refresh".equals(op) || "pull".equals(op)) return buddyCategoryList(true);
+        final String name = firstNonEmpty(p.optString("name", ""), p.optString("category_name", ""));
+        final int cid = p.optInt("category_id", p.optInt("id", -1));
+        return guarded("internal.buddy_category", () -> {
+            ExtraSvc.Result res;
+            switch (op) {
+                case "add":
+                case "create":
+                    if (name.isEmpty()) throw new ApiError(1400, "missing name");
+                    res = qq.extra().addBuddyCategory(name);
+                    break;
+                case "delete":
+                case "del":
+                case "remove":
+                    if (cid < 0) throw new ApiError(1400, "missing category_id");
+                    res = qq.extra().deleteBuddyCategory(cid);
+                    break;
+                case "rename":
+                    if (cid < 0 || name.isEmpty())
+                        throw new ApiError(1400, "rename needs category_id and name");
+                    res = qq.extra().renameBuddyCategory(cid, name);
+                    break;
+                case "set":
+                case "assign": {
+                    long uin = parseId(p.optString("user_id", ""));
+                    if (uin == 0 || cid < 0)
+                        throw new ApiError(1400, "set needs user_id and category_id");
+                    res = qq.extra().setBuddyCategory(uin, cid);
+                    break;
+                }
+                default:
+                    throw new ApiError(1400, "unknown op: " + op);
+            }
+            if (!res.ok()) throw new ApiError(1500, "buddy category " + op + ": " + res.describe());
+            // The list is served from QQ's cache, which still holds the pre-write table until a
+            // pull lands; without this the caller sees the write succeed and the row missing.
+            ExtraSvc.Result pull = qq.extra().pullBuddyCategories();
+            JSONObject out = buddyCategoryList(false);
+            out.put("op", op).put("result", res.describe()).put("refresh", pull.describe());
+            return out;
+        });
+    }
+
+    private JSONObject buddyCategoryList(boolean refresh) throws Exception {
+        ExtraSvc.Result pull = refresh ? qq.extra().pullBuddyCategories() : null;
+        java.util.List<Object> categories = qq.extra().buddyCategories();
+        JSONObject out = new JSONObject().put("categories", toJson(categories))
+                .put("count", categories.size());
+        if (pull != null) out.put("refresh", pull.describe());
+        return out;
+    }
+
+    /** Cached nicknames for the named friends, keyed by uid. */
+    private Object buddyNick(JSONObject p) throws Exception {
+        java.util.List<String> uids = targetUids(p);
+        java.util.Map<String, String> nicks = qq.extra().buddyNick(uids);
+        JSONObject users = new JSONObject();
+        for (java.util.Map.Entry<String, String> e : nicks.entrySet())
+            putQuiet(users, e.getKey(), e.getValue());
+        return new JSONObject().put("nicks", users).put("count", nicks.size());
+    }
+
+    /** Special care (特别关心) plus its ring and zone sub-switches. */
+    private Object specialCare(JSONObject p) throws Exception {
+        final long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) throw new ApiError(1400, "missing user_id");
+        final boolean on = p.has("enable") ? p.optBoolean("enable", true)
+                : p.optBoolean("on", true);
+        // QQ keeps three independent flags; when only the master switch is given the sub-switches
+        // follow it, which is what the phone client does when you tap the star.
+        final boolean ring = p.has("ring") ? p.optBoolean("ring", on) : on;
+        final boolean zone = p.has("zone") ? p.optBoolean("zone", on) : on;
+        return guarded("internal.special_care", () -> {
+            ExtraSvc.Result res = qq.extra().setSpecialCare(uin, on, ring, zone);
+            if (!res.ok()) throw new ApiError(1500, "special care: " + res.describe());
+            return new JSONObject().put("user_id", String.valueOf(uin))
+                    .put("enable", on).put("ring", ring).put("zone", zone)
+                    .put("result", res.describe());
+        });
+    }
+
+    /** Read or update the account's "who may add me" settings. */
+    private Object addMeSetting(JSONObject p) throws Exception {
+        String op = internalOp(p, p.has("value") || p.has("values") ? "set" : "get");
+        if (!"set".equals(op)) return kernelRead(0, "setting", qq.extra().addMeSetting());
+        final int type = p.optInt("type", -1);
+        if (type < 0) throw new ApiError(1400, "set needs type");
+        final java.util.HashMap<String, String> values = new java.util.HashMap<>();
+        JSONObject map = p.optJSONObject("values");
+        if (map != null) {
+            java.util.Iterator<String> keys = map.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                values.put(key, map.optString(key, ""));
+            }
+        } else if (p.has("value")) {
+            values.put(p.optString("key", "value"), p.optString("value", ""));
+        }
+        if (values.isEmpty()) throw new ApiError(1400, "set needs value or values");
+        return guarded("internal.add_me_setting", () -> {
+            ExtraSvc.Result res = qq.extra().setAddMeSetting(type, values);
+            if (!res.ok()) throw new ApiError(1500, "add-me setting: " + res.describe());
+            return new JSONObject().put("type", type).put("values", new JSONObject(values))
+                    .put("result", res.describe());
+        });
+    }
+
+    /** Stranger (疑问) friend requests: list them, or approve/reject one. */
+    private Object doubtBuddy(JSONObject p) throws Exception {
+        String op = internalOp(p, p.has("request_id") ? "approve" : "get");
+        if ("get".equals(op) || "query".equals(op) || "list".equals(op)) {
+            return kernelRead(0, "requests", qq.extra().doubtBuddyReq(
+                    p.optString("next", p.optString("cookie", "")), p.optInt("count", 20)));
+        }
+        final String reqId = firstNonEmpty(p.optString("request_id", ""), p.optString("flag", ""));
+        if (reqId.isEmpty()) throw new ApiError(1400, "missing request_id");
+        final long seq = p.optLong("seq", 0);
+        final boolean approve = p.optBoolean("approve", true);
+        return guarded("internal.doubt_buddy", () -> {
+            ExtraSvc.Result res = qq.extra().approveDoubtBuddyReq(reqId, seq, approve);
+            if (!res.ok()) throw new ApiError(1500, "doubt request: " + res.describe());
+            return new JSONObject().put("request_id", reqId).put("approve", approve)
+                    .put("result", res.describe());
+        });
+    }
+
+    /** Rich profile (level, vip, medals) for one account. */
+    private Object userDetail(JSONObject p) throws Exception {
+        long uin = parseId(p.optString("user_id", ""));
+        if (uin == 0) uin = selfUin();
+        JSONObject out = kernelRead(0, "detail", qq.extra().userDetail(uin));
+        out.put("user_id", String.valueOf(uin));
+        return out;
+    }
+
+    private Object vasInfo(JSONObject p) throws Exception {
+        return profileMapResult("vas", qq.extra().vasInfo(targetUids(p)));
+    }
+
+    private Object profileStatus(JSONObject p) throws Exception {
+        return profileMapResult("status", qq.extra().statusInfo(targetUids(p)));
+    }
+
+    private Object intimateRelation(JSONObject p) throws Exception {
+        return profileMapResult("intimate", qq.extra().intimate(targetUids(p)));
+    }
+
+    private Object relationFlag(JSONObject p) throws Exception {
+        return profileMapResult("relation", qq.extra().relationFlag(targetUids(p)));
+    }
+
+    private static JSONObject profileMapResult(String key, java.util.Map<String, Object> map)
+            throws Exception {
+        return new JSONObject().put(key, toJson(map))
+                .put("count", map == null ? 0 : map.size());
+    }
+
+    private Object profileSetBirthday(JSONObject p) throws Exception {
+        final int year = p.optInt("year", 0);
+        final int month = p.optInt("month", 0);
+        final int day = p.optInt("day", 0);
+        if (month < 0 || month > 12 || day < 0 || day > 31)
+            throw new ApiError(1400, "month must be 0-12 and day 0-31");
+        return guarded("internal.profile_set_birthday", () -> {
+            ExtraSvc.Result res = qq.extra().setBirthday(year, month, day);
+            if (!res.ok()) throw new ApiError(1500, "set birthday: " + res.describe());
+            return new JSONObject().put("year", year).put("month", month).put("day", day)
+                    .put("result", res.describe());
+        });
+    }
+
+    /**
+     * Speech-to-text for a voice message. The kernel wants the message's own PttElement, so the
+     * record has to be loaded and searched rather than rebuilt from the segment data.
+     */
+    private Object voiceToText(JSONObject p) throws Exception {
+        MsgStore.Rec rec = requireMessage(p.optString("message_id", ""), p);
+        validateMessageChannel(p, rec.id);
+        Object record = rec.msgRecord;
+        if (record == null && rec.msgId != 0) {
+            String peer = rec.peerUid == null || rec.peerUid.isEmpty()
+                    ? String.valueOf(rec.peerUin) : rec.peerUid;
+            record = qq.fetchRecord(rec.chatType, peer, rec.msgId);
+        }
+        if (record == null)
+            throw new ApiError(1404, "message not found: " + p.optString("message_id", ""));
+        Object element = pttElementOf(record);
+        if (element == null) throw new ApiError(1400, "message has no voice element");
+        long kernelId = Ref.asLong(qq.ref.getOrNull(record, "msgId"));
+        Object contact = qq.ref.neu(QQClient.CONTACT, rec.chatType,
+                rec.peerUid == null || rec.peerUid.isEmpty()
+                        ? String.valueOf(rec.peerUin) : rec.peerUid, "");
+        ExtraSvc.Result res = qq.extra().voiceToText(kernelId, contact, element);
+        JSONObject out = kernelRead(0, "text", res);
+        out.put("message_id", p.optString("message_id", ""));
+        return out;
+    }
+
+    /** The record's voice element, matched by type name or the PTT element constant. */
+    private Object pttElementOf(Object record) throws Exception {
+        Object elements = qq.ref.getOrNull(record, "elements");
+        if (!(elements instanceof java.util.List)) return null;
+        for (Object element : (java.util.List<?>) elements) {
+            if (element == null) continue;
+            if (element.getClass().getSimpleName().contains("Ptt")) return element;
+            if (Ref.asInt(qq.ref.getOrNull(element, "elementType")) == 4) return element;
+        }
+        return null;
+    }
+
+    /** The account's emoji tray (QQ's phone build exposes the recently-used list). */
+    private Object favEmoji(JSONObject p) throws Exception {
+        return kernelRead(0, "emojis", qq.extra().emojiTray());
+    }
+
+    /** The account's auto-reply texts (自动回复). */
+    private Object autoReply(JSONObject p) throws Exception {
+        return kernelRead(0, "texts", qq.extra().autoReplyList());
+    }
+
+    /** Unread counters for one or more conversations. */
+    private Object unreadSummary(JSONObject p) throws Exception {
+        java.util.List<String> channels = new java.util.ArrayList<>();
+        String single = p.optString("channel_id", "");
+        if (!single.isEmpty()) channels.add(single);
+        JSONArray many = p.optJSONArray("channel_ids");
+        if (many != null) {
+            for (int i = 0; i < many.length(); i++) {
+                String c = many.optString(i, "");
+                if (!c.isEmpty() && !channels.contains(c)) channels.add(c);
+            }
+        }
+        if (channels.isEmpty()) throw new ApiError(1400, "missing channel_id");
+        java.util.List<Object> contacts = new java.util.ArrayList<>();
+        for (String c : channels) contacts.add(contactForChannel(c));
+        JSONObject out = kernelRead(0, "unread", qq.extra().unreadCount(contacts));
+        out.put("channels", new JSONArray(channels));
+        return out;
+    }
+
+    /** Mark one conversation as read. */
+    private Object markRead(JSONObject p) throws Exception {
+        final String channelId = p.optString("channel_id", "");
+        final Object contact = contactForChannel(channelId);
+        return guarded("internal.mark_read", () -> {
+            ExtraSvc.Result res = qq.extra().markRead(contact);
+            if (!res.ok()) throw new ApiError(1500, "mark read: " + res.describe());
+            return new JSONObject().put("channel_id", channelId).put("read", true)
+                    .put("result", res.describe());
+        });
+    }
+
+    /** A kernel Contact for a Satori channel id (group number, or `private:{uin}`). */
+    private Object contactForChannel(String channelId) throws Exception {
+        if (channelId == null || channelId.isEmpty())
+            throw new ApiError(1400, "missing channel_id");
+        boolean group = !Codec.isPrivateChannel(channelId);
+        long peer = Codec.channelPeer(channelId);
+        if (peer == 0) throw new ApiError(1400, "invalid channel_id: " + channelId);
+        String uid = group ? String.valueOf(peer) : uidFor(0, peer);
+        return qq.ref.neu(QQClient.CONTACT, group ? QQClient.CT_GROUP : QQClient.CT_C2C, uid, "");
     }
 
     private Object friendRemark(JSONObject p) throws Exception {
@@ -1381,6 +1925,18 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("friend_remark").put("friend_top").put("friend_msg_notify")
                         .put("friend_block").put("friend_relation").put("friend_add")
                         .put("recent_contacts")
+                        .put("group_detail").put("group_all_info")
+                        .put("group_bulletin").put("group_essence_list")
+                        .put("group_statistic").put("group_member_level")
+                        .put("group_avatar_wall").put("group_medal")
+                        .put("member_identity").put("member_common")
+                        .put("buddy_category").put("buddy_nick").put("buddy_req_unread")
+                        .put("doubt_buddy").put("special_care").put("add_me_setting")
+                        .put("user_detail").put("vas_info").put("profile_status")
+                        .put("profile_intimate").put("profile_relation_flag")
+                        .put("profile_set_birthday")
+                        .put("voice_to_text").put("fav_emoji").put("auto_reply")
+                        .put("unread_summary").put("mark_read")
                         .put("qzone.publish").put("qzone.delete").put("qzone.list")
                         .put("qzone.clear").put("status").put("version")
                         .put("clean_cache").put("restart"))
@@ -1391,6 +1947,34 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("special_faces", new JSONObject().put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE))
                 .put("group_msg_masks", new JSONArray()
                         .put("notify").put("assistant").put("shield").put("receive"))
+                .put("params", new JSONObject()
+                        .put("group_detail", "guild_id, source?")
+                        .put("group_all_info", "guild_id")
+                        .put("group_bulletin", "guild_id, op?=get|list, start?, count?")
+                        .put("group_essence_list", "guild_id, start?, limit?")
+                        .put("group_statistic", "guild_id")
+                        .put("group_member_level", "guild_id")
+                        .put("group_avatar_wall", "guild_id")
+                        .put("group_medal", "guild_id")
+                        .put("member_identity", "guild_id, user_id?")
+                        .put("member_common", "guild_id, user_id?|user_ids?, start_uin?")
+                        .put("buddy_category", "op?=get|refresh|add|delete|rename|set, category_id?, name?, user_id?")
+                        .put("buddy_nick", "user_id?|user_ids?")
+                        .put("buddy_req_unread", "无")
+                        .put("special_care", "user_id, enable?/on?, ring?, zone?")
+                        .put("add_me_setting", "op?=get|set, type?, value?|values?")
+                        .put("doubt_buddy", "op?=get|approve, request_id?, seq?, approve?")
+                        .put("user_detail", "user_id?")
+                        .put("vas_info", "user_id?|user_ids?")
+                        .put("profile_status", "user_id?|user_ids?")
+                        .put("profile_intimate", "user_id?|user_ids?")
+                        .put("profile_relation_flag", "user_id?|user_ids?")
+                        .put("profile_set_birthday", "year?, month, day")
+                        .put("voice_to_text", "message_id, channel_id?")
+                        .put("fav_emoji", "无（内核只开放最近使用表情）")
+                        .put("auto_reply", "无")
+                        .put("unread_summary", "channel_id|channel_ids")
+                        .put("mark_read", "channel_id"))
                 .put("read_actions", new JSONArray()
                         .put("group_extra").put("group_overview").put("group_member_search")
                         .put("contact_search").put("group_active").put("member_info")
@@ -1400,6 +1984,17 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("profile_self").put("group_shut_up_list")
                         .put("group_honor").put("friend_remark").put("friend_relation")
                         .put("recent_contacts")
+                        .put("group_detail").put("group_all_info")
+                        .put("group_bulletin").put("group_essence_list")
+                        .put("group_statistic").put("group_member_level")
+                        .put("group_avatar_wall").put("group_medal")
+                        .put("member_identity").put("member_common")
+                        .put("buddy_category").put("buddy_nick").put("buddy_req_unread")
+                        .put("doubt_buddy").put("add_me_setting")
+                        .put("user_detail").put("vas_info").put("profile_status")
+                        .put("profile_intimate").put("profile_relation_flag")
+                        .put("voice_to_text").put("fav_emoji").put("auto_reply")
+                        .put("unread_summary")
                         .put("status").put("version").put("capabilities"))
                 .put("write_actions", new JSONArray()
                         .put("poke").put("like").put("invite").put("card")
@@ -1410,6 +2005,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("profile_set_avatar").put("group_msg_mask")
                         .put("friend_remark").put("friend_top").put("friend_msg_notify")
                         .put("friend_block").put("friend_add")
+                        .put("buddy_category").put("special_care").put("add_me_setting")
+                        .put("doubt_buddy").put("profile_set_birthday")
+                        .put("mark_read")
                         .put("qzone.publish").put("qzone.delete").put("qzone.clear")
                         .put("clean_cache").put("restart"));
     }
@@ -2127,7 +2725,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         long gid = guildIdOf(p);
         JSONObject g = groupInfoJson(gid);
         JSONArray data = new JSONArray().put(Codec.channel(QQClient.CT_GROUP, gid, g.optString("group_name")));
-        return listWrap(data);
+        return pagedList(data, p);
     }
 
     private JSONObject satoriChannelUpdate(JSONObject p) throws Exception {
@@ -2215,6 +2813,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             data.put(Codec.guild(g.optLong("group_id"), g.optString("group_name")));
         }
         return data;
+    }
+
+    /**
+     * QQ's rank model is the built-in owner/admin/member trio, and that is all the kernel can
+     * grant ({@code guild.member.role.set} only acts on `admin`). The richer per-member identity
+     * data — level, titles, tags — is a separate concept and lives in `internal/member_identity`.
+     */
+    private JSONArray guildRoles(long groupId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing guild_id");
+        return new JSONArray()
+                .put(new JSONObject().put("id", "owner").put("name", "owner"))
+                .put(new JSONObject().put("id", "admin").put("name", "admin"))
+                .put(new JSONObject().put("id", "member").put("name", "member"));
     }
 
     private JSONObject satoriMember(JSONObject p) throws Exception {
@@ -2341,6 +2952,47 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private JSONObject listWrap(JSONArray data) throws Exception {
         return new JSONObject().put("data", data == null ? new JSONArray() : data);
+    }
+
+    /**
+     * Satori {@code List}: `{data, next}`. A request that passes neither `next` nor `limit` keeps
+     * the whole result set, which is what the earlier releases returned; a request that pages gets
+     * an opaque offset token back. Callers that just want one page pass `limit`.
+     */
+    private JSONObject pagedList(JSONArray all, JSONObject p) throws Exception {
+        return pagedList(all, p, PAGE_DEFAULT);
+    }
+
+    static JSONObject pagedList(JSONArray all, JSONObject p, int defaultLimit) throws Exception {
+        JSONArray data = all == null ? new JSONArray() : all;
+        String token = p == null ? "" : p.optString("next", "");
+        int limit = p == null ? 0 : p.optInt("limit", 0);
+        if (limit <= 0 && token.isEmpty()) return new JSONObject().put("data", data);
+        if (limit <= 0) limit = defaultLimit;
+        long offset = 0;
+        if (!token.isEmpty()) {
+            offset = parseLongQuiet(token);
+            if (offset < 0) throw new ApiError(1400, "invalid next token: " + token);
+        }
+        JSONArray slice = new JSONArray();
+        for (long i = offset; i < data.length() && slice.length() < limit; i++)
+            slice.put(data.opt((int) i));
+        JSONObject out = new JSONObject().put("data", slice);
+        long nextOffset = offset + slice.length();
+        if (nextOffset < data.length()) out.put("next", String.valueOf(nextOffset));
+        return out;
+    }
+
+    /**
+     * Milliseconds for a `channel.mute` request. The published spec sends `duration`; the
+     * protocol table shipped by @satorijs/protocol sends `enable`. A bare `enable: true` means
+     * "until turned off", which QQ's boolean kernel call expresses as its 30-day ceiling.
+     */
+    static long resolveChannelMuteMs(JSONObject p) {
+        if (p == null) return DEFAULT_CHANNEL_MUTE_MS;
+        if (p.has("duration")) return Math.max(0, p.optLong("duration", 0));
+        if (p.has("enable")) return p.optBoolean("enable", true) ? DEFAULT_CHANNEL_MUTE_MS : 0;
+        return DEFAULT_CHANNEL_MUTE_MS;
     }
 
     private long guildIdOf(JSONObject p) {
@@ -4780,6 +5432,31 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         for (Object like : (java.util.List<?>) likes) {
             String id = Ref.asStr(qq.ref.get(like, "emojiId"));
             if (!id.isEmpty()) out.put(id, Ref.asLong(qq.ref.get(like, "likesCnt")));
+        }
+        return out;
+    }
+
+    /**
+     * Emoji ids this login itself clicked on a message. {@code MsgEmojiLikes.isClicked} is the
+     * kernel's own flag for that, so nothing has to be guessed from the elsewhere-unkeyed counts.
+     */
+    private java.util.List<String> reactionEmojiKeys(int messageId) throws Exception {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        MsgStore.Rec r = store.get(messageId);
+        if (r == null) return out;
+        Object rec = r.msgRecord;
+        if (rec == null && r.msgId != 0) {
+            String peer = r.peerUid == null || r.peerUid.isEmpty()
+                    ? String.valueOf(r.peerUin) : r.peerUid;
+            rec = qq.fetchRecord(r.chatType, peer, r.msgId);
+        }
+        if (rec == null) return out;
+        Object likes = qq.ref.get(rec, "emojiLikesList");
+        if (!(likes instanceof java.util.List)) return out;
+        for (Object like : (java.util.List<?>) likes) {
+            String id = Ref.asStr(qq.ref.get(like, "emojiId"));
+            if (id.isEmpty()) continue;
+            if (Ref.asBool(qq.ref.get(like, "isClicked"))) out.add(id);
         }
         return out;
     }

@@ -43,6 +43,10 @@
 | 富媒体 | `IRichMediaService` |
 | UIN 转 UID | `getUidByUin` |
 
+`qq/ExtraSvc` 里所有内核回调都按 `(int code, String msg, <payload>...)` 的形状匹配，不按方法名匹配：`IFetchFavEmojiListCallback` 的回调叫 `onFetchFavEmojiListCallback`，只认 `onResult` 的写法会让这类调用每次都等到超时。读操作的返回结构由 `SatoriHub.toJson` 反射导出，QQ 增删字段时跟着变。
+
+内核入口是否接线要现场核。9.3.60 上 `fetchFavEmojiList`、`queryFavEmojiByDesc`、`getGroupExtList`、`searchGroupFileByWord` 接受调用但不回调，`searchGroupFile` 同步返回 -1，`setGander` 回「暂未实现」。未接线又会让调用方白等 15 秒的入口不提供动作，只在 [`SATORI_SUPPORT.md`](SATORI_SUPPORT.md#内核可用性) 里记录。
+
 私聊 `Contact` 使用 UID，群聊使用群号。可选字段必须通过 `Ref.getOrNull` 探测。QQ 9.3.60 已移除 `MsgRecord.senderRoleType` 与 `RevokeElement.senderUid`。群成员角色来自 `getAllMemberList` 缓存，不使用 `MsgRecord.roleType` 或 `roleId`。
 
 ## 过检测
@@ -75,3 +79,4 @@ Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与�
 5. QSec、Turing 与环境上报的命令白名单，以及 QSec 检测入口的类名与方法签名
 6. 主进程与 MSF 进程的 `/healthz` hook 计数及 `loop_ok`
 7. `libfekit.so`、`libturingxq.so`、`libmsfbootV2.so` 导出的 libc 符号与路径字符串，见 [`ANTIDETECT.md`](ANTIDETECT.md)
+8. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（用 `internal/*` 逐个打一遍，`/healthz` 之外还要看 logcat 的 `Q.Kernel`，需先开 `verbose_logs`）

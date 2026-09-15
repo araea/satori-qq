@@ -9,6 +9,7 @@
 - 事件：`GET /v1/events` 升级为 WebSocket。客户端须在 10 秒内发送 `IDENTIFY`，服务端随后发送 `READY` 与 `EVENT`。省略 `sn` 创建新会话，显式指定 `sn=0` 可回放缓冲区内 `sn > 0` 的事件
   - `READY` 里的登录账号就是客户端之后每个请求要带回来的 `Satori-User-ID`。QQ 账号尚未可知时不发 `READY`，等账号可知（每秒轮询）后补发，不把占位账号发给客户端
 - 元信息：`POST /v1/meta`；资源代理：`GET /v1/proxy/{url}`
+- 分页：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next}`。不带 `next` 与 `limit` 时返回完整结果；带 `limit` 或 `next` 时按偏移分页，`next` 为下一次要传回的偏移量。`message.list` 是双向分页，另见下表
 - 平台为 `red`，适配器为 `satori-qq`
 - 群频道的 `channel.id` 与 `guild.id` 均为群号，`channel.type=0`
 - 私聊频道为 `private:{uin}`，`channel.type=1`
@@ -28,22 +29,26 @@ QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调�
 | `message.delete` | 支持 | 按 QQ `msgId` 撤回 |
 | `channel.get` / `channel.list` | 支持 | 每个群映射为一个文字频道 |
 | `channel.update` | 支持 | 群主或管理员修改群名与群头像 |
-| `channel.mute` | 支持 | 全员禁言；`duration=0` 解除，正值到时自动解除 |
+| `channel.mute` | 支持 | 全员禁言。`duration` 为毫秒，`0` 解除；也可只传 `enable`，`false` 解除、`true` 表示停到手动解除（按 30 天上限计时） |
 | `user.channel.create` | 支持 | 创建 `private:{uin}` 私聊频道 |
 | `guild.get` / `guild.list` | 支持 | 查询群 |
 | `guild.member.get` / `guild.member.list` | 支持 | 查询成员及 owner、admin、member 角色 |
 | `guild.member.kick` | 支持 | `permanent` 对应拒绝再次加群 |
 | `guild.member.mute` | 支持 | `duration` 单位为毫秒 |
 | `guild.member.role.set` / `unset` | 支持 | 仅支持 `role_id=admin` |
+| `guild.member.role.list` | 支持 | 返回该成员的角色，取值同 `guild.role.list` |
 | `guild.role.list` | 支持 | 返回 owner、admin、member |
 | `user.get` | 支持 | 查询用户资料 |
 | `friend.list` / `friend.delete` | 支持 | 查询或删除好友，删除时不额外拉黑 |
 | `friend.approve` | 受限 | 处理好友申请，`message_id` 为申请 flag |
 | `guild.approve` / `guild.member.approve` | 受限 | 处理群邀请或加群申请 |
-| `reaction.create` / `delete` / `list` | 支持 | `emoji_id` 为表情 ID，只能删除自己的表态 |
+| `reaction.create` / `delete` / `list` | 支持 | `emoji_id` 为表情 ID，只能操作自己的表态 |
+| `reaction.clear` | 支持 | 不带 `emoji_id` 时清除该消息上自己加过的全部表态 |
 | `upload.create` | 支持 | 上传多个文件，返回 `internal:red/{uin}/_tmp/{id}` |
 | `message.update` / `channel.create` / `channel.delete` | 不支持 | 返回 404 |
-| `reaction.clear` / `guild.role.create` / `update` / `delete` | 不支持 | 返回 404 |
+| `reaction.clear` 之外的其余表态管理 / `guild.role.create` / `update` / `delete` | 不支持 | 返回 404 |
+
+QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传其他 `user_id` 时返回 400，`reaction.clear` 也只清除自己的那部分。
 
 `internal/get_forward` 的 `id` 有两种：转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。`native:` 需要知道会话，父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取。
 
@@ -95,12 +100,36 @@ QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调�
 | 群设置 | `group_msg_mask` | 设置群消息提醒方式：`notify`、`assistant`、`shield`、`receive` |
 | 群查询 | `group_shut_up_list` | 查询群内被禁言的成员 |
 | 群查询 | `group_honor` | 查询群荣誉 |
+| 群详情 | `group_detail` / `group_all_info` | 群容量、等级、群主与扩展标志 |
+| 群详情 | `group_bulletin` | 读取群公告；`op=list` 读公告列表（见限制） |
+| 群详情 | `group_essence_list` | 按页读取精华消息 |
+| 群详情 | `group_statistic` / `group_member_level` | 群统计与成员等级刻度 |
+| 群详情 | `group_avatar_wall` / `group_medal` | 群头像墙与群勋章（见限制） |
+| 群成员 | `member_identity` | 成员群身份：等级、头衔、互动与业务标签 |
+| 群成员 | `member_common` | 成员缓存之外的扩展字段 |
 | 好友 | `friend_remark` | 查询或设置好友备注 |
 | 好友 | `friend_top` | 置顶或取消置顶与好友的会话 |
 | 好友 | `friend_msg_notify` | 开启或关闭单个好友的消息提醒 |
 | 好友 | `friend_block` | 拉黑或取消拉黑好友 |
 | 好友 | `friend_relation` | 查询是否为好友、是否已拉黑及备注 |
 | 好友 | `friend_add` | 发送好友申请 |
+| 好友 | `buddy_category` | 查询好友分组；`op=add/delete/rename/set` 增删改名或移动好友 |
+| 好友 | `buddy_nick` | 读取指定好友的昵称 |
+| 好友 | `special_care` | 设置特别关心及其铃声、空间开关 |
+| 好友 | `add_me_setting` | 读取或修改加好友设置 |
+| 好友 | `doubt_buddy` | 查询陌生好友申请，或通过、拒绝其中一条 |
+| 好友 | `buddy_req_unread` | 未读好友申请数 |
+| 资料 | `user_detail` | 资料详情：等级、会员、生日、地区、标签 |
+| 资料 | `vas_info` | 会员、铭牌、字体等增值信息 |
+| 资料 | `profile_status` | 在线状态：设备、网络、电量、自定义状态 |
+| 资料 | `profile_intimate` | 亲密关系 |
+| 资料 | `profile_relation_flag` | 拉黑、置顶、免打扰、特别关心等关系标志 |
+| 资料 | `profile_set_birthday` | 修改生日 |
+| 消息 | `voice_to_text` | 语音转文字 |
+| 消息 | `fav_emoji` | 表情栏（内核只开放最近使用表情） |
+| 消息 | `auto_reply` | 读取自动回复文本 |
+| 消息 | `unread_summary` | 查询指定频道的未读数 |
+| 消息 | `mark_read` | 将会话标记为已读 |
 | 联系人 | `recent_contacts` | 查询最近联系人及未读数 |
 | 能力查询 | `capabilities` / `help` | 返回扩展动作与参数清单 |
 | 状态查询 | `status` / `version` | 返回健康状态或版本 |
@@ -110,9 +139,24 @@ QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调�
 | QQ 空间 | `qzone.auth` | 读取调试用鉴权信息 |
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程或清理临时文件 |
 
-完整参数用 `capabilities` 或 `help` 查询。`group_member_search.next` 可直接用于下一次扩展调用，`next_offset` 供 HTTP 客户端分页。
+完整参数用 `capabilities` 或 `help` 查询，返回里的 `params` 字段逐条列出参数。`group_member_search.next` 可直接用于下一次扩展调用，`next_offset` 供 HTTP 客户端分页。
 
-个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 除 `mask` 外也接受 `shield` 布尔简写。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态。这些动作受 QQ 自身权限与账号状态限制。
+扩展动作返回的内核原始数据由反射导出，因此 QQ 增删字段时会跟着变而不是静默丢字段。读操作的返回形如 `{guild_id?, ok, result, <数据>}`，其中 `result` 是内核回调的原文；写操作的返回带 `result` 与写入后的值。
+
+## 内核可用性
+
+以下项在 9.3.60.40970 上核验过，属于 QQ 自身限制而非模块缺陷：
+
+| 项 | 现状 |
+| --- | --- |
+| `group_bulletin` 的 `op=list` | 服务端回 `code=1 server get bulletin list err`，单条公告可读 |
+| `group_medal` | 服务端回 `code=2 system error!` 并给出空勋章列表；无勋章的群即如此 |
+| `fav_emoji` | `fetchFavEmojiList` 与 `queryFavEmojiByDesc` 接受调用但不回调，只有 `getRecentUseEmojiList` 有返回，因此该动作给的是最近使用表情 |
+| 修改性别 | `setGander` 回 `code=-1 暂未实现`，未提供该动作 |
+| `getGroupExtList` | 两个刷新标志都不回调，未提供对应动作 |
+| `searchGroupFile` / `searchGroupFileByWord` | 前者同步返回 -1，后者不回调，未提供群文件搜索动作 |
+
+个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑，`special_care` 缺省开启。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 不带 `mask` 时读取当前设置，除 `mask` 外也接受 `shield` 布尔简写。`buddy_category` 的写操作会先拉取一次分组成员表再返回，否则调用方会看到写入成功而列表里没有新分组。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态，`profile_relation_flag` 带回拉黑与特别关心标志。这些动作受 QQ 自身权限与账号状态限制。
 
 ## 事件
 

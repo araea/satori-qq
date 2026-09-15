@@ -30,7 +30,12 @@
 #
 # 停止：kill $(cat $QQ_REVIVE_PIDFILE)；或注释掉 service.d 里的启动行。
 set -u
-export PATH=/data/data/com.termux/files/usr/bin:/system/bin:/system/xbin:${PATH:-}
+# 系统工具优先。这条顺序是有代价换来的：Termux 的 $PREFIX/bin/am 是个转发给 Termux:API 的
+# 脚本，**以 root 跑不通**（它要连 Termux:API 的本地 socket）。原来把 Termux 的 bin 放在最前，
+# 于是 restart_qq 里的 `am force-stop` 一直静默失败——日志照样写 "restart: ..."，QQ 主进程
+# 的 pid 却一个都没变。2026-09-15 17:29 那次真踢线上实测到：看守在 17:29:48 记了重启，
+# 主进程 30047 一直活着。系统侧的 am/monkey/curl/pgrep/stat/ping 在 Android 16 上都有。
+export PATH=/system/bin:/system/xbin:/data/data/com.termux/files/usr/bin:${PATH:-}
 
 PKG=${QQ_REVIVE_PKG:-com.tencent.mobileqq}
 PORT=${QQ_REVIVE_PORT:-3001}
@@ -43,6 +48,9 @@ PING_HOST=${QQ_REVIVE_PING_HOST:-223.5.5.5}
 RECOVER_WAIT=${QQ_REVIVE_RECOVER_WAIT:-90}
 MAX_LOG_BYTES=${QQ_REVIVE_MAX_LOG_BYTES:-2000000}
 KICK_LOG=${QQ_REVIVE_KICK_LOG:-/data/data/${PKG}/files/qk_kick.log}
+# 绝对路径，别再让 PATH 决定杀不杀得掉 QQ。
+AM=${QQ_REVIVE_AM:-/system/bin/am}
+MONKEY=${QQ_REVIVE_MONKEY:-/system/bin/monkey}
 
 # 日志与 pid 放在 /data/adb/satori-qq 下（root 可读，普通应用读不到）。
 # 不要放到 /data/local/tmp：那个目录普通应用能进，libfekit 里也带着这个路径字符串。
@@ -89,7 +97,11 @@ upstream_links() {
         END { print c + 0 }'
 }
 
-device_online() { ping -c 1 -W 3 "$PING_HOST" >/dev/null 2>&1; }
+device_online() {
+    # toybox 与 procps 的 ping 在「等多久」这个参数上不一致：-W 是等一个回包，-w 是整体超时。
+    ping -c 1 -W 3 "$PING_HOST" >/dev/null 2>&1 && return 0
+    ping -c 1 -w 3 "$PING_HOST" >/dev/null 2>&1
+}
 
 # 模块落盘的踢线记录行数。文件不存在（模块还没写过踢线）回 0。
 kick_log_lines() {
@@ -119,9 +131,25 @@ main_age() {
 
 restart_qq() {
     log "restart: $1"
-    am force-stop "$PKG" >/dev/null 2>&1
+    local before after rc
+    before=$(pgrep -f "$PKG" 2>/dev/null | tr '\n' ' ')
+    "$AM" force-stop "$PKG" >/dev/null 2>&1
+    rc=$?
     sleep 3
-    monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    if pgrep -f "$PKG" >/dev/null 2>&1; then
+        # 杀了还活着：多半是 am 取到了别的东西（Termux 的 am 以 root 跑不通），必须喊出来。
+        # 一次失败的重启如果只留在日志里像成功，僵尸会话就永远等不到救。
+        log "restart: force-stop 之后 $PKG 仍在 (am=$AM rc=$rc，重启前 pid: $before)，改用 kill -9 兜底"
+        for p in $(pgrep -f "$PKG" 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
+        sleep 2
+    fi
+    "$MONKEY" -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    after=$(pgrep -f "$PKG" 2>/dev/null | tr '\n' ' ')
+    if [ -z "$after" ]; then
+        log "restart: 拉起之后没看到 $PKG 进程（monkey=$MONKEY），下一轮按端口不通处理"
+    else
+        log "restart: 进程 $before -> $after，等 ${RECOVER_WAIT}s"
+    fi
     sleep "$RECOVER_WAIT"
 }
 

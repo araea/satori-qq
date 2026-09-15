@@ -16,7 +16,7 @@
 
 ### 检测库按库计数
 
-`qk_env_maps_*.json` 与 `/healthz` 的 `maps` 增加 `libs`，逐库给出这一轮补了多少个 GOT 槽：本地实测 `{"fekit":37,"turingxq":21,"turingmfa":0,"msfbootV2":5,"qsec":0,"ckguard":2,"wtecdh":0}`，合计等于 `patched`。QQ 换库名或去掉某个库时，对应项会直接变 0，不用再逐槽核对。
+`qk_env_maps_*.json` 与 `internal/status` 的 `env_report.maps` 增加 `libs`，逐库给出这一轮补了多少个 GOT 槽：本地实测 `{"fekit":37,"turingxq":21,"turingmfa":0,"msfbootV2":5,"qsec":0,"ckguard":2,"wtecdh":0}`，合计等于 `patched`。QQ 换库名或去掉某个库时，对应项会直接变 0，不用再逐槽核对。
 
 ### 其它
 

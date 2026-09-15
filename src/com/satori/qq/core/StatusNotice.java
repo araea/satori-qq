@@ -33,9 +33,9 @@ public final class StatusNotice {
     public static final int NOTIFY_ID = 0x5A710001;
     private static final int REQ_OPEN_APP = 0x5A710003;
 
-    private static final int COLOR_ONLINE = 0xFF2E7D32;   // green — running normally
-    private static final int COLOR_WAIT = 0xFFF9A825;     // amber — waiting for login
-    private static final int COLOR_DEGRADED = 0xFFC62828; // red   — port not listening
+    private static final int COLOR_ONLINE = 0xFF5D438B;   // expressive iris brand primary
+    private static final int COLOR_WAIT = 0xFF775A0B;     // readable amber
+    private static final int COLOR_DEGRADED = 0xFFBA1A1A; // Material error role
 
     private final Context ctx;
     private final NotificationManager nm;
@@ -102,39 +102,42 @@ public final class StatusNotice {
             v.title = "Satori QQ · 运行中";
             StringBuilder who = new StringBuilder(uin == null || uin.isEmpty() ? "未知账号" : uin);
             if (nick != null && !nick.isEmpty()) who.append(" (").append(nick).append(')');
-            v.text = who + " · 端口 " + port + " · 连接 " + connections;
+            v.text = connections == 0 ? "等待客户端连接 · 端口 " + port
+                    : "已连接 " + connections + " 个客户端 · 端口 " + port;
+            v.big = "QQ " + who + "\n" + v.text;
             v.color = COLOR_ONLINE;
         } else if (!online) {
             v.title = "Satori QQ · 等待登录";
-            v.text = "服务就绪，等待 QQ 登录";
+            v.text = listening ? "打开 QQ 登录，即可连接服务" : "等待 QQ 登录与本地服务启动";
             v.color = COLOR_WAIT;
         } else {
             v.title = "Satori QQ · 服务异常";
             v.text = "本地端口 " + port + " 未监听";
             v.color = COLOR_DEGRADED;
         }
-        v.big = v.text;
+        if (v.big == null) v.big = v.text;
         String coarse = "";
         if (online && listening && onlineSinceMs > 0) {
             long up = System.currentTimeMillis() - onlineSinceMs;
             coarse = String.valueOf(up / 60000L); // minute granularity for dedupe
-            v.big = v.text + "\n在线 " + humanUptime(up);
+            v.big += "\n已在线 " + humanUptime(up);
         }
         com.satori.qq.qq.WakeLockCtl w = wake;
         String wk = w == null ? "w-" : (w.held() ? "w1" : "w0");
-        v.key = v.title + '|' + v.text + '|' + coarse + '|' + wk;
+        v.key = v.title + '|' + v.text + '|' + uin + '|' + nick + '|' + coarse + '|' + wk;
         return v;
     }
 
     private Notification notif(View v) {
         Notification.Builder b = new Notification.Builder(ctx, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setSmallIcon(StatusIcon.get())
                 .setContentTitle(v.title)
                 .setContentText(v.text)
                 .setStyle(new Notification.BigTextStyle().bigText(v.big))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
+                .setCategory(Notification.CATEGORY_SERVICE)
                 .setColor(v.color);
         PendingIntent open = openAppIntent();
         if (open != null) b.setContentIntent(open);

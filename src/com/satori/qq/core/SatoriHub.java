@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.39";
+    public static final String APP_VERSION = "0.8.9.40";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -3235,7 +3235,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             } catch (Throwable t) {
                 L.e("scheduled channel unmute " + guildId, t);
             }
-        }, "satori-channel-unmute");
+        }, "pool-9-thread-1");
         timer.setDaemon(true);
         timer.start();
     }
@@ -5611,12 +5611,22 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final java.util.Set<String> seenRequests = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<Long> seenRecalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> seenMemberChanges = java.util.concurrent.ConcurrentHashMap.newKeySet();
-    /** Only empty shell records need polling; complete UI messages take the synchronous fast path. */
+    /**
+     * Only empty shell records need polling; complete UI messages take the synchronous fast path.
+     *
+     * <p>线程名是外部可见的：`/proc/<pid>/task/comm` 里能读到。带上模块名字的线程等于把
+     * 模块写在自己的进程里（Duck Detector 一类检测器就在扫线程名），所以这里按 JVM 线程池
+     * 的默认风格命名，QQ 自己也有若干 `pool-N-thread-M`。
+     */
     private final java.util.concurrent.ScheduledExecutorService selfSendScheduler =
-            java.util.concurrent.Executors.newScheduledThreadPool(4, r -> {
-                Thread t = new Thread(r, "satori-self-send");
-                t.setDaemon(true);
-                return t;
+            java.util.concurrent.Executors.newScheduledThreadPool(4, new java.util.concurrent.ThreadFactory() {
+                private final java.util.concurrent.atomic.AtomicInteger seq =
+                        new java.util.concurrent.atomic.AtomicInteger();
+                @Override public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "pool-8-thread-" + (seq.incrementAndGet() % 100));
+                    t.setDaemon(true);
+                    return t;
+                }
             });
     private final java.util.Set<Long> selfSendPollScheduled = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final long OUTBOUND_MSG_TTL_MS = 120_000;

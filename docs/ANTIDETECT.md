@@ -69,6 +69,10 @@ Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
 
 这些正则不走 libc 字符串函数，模块的 `strstr` 家族接管不到。目前靠「别撞上」：模块自己起的线程名是 `pool-N-thread-M`（JVM 默认风格），路径不带 `sator-`/`magisk`/`kworker` 之类字样，所以没有一条能匹配。**改动线程名、临时文件名或模块目录名时要照这份清单核一遍**。
 
+线程名是外部可见的，`/proc/<pid>/task/*/comm` 直接读得到。0.8.9.39 里自检到两处带模块名的线程（`satori-self-send`、`satori-channel-unmute`），0.8.9.40 改成 `pool-8-thread-N` 与 `pool-9-thread-1`；QQ 自己也有若干 `pool-N-thread-M`，这种名字不显眼。**新起线程时不要用模块名**，要能过 `scripts/qq-satori-exposure-audit.sh` 的 `suspicious_thread_names`（它匹配 satori/xposed/vector/zygisk/mapshide）。
+
+logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前缀的标签，消息里会提到 patch 计数与 seccomp。QQ 自己进程写下的日志，自己的进程（以及 root）读得到，拦不掉，而排障要用它；详细数字另外落盘到只 root 可读的 `qk_env_maps_*.json`。同理，常驻通知的渠道名与标题带「Satori」是给人看的，属于必要暴露。
+
 清单分两份：`AndroidManifest.xml` 带 Xposed 元数据用于注册，`AndroidManifest.stealth.xml` 不带，启用后覆盖安装 stealth 版本。按安装包元数据里有没有 `xposed*` 键判定模块的工具，看到的是 stealth 版本。Duck Detector 的 LSPosed 卡片就是按这条查的：同一台机器上它扫出了便签模块与「雹」的 `xposedmodule` 元数据，而已覆盖安装 stealth 变体的本模块不在那张清单里。
 
 真机实测（16070，0.8.9.39）：主进程 libfekit 的 GOT 逐槽核对全部指向 libmapshide 的包装（`dlsym`/`open`/`fopen`/`getenv`/`readdir`/`freopen`/`strcasestr`/`memmem` 等），主进程 65 个 slot、MSF 42 个，maps、tcp、environ 泄漏 0，`loop_ok=1`。

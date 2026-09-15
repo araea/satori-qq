@@ -116,6 +116,25 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}' | head -c 400
 
 版本 APK 与变更记录发布在[模块市场](https://github.com/Xposed-Modules-Repo/com.satori.qq)。
 
+## 版本号
+
+`versionName` 走语义化版本 `主.次.补丁`，从 **0.9.0** 开始：
+
+- **主**：Satori 方法表或 `/v1/internal` 动作有破坏性变更（删方法、改参数含义、改事件字段）。
+- **次**：新增方法 / 动作 / 事件，或对 QQ 的行为适配、反检测策略这类会影响兼容性的改动。
+- **补丁**：修 bug、改文案、改默认值，调用方不用动。
+- 需要区分同一天发的多次构建时，第 4 段临时当构建号用（`0.9.1.2`），并在下一次发版时并回三段。
+
+配一个数字递增的 `versionCode`：Android 判升级、市场判更新、Xposed 管理器判"有新版本"用的都是它，
+`versionName` 只负责给人看。发布 tag 是 `{versionCode}-{versionName}`。
+
+0.9.0 之前的三段固定成了 `0.8.9`、只递增第 4 段（`0.8.9.1` 一直到 `0.8.9.46`），
+文档与变更记录里那些 `0.8.9.x 起` 的说法指的是旧编号，两套编号的对应关系见
+[`marketplace/`](marketplace/) 下的变更记录。
+
+版本号要同步改三处：`AndroidManifest.xml`、`AndroidManifest.stealth.xml`、`SatoriHub.APP_VERSION`。
+`tests/ManifestStealthTest` 会校验三者一致、且 `versionName` 符合上面的形状。
+
 ## 文档
 
 - [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)：协议方法、事件与消息元素

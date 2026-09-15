@@ -27,6 +27,21 @@ public final class ManifestStealthTest {
         eq(manifestAttr(normal, "versionCode"), manifestAttr(stealth, "versionCode"), "versionCode sync");
         eq(manifestAttr(normal, "versionName"), manifestAttr(stealth, "versionName"), "versionName sync");
 
+        // 第三处版本号：模块报给 /healthz 与 READY 的那个。清单与它不同步时，
+        // 「装上的到底是哪一版」这件事就没有可信来源了（排查时先看 healthz）。
+        String reported = appVersion(new File(root, "src/com/satori/qq/core/SatoriHub.java"));
+        eq(manifestAttr(normal, "versionName"), reported, "APP_VERSION sync");
+
+        check(isSemver(manifestAttr(normal, "versionName")),
+                "versionName is semver-ish: " + manifestAttr(normal, "versionName"));
+        int versionCode = 0;
+        try {
+            versionCode = Integer.parseInt(manifestAttr(normal, "versionCode"));
+        } catch (NumberFormatException e) {
+            throw new AssertionError("versionCode is an integer: " + manifestAttr(normal, "versionCode"));
+        }
+        check(versionCode > 0, "versionCode positive");
+
         int normalXposed = countXposedMeta(normal);
         check(normalXposed >= 4, "bootstrap keeps >=4 xposed meta-data entries, got " + normalXposed);
         eq(0, countXposedMeta(stealth), "stealth xposed meta-data entries");
@@ -40,8 +55,25 @@ public final class ManifestStealthTest {
         System.out.println("ManifestStealthTest passed");
     }
 
-    private static int countXposedMeta(Document doc) {
-        int n = 0;
+    /** 从 SatoriHub.java 里读出 {@code APP_VERSION = "x.y.z"}。 */
+    private static String appVersion(File source) throws Exception {
+        if (!source.isFile()) throw new AssertionError("missing " + source);
+        String text = new String(java.nio.file.Files.readAllBytes(source.toPath()), "UTF-8");
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("APP_VERSION\\s*=\\s*\"([^\"]+)\"").matcher(text);
+        if (!m.find()) throw new AssertionError("APP_VERSION not found in " + source);
+        return m.group(1);
+    }
+
+    /**
+     * 语义化版本：{@code 主.次.补丁}，可选的第四段留给「同一天发两次」的构建号。
+     * 前三段必须是数字，且只能是这四段——写成 {@code 0.9} 或 {@code 0.9.0.1.2} 都不算。
+     */
+    private static boolean isSemver(String name) {
+        return name != null && name.matches("\\d+\\.\\d+\\.\\d+(\\.\\d+)?");
+    }
+
+    private static int countXposedMeta(Document doc) {        int n = 0;
         NodeList metas = doc.getElementsByTagName("meta-data");
         for (int i = 0; i < metas.getLength(); i++) {
             Element meta = (Element) metas.item(i);
@@ -51,8 +83,20 @@ public final class ManifestStealthTest {
         return n;
     }
 
+    /**
+     * 取 manifest 根节点上的属性。
+     *
+     * <p>android 命名空间那一串必须用限定名取：原先只写 {@code getAttribute("versionCode")}，
+     * 取到的一直是空串，于是「两个清单的 versionCode/versionName 一致」这两条断言是**空比对**，
+     * 永远通过。现在先按命名空间取，再退回带前缀的限定名，并且要求结果非空。
+     */
     private static String manifestAttr(Document doc, String attr) {
-        return doc.getDocumentElement().getAttribute(attr);
+        Element root = doc.getDocumentElement();
+        for (String name : new String[]{attr, "android:" + attr}) {
+            String v = root.getAttribute(name);
+            if (v != null && !v.isEmpty()) return v;
+        }
+        throw new AssertionError("manifest has no " + attr);
     }
 
     private static Document parse(File xml) throws Exception {

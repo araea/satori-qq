@@ -198,6 +198,7 @@ public final class ExtraSvc {
         Result r = new Result();
         if (svc == null) {
             r.msg = label + ": service not ready";
+            Compat.observe(label, "failed");
             return r;
         }
         try {
@@ -255,12 +256,14 @@ public final class ExtraSvc {
             if (!latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 r.timedOut = true;
                 r.msg = label + " timeout";
+                Compat.observe(label, "timeout");
                 L.i("ExtraSvc " + label + " -> timeout");
                 return r;
             }
             r.code = code.get();
             r.msg = wording[0] == null ? "" : wording[0];
             r.payload = payload[0];
+            Compat.observe(label, r.ok() ? "ok" : "failed");
             L.i("ExtraSvc " + label + " -> " + r.describe()
                     + (r.payload == null ? "" : " payload=" + r.payload.getClass().getName()));
         } catch (InterruptedException e) {
@@ -269,6 +272,7 @@ public final class ExtraSvc {
         } catch (Throwable t) {
             L.e(label, t);
             r.msg = String.valueOf(t);
+            Compat.observe(label, "failed");
         }
         return r;
     }
@@ -886,6 +890,12 @@ public final class ExtraSvc {
     public Result voiceToText(long msgId, Object contact, Object element) {
         return call(qq.getMsgService(), OPERATE_CB, "translatePtt2Text",
                 (svc, cb) -> ref.call(svc, "translatePtt2Text", msgId, contact, element, cb));
+    }
+
+    /** 转写的 AI 变体：结果同样写在元素上，主入口没转出字时再试这条。 */
+    public Result voiceToTextAi(long msgId, Object contact, Object element) {
+        return call(qq.getMsgService(), OPERATE_CB, "translatePtt2TextAiVoice",
+                (svc, cb) -> ref.call(svc, "translatePtt2TextAiVoice", msgId, contact, element, cb));
     }
 
     // -------------------------------------------------------------- rich media

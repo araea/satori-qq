@@ -10,6 +10,7 @@ import com.satori.qq.packet.PacketSvc;
 import com.satori.qq.packet.Pb;
 import com.satori.qq.qq.Convert;
 import com.satori.qq.qq.AntiDetect;
+import com.satori.qq.qq.Compat;
 import com.satori.qq.qq.ExtraSvc;
 import com.satori.qq.qq.Media;
 import com.satori.qq.qq.LegacySvc;
@@ -31,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.41";
+    public static final String APP_VERSION = "0.8.9.42";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -198,6 +199,51 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private long selfUin() { try { return Long.parseLong(qq.selfUin()); } catch (Throwable t) { return 0; } }
 
+    private volatile JSONObject compatCache;
+    private volatile String compatCacheVersion = "";
+    private volatile long compatCacheMs;
+    /** 静态自检不快，但也不必每次探针都跑；换了个 QQ 版本或过了 10 分钟就重算。 */
+    private static final long COMPAT_TTL_MS = 10 * 60 * 1000L;
+
+    /** 内核接口面自检。QQ 版本变了就重算，便于升级后第一眼看到断在哪。 */
+    private JSONObject compatReport(boolean force) {
+        try {
+            String version = qq.qqVersion();
+            long now = System.currentTimeMillis();
+            JSONObject cached = compatCache;
+            if (!force && cached != null && version.equals(compatCacheVersion)
+                    && now - compatCacheMs < COMPAT_TTL_MS) return cached;
+            JSONObject fresh = Compat.audit(qq.ref, version);
+            compatCache = fresh;
+            compatCacheVersion = version;
+            compatCacheMs = now;
+            if (!fresh.optBoolean("ok")) {
+                // 只在坏掉时才吱声：正常时每个探针周期打一行会把日志刷满。
+                L.e("compat: " + fresh.optInt("passed") + "/" + fresh.optInt("total")
+                        + " 内核接口面通过，缺 " + fresh.optJSONArray("missing"), null);
+            }
+            return fresh;
+        } catch (Throwable t) {
+            L.e("compat audit", t);
+            try {
+                return new JSONObject().put("ok", false).put("error", String.valueOf(t));
+            } catch (Exception e) {
+                return new JSONObject();
+            }
+        }
+    }
+
+    private JSONObject compatSummary() throws Exception {
+        JSONObject full = compatReport(false);
+        if (full.has("error")) return new JSONObject().put("ok", false).put("error", full.opt("error"));
+        return new JSONObject()
+                .put("ok", full.optBoolean("ok"))
+                .put("passed", full.optInt("passed"))
+                .put("total", full.optInt("total"))
+                .put("missing", full.optJSONArray("missing") == null
+                        ? 0 : full.optJSONArray("missing").length());
+    }
+
     private String assetBase() {
         return "http://" + cfg.host + ":" + cfg.port + "/v1/assets/";
     }
@@ -276,6 +322,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("online", online)
                         .put("listening", server != null && server.isListening())
                         .put("self_id", selfUin())
+                        .put("qq_version", qq.qqVersion())
+                        .put("compat", compatSummary())
                         .put("online_since_epoch_ms", onlineSinceMs)
                         .put("connections", server == null ? 0 : server.connectionCount())
                         .put("notice", noticeDiag())
@@ -1146,6 +1194,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "capabilities":
             case "help":
                 return internalCapabilities();
+            case "compat":
+            case "selftest":
+                return new JSONObject()
+                        .put("static", compatReport(p.optBoolean("force", false)))
+                        .put("observed", Compat.observed());
             case "restart":
                 scheduleRestart(Math.max(500, params.optInt("delay", 0)));
                 return new JSONObject();
@@ -2099,22 +2152,128 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             throw new ApiError(1404, "message not found: " + p.optString("message_id", ""));
         Object element = pttElementOf(record);
         if (element == null) throw new ApiError(1400, "message has no voice element");
+        Object inner = pttInnerOf(element);
         long kernelId = Ref.asLong(qq.ref.getOrNull(record, "msgId"));
-        Object contact = qq.ref.neu(QQClient.CONTACT, rec.chatType,
-                rec.peerUid == null || rec.peerUid.isEmpty()
-                        ? String.valueOf(rec.peerUin) : rec.peerUid, "");
+        String peer = rec.peerUid == null || rec.peerUid.isEmpty()
+                ? String.valueOf(rec.peerUin) : rec.peerUid;
+        Object contact = qq.ref.neu(QQClient.CONTACT, rec.chatType, peer, "");
         ExtraSvc.Result res = qq.extra().voiceToText(kernelId, contact, element);
-        JSONObject out = kernelRead(0, "text", res);
+        // 听写是异步的，而且结果不走回调——IOperateCallback 只有码与一句短语。这一次
+        // 调用只是把任务交出去，文字稍后写回语音元素自己（PttElement.text）。所以问完
+        // 要盯着元素看一会儿，别让第一次调用的人收到空字符串：那种失败最像「这段语音
+        // 转不了」，其实只是还没轮到它。
+        String text = "";
+        for (int attempt = 0; attempt < VOICE_POLL_ATTEMPTS; attempt++) {
+            text = pttTextOf(inner);
+            if (!text.isEmpty()) break;
+            Thread.sleep(VOICE_POLL_INTERVAL_MS);
+            Object freshShell = pttElementOf(qq.fetchRecord(rec.chatType, peer, rec.msgId));
+            Object fresh = freshShell == null ? null : pttInnerOf(freshShell);
+            if (fresh != null && fresh != freshShell) inner = fresh;
+        }
+        // 主入口一直没结果时再让 AI 变体试一次；它会翻成人话，只在调用方明说要时才用。
+        if (text.isEmpty() && p.optBoolean("ai", false)) {
+            qq.extra().voiceToTextAi(kernelId, contact, element);
+            for (int attempt = 0; attempt < VOICE_POLL_ATTEMPTS; attempt++) {
+                text = pttTextOf(inner);
+                if (!text.isEmpty()) break;
+                Thread.sleep(VOICE_POLL_INTERVAL_MS);
+                Object freshShell = pttElementOf(qq.fetchRecord(rec.chatType, peer, rec.msgId));
+                Object fresh = freshShell == null ? null : pttInnerOf(freshShell);
+                if (fresh != null && fresh != freshShell) inner = fresh;
+            }
+        }
+        JSONObject out = kernelRead(0, "transcript", res);
         out.put("message_id", p.optString("message_id", ""));
+        out.put("text", text);
+        if (text.isEmpty()) {
+            // 没转出字时给足判读依据：是内核只回状态码，还是这段语音本来就转不了。
+            out.put("can_convert", Ref.asBool(byName(inner, "canConvert2Text")));
+            out.put("translate_status", Ref.asInt(byName(inner, "translateStatus")));
+            out.put("duration", Ref.asInt(byName(inner, "duration")));
+            if (p.optBoolean("debug", false)) {
+                out.put("element_class", inner.getClass().getName());
+                out.put("element", toJson(inner));
+                Object shell = pttElementOf(record);
+                out.put("shell_class", shell == null ? "" : shell.getClass().getName());
+                out.put("via_get_or_null", qq.ref.getOrNull(shell, "pttElement") == null ? "null" : "hit");
+                out.put("via_scan", byName(shell, "pttElement") == null ? "null" : "hit");
+                String dur = String.valueOf(byName(byName(shell, "pttElement"), "duration"));
+                out.put("scan_duration", dur);
+            }
+        }
         return out;
     }
 
-    /** The record's voice element, matched by type name or the PTT element constant. */
+    /**
+     * Read one field by name through the same path [`toJson`] uses.
+     *
+     * <p>{@code Ref.getOrNull} 在内核这几个结构上一路回 null（同一个对象 {@code toJson}
+     * 明明读得到），所以凡是「拿不准有没有」的字段都走这里。</p>
+     */
+    static Object byName(Object o, String name) {
+        if (o == null || name == null || name.isEmpty()) return null;
+        for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (!f.getName().equals(name)) continue;
+                try {
+                    f.setAccessible(true);
+                    return f.get(o);
+                } catch (Throwable ignore) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 听写是异步的：交出去之后隔多久看一次结果。10 × 300ms 兜住最慢的一档。 */
+    private static final int VOICE_POLL_ATTEMPTS = 10;
+    private static final long VOICE_POLL_INTERVAL_MS = 300L;
+
+    /** QQ 把听写结果写在语音元素自身（`PttElement.text`），没有别的去处。 */
+    private String pttTextOf(Object element) {
+        Object inner = pttInnerOf(element);
+        if (inner == null) return "";
+        for (String field : new String[]{"text", "pttText", "voiceText"}) {
+            String value = Ref.asStr(byName(inner, field)).trim();
+            if (!value.isEmpty()) return value;
+        }
+        return "";
+    }
+
+    /**
+     * 记录里的元素是 `MsgElement` 外壳，真正的 `PttElement` 挂在它的一个字段上。
+     *
+     * <p>按**字段类型名**找而不是按字段名找：`Ref.getOrNull` 在这个字段上一路回
+     * null（同一个对象 `toJson` 却能读到它的值），而类型名在 QQ 换代时比字段名稳。
+     * 调内核要的是外壳，读 duration / canConvert2Text / text 要的是内芯——拿外壳读
+     * 只会得到全 0，看上去像「这段语音转不了」。</p>
+     */
+    private Object pttInnerOf(Object element) {
+        if (element == null) return null;
+        if (element.getClass().getSimpleName().contains("Ptt")) return element;
+        for (Class<?> c = element.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                if (!f.getType().getSimpleName().contains("Ptt")) continue;
+                try {
+                    f.setAccessible(true);
+                    Object value = f.get(element);
+                    if (value != null) return value;
+                } catch (Throwable ignore) {}
+            }
+        }
+        return element;
+    }
+
+    /** The record's voice element (the `MsgElement` shell the kernel call wants). */
     private Object pttElementOf(Object record) throws Exception {
         Object elements = qq.ref.getOrNull(record, "elements");
         if (!(elements instanceof java.util.List)) return null;
         for (Object element : (java.util.List<?>) elements) {
             if (element == null) continue;
+            if (pttInnerOf(element) != element) return element;
             if (element.getClass().getSimpleName().contains("Ptt")) return element;
             if (Ref.asInt(qq.ref.getOrNull(element, "elementType")) == 4) return element;
         }
@@ -2388,6 +2547,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("robot_list").put("robot_owned")
                         .put("qzone.publish").put("qzone.delete").put("qzone.list")
                         .put("qzone.clear").put("status").put("version")
+                        .put("compat")
                         .put("clean_cache").put("restart"))
                 .put("group_file_ops", new JSONArray()
                         .put("info").put("list").put("url").put("upload")
@@ -2452,7 +2612,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("unread_details", "无")
                         .put("session_top", "channel_id|channel_ids, op?=on|off, top?")
                         .put("robot_list", "无")
-                        .put("robot_owned", "guild_id, user_id|user_ids"))
+                        .put("robot_owned", "guild_id, user_id|user_ids")
+                        .put("compat", "force?"))
                 .put("read_actions", new JSONArray()
                         .put("group_extra").put("group_overview").put("group_member_search")
                         .put("contact_search").put("group_active").put("member_info")
@@ -2482,7 +2643,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("media_dir").put("batch_file_count")
                         .put("recent_snapshot").put("unread_details")
                         .put("robot_list").put("robot_owned")
-                        .put("status").put("version").put("capabilities"))
+                        .put("status").put("version").put("capabilities").put("compat"))
                 .put("write_actions", new JSONArray()
                         .put("poke").put("like").put("invite").put("card")
                         .put("special_title").put("title_display").put("honor_display")

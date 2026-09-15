@@ -102,6 +102,12 @@ node tests/ws-kernel-writes.js     # 扩展写入动作，自带清理
 node tests/internal-kernel-probe.js # 官方 internal 路由 + 0.8.9.39 新增动作
 ```
 
+升级 QQ 之后先跑一次接口面自检，它会指出断在哪个类、哪个字段或哪个回调，再跑上面的巡检：
+
+```sh
+curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}' | head -c 400
+```
+
 版本 APK 与变更记录发布在[模块市场](https://github.com/Xposed-Modules-Repo/com.satori.qq)。
 
 ## 文档

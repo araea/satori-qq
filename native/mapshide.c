@@ -1,5 +1,7 @@
 // mapshide.c — detector-lib GOT filter + in-process seccomp for bare svc.
 //
+// v5.16 (0.8.9.42): 自检按库分列 patched 计数（libs 字段），升级 QQ 后哪个检测库
+// 改名或消失一眼可见；配合 Java 侧的 internal/compat 静态自检。
 // v5.15 (0.8.9.39): /proc/<pid>/mem、/proc/<pid>/pagemap、/proc/kcore 直接拒掉
 // （偏移读没法做行过滤，而堆关键字扫描正是走这条路）；模块自己的 memfd 不再叫
 // jit-cache——ART 已经用了这个名字，同进程出现第二个同名的 memfd inode 是
@@ -490,6 +492,30 @@ static int is_detector_path(const char* p) {
             || contains_ci(p, n, "wtecdh") || contains_ci(p, n, "turing")
             || contains_ci(p, n, "libqsec") || contains_ci(p, n, "dandelion")
             || contains_ci(p, n, "msfboot");
+}
+
+/*
+ * 每个检测库各补了多少个 GOT 槽。QQ 升级时如果换了库名或去掉了某个库，这里会直接少一项或者
+ * 变 0——比只看总量 patched 更快定位。索引与 LIB_NAMES 一一对应，认不出的归 other。
+ */
+static const char* LIB_NAMES[] = {
+    "fekit", "turingxq", "turingmfa", "msfbootV2", "qsec", "ckguard", "wtecdh", "other", 0
+};
+static int g_lib_patched[8];
+/* 正在补哪个库。do_patch_dyn 里与 ctx->patched 一起加，两个数字口径一致。 */
+static int g_lib_id;
+
+static int lib_index(const char* p) {
+    if (!p) return 7;
+    size_t n = strlen(p);
+    if (contains_ci(p, n, "fekit")) return 0;
+    if (contains_ci(p, n, "turingxq")) return 1;
+    if (contains_ci(p, n, "turingmfa")) return 2;
+    if (contains_ci(p, n, "msfboot")) return 3;
+    if (contains_ci(p, n, "libqsec")) return 4;
+    if (contains_ci(p, n, "ckguard")) return 5;
+    if (contains_ci(p, n, "wtecdh")) return 6;
+    return 7;
 }
 
 /* openat(dirfd, "maps") bypasses a path-only /proc filter. Resolve dirfd. */
@@ -1210,6 +1236,7 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
             if (raw_svc(SYS_mprotect, (long)pg, (long)g_page, (long)PROT_READ, 0, 0, 0) != 0)
                 mprotect((void*)pg, (size_t)g_page, PROT_READ);
             ctx->patched++;
+            g_lib_patched[g_lib_id]++;
             if (repl == ctx->my_dlsym) ctx->dlsym_n++;
             if (repl == ctx->my_readdir) ctx->readdir_n++;
             if (repl == ctx->my_getenv) ctx->getenv_n++;
@@ -1298,7 +1325,10 @@ static void patch_line(char* line, size_t ll, void* arg) {
     if (contains(line, ll, " 00000000 ") && is_detector_path(line)) {
         const char* rest;
         uintptr_t start = parse_hex(line, &rest);
-        if (start && rest && *rest == '-') patch_module_at(start, ctx);
+        if (start && rest && *rest == '-') {
+            g_lib_id = lib_index(line);
+            patch_module_at(start, ctx);
+        }
     }
 }
 
@@ -1351,6 +1381,7 @@ static int iter_cb(void* info_v, size_t size, void* data) {
     ctx_t* ctx = (ctx_t*)data;
     const char* nm = info->dlpi_name ? info->dlpi_name : "";
     if (!is_detector_path(nm)) return 0;
+    g_lib_id = lib_index(nm);
     patch_module_at(info->dlpi_addr, ctx);
     return 0;
 }
@@ -1625,15 +1656,19 @@ static void persist_maps_stats(int patched, int dlsym_n, int readdir_n,
         return;
     int ok = hide_loop_ok(leak_maps, leak_tcp, leak_env, dlsym_n);
     /* 文件名按 process_key() 分进程；pid 让读侧能再确认一次这份数据是不是自己写的。 */
-    char json[512];
+    char json[768];
     int len = snprintf(json, sizeof(json),
             "{\"pid\":%d,\"patched\":%d,\"dlsym\":%d,\"readdir\":%d,\"seccomp\":%d,"
             "\"named_rx\":%d,\"tcp\":1,\"getenv\":%d,\"freopen\":%d,\"environ\":1,"
             "\"risk_blocks\":%d,\"system_blocks\":%d,"
-            "\"leak_maps\":%d,\"leak_tcp\":%d,\"leak_env\":%d,\"loop_ok\":%d}\n",
+            "\"leak_maps\":%d,\"leak_tcp\":%d,\"leak_env\":%d,\"loop_ok\":%d,"
+            "\"libs\":{\"fekit\":%d,\"turingxq\":%d,\"turingmfa\":%d,\"msfbootV2\":%d,"
+            "\"qsec\":%d,\"ckguard\":%d,\"wtecdh\":%d,\"other\":%d}}\n",
             (int)raw_svc(SYS_getpid, 0, 0, 0, 0, 0, 0),
             patched, dlsym_n, readdir_n, g_seccomp_on, g_named_rx, getenv_n, freopen_n,
-            g_risk_blocks, g_system_blocks, leak_maps, leak_tcp, leak_env, ok);
+            g_risk_blocks, g_system_blocks, leak_maps, leak_tcp, leak_env, ok,
+            g_lib_patched[0], g_lib_patched[1], g_lib_patched[2], g_lib_patched[3],
+            g_lib_patched[4], g_lib_patched[5], g_lib_patched[6], g_lib_patched[7]);
     if (len <= 0) return;
     long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)path,
             (long)(O_WRONLY | O_CREAT | O_TRUNC), 420L, 0L, 0L);
@@ -1677,6 +1712,7 @@ int Java_com_satori_qq_qq_MapsHide_install(void* env, void* clazz) {
     g_page = sysconf(39);
     if (g_page <= 0) g_page = 4096;
     ctx_t ctx;
+    for (int i = 0; i < 8; i++) g_lib_patched[i] = 0;
     ctx.my_openat = (void*)my_openat;
     ctx.my_open = (void*)my_open;
     ctx.my_fopen = (void*)my_fopen;

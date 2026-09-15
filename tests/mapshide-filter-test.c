@@ -153,8 +153,22 @@ int main(void) {
         if ((rc = expect(my_strcasestr("maps: LIBC.so", "libc") != 0, 1, 82))) return rc;
         if ((rc = expect(my_memmem(hay, sizeof(hay) - 1, "zygisk", 6) == 0, 1, 83))) return rc;
         if ((rc = expect(my_memmem(hay, sizeof(hay) - 1, "base.apk", 8) != 0, 1, 84))) return rc;
-        if ((rc = expect(needle_blocked("com.topjohnwu.magisk", 22), 1, 85))) return rc;
+        if ((rc = expect(needle_blocked("com.topjohnwu.magisk", 21), 1, 85))) return rc;
         if ((rc = expect(needle_blocked("com.tencent.mobileqq", 20), 0, 86))) return rc;
+    }
+    {
+        /* 按库归因：升级 QQ 后哪个检测库改名/消失要靠这个看出来。 */
+        if ((rc = expect(lib_index("/data/app/x/lib/libfekit.so"), 0, 92))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libturingxq.so"), 1, 93))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libturingmfa.so"), 2, 94))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libmsfbootV2.so"), 3, 95))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libQSec.so"), 4, 96))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libckguard.so"), 5, 97))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libwtecdh.so"), 6, 98))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libother.so"), 7, 99))) return rc;
+        if ((rc = expect(lib_index(0), 7, 100))) return rc;
+        if ((rc = expect(strcmp(LIB_NAMES[0], "fekit") == 0, 1, 101))) return rc;
+        if ((rc = expect(strcmp(LIB_NAMES[7], "other") == 0, 1, 102))) return rc;
     }
     return 0;
 }

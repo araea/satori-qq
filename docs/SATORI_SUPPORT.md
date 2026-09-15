@@ -158,6 +158,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 机器人 | `robot_list` / `robot_owned` | 可加入群创建的机器人列表；群成员各自拥有的机器人 |
 | 联系人 | `recent_contacts` | 查询最近联系人及未读数 |
 | 能力查询 | `capabilities` / `help` | 返回扩展动作与参数清单 |
+| 能力查询 | `compat` | 内核接口面静态自检与运行时调用观测，QQ 升级后先跑它；`force=true` 强制重算 |
 | 状态查询 | `status` / `version` | 返回健康状态或版本 |
 | QQ 空间 | `qzone.publish` / `qzone.create` | 发布说说 |
 | QQ 空间 | `qzone.delete` / `qzone.list` | 删除或列出说说 |

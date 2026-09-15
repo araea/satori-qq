@@ -88,15 +88,31 @@ Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与�
 
 ## QQ 升级检查
 
-升级 QQ 后应重新核验：
+升级 QQ 后先跑一次自检，再按下面逐项核：
+
+```sh
+curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'   # 或走客户端 client.callOk('internal/compat')
+```
+
+`internal/compat` 用反射核对模块依赖的内核接口面，不发任何内核请求，几毫秒出结果：
+
+- `static.types`：模块引用到的 128 个内核类（接口、结构体、枚举）在不在。表由源码里的类名字面量生成，重新生成的办法写在 `qq/Compat` 的注释里
+- `static.services`：会话上 7 个服务入口（`getMsgService` 等）与它们必须实现的接口
+- `static.structs`：模块会写入的结构体字段名。字段改名是静默失败——`Ref.put` 找不到字段就退化，值写不进去，服务端只回参数错误
+- `static.callbacks`：回调接口是否有 `on*` 方法（参数个数按「至少」算，内核回调常多带参数）
+- `observed`：`ExtraSvc.call` 记录的每次内核调用结果（成功/超时/其它失败），按 label 分列。哪个入口开始不回调看这里，比对着 15 秒超时猜快得多
+
+`static.ok` 为 `false` 时 `missing` 逐条给出断点。`/healthz` 里的 `compat` 是同一份报告的摘要（按 QQ 版本缓存 10 分钟）。`internal/compat` 传 `force=true` 可强制重算。
+
+接口面干净之后，再按下面逐项核：
 
 1. `nativeinterface` 类名、构造函数与方法签名
 2. 消息元素常量与可选字段
 3. `IKernelMsgListener` 回调集合
 4. OIDB 命令号、子命令与响应字段
 5. QSec、Turing 与环境上报的命令白名单，以及 QSec 检测入口的类名与方法签名
-6. 主进程与 MSF 进程的 `/healthz` hook 计数及 `loop_ok`
+6. 主进程与 MSF 进程的 `/healthz` hook 计数及 `loop_ok`，以及 `maps.libs` 里每个检测库各补了多少槽（某个库改名或消失会直接体现为对应项变 0）
 7. `libfekit.so`、`libturingxq.so`、`libmsfbootV2.so` 导出的 libc 符号与路径字符串，见 [`ANTIDETECT.md`](ANTIDETECT.md)
-8. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（用 `internal/*` 逐个打一遍，`/healthz` 之外还要看 logcat 的 `Q.Kernel`，需先开 `verbose_logs`）
+8. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（跑 `tests/internal-kernel-probe.js` 之后看 `internal/compat` 的 `observed`）
 9. 检测库 import 的字符串搜索符号有没有变（`llvm-nm -D lib*.so | grep ' U '` 看是否新增 `strcasecmp`/`strnstr` 一类），变了就把 `native/mapshide.c` 的 `BLOCK` 判定接到同一个入口上，见 [`ANTIDETECT.md`](ANTIDETECT.md)
 10. Turing 的 POSIX ERE 黑名单（进程名/线程名/路径）有没有新增模式

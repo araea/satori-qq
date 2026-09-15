@@ -18,6 +18,17 @@
 
 `qk_env_maps_*.json` 与 `internal/status` 的 `env_report.maps` 增加 `libs`，逐库给出这一轮补了多少个 GOT 槽：本地实测 `{"fekit":37,"turingxq":21,"turingmfa":0,"msfbootV2":5,"qsec":0,"ckguard":2,"wtecdh":0}`，合计等于 `patched`。QQ 换库名或去掉某个库时，对应项会直接变 0，不用再逐槽核对。
 
+### 修复：`voice_to_text` 真的能转出文字
+
+这个动作从 0.8.9.38 起只回状态码，拿不到文字。两层原因：
+
+- 记录里的元素是 `MsgElement` 外壳，真正的 `PttElement` 挂在它的一个字段上。此前按 `elementType == 4` 命中外壳就当成语音元素往下读，`duration` 一律是 0、`canConvert2Text` 一律是 false，看上去像「这段语音本来就转不了」
+- 转写结果不在回调里，而且听写是异步的：`translatePtt2Text` 用 `IOperateCallback`（只有码与一句短语），这一次调用只是把任务交出去，文字稍后写回元素自己（`PttElement.text`）
+
+现在外壳与内芯分开拿：调内核要外壳，读 `text` / `duration` / `canConvert2Text` 要内芯，内芯按**字段类型名**找而不是按字段名找——`Ref.getOrNull` 在这个字段上一路回 null（同一个对象 `toJson` 却读得到），类型名在 QQ 换代时也比字段名稳。交任务之后盯着元素看最多 3 秒（10 × 300ms）再返回，别让第一次调用的人收到空字符串。主入口一直没结果时，加 `ai: true` 会让 `translatePtt2TextAiVoice` 再试一次（它会翻成人话，所以不默认启用）。没转出字时返回 `can_convert` / `translate_status` / `duration`，把「内核还没转」和「这段本来就转不了」分开。
+
+测试群 46360522 的 8 条真实语音全部转出文字；第一条 15 秒是冷启动听写，其余 100–240 毫秒。
+
 ### 其它
 
 - `internal/capabilities` 登记 `compat`

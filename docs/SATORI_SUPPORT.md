@@ -138,7 +138,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 资料 | `profile_intimate` | 亲密关系 |
 | 资料 | `profile_relation_flag` | 拉黑、置顶、免打扰、特别关心等关系标志 |
 | 资料 | `profile_set_birthday` | 修改生日 |
-| 消息 | `voice_to_text` | 语音转文字 |
+| 消息 | `voice_to_text` | 语音转文字。听写是异步的，动作会等到结果写回再返回；主入口没结果时加 `ai: true` 走 AI 变体 |
 | 消息 | `fav_emoji` | 表情栏（内核只开放最近使用表情） |
 | 消息 | `auto_reply` | 读取自动回复文本 |
 | 消息 | `unread_summary` | 查询指定频道的未读数 |
@@ -165,6 +165,8 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | QQ 空间 | `qzone.clear` / `qzone.delete_all` / `qzone.delete-all` | 删除全部说说 |
 | QQ 空间 | `qzone.auth` | 读取调试用鉴权信息 |
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程或清理临时文件 |
+
+`voice_to_text` 的结果不在回调里：`translatePtt2Text` 用 `IOperateCallback`，只有状态码。内核把转写文字写回语音元素自己（`PttElement.text`），所以动作在交任务之后盯着元素看最多 3 秒再返回。**第一次调用某条语音会慢**（冷启动听写，实测约 15 秒），之后读同一条只要一两百毫秒。听写没跑起来的语音会返回 `text` 为空，同时带上 `translate_status` / `duration` / `can_convert`，便于区分「内核还没转」和「这段本来就转不了」。
 
 完整参数用 `capabilities` 或 `help` 查询，返回里的 `params` 字段逐条列出参数。`group_member_search.next` 可直接用于下一次扩展调用，`next_offset` 供 HTTP 客户端分页。
 

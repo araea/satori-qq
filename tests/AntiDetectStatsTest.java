@@ -117,6 +117,16 @@ public final class AntiDetectStatsTest {
         AntiDetect.noteBlockedKick("uid-fail", "no-args");
         check("uid-fail".equals(AntiDetect.lastKickSource()), "kick source replaced");
 
+        // MSF 强踢那几个 reason 必须拦；用户自己退出、切号、票据自然过期要放行，
+        // 拦错了会把正常退出登录也变成"踢线"。
+        for (String reason : new String[]{"kicked", "secKicked", "forceLogout", "suspend"}) {
+            check(AntiDetect.kickReasonBlocked(reason), "block reason " + reason);
+        }
+        for (String reason : new String[]{"user", "switchAccount", "expired", "tips", "gray",
+                "restartProcess", "", null}) {
+            check(!AntiDetect.kickReasonBlocked(reason), "pass reason " + reason);
+        }
+
         System.out.println("AntiDetectStatsTest OK");
     }
 

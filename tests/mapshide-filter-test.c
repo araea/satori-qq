@@ -27,7 +27,20 @@ int main(void) {
             "7400000000-7400001000 r-xp 00000000 00:00 0 /data/local/tmp/frida-agent.so\n";
     int rc;
     if ((rc = expect(line_blocked(anon_rx, sizeof(anon_rx) - 1), 1, 1))) return rc;
-    if ((rc = expect(line_blocked(qq_shadowhook, sizeof(qq_shadowhook) - 1), 0, 2))) return rc;
+    /* 匿名的可执行映射统一滤掉，rwxp 也算。0.8.9.44 之前在设备上核对过：主进程有两条
+     * 无路径 rwxp（一条 4KB、与 :MSF 同地址，一条约 1.9MB、只有主进程有），读出来的字节
+     * 都是 aarch64 蹦床（`ldr x17,#8; br x17` 一类），也就是 inline hook 的落地页。
+     * libfekit 读的正是 maps，留着就是把"进程里有 trampoline 区"直接递过去。 */
+    if ((rc = expect(line_blocked(qq_shadowhook, sizeof(qq_shadowhook) - 1), 1, 2))) return rc;
+    const char named_rwx[] =
+            "702a500000-702a501000 rwxp 00000000 00:00 0 [anon:dalvik-jit-code-cache]\n";
+    if ((rc = expect(line_blocked(named_rwx, sizeof(named_rwx) - 1), 0, 117))) return rc;
+    if ((rc = expect(is_exec_perm("7000-8000 rwxp 0 00:00 0 \n", 25), 1, 118))) return rc;
+    if ((rc = expect(is_exec_perm("7000-8000 rw-p 0 00:00 0 \n", 24), 0, 119))) return rc;
+    /* 环境变量那条路共用 line_blocked：一个带 x 的普通词不能被当成权限位。 */
+    if ((rc = expect(is_exec_perm("FOO=abc xyz", 11), 0, 120))) return rc;
+    if ((rc = expect(is_exec_perm("Size: 4 kB\n", 11), 0, 121))) return rc;
+    if ((rc = expect(is_exec_perm("7d1c899000-7d1c8a1000 default anon=1 dirty=1\n", 42), 0, 122))) return rc;
     if ((rc = expect(line_blocked(named_art, sizeof(named_art) - 1), 0, 3))) return rc;
     if ((rc = expect(line_blocked(generic_vector, sizeof(generic_vector) - 1), 0, 4))) return rc;
     if ((rc = expect(line_blocked(helper, sizeof(helper) - 1), 1, 5))) return rc;
@@ -169,6 +182,46 @@ int main(void) {
         if ((rc = expect(lib_index(0), 7, 100))) return rc;
         if ((rc = expect(strcmp(LIB_NAMES[0], "fekit") == 0, 1, 101))) return rc;
         if ((rc = expect(strcmp(LIB_NAMES[7], "other") == 0, 1, 102))) return rc;
+    }
+    {
+        /* 模块自己的 .so 挂在 /memfd:dalvik-jit-code-cache 上。ART 的 memfd 只有
+         * jit-cache / jit-zygote-cache，dalvik-jit-code-cache 只当 anon_shmem 名字用，
+         * 所以这条 BLOCK 只打模块那三行，ART 自己的行要照旧放过去。 */
+        const char mod_rx[] =
+                "7d1c899000-7d1c8a1000 r-xp 00000000 00:01 7866 /memfd:dalvik-jit-code-cache (deleted)\n";
+        const char mod_rw[] =
+                "7d1c8a8000-7d1c8a9000 rw-p 00007000 00:01 7866 /memfd:dalvik-jit-code-cache (deleted)\n";
+        const char art_memfd[] =
+                "64800000-66800000 r--s 00000000 00:01 7859 /memfd:jit-cache (deleted)\n";
+        const char art_shmem[] =
+                "66800000-68800000 r-xs 02000000 00:01 7859 [anon_shmem:dalvik-jit-code-cache]\n";
+        const char art_zygote[] =
+                "60800000-62800000 r--s 00000000 00:01 4 /memfd:jit-zygote-cache (deleted)\n";
+        if ((rc = expect(line_blocked(mod_rx, sizeof(mod_rx) - 1), 1, 103))) return rc;
+        if ((rc = expect(line_blocked(mod_rw, sizeof(mod_rw) - 1), 1, 104))) return rc;
+        if ((rc = expect(line_blocked(art_memfd, sizeof(art_memfd) - 1), 0, 105))) return rc;
+        if ((rc = expect(line_blocked(art_shmem, sizeof(art_shmem) - 1), 0, 106))) return rc;
+        if ((rc = expect(line_blocked(art_zygote, sizeof(art_zygote) - 1), 0, 107))) return rc;
+    }
+    {
+        /* fdinfo 的 name: 行、numa_maps 的 file= 行：都是按行的文本，走同一张 BLOCK 表就能盖住。 */
+        if ((rc = expect(is_proc_exposure_path("/proc/self/fdinfo/57"), 1, 108))) return rc;
+        if ((rc = expect(is_proc_exposure_path("/proc/1234/numa_maps"), 1, 109))) return rc;
+        if ((rc = expect(is_proc_exposure_path("/proc/self/fd/57"), 0, 110))) return rc;
+    }
+    {
+        /* readlink 的输入是 /proc/self/fd/<n>，关键字只在返回值里，所以要按结果判。 */
+        const char target[] = "/memfd:dalvik-jit-code-cache (deleted)";
+        const char benign[] = "socket:[12345]";
+        const char apk[] = "/data/app/x/com.satori.qq-y/base.apk";
+        const char lib[] = "/apex/com.android.art/lib64/libart.so";
+        if ((rc = expect(link_result_blocked(target, sizeof(target) - 1), 1, 111))) return rc;
+        if ((rc = expect(link_result_blocked(apk, sizeof(apk) - 1), 1, 112))) return rc;
+        if ((rc = expect(link_result_blocked(benign, sizeof(benign) - 1), 0, 113))) return rc;
+        if ((rc = expect(link_result_blocked(lib, sizeof(lib) - 1), 0, 114))) return rc;
+        if ((rc = expect(link_result_blocked(target, 0), 0, 115))) return rc;
+        /* 名字过滤认不出 dl_iterate_phdr 里的 /proc/self/fd/<n>，那条靠 g_self_base 排除。 */
+        if ((rc = expect(module_name_blocked("/proc/self/fd/57"), 0, 116))) return rc;
     }
     return 0;
 }

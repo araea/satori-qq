@@ -36,26 +36,54 @@ Java 层在 `qq/AntiDetect`，装在每个 QQ 进程：
 - Root、Xposed、调试器、模拟器、包管理、堆栈、Pandora、Turing、MSF 遥测与强制下线处理逐项覆盖
 - 设备标识只在配置了假值时改写，多路径保持同一值
 
-### 踢回登录页的三个入口
+### 踢下线的四个入口
 
-服务端踢线在客户端有不止一个处理入口，它们互不经过对方。只挡一个，被踢时界面照样退回登录页：
+服务端踢线在客户端有不止一个处理入口，它们互不经过对方。少挡一个，被踢时界面照样退回登录页：
 
 | 入口 | 触发方 | 拦下的方法 | 计数标签 |
 | --- | --- | --- | --- |
-| `com.tencent.mobileqq.kick.NTKickProcessor` | 内核 `IKickApi` 收到的踢线 | `b(AppRuntime, KickedInfo, LogoutReason)` | `nt-kick` |
+| `com.tencent.mobileqq.kick.NTKickProcessor` | 内核 `IKickApi` 收到的踢线 | `a(AppRuntime, KickedInfo)`、`b(AppRuntime, KickedInfo, LogoutReason)` | `nt-kick` |
 | `com.tencent.mobileqq.login.ntlogin.ao` | `NTLoginTicketManager` 刷新登录票据失败，错误码 140022014/140022015/140022016 或 `refreshMethodNeedKick` | `f(int, String)` | `ticket-refresh` |
 | `com.tencent.mobileqq.login.api.impl.UidServiceImpl` | 取不到 UID | `kickToLoginPage()` | `uid-fail` |
+| `mqq.app.MainService$MyErrorHandler` | MSF 把强踢当错误事件抛上来 | `popupNotification(...)`（6 参与 8 参两个重载）、`popupNotificationEx(...)` | `msf-kick` |
 
-后两个都会先 `ntTriggerLogout`，再拿 `LoginActivity` 发 `ACTION_KICK_TO_LOGIN`，界面上的表现就是「刚登录就被弹回登录页」。`/healthz` 的 `kick_hook` 是三个入口的 hook 数之和（正常为 3），`last_kick_source` 记下最近一次是哪个入口拦下的，`last_kick` 记下参数（`ticket-refresh` 会带上服务端错误码和原文）。
+`NTKickProcessor` 那条：`a` 是接口 `IKickApi.b` 的实现，`b` 是它调用的私有方法。只拦 `b` 的话，`a` 里在它之前做的几件事照旧执行——`kick.a` 线程（清登录数据）、`updateSimpleAccount(uin,false)`、`reportClearLoginData(uin,"2004")`、`setSortAccountList`，本地账号列表当场被标成已下线。两个都拦。
+
+`MainService$MyErrorHandler` 那条是 0.8.9.44 补上的，也是之前"还是会掉线"的直接原因。它自己有一堆回调：`onKicked`、`onKickedAndClearToken`、`onUserTokenExpired`、`onServerSuspended`、`onCloneError`、`onGrayError`，各自解完包（`RequestPushForceOffline` / `RequestMSFForceOffline`，`RequestMSFForceOffline.bSigKick == 1` 就是带签名数据的安全强踢、reason 取 `secKicked`），最后都落进 `popupNotification` / `popupNotificationEx` 这两个出口。出口里做的是 `appRuntime.logout(reason, true)`，再拿 `LoginActivity` 发 `ACTION_KICK_TO_LOGIN`。拦这里等于一次盖住上面所有回调。
+
+不是所有 `LogoutReason` 都该拦。拦的是 `kicked`、`secKicked`、`forceLogout`、`suspend`；放行 `user`（用户自己退出）、`switchAccount`（切号）、`expired`（票据自然过期，QQ 自己会重登）、`tips`、`gray`、`restartProcess`——拦这些才是真出问题。判定在 `AntiDetect.kickReasonBlocked`，有单测。
+
+`/healthz` 的 `kick_hook` 是四个入口的 hook 数之和（0.8.9.44 起正常为 **7**：nt-kick 2 + ticket-refresh 1 + uid-fail 1 + msf-kick 3），`last_kick_source` 记下最近一次是哪个入口拦下的，`last_kick` 记参数，`kick_log` 是最近 12 次的原文。
+
+### 踢线之后：自动登录会被关掉
+
+这一条比拦踢线本身更要紧。QQ 在踢线路径上顺手做 `appRuntime.setAutoLogin(false)`：
+
+```text
+QQAppInterface.setAutoLogin(false)
+  -> mqq.app.AutoLoginUtil.setAutoLogin(uin, false)
+     -> common_mmkv_configurations["mqq_account_auto_login_<uin>"] = 1   // 2 才是自动
+```
+
+这是**落盘**的。所以踢线之后哪怕把 QQ 拉起来，它停在登录页、不会自己登回来，外部看守重启多少次都一样。`NTKickProcessor.a`（`KKICKBYMULTIINST` 分支）与 `MainService$MyErrorHandler.onKickedInternal` 里都有这一句。
+
+模块在拦下踢线后的 60 秒内把这次 `setAutoLogin(false)` 顶回 `true`（`hookAutoLoginGuard`，命中数在 `/healthz` 的 `auto_login_kept`）。只在这个窗口里生效，用户自己退出登录（`user`）不受影响。
+
+`qk_kick.log` 里逐条记着时间、入口、reason、标题与正文（app 私有目录，0600，只 root 可读）。落盘的理由和 `blocked_kicks` 会随进程重启归零有关：`scripts/qq-revive.sh` 按这个文件的行数增长判断"刚刚又被踢了"，跨重启仍然成立；`online=false` 连着几轮也重启（那是已经退出登录，只能靠登回来）。
 
 Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
 
 - 命中库：libfekit、libturingxq、libturingmfa、ckguard、wtecdh、libQSec、dandelion、libmsfbootV2
 - 接管这些库 import 的 `open`、`openat`、`fopen`、`stat`、`access`、`readlink`、`getdents64`、`readdir`、`syscall`、`__system_property_get` 等符号，换成自己的包装
-- 包装里对 `/proc` 的 maps、smaps、mountinfo、status、environ、cmdline、tcp 做行过滤，路径命中黑名单直接返回 `ENOENT`
-- 无路径的 RX 映射改名成 `dalvik-jit-code-cache`，模块自己的 `.so` 从 memfd 以 `jit-cache` 载入
+- 包命中的 `/proc` 路径做行过滤：maps、smaps、smaps_rollup、mountinfo、mounts、status、environ、cmdline、tcp/tcp6，0.8.9.44 起加上 `fdinfo`（`name:\t<路径>` 行）与 `numa_maps`（`file=<路径>` 行）；路径命中黑名单直接返回 `ENOENT`
+- 无路径的可执行映射一律从行过滤里去掉（0.8.9.44 起 `rwxp` 也算，此前只滤 `r-xp`）。真机上核对过主进程那两条无路径 `rwxp`：一条 4KB（与 `:MSF` 同地址）、一条约 1.9MB（只有主进程有），读出来的字节都是 aarch64 蹦床（`ldr x17,#8; br x17`、`ldr x0,#12; br x16` 这类），也就是 inline hook 的落地页。带 `[anon:...]` / `[anon_shmem:...]` 名字的映射不受影响
+- 无路径的 RX 映射改名成 `dalvik-jit-code-cache`，模块自己的 `.so` 从 memfd 以同名载入；0.8.9.44 起 `BLOCK` 表里多一条 `/memfd:dalvik-jit-code-cache`，把模块那三行映射（r-xp/r--p/rw-p，同一个 inode）从 maps/smaps 里一并去掉
+- `readlink`/`readlinkat` 除输入路径外还看**返回值**：`/proc/self/fd/<n>`、`/proc/self/map_files/<range>` 这类入口本身没有可拦的关键字，泄漏全在目标路径上
+- `dl_iterate_phdr` 的过滤除按名字，还按加载基址跳过模块自己——libmapshide 是从 memfd 载的，`dlpi_name` 就是当初 `dlopen` 的参数 `/proc/self/fd/<n>`，名字过滤认不出来
 - 用 seccomp 对模块自身文本段里的裸 svc 做 TRAP 兜底，覆盖 openat、openat2、faccessat、faccessat2、newfstatat、statx、readlinkat、getdents64
 - 装完后自己再读一遍 maps、tcp、environ，把 `leak_*` 与 `loop_ok` 落盘自证
+
+memfd 名字为什么这么取：ART 自己的两份 JIT 缓存是 `/memfd:jit-cache` 与 `/memfd:jit-zygote-cache`，`dalvik-jit-code-cache` 只作为它们的 `[anon_shmem:...]` 名字出现，带 `/memfd:` 前缀的从来没有。所以模块用 `dalvik-jit-code-cache` 当 memfd 名（早先用 `jit-cache` 会与 ART 撞成同进程两个同名不同 inode，那正是"加载器藏在 memfd"的判据），再用 `/memfd:dalvik-jit-code-cache` 这条 `BLOCK` 把它的三行映射从检测库的视野里去掉，ART 自己的行不受影响。
 
 0.8.9.39 起 token 扫描按「符号集合」而不是单个符号接管。libfekit 同时 import `strstr`、`strcasestr`、`memmem`，此前只接管了 `strstr`，而且只在 needle 恰好等于黑名单里的某个词时才返回 NULL：`strstr(maps_line, "com.topjohnwu.magisk-1.2")` 这类更长的 needle 会照常命中。现在三个入口共用一条规则——**needle 里只要出现 `BLOCK` 表中任一条（子串、大小写不敏感），就返回未找到**，判定集与 `path_denied` 完全一致。实测主进程补丁数 63 → 65，MSF 40 → 42。
 
@@ -86,6 +114,7 @@ logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前�
 | `qk_env_*.json` 自检 | `/storage/emulated/0/Android/data/com.tencent.mobileqq/files` | `/data/data/com.tencent.mobileqq/files`（0600） | 外部存储的 `Android/data` 有绕过存储沙箱的枚举手法，而这份文件的字段名直接写着模块做了什么。升级后首次写盘会把旧位置的同名文件删掉 |
 | 看守日志与 pid | `/data/local/tmp`（0771，libfekit 二进制里带着这个路径字符串） | `/data/adb/satori-qq/`（0600，普通应用进不去） | 文件名与内容能反推模块 |
 | `satori-last-send.txt`、`satori-history.txt` | 每次发消息、每次查历史都重写 | 只在 `verbose_logs=true` 时写 | 逐次 I/O 与残留；诊断信息在 logcat 的 `Q.Kernel` 里仍然有 |
+| `qk_kick.log` 踢线记录（0.8.9.44 新增） | — | `/data/data/com.tencent.mobileqq/files/qk_kick.log`（0600，超过 64KB 只留尾部 32KB） | 服务端踢线原文（reason、标题、正文）对排障有用，但要把"刚被踢过"这件事留给重启后的看守看，所以落盘而不是只在内存里 |
 
 配置文件 `satori-qq.json` 仍留在外部目录：它要能被人直接编辑，这是必要暴露；换到只有 root 能改的路径，维护成本高过收益。
 
@@ -107,6 +136,8 @@ logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前�
 | 可执行映射里出现第二个 `jit-cache` memfd（加载器藏在 memfd 的判据） | 模块的 memfd 改名为 `dalvik-jit-code-cache`，ART 自己的 `jit-cache` 仍是唯一一个 |
 | 用 `dladdr` 反查函数地址属于哪个模块 | `my_dladdr` 把模块自己的名字换成 `[anon:dalvik-jit-code-cache]` |
 | 数 `/proc/<pid>/mem` 里的 dalvik 堆窗口找关键字 | 0.8.9.39 起 `/proc/*/mem`、`/proc/*/pagemap`、`/proc/kcore` 直接 `ENOENT`（偏移读没法行过滤） |
+| 枚举 `/proc/self/fd`、`/proc/self/map_files` 逐个 `readlink`，看有没有从 memfd 或模块 APK 载进来的东西 | `readlink`/`readlinkat` 的返回值命中 `BLOCK` 就回 `ENOENT`；`fdinfo`（`name:` 行）与 `numa_maps`（`file=` 行）这两条等价的文本路走同一张表 |
+| 读 `/proc/self/maps` 数 `/memfd:` 映射，或把 `dl_iterate_phdr` 与 maps 的条目对上 | 模块那三行带 `/memfd:dalvik-jit-code-cache` 的映射被 `BLOCK` 滤掉；`dl_iterate_phdr` 按加载基址跳过模块自己（它的 `dlpi_name` 是 `/proc/self/fd/<n>`，名字里没有关键字） |
 
 挡不住的，以及为什么：
 

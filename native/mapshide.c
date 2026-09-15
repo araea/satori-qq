@@ -72,6 +72,8 @@ typedef struct {
 } dl_phdr_info_min;
 
 extern int dl_iterate_phdr(int (*cb)(void*, size_t, void*), void* data);
+/* 自检文件的原子替换用；不走 syscall 包装，直接调 libc。 */
+extern int rename(const char* from, const char* to);
 extern int __android_log_print(int prio, const char* tag, const char* fmt, ...);
 extern int mprotect(void* addr, size_t len, int prot);
 extern long sysconf(int name);
@@ -198,12 +200,23 @@ static const char* BLOCK[] = {
     "me.bmax.apatch", "com.noshufou", "eu.chainfire.supersu",
     "com.koushikdutta.superuser", "install-recovery.sh",
     "zygisk_vector", "libvector", "JingMatrix", "frida", "gadget",
-    "linjector", "lsplant", 0
+    "linjector", "lsplant",
+    /*
+     * 模块自己的 .so 是从 memfd 载进来的，maps/smaps 里有三行
+     * /memfd:dalvik-jit-code-cache（r-xp / r--p / rw-p，同一个 inode）。ART 自己只用
+     * /memfd:jit-cache 与 /memfd:jit-zygote-cache 这两个名字，`dalvik-jit-code-cache`
+     * 只作为 ART 那份 JIT 缓存的 anon_shmem 名字出现，带 /memfd: 前缀的从来不会有。
+     * 所以这一条只会命中模块那三行，ART 自己的行照旧放过去。libfekit 读的正是 maps/smaps。
+     */
+    "/memfd:dalvik-jit-code-cache", 0
 };
 
 static long g_page = 4096;
 static uintptr_t g_text_lo;
 static uintptr_t g_text_hi;
+/* 模块自己的加载基址。dl_iterate_phdr 的 dlpi_name 是从 dlopen 时那条
+ * /proc/self/fd/<n> 原样抄下来的，名字里没有可拦的关键字，只能按基址认自己。 */
+static uintptr_t g_self_base;
 static int g_seccomp_on;
 static int g_named_rx;
 static int g_risk_blocks;
@@ -272,11 +285,39 @@ static int symbol_denied(const char* name) {
             || contains_ci(name, n, "frida") || contains_ci(name, n, "substrate");
 }
 
+/*
+ * 第 2 个字段看起来像权限位（rwxps- 组成、长度 3~5）且带 x 就算可执行映射。
+ * 收得这么紧是为了能安全地给 line_blocked 用：那个函数同时被环境变量那条路调用，
+ * 值里出现一个带 x 的普通词（"abc xyz"）不该被当成映射。
+ */
+static int is_exec_perm(const char* line, size_t len) {
+    size_t i = 0;
+    while (i < len && line[i] == ' ') i++;
+    while (i < len && line[i] != ' ' && line[i] != '\n') i++;
+    while (i < len && line[i] == ' ') i++;
+    size_t start = i;
+    while (i < len && line[i] != ' ' && line[i] != '\n') i++;
+    size_t flen = i - start;
+    if (flen < 3 || flen > 5) return 0;
+    int has_x = 0;
+    for (size_t j = start; j < i; j++) {
+        char c = line[j];
+        if (c == 'x') has_x = 1;
+        else if (c != 'r' && c != 'w' && c != '-' && c != 'p' && c != 's') return 0;
+    }
+    return has_x;
+}
+
 static int line_blocked(const char* line, size_t len) {
     for (int i = 0; BLOCK[i]; i++) {
         if (contains_ci(line, len, BLOCK[i])) return 1;
     }
-    if (contains(line, len, " r-xp ") || contains(line, len, " r-xp\t")) {
+    /*
+     * 没有路径的可执行映射：注入物的强信号。0.8.9.44 起 rwxp 也算——模块加载器留下的
+     * 匿名 RWX 区（maps 里两行：一个 1.9MB、一个 4KB）本来只有 r-xp 那一类被滤掉，
+     * rwxp 照旧露给 libfekit。带 [anon:...] / [anon_shmem:...] 名字的映射不受影响。
+     */
+    if (is_exec_perm(line, len)) {
         int has_path = 0;
         for (size_t i = 0; i < len; i++) {
             if (line[i] == '/' || line[i] == '[') { has_path = 1; break; }
@@ -365,15 +406,22 @@ static int starts_with(const char* p, size_t n, const char* pre) {
 
 static int path_denied(const char* p);
 static int my_getdents64(int fd, void* dirp, unsigned count);
+static long my_readlinkat(int dirfd, const char* path, char* buf, unsigned long bufsz);
 
 static int is_proc_exposure_path(const char* p) {
     if (!p) return 0;
     if (!strstr(p, "/proc")) return 0;
+    /* fdinfo 是按 fd 号取的：/proc/self/fdinfo/57，末尾是编号不是关键字，只能看中间那段。 */
+    if (strstr(p, "/fdinfo/")) return 1;
     return ends_with(p, "/maps") || ends_with(p, "/smaps") || ends_with(p, "/smaps_rollup")
             || ends_with(p, "/mountinfo") || ends_with(p, "/mounts")
             || ends_with(p, "/status")
             || ends_with(p, "/environ")
             || ends_with(p, "/cmdline")
+            /* fdinfo 里 `name:\t<路径>`、numa_maps 里 `file=<路径>`，都是按行写的文本，
+             * 走同一张 BLOCK 表即可；不列进来的话模块 memfd 会从这两条路重新露出去。 */
+            || ends_with(p, "/fdinfo")
+            || ends_with(p, "/numa_maps")
             || ends_with(p, "/tcp") || ends_with(p, "/tcp6");
 }
 
@@ -761,6 +809,7 @@ static long my_syscall(long n, long a0, long a1, long a2, long a3, long a4, long
         char resolved[768];
         const char* path = effective_path((int)a0, (const char*)a1, resolved, sizeof(resolved));
         if (path_denied(path) || path_denied((const char*)a1)) return -ENOENT;
+        if (n == SYS_readlinkat) return my_readlinkat((int)a0, (const char*)a1, (char*)a2, (unsigned long)a3);
         if (is_proc_exposure_path(path) && (n == SYS_faccessat || n == SYS_faccessat2))
             return 0;
     }
@@ -790,10 +839,27 @@ static long copy_process_exe(char* buf, unsigned long bufsz) {
     return (long)n;
 }
 
+/*
+ * readlink 的输入路径是 /proc/self/fd/<n> 或 /proc/self/map_files/<range>，本身没有可拦的关键字，
+ * 真正泄漏的是**返回值**——它把模块的目标路径原样抄出来。所以只能看结果再决定。
+ */
+static long link_result_blocked(const char* buf, long n) {
+    if (n <= 0 || !buf) return 0;
+    char tmp[1025];
+    unsigned len = (unsigned)n;
+    if (len > sizeof(tmp) - 1) len = sizeof(tmp) - 1;
+    for (unsigned i = 0; i < len; i++) tmp[i] = buf[i];
+    tmp[len] = 0;
+    /* readlink 不补 NUL，所以先自己收尾再交给 path_denied（它顺带做去掉不可见字符与折叠路径）。 */
+    return (long)path_denied(tmp);
+}
+
 static long my_readlink(const char* path, char* buf, unsigned long bufsz) {
     if (path_denied(path)) return -ENOENT;
     if (path && strcmp(path, "/proc/self/exe") == 0 && buf) return copy_process_exe(buf, bufsz);
-    return raw_svc(SYS_readlinkat, (long)AT_FDCWD, (long)path, (long)buf, (long)bufsz, 0, 0);
+    long n = raw_svc(SYS_readlinkat, (long)AT_FDCWD, (long)path, (long)buf, (long)bufsz, 0, 0);
+    if (link_result_blocked(buf, n)) return -ENOENT;
+    return n;
 }
 
 static int module_name_blocked(const char* name);
@@ -803,7 +869,9 @@ static long my_readlinkat(int dirfd, const char* path, char* buf, unsigned long 
     const char* ep = effective_path(dirfd, path, resolved, sizeof(resolved));
     if (path_denied(ep) || path_denied(path)) return -ENOENT;
     if (ep && strcmp(ep, "/proc/self/exe") == 0 && buf) return copy_process_exe(buf, bufsz);
-    return raw_svc(SYS_readlinkat, (long)dirfd, (long)path, (long)buf, (long)bufsz, 0, 0);
+    long n = raw_svc(SYS_readlinkat, (long)dirfd, (long)path, (long)buf, (long)bufsz, 0, 0);
+    if (link_result_blocked(buf, n)) return -ENOENT;
+    return n;
 }
 
 static int my_stat(const char* path, void* st) {
@@ -1055,7 +1123,10 @@ static int module_name_blocked(const char* name) {
 static int filtered_iter_cb(void* info_v, size_t size, void* data_v) {
     dl_phdr_info_min* info = (dl_phdr_info_min*)info_v;
     iter_filter_t* filter = (iter_filter_t*)data_v;
-    if (module_name_blocked(info && info->dlpi_name ? info->dlpi_name : "")) return 0;
+    if (!info) return filter->callback(info_v, size, filter->data);
+    /* 自己的条目：dlpi_name 是 /proc/self/fd/<n>，名字过滤认不出来，按基址跳过。 */
+    if (g_self_base && (uintptr_t)info->dlpi_addr == g_self_base) return 0;
+    if (module_name_blocked(info->dlpi_name ? info->dlpi_name : "")) return 0;
     return filter->callback(info_v, size, filter->data);
 }
 
@@ -1424,6 +1495,8 @@ static void on_sigsys(int sig, siginfo_t* si, void* uctx) {
         char resolved[768];
         const char* path = effective_path((int)r[0], (const char*)r[1], resolved, sizeof(resolved));
         if (path_denied(path) || path_denied((const char*)r[1])) ret = -ENOENT;
+        else if (nr == SYS_readlinkat)
+            ret = my_readlinkat((int)r[0], (const char*)r[1], (char*)r[2], (unsigned long)r[3]);
         else ret = raw_svc(nr, (long)r[0], (long)r[1], (long)r[2], (long)r[3], (long)r[4], (long)r[5]);
     } else if (nr == SYS_getdents64) {
         ret = my_getdents64((int)r[0], (void*)r[1], (unsigned)r[2]);
@@ -1670,11 +1743,20 @@ static void persist_maps_stats(int patched, int dlsym_n, int readdir_n,
             g_lib_patched[0], g_lib_patched[1], g_lib_patched[2], g_lib_patched[3],
             g_lib_patched[4], g_lib_patched[5], g_lib_patched[6], g_lib_patched[7]);
     if (len <= 0) return;
-    long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)path,
+    /*
+     * 先写 .tmp 再 rename。直接 O_TRUNC 写同一个文件的话，读侧（/healthz 与
+     * /v1/internal/status）正好撞上中间那一下就会读到空文件，看板上表现为 maps
+     * 整段消失——2026-09-15 实测过一次。rename 是原子的，读侧要么看到旧的一份，
+     * 要么看到新的。
+     */
+    char tmp[208];
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) <= 0) return;
+    long fd = raw_svc(SYS_openat, (long)AT_FDCWD, (long)tmp,
             (long)(O_WRONLY | O_CREAT | O_TRUNC), 420L, 0L, 0L);
     if (fd < 0) return;
     raw_svc(SYS_write, fd, (long)json, (long)len, 0, 0, 0);
     raw_svc(SYS_close, fd, 0, 0, 0, 0, 0);
+    rename(tmp, path);
 }
 
 static void scrub_environ(void) {
@@ -1750,6 +1832,17 @@ int Java_com_satori_qq_qq_MapsHide_install(void* env, void* clazz) {
     ctx.readdir_n = 0;
     ctx.getenv_n = 0;
     ctx.freopen_n = 0;
+    /*
+     * 先认出自己。libmapshide 是从 memfd 载入的，dl_iterate_phdr 把 dlopen 的参数
+     * /proc/self/fd/<n> 原样当 dlpi_name，名字里没有关键字；不按基址排除的话，检测库走
+     * dl_iterate_phdr 能看见一个「从 /proc/self/fd 里载起来的库」——那本身就是判据。
+     */
+    if (!g_self_base) {
+        Dl_info_min self;
+        for (unsigned i = 0; i < sizeof(self); i++) ((char*)&self)[i] = 0;
+        if (dladdr((void*)&Java_com_satori_qq_qq_MapsHide_install, (void*)&self) && self.dli_fbase)
+            g_self_base = (uintptr_t)self.dli_fbase;
+    }
     patch_from_maps(&ctx);
     dl_iterate_phdr(iter_cb, &ctx);
     name_anon_rx();

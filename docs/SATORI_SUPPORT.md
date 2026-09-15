@@ -191,6 +191,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | `destroyGroup` / `transferGroupV2` | 只有群主可用；模块要求 `confirm=true` 才发出去 |
 | `getGroupNotifiesUnreadCount` | 账号级未读，不带群号也能读（早期实现要求 `guild_id`，0.8.9.39 起不必） |
 | `getGroupDetailInfo` / `getGroupAllInfo` / `getGroupStatisticInfo` / `getGroupMemberLevelInfo` / `getGroupBulletin` / `getGroupMsgMask` / `getBuddyReqUnreadCnt` / `getAddMeSetting` / `getDoubtBuddyReq` | 这些入口只回 `code=0`（本机的 `IOperateCallback.onResult` 只有 `(int, String)` 两个参数，没有载荷）。0.8.9.41 起：群详情改走 `batchQueryCachedGroupDetailInfo`（回调直接给 `ArrayList<GroupDetailInfo>`，含 `cmdUinMsgMask`、`cmdUinPrivilege`、`activeMemberNum`），群消息提醒方式与群统计从这份缓存里取；其余仍无数据的动作在响应里带 `payload: false`，不假装成功 |
+| `group_member_level` | 一个 QQ 进程里**只有第一次**会回调；之后再调就 15 秒超时，返回 `ok:false, result:"getGroupMemberLevelInfo timeout"`。2026-09-15 在 0.8.9.43 与 0.8.9.44 上各复现过（`ws-kernel-extras.js` 因此第一次跑 28/28、之后几次 27/28）。判回归时要么刚重启过 QQ，要么别拿这一项当判据 |
 
 个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑，`special_care` 缺省开启。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 不带 `mask` 时读取当前设置，除 `mask` 外也接受 `shield` 布尔简写。`buddy_category` 的写操作会先拉取一次分组成员表再返回，否则调用方会看到写入成功而列表里没有新分组。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态，`profile_relation_flag` 带回拉黑与特别关心标志。这些动作受 QQ 自身权限与账号状态限制。
 

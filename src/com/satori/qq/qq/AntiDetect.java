@@ -82,12 +82,33 @@ public final class AntiDetect {
     private static volatile String lastKickSource = "";
     /** 踢线处理入口的 hook 数；0 表示这个版本没拦住踢线，被踢会正常退出登录。 */
     private static volatile int serverKickHookCount;
+    /**
+     * 最近几次被拦下的踢线。{@code /healthz} 的 kick 字段只留最后一次，重复被踢时看不出规律
+     * （是同一台设备在别处登录，还是风控每隔几分钟来一次）。这里留一小圈原文。
+     */
+    private static final int KICK_LOG_MAX = 12;
+    private static final java.util.ArrayDeque<String> KICK_LOG = new java.util.ArrayDeque<>();
+    private static final AtomicLong KICK_LOG_TOTAL = new AtomicLong();
+    /** 被拦下踢线之后这段时间内，QQ 想关掉自动登录的都不算数。 */
+    private static final long AUTO_LOGIN_GUARD_MS = 60000L;
+    private static final AtomicLong AUTO_LOGIN_KEPT = new AtomicLong();
 
     public static int blockedKicks() { return BLOCKED_KICKS.get(); }
     public static long lastKickMs() { return lastKickMs; }
     public static String lastKick() { return lastKick; }
     public static String lastKickSource() { return lastKickSource; }
     public static int serverKickHooks() { return serverKickHookCount; }
+    public static long autoLoginKept() { return AUTO_LOGIN_KEPT.get(); }
+
+    /** 踢线原文，新的在前。进程内环形，落盘那份由 {@link #recordBlockedKick} 追加。 */
+    public static String[] kickLog() {
+        synchronized (KICK_LOG) {
+            return KICK_LOG.toArray(new String[0]);
+        }
+    }
+
+    /** 进程启动以来记下的踢线条数；落盘的 qk_kick.log 行数才是跨重启的判据。 */
+    public static long kickLogTotal() { return KICK_LOG_TOTAL.get(); }
 
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
                       boolean observeFekitAttach) {
@@ -1007,8 +1028,12 @@ public final class AntiDetect {
 
     private void hookQQDetectionPatch() {
         if (blockServerKick) {
+            // 内核 IKickApi 的踢线回调是 a(AppRuntime, KickedInfo)，b(...) 是它调用的私有方法。
+            // 只拦 b 的话，a 里在它之前做的几件事照样跑：kick.a 线程（清登录数据）、
+            // updateSimpleAccount(uin,false)、reportClearLoginData(uin,"2004")、setSortAccountList
+            // ——本地账号列表当场就被标成已下线。两个都拦，a 是外层，b 就再也到不了。
             hookServerKick("com.tencent.mobileqq.kick.NTKickProcessor",
-                    new String[]{"b"}, "nt-kick", true);
+                    new String[]{"a", "b"}, "nt-kick", true);
             // NTLoginTicketManager。登录后刷新票据失败时，错误码落在
             // 140022014/140022015/140022016 或 refreshMethodNeedKick 为真，会走到 f(int,String)：
             // 里面先 ntTriggerLogout(expired)，再拿 LoginActivity 发 ACTION_KICK_TO_LOGIN，
@@ -1019,6 +1044,8 @@ public final class AntiDetect {
             // 再 kickToLoginPage() 跳到 /base/login。
             hookServerKick("com.tencent.mobileqq.login.api.impl.UidServiceImpl",
                     new String[]{"kickToLoginPage"}, "uid-fail", false);
+            hookMainServiceKick();
+            hookAutoLoginGuard();
         }
 
         hookVoidMethods("com.tencent.mobileqq.msf.core.MsfCore", new String[]{
@@ -1152,9 +1179,120 @@ public final class AntiDetect {
         }
     }
 
+    /**
+     * 该拦的踢线原因。{@code user}（用户自己退出）、{@code switchAccount}（切号）、
+     * {@code expired}（票据自然过期，QQ 自己会重登）、{@code tips}/{@code gray}（只是提示）、
+     * {@code restartProcess} 都要放行——拦这些才是真出问题。
+     */
+    private static final String[] KICK_REASONS_BLOCKED = {
+            "kicked", "secKicked", "forceLogout", "suspend",
+    };
+
+    public static boolean kickReasonBlocked(String reason) {
+        if (reason == null) return false;
+        for (String r : KICK_REASONS_BLOCKED) if (r.equals(reason)) return true;
+        return false;
+    }
+
+    /**
+     * MSF 侧强踢的唯一出口。
+     *
+     * <p>服务端下发的强制下线在客户端有另一条与 NTKickProcessor 完全独立的路：MSF 把它当错误
+     * 事件抛给 {@code mqq.app.MainService$MyErrorHandler}。onKicked / onKickedAndClearToken /
+     * onUserTokenExpired / onServerSuspended / onCloneError 各处理各的，最后都落进
+     * popupNotification（6 参与 8 参两个重载）与 popupNotificationEx，那里做的是
+     * {@code appRuntime.logout(reason, true)} 再拿 LoginActivity 发 KICK_TO_LOGIN。只拦
+     * NTKickProcessor 的话，走这条路的踢线一次都拦不住，界面直接回登录页。
+     */
+    private void hookMainServiceKick() {
+        try {
+            Class<?> cls = ref.clsOrNull("mqq.app.MainService$MyErrorHandler");
+            if (cls == null) return;
+            int hooked = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                String name = m.getName();
+                if (!"popupNotification".equals(name) && !"popupNotificationEx".equals(name)) continue;
+                if (m.getReturnType() != void.class) continue;
+                Class<?>[] pt = m.getParameterTypes();
+                // 两个重载的形状都是 (String action, String uin, String title, String msg,
+                // Constants$LogoutReason reason, ...)，reason 固定在第 5 个参数上。
+                if (pt.length < 5 || !pt[4].getName().endsWith("LogoutReason")) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (p == null || p.args == null || p.args.length < 5 || p.args[4] == null) return;
+                        String reason = String.valueOf(p.args[4]);
+                        if (!kickReasonBlocked(reason)) return;
+                        StringBuilder sb = new StringBuilder("reason=").append(reason);
+                        sb.append(" action=").append(Ref.asStr(p.args[0]));
+                        sb.append(" uin=").append(Ref.asStr(p.args[1]));
+                        String title = Ref.asStr(p.args[2]);
+                        if (!title.isEmpty()) sb.append(" title=").append(title);
+                        String msg = Ref.asStr(p.args[3]);
+                        if (!msg.isEmpty()) sb.append(" msg=").append(msg);
+                        recordBlockedKick("msf-kick", clip(sb.toString(), 200));
+                        p.setResult(null);
+                    }
+                });
+                hooked++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (hooked > 0) {
+                serverKickHookCount += hooked;
+                L.i("AntiDetect: blocked MSF kick handler (" + hooked + ")");
+            } else {
+                L.w("AntiDetect: MSF kick handler not found");
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.msfKick", t);
+        }
+    }
+
+    /**
+     * 拦住踢线还不够：QQ 在踢线路径上顺手把"下次自动登录"关掉。
+     * {@code QQAppInterface.setAutoLogin(false)} → {@code mqq.app.AutoLoginUtil.setAutoLogin(uin,false)}
+     * 会把 {@code common_mmkv_configurations} 里的 {@code mqq_account_auto_login_<uin>} 写成 1
+     * （2 才是自动）。这个值是落盘的，所以踢线之后哪怕把 QQ 拉起来也停在登录页、不会自己登回来
+     * ——看守重启多少次都一样。所以在拦下踢线后的窗口里，把 false 换成 true。
+     */
+    private void hookAutoLoginGuard() {
+        try {
+            Class<?> cls = ref.clsOrNull("mqq.app.AutoLoginUtil");
+            if (cls == null) return;
+            int hooked = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!"setAutoLogin".equals(m.getName())) continue;
+                Class<?>[] pt = m.getParameterTypes();
+                if (pt.length != 2 || pt[0] != String.class || pt[1] != boolean.class) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (p == null || p.args == null || p.args.length < 2) return;
+                        if (!Boolean.FALSE.equals(p.args[1])) return;
+                        long last = lastKickMs;
+                        if (last == 0 || System.currentTimeMillis() - last > AUTO_LOGIN_GUARD_MS) return;
+                        p.args[1] = Boolean.TRUE;
+                        AUTO_LOGIN_KEPT.incrementAndGet();
+                        L.e("AntiDetect: kept auto-login after blocked kick", null);
+                    }
+                });
+                hooked++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (hooked > 0) L.i("AntiDetect: auto-login guard (" + hooked + ")");
+        } catch (Throwable t) {
+            L.e("AntiDetect.autoLogin", t);
+        }
+    }
+
+    private static String clip(String text, int max) {
+        if (text == null) return "";
+        String t = text.replace('\n', ' ').replace('\r', ' ');
+        return t.length() > max ? t.substring(0, max) : t;
+    }
+
     /** 踢线入口的参数形状不一：NTKickProcessor 带 KickedInfo，其余入口按原样记。 */
-    private String describeArgs(Object[] args, boolean kickedInfoArgs) {
-        if (kickedInfoArgs) return describeKick(args);
+    private String describeArgs(Object[] args, boolean kickedInfoArgs) {        if (kickedInfoArgs) return describeKick(args);
         if (args == null || args.length == 0) return "no-args";
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < args.length; i++) {
@@ -1184,8 +1322,53 @@ public final class AntiDetect {
     /** 记下这次踢线。日志走 L.e，不开 verbose 也要能在 logcat 里看到。 */
     public static void recordBlockedKick(String source, String detail) {
         noteBlockedKick(source, detail);
+        appendKickLog(lastKickSource, lastKick);
         L.e("AntiDetect: server kick blocked #" + BLOCKED_KICKS.get()
                 + " [" + lastKickSource + "] " + lastKick, null);
+    }
+
+    /**
+     * 把这次踢线追加到 app 私有目录的 {@code qk_kick.log}。
+     *
+     * <p>只留在内存里不够：{@code blocked_kicks} 会随进程重启归零，而「被拦下的踢线 = 服务端会话
+     * 已作废」这件事必须在重启后仍然看得见——看守正是靠它决定要不要立刻重启 QQ。root 读得到这个
+     * 文件，普通应用进不来，文件里也只有一行时间戳、来源和一句服务端原文。
+     */
+    private static void appendKickLog(String source, String detail) {
+        String line = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                .format(new java.util.Date(System.currentTimeMillis()))
+                + " " + (source == null ? "" : source)
+                + " " + (detail == null ? "" : detail)
+                + " pid=" + android.os.Process.myPid();
+        line = line.replace('\n', ' ').replace('\r', ' ');
+        if (line.length() > 400) line = line.substring(0, 400);
+        KICK_LOG_TOTAL.incrementAndGet();
+        synchronized (KICK_LOG) {
+            KICK_LOG.addFirst(line);
+            while (KICK_LOG.size() > KICK_LOG_MAX) KICK_LOG.removeLast();
+        }
+        try {
+            File dir = new File(ENV_DIR);
+            if (!dir.isDirectory()) return;
+            File f = new File(dir, "qk_kick.log");
+            /* 只留最近 200 行，避免长期运行把它撑大。 */
+            if (f.length() > 65536L) {
+                java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw");
+                byte[] tail = new byte[(int) Math.min(32768L, f.length())];
+                raf.seek(f.length() - tail.length);
+                raf.readFully(tail);
+                raf.setLength(0);
+                raf.write(tail);
+                raf.close();
+            }
+            FileOutputStream out = new FileOutputStream(f, true);
+            out.write((line + "\n").getBytes("UTF-8"));
+            out.close();
+            f.setReadable(false, false);
+            f.setReadable(true, true);
+            f.setWritable(false, false);
+            f.setWritable(true, true);
+        } catch (Throwable ignore) {}
     }
 
     /** 只更新状态、不落日志。单测跑在 JVM 上，碰 android.util.Log 会撞上桩实现。 */

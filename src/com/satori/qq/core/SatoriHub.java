@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.40";
+    public static final String APP_VERSION = "0.8.9.41";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -1696,7 +1696,15 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String op = internalOp(p, mask.isEmpty() && !p.has("shield") && !p.has("enable")
                 ? "get" : "set");
         if ("get".equals(op) || "query".equals(op)) {
-            return kernelRead(groupId, "mask", qq.extra().groupMsgMask());
+            // `getGroupMsgMask` 只回状态码，真正的掩码在群详情缓存里（`cmdUinMsgMask`）。
+            ExtraSvc.Result direct = qq.extra().groupMsgMask();
+            if (direct.payload != null) return kernelRead(groupId, "mask", direct);
+            JSONObject out = new JSONObject().put("guild_id", String.valueOf(groupId))
+                    .put("ok", direct.ok()).put("result", direct.describe());
+            String cached = cachedGroupMask(groupId);
+            if (cached.isEmpty()) out.put("payload", false);
+            else out.put("mask", cached);
+            return out;
         }
         if (mask.isEmpty()) {
             if (p.has("shield")) mask = p.optBoolean("shield", false) ? "SHIELD" : "NOTIFY";
@@ -1740,7 +1748,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (groupId != 0) out.put("guild_id", String.valueOf(groupId));
         out.put("ok", res.ok()).put("result", res.describe());
         Object payload = res.payload;
-        if (payload == null) return out;
+        if (payload == null) {
+            // Several QQNT entries answer `code=0 success` and carry nothing at all
+            // (`IOperateCallback` has no payload parameter on this build). Say so instead of
+            // returning a body that looks like an empty result.
+            out.put("payload", false);
+            return out;
+        }
         if (payload instanceof String) {
             String text = ((String) payload).trim();
             if (text.startsWith("{") || text.startsWith("[")) {
@@ -1788,7 +1802,42 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private Object groupStatistic(JSONObject p) throws Exception {
         long gid = guildIdOf(p);
-        return kernelRead(gid, "statistic", qq.extra().groupStatistic(gid));
+        ExtraSvc.Result res = qq.extra().groupStatistic(gid);
+        if (res.payload != null) return kernelRead(gid, "statistic", res);
+        // 服务端统计接口只回状态码；能用的是缓存详情里的活跃数与成员数。
+        JSONObject out = new JSONObject().put("guild_id", String.valueOf(gid))
+                .put("ok", res.ok()).put("result", res.describe());
+        JSONObject cached = firstCachedGroup(gid);
+        if (cached == null) {
+            out.put("payload", false);
+            return out;
+        }
+        out.put("active_member_num", cached.optInt("activeMemberNum",
+                cached.optInt("activeMemberNumForDisplay", 0)));
+        out.put("member_num", cached.optInt("groupMemberNum", 0));
+        out.put("member_max", cached.optInt("groupMemberMaxNum", 0));
+        return out;
+    }
+
+    /** 群详情缓存里的一项，取不到回 null。`getGroupAllInfo` 一类的入口不带载荷，数据在这里。 */
+    private JSONObject firstCachedGroup(long groupId) {
+        try {
+            Object payload = qq.extra().groupDetail(groupId, null).payload;
+            if (payload == null) return null;
+            Object json = toJson(payload);
+            JSONArray arr = json instanceof JSONArray ? (JSONArray) json : null;
+            if (arr == null || arr.length() == 0) return null;
+            return arr.optJSONObject(0);
+        } catch (Throwable t) {
+            L.e("firstCachedGroup", t);
+            return null;
+        }
+    }
+
+    /** 本号在该群的群消息提醒方式；详情缓存里的 `cmdUinMsgMask`。 */
+    private String cachedGroupMask(long groupId) {
+        JSONObject group = firstCachedGroup(groupId);
+        return group == null ? "" : group.optString("cmdUinMsgMask", "");
     }
 
     private Object groupMemberLevel(JSONObject p) throws Exception {

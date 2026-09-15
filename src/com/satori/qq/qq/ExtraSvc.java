@@ -48,6 +48,14 @@ public final class ExtraSvc {
             "com.tencent.qqnt.kernel.nativeinterface.GetGroupMedalListReq";
     private static final String GROUP_MEDAL_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IGetGroupMedalListCallback";
+    private static final String BATCH_GROUP_DETAIL_REQ =
+            "com.tencent.qqnt.kernel.nativeinterface.BatchQueryCachedGroupDetailInfoReq";
+    private static final String BATCH_GROUP_DETAIL_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.IBatchQueryCachedGroupDetailInfoCallback";
+    private static final String GROUP_DETAIL_REQ =
+            "com.tencent.qqnt.kernel.nativeinterface.GroupDetailInfoReq";
+    private static final String GROUP_DETAIL_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.IGroupDetailInfoCallback";
     private static final String GROUP_AVATAR_WALL_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IGroupAvatarWallCallback";
     private static final String IDENTITY_LIST_REQ =
@@ -202,18 +210,25 @@ public final class ExtraSvc {
                 // <payload>...)`; a few carry the payload alone, e.g.
                 // `IBatchQueryCachedGroupDetailInfoCallback.onResult(ArrayList<GroupDetailInfo>)`.
                 // Both have to complete the wait, or the second shape silently times out.
-                if (args != null && args.length >= 2 && args[0] instanceof Number) {
+                //
+                // Only methods named `on*` count as callbacks: `Object.equals` hands the proxy a
+                // single non-numeric argument too, and treating that as a payload would let a
+                // bookkeeping call complete the wait with the wrong value.
+                String cbName = m.getName();
+                boolean isCallback = cbName != null && cbName.startsWith("on");
+                if (isCallback && args != null && args.length >= 2 && args[0] instanceof Number) {
                     code.set(Ref.asInt(args[0]));
                     wording[0] = Ref.asStr(args[1]);
                     if (args.length >= 3 && args[2] != null) payload[0] = args[2];
                     latch.countDown();
-                } else if (args != null && args.length == 1 && args[0] != null
+                } else if (isCallback && args != null && args.length == 1 && args[0] != null
                         && !(args[0] instanceof Number)) {
                     code.set(0);
+                    wording[0] = "payload";
                     payload[0] = args[0];
                     latch.countDown();
                 } else {
-                    L.i("ExtraSvc " + label + " cb." + m.getName() + " args="
+                    L.i("ExtraSvc " + label + " cb." + cbName + " args="
                             + (args == null ? 0 : args.length));
                 }
                 return defOf(m.getReturnType());
@@ -270,6 +285,19 @@ public final class ExtraSvc {
         if (r == byte.class) return (byte) 0;
         if (r == char.class) return (char) 0;
         return null;
+    }
+
+    /**
+     * Whether a callback payload actually carries something. An empty list or map is what a kernel
+     * cache answers when it has nothing — treating that as data would stop the caller from trying
+     * the next entry.
+     */
+    private static boolean hasData(Object payload) {
+        if (payload == null) return false;
+        if (payload instanceof java.util.Collection) return !((java.util.Collection<?>) payload).isEmpty();
+        if (payload instanceof java.util.Map) return !((java.util.Map<?, ?>) payload).isEmpty();
+        if (payload instanceof String) return !((String) payload).trim().isEmpty();
+        return true;
     }
 
     private String selfUid() {
@@ -493,15 +521,42 @@ public final class ExtraSvc {
 
     // ------------------------------------------------------------ group reads
 
-    /** Full group profile: capacity, level, owner, flags. `source` picks the big-data entry. */
+    /**
+     * Full group profile: capacity, level, owner, flags.
+     *
+     * <p>`getGroupDetailInfo` only answers with a status code on this build, so the cached batch
+     * entry is tried first — it hands back the {@code GroupDetailInfo} struct itself. Falling back
+     * to the filtered entry, then to the status-only call, keeps the action working on builds
+     * where either entry is missing.
+     */
     public Result groupDetail(long groupCode, String source) {
+        Result cached = call(qq.getGroupService(), BATCH_GROUP_DETAIL_CB,
+                "batchQueryCachedGroupDetailInfo", (svc, cb) -> {
+                    Object req = ref.neu(BATCH_GROUP_DETAIL_REQ);
+                    ArrayList<Long> codes = new ArrayList<>();
+                    codes.add(groupCode);
+                    ref.put(req, "groupCodes", codes);
+                    ref.call(svc, "batchQueryCachedGroupDetailInfo", req, cb);
+                });
+        if (hasData(cached.payload)) return cached;
+        Result filtered = call(qq.getGroupService(), GROUP_DETAIL_CB, "getGroupDetailInfoByFilter",
+                (svc, cb) -> {
+                    Object req = ref.neu(GROUP_DETAIL_REQ);
+                    ref.put(req, "groupCode", groupCode);
+                    ref.put(req, "appid", 0);
+                    ref.call(svc, "getGroupDetailInfoByFilter", req, 0, 0, false, cb);
+                });
+        if (hasData(filtered.payload)) return filtered;
+        // Last resort: the status-only entry, so a caller still learns the link is alive.
         return call(qq.getGroupService(), OPERATE_CB, "getGroupDetailInfo",
                 (svc, cb) -> ref.call(svc, "getGroupDetailInfo", groupCode,
                         groupInfoSource(source), cb));
     }
 
-    /** The same profile through the "all info" entry, which carries a few extra fields. */
+    /** Same struct as {@link #groupDetail}, read through the "all info" entry's name. */
     public Result groupAllInfo(long groupCode) {
+        Result cached = groupDetail(groupCode, null);
+        if (hasData(cached.payload)) return cached;
         return call(qq.getGroupService(), OPERATE_CB, "getGroupAllInfo",
                 (svc, cb) -> ref.call(svc, "getGroupAllInfo", groupCode,
                         groupInfoSource(null), cb));

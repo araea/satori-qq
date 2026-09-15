@@ -59,7 +59,42 @@ Java 层在 `qq/AntiDetect`，装在每个 QQ 进程：
 
 `/healthz` 的 `kick_hook` 是踢线入口的 hook 数之和（0.8.9.46 起正常为 **12**：nt-kick 2 + ticket-refresh 1 + uid-fail 1 + msf 入口 4 + msf 出口 3 + gray 软事件 1），`last_kick_source` 记下最近一次是哪个入口拦下的，`last_kick` 记参数，`kick_log` 是最近 12 次的原文。另有一个独立的登出守卫，hook 数在 `logout_guard.hooks`（0.8.9.46 起正常为 **5**），以及保住盘上登录态的守卫，在 `login_state.hooks`（正常为 **2**）。
 
-`last_kick` 现在带两个新字段：`kickType=`（`RequestMSFForceOffline.bKickType`，对应 `KickedType` 的 `KKICKBYMULTIINST` / `KKICKBYMOBILE` / `KKICKBYPASSWORDCHANGE` / `KKCIKBYLOWVERSION`，名称后带 `?` 表示字节到枚举的映射是推定——全 APK 里 Java 侧没人读这个字段，映射在 native）与 `sigKick=`（1 表示带 `vecSigKickData` 的安全强踢，reason 取 `secKicked`；0 是普通强踢）。只记 reason 与服务端文案的话，现场分不出「在别处登录被顶」和「风控打击」。
+`last_kick` 现在带这些字段：`kickType=`（`RequestMSFForceOffline.bKickType`，名字按 `KickedType` 的声明顺序取，见下）与 `sigKick=`（1 表示带 `vecSigKickData` 的安全强踢，reason 取 `secKicked`；0 是普通强踢），另有 `seqno=` / `sigLen=` / `sameDevice=`。内核那条路（`nt-kick`）参数是 `KickedInfo`，字段比 MSF 包多，单独记 `appId=` / `instanceId=` / `securityKickedType=`。只记 reason 与服务端文案的话，现场分不出「在别处登录被顶」和「风控打击」。
+
+### `kickType` 那个字节能读到什么程度（2026-09-15 核）
+
+16070 的 `classes.dex` 里 `com.tencent.qqnt.kernel.nativeinterface.KickedType` 的声明顺序是：
+
+```text
+KKICKBYMULTIINST(0), KKICKBYMOBILE(1), KKICKBYPASSWORDCHANGE(2), KKCIKBYLOWVERSION(3)
+```
+
+`KickedInfo` 的字段是 `appId, instanceId, kickedType, sameDevice, securityKickedType, tipsDesc, tipsTitle`——**`appId` 是判「谁把我顶了」的唯一字段**（PC / 手机 / 平板各有自己的 appId），MSF 那个包里没有它。
+
+仍然不确定的两件事，别当成结论用：
+
+- 「服务端那个字节就是枚举序号」是推定。没有任何 Java 类读这个字段（映射在 native），而 native 里连这几个枚举名的字符串都没有（`libMSFKernel.so`、`libkernel.so` 等逐个 `strings` 过，0 命中），所以核不到映射代码。日志里名字后面一直带 `?`。
+- `0` 有歧义：`KickedInfo` 的默认构造就是 `KickedType.values()[0]`，服务端没填时同样取到 0。
+
+## 设备侧现状（2026-09-15 实测，判断「环境到底脏不脏」用这几条）
+
+| 项 | 本机 | 说明 |
+| --- | --- | --- |
+| `ro.boot.verifiedbootstate` | `green` | 设备层已处理（KSU 侧模块改的），与 `ro.boot.flash.locked=1` 一致 |
+| `ro.boot.flash.locked` | `1` | 同上 |
+| `ro.boot.hardware` / `ro.bootloader` | `qcom` / `unknown` | libfekit 只读这两个，没有异常 |
+| `ro.debuggable` / `ro.kernel.qemu` | 空 / 空 | libfekit 读；空是正常 |
+| `ro.build.tags` / `ro.build.type` | `release-keys` / `user` | 正常 |
+| `ro.vivo.oem.name` | 空 | libfekit 读它（跨厂商 ROM 检查）；空是正常 |
+| root 管理器应用 | 一个都没装 | libfekit 自带名单：magisk / kernelsu / apatch / kingroot / kingo / shuame / smedialink / zhiqupk / cleanmaster 系，`pm list packages` 逐个对过 |
+| `/sys/module/kernelsu`、`/sys/module/apatch` | 不存在 | 本机 KSU 编进内核（GKI），没有模块目录 |
+| `files/imei`（libmsfbootV2 启动读它） | `4538aeb7a1c7d631`，2026-09-07 起没变 | 设备指纹稳定，模块也没设 `fake_imei`（配置文件不存在，全用默认值） |
+| 时钟偏差 | 与 baidu/tencent/deepseek 回包的 `Date` 差 1 秒内 | SSO 签名对时间敏感，偏差大的设备会「登录已失效」 |
+| libfekit 读的 `/sys` 路径 | `/sys/devices/soc0/serial_number`（应用读是 EACCES）、`cpu0/cpufreq/{cpuinfo_max,cpuinfo_min,scaling_cur}_freq` | 前者普通应用拿不到（QQ 也拿不到），后者是遥测 |
+| libturingxq / libturingmfa 读的 `/sys` | `/sys/fs/selinux/enforce`、`cpu%d/cpu_capacity` | 本机 enforcing（正常） |
+| libMSFKernel 的关键字 | 只有 `loadavg` / `meminfo` / `stat` 与它自己的 `.MSF*` 数据文件 | 没有 root/hook 关键字名单；inotify 盯的是它自己那些文件，不是检测面 |
+
+结论：**客户端这边看不到能解释「被设备异常整下线」的脏东西**。所以再堆过检测的收益有限，先把「下一次踢线到底是什么性质」的证据抓全（见上），别反过来先改策略。
 
 踢线原文本该从 `Packet.decodePacket(buf, "RequestMSFForceOffline", new RequestMSFForceOffline())` 解——那就是 `MainService` 自己解这个包用的入口。别的回调带的是另一种包，硬解会得到垃圾字段，所以解完要校验（标题或正文至少一个非空，或 uin 非 0），过不了就只记 `cmd=` 与 `uin=`。
 
@@ -191,7 +226,7 @@ logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前�
 | `qk_env_*.json` 自检 | `/storage/emulated/0/Android/data/com.tencent.mobileqq/files` | `/data/data/com.tencent.mobileqq/files`（0600） | 外部存储的 `Android/data` 有绕过存储沙箱的枚举手法，而这份文件的字段名直接写着模块做了什么。升级后首次写盘会把旧位置的同名文件删掉 |
 | 看守日志与 pid | `/data/local/tmp`（0771，libfekit 二进制里带着这个路径字符串） | `/data/adb/satori-qq/`（0600，普通应用进不去） | 文件名与内容能反推模块 |
 | `satori-last-send.txt`、`satori-history.txt` | 每次发消息、每次查历史都重写 | 只在 `verbose_logs=true` 时写（0.8.9.46 起并移到 `/data/data/com.tencent.mobileqq/files/`） | 逐次 I/O 与残留；诊断信息在 logcat 的 `Q.Kernel` 里仍然有 |
-| `qk_kick.log` 踢线记录（0.8.9.44 新增） | — | `/data/data/com.tencent.mobileqq/files/qk_kick.log`（0600，超过 64KB 只留尾部 32KB） | 服务端踢线原文（reason、`kickType`、`sigKick`、标题、正文）对排障有用，但要把"刚被踢过"这件事留给重启后的看守看，所以落盘而不是只在内存里 |
+| `qk_kick.log` 踢线记录（0.8.9.44 新增，0.10.0 补字段） | — | `/data/data/com.tencent.mobileqq/files/qk_kick.log`（0600，超过 64KB 只留尾部 32KB） | 服务端踢线原文（入口、reason、`kickType`、`sigKick`、`seqno`、`sigLen`、`sameDevice`、标题、正文、`up=<秒>`）对排障有用，但要把"刚被踢过"这件事留给重启后的看守看，所以落盘而不是只在内存里。`up=` 是这次登录活了多久，用来分「周期性（票据/会话寿命）」与「事件驱动（行为打分）」 |
 | `qk_guard.log` 善后动作（0.8.9.45/46） | — | 同上目录（0600，同口径截断） | 被拦下的登出、被顶回去的摘账号、自愈修回来的东西。**不与 `qk_kick.log` 合并**：那份是看守的重启判据 |
 | `qk_sso.log` 模块自己 SSO 请求的失败（0.8.9.46 新增） | — | 同上目录（0600，同口径截断） | 用来分开「环境检测」与「接口把会话打废」两种踢线成因，要与 `qk_kick.log` 对时间 |
 
@@ -245,15 +280,17 @@ logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前�
 
 外部的 `scripts/qq-satori-exposure-audit.sh` 取主进程 pid 的 `/proc/<pid>/maps`，不受这份文件影响。
 
+**排障时别把 force-stop 当免费手段**：每强停再拉起一次，QQ 都要重新握手、重新上报设备信息、重新做一次登录（`qk_guard.log` 里能看到 `auto_login_kept`），而「服务端认为同一账号出现了第二个登录实例」正是 `KKICKBYMULTIINST` 那类强下线的语义。装完新版本重启一次是必要的，除此之外的反复重启没有收益。看守只在两条判据上重启 QQ：`qk_kick.log` 增行，或连续多轮离线。
+
 ## 挡不住的部分
 
 这些不在模块里做。列出来是为了知道边界。
 
-- Bootloader 解锁。本机 `ro.boot.verifiedbootstate` 是 `orange`。QQ 自己的库只读 `ro.bootloader` 与 `ro.boot.hardware`，不读这个值，模块不伪造它。Duck Detector 会读。单独把它改成 `green` 会与 `ro.boot.flash.locked`、vbmeta 状态矛盾。查看：`getprop ro.boot.verifiedbootstate`。要在设备层处理，用带 bootloader 伪造的 root 方案。
+- Bootloader 解锁。本机 `ro.boot.verifiedbootstate` 已经是 `green`、`ro.boot.flash.locked` 是 `1`——这两个值由 root 方案那一侧的模块改（设备层，不在本模块里）。QQ 自己的库只读 `ro.bootloader` 与 `ro.boot.hardware`，不读这两个值；本机这两个是 `unknown` / `qcom`，正常。Duck Detector 之类会读。要在设备层处理，用带 bootloader 伪造的 root 方案。
 - SELinux。Turing 读 `/sys/fs/selinux/enforce`。模块的 native 过滤只覆盖 `/proc`，不覆盖 `/sys`。本机是 enforcing，正常。查看：`getprop ro.boot.selinux; cat /sys/fs/selinux/enforce`。
 - 内核与挂载命名空间。Magisk、KernelSU、APatch 的挂载点由内核层暴露。模块只在检测库进程内过滤 maps 与 mountinfo，检测方换一条模块没接管的通道，或直接读内核，就绕开了。对比：在进程内和进程外各读一次 `/proc/self/mountinfo`。
 - ArtMethod 完整性。`libfekit.so` 带 `parse_libart.cpp` 与整套 `art::CheckJNI` 符号，可以对比运行时方法入口与磁盘上的 `libart.so`。Xposed 与 LSPlant 的 ArtMethod 改写不在本模块覆盖范围。核实：`strings -a libfekit.so | grep -E 'CheckJNI|parse_libart'`。
-- 服务端风控。客户端拦得再干净，腾讯仍按历史行为、设备指纹变化与网络环境打分。
+- 服务端风控。客户端拦得再干净，腾讯仍按历史行为、设备指纹变化与网络环境打分。2026-09-15 那次排查把客户端能看的都看了一遍（见上「设备侧现状」），没有异常项，所以这两次踢线（`kickType=0` + `sameDevice=0` + 普通强踢）更可能是服务端侧的判断，而不是本机暴露了什么。
 - 进程内内存关键字扫描。检测方读自己进程的堆/栈（`memchr` 扫一段内存），模块引用的 Xposed 类名就在里面；这条路不经过文件，GOT 与 `/proc` 过滤都用不上。`/proc/*/mem` 那条读法已经堵掉，直接扫内存堵不掉。
 - 多后端交叉校验。同一个事实用 libc、裸 syscall、汇编三种方式各读一次再比对，模块只改得了其中 libc 那条。libfekit 现在只用 libc，一旦它照着这个思路改，`/proc` 文本过滤的收益会明显下降。
 

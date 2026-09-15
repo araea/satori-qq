@@ -86,7 +86,7 @@ plugins:
 
 所以除了拦踢线，模块在踢线后的 15 分钟"善后期"里还做两件事：把要摘账号/关自动登录的写入顶回去（`login_state.kept` 记命中次数），以及在离线时把 `u_<uin>_t` 与自动登录开关修回来（`qk_guard.log` 里的 `self-heal` 行）。善后期跨进程重启成立——判据除了内存计数还看 `qk_kick.log` 的修改时间，因为看守恰好在窗口里 force-stop QQ。用户自己按的退出登录（reason `user`/`switchAccount`）会让善后期立即停手。
 
-`/healthz` 里：`kick_hook` 为 0 表示这一版没拦住踢线（0.8.9.46 起正常为 12），`logout_guard.hooks` 为 0 表示没拦住踢线后的登出（0.8.9.46 起正常为 5），`login_state.hooks` 为 0 表示没拦住摘账号（正常为 2）。逐条原文在 `kick_log` / `logout_guard.log`，落盘到 `qk_kick.log` / `qk_guard.log`，`kick_log` 里现在带 `kickType=`（能区分「被另一台手机顶下线」「改密码」「多开」「版本过低」）与 `sigKick=`。`sso.session_errors` 是模块自己发的 SSO 请求撞上 QQ 认「票据失效」那组错误码的次数——它涨了才说明踢线是接口调用把会话打废的，而不是环境检测；原文在 `qk_sso.log`。用 [`scripts/qq-revive.sh`](scripts/qq-revive.sh) 看守：它按踢线记录行数增长、`online=false` 与「MSF 进程没有上游连接」判断，必要时重启 QQ，装法见 [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh) 开头。
+`/healthz` 里：`kick_hook` 为 0 表示这一版没拦住踢线（0.8.9.46 起正常为 12），`logout_guard.hooks` 为 0 表示没拦住踢线后的登出（0.8.9.46 起正常为 5），`login_state.hooks` 为 0 表示没拦住摘账号（正常为 2）。逐条原文在 `kick_log` / `logout_guard.log`，落盘到 `qk_kick.log` / `qk_guard.log`，`kick_log` 里现在带 `kickType=`（0.10.0 起名字按 QQ 的 `KickedType` 声明顺序取，仍带 `?`；判定口径与不确定性写在 [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md)）、`sigKick=`、`seqno=`、`sigLen=`、`sameDevice=`，内核那条路还带 `appId=`（哪一端的登录把本机顶了）；每行的 `up=<秒>` 是这次登录活了多久——同一个数反复出现说明是会话/票据寿命，长短不一才像行为打分。`sso.session_errors` 是模块自己发的 SSO 请求撞上 QQ 认「票据失效」那组错误码的次数——它涨了才说明踢线是接口调用把会话打废的，而不是环境检测；原文在 `qk_sso.log`。用 [`scripts/qq-revive.sh`](scripts/qq-revive.sh) 看守：它按踢线记录行数增长、`online=false` 与「MSF 进程没有上游连接」判断，必要时重启 QQ，装法见 [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh) 开头。
 
 ## 构建与测试
 

@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.9.1";
+    public static final String APP_VERSION = "0.10.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -6564,6 +6564,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         Thread t = new Thread(() -> {
             boolean previous = qq.isOnline();
             onlineSinceMs = previous ? System.currentTimeMillis() : 0;
+            AntiDetect.noteOnlineSince(onlineSinceMs);
             long interval = Math.max(1000L, cfg.heartbeatMs);
             long nextHeartbeat = System.currentTimeMillis() + interval;
             while (true) {
@@ -6573,6 +6574,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     long now = System.currentTimeMillis();
                     if (online != previous) {
                         onlineSinceMs = online ? now : 0;
+                        // 踢线台账里的 up=<秒> 就是从这里来的：一条踢线是「登录后多久」被推下来的，
+                        // 是判周期还是事件驱动的唯一线索。
+                        AntiDetect.noteOnlineSince(onlineSinceMs);
                         L.i("QQ kernel state -> " + (online ? "online" : "offline"));
                         emitLoginUpdated();
                         previous = online;

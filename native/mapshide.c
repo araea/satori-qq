@@ -199,6 +199,14 @@ static const char* BLOCK[] = {
     "apatch", "shamiko", "com.topjohnwu", "me.weishu.kernelsu",
     "me.bmax.apatch", "com.noshufou", "eu.chainfire.supersu",
     "com.koushikdutta.superuser", "install-recovery.sh",
+    /*
+     * libfekit 自己那份 root 管理器名单里剩下的一键 root 应用。本机没装，但名单是它带的，
+     * 装上任何一个都会被它按进程名/路径认出来，补齐成本是五条字符串。
+     * （com.topjohnwu / me.weishu.kernelsu / me.bmax.apatch / com.noshufou /
+     *   eu.chainfire.supersu / com.koushikdutta.superuser 上面已经有了。）
+     */
+    "com.kingroot.kinguser", "com.kingo.root", "com.shuame.rootgenius",
+    "com.smedialink.oneclickroot", "com.zhiqupk.root.global",
     "zygisk_vector", "libvector", "JingMatrix", "frida", "gadget",
     "linjector", "lsplant",
     /*

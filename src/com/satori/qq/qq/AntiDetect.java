@@ -1861,16 +1861,28 @@ public final class AntiDetect {
         return text.length() > 160 ? text.substring(0, 160) : text;
     }
 
-    /** 把一次踢线的参数整理成一行可读文本。 */
+    /**
+     * 把一次踢线的参数整理成一行可读文本。
+     *
+     * <p>{@code KickedInfo} 比 MSF 那个包多三个字段，而且只有这里有：{@code appId} 指是哪一端
+     * 的登录把本机顶了（PC / 手机 / 平板各有 appId），{@code instanceId} 指同一端里的第几个实例，
+     * {@code securityKickedType} 是安全强踢的子类型。判断「是不是有人从别处登录」只能靠 appId，
+     * 服务端文案里看不出来。
+     */
     private String describeKick(Object[] args) {
         StringBuilder sb = new StringBuilder();
         Object info = args != null && args.length > 1 ? args[1] : null;
         if (info != null) {
             sb.append("type=").append(String.valueOf(ref.get(info, "kickedType")));
+            sb.append(" kickType=").append(Ref.asInt(ref.get(info, "kickedType")));
             sb.append(" security=").append(String.valueOf(ref.get(info, "securityKickedType")));
             sb.append(" sameDevice=").append(String.valueOf(ref.get(info, "sameDevice")));
+            sb.append(" appId=").append(Ref.asInt(ref.get(info, "appId")));
+            sb.append(" instanceId=").append(Ref.asInt(ref.get(info, "instanceId")));
             String title = Ref.asStr(ref.get(info, "tipsTitle"));
             if (title != null && !title.isEmpty()) sb.append(" tips=").append(title);
+            String desc = Ref.asStr(ref.get(info, "tipsDesc"));
+            if (desc != null && !desc.isEmpty()) sb.append(" msg=").append(desc);
         }
         if (args != null && args.length > 2 && args[2] != null)
             sb.append(" reason=").append(args[2]);
@@ -1880,19 +1892,27 @@ public final class AntiDetect {
     /**
      * MSF 侧踢线的参数：把服务端推下来的强制下线包解开，逐字段记下来。
      *
-     * <p>{@code RequestMSFForceOffline} 里有两个字段是别处拿不到的判据：
+     * <p>{@code RequestMSFForceOffline} 一共八个字段：{@code bKickType}、{@code bSameDevice}、
+     * {@code bSigKick}、{@code iSeqno}、{@code lUin}、{@code strTitle}、{@code strInfo}、
+     * {@code vecSigKickData}。能当判据的是前三个加签名段长度：
      *
      * <ul>
-     *   <li>{@code bKickType} —— 只有它能区分「被另一台手机顶下线」「改密码」「多开」「版本过低」。
-     *       全 APK 里 Java 侧没人读它（只有一个 dex 带着这个字段名），说明字节到
-     *       {@code KickedType} 的映射在 native，这里按 {@code KickedType} 的声明顺序解释，
-     *       所以名称后面带 {@code ?}，表示是推定而不是读出来的。</li>
+     *   <li>{@code bKickType} —— 区分「被另一处登录顶下线」「改密码」「多开」「版本过低」。
+     *       2026-09-15 从 16070 的 {@code classes.dex} 里核出 {@code KickedType} 的声明顺序是
+     *       {@code KKICKBYMULTIINST, KKICKBYMOBILE, KKICKBYPASSWORDCHANGE, KKCIKBYLOWVERSION}，
+     *       名字按这个顺序取。**但「服务端那个字节就是枚举序号」仍是推定**——没有哪个 Java
+     *       类读过这个字段（映射在 native，而 native 里也没有这几个枚举名的字符串），所以
+     *       名字后面继续带 {@code ?}。0 还有一层歧义：{@code KickedInfo} 的默认构造就是
+     *       {@code KickedType.values()[0]}，服务端没填时同样取到 0。</li>
      *   <li>{@code bSigKick} —— 1 表示带 {@code vecSigKickData} 的安全强踢（reason 取
-     *       {@code secKicked}），0 是普通强踢（{@code kicked}）。</li>
+     *       {@code secKicked}），0 是普通强踢（{@code kicked}）。{@code sigLen} 单独记，
+     *       因为「说了是安全强踢但签名段是空的」和真有数据是两回事。</li>
+     *   <li>{@code bSameDevice} —— 0 表示服务端认这不是同一台设备。</li>
      * </ul>
      *
      * <p>只记 reason 与服务端文案的话，现场只能看到「下线通知 / 你的账号当前登录已失效」，
-     * 分不出是风控打击还是账号在别处登录。这两个字段是唯一能把它们分开的东西。
+     * 分不出是风控打击还是账号在别处登录。MSF 这条路拿不到 {@code appId}（那是 NT 内核
+     * {@code KickedInfo} 的字段，见 {@link #describeKick}），所以这条路判不到"哪一端"。
      */
     private String describeMsfKick(Object[] args) {
         StringBuilder sb = new StringBuilder();
@@ -1908,6 +1928,10 @@ public final class AntiDetect {
             if (!name.isEmpty()) sb.append("(").append(name).append("?)");
             sb.append(" sigKick=").append(ref.get(decoded, "bSigKick"));
             sb.append(" sameDevice=").append(ref.get(decoded, "bSameDevice"));
+            sb.append(" seqno=").append(Ref.asLong(ref.get(decoded, "iSeqno")));
+            // 安全强踢带一段签名数据，长度够区分「真的有 vecSigKickData」与「字段是空的」。
+            Object sig = ref.get(decoded, "vecSigKickData");
+            sb.append(" sigLen=").append(sig instanceof byte[] ? ((byte[]) sig).length : 0);
             String title = Ref.asStr(ref.get(decoded, "strTitle"));
             if (!title.isEmpty()) sb.append(" title=").append(title);
             String info = Ref.asStr(ref.get(decoded, "strInfo"));
@@ -2023,10 +2047,15 @@ public final class AntiDetect {
      * 文件，普通应用进不来，文件里也只有一行时间戳、来源和一句服务端原文。
      */
     private static void appendKickLog(String source, String detail) {
+        // 本次登录活了多久。这一项是判「踢线是周期性的还是事件驱动的」的唯一线索：如果每次都
+        // 落在同一个数（例如一小时）附近，那是会话/票据的生命周期到了；如果长短不一，才更像
+        // 按行为与设备指纹打分的结果。之前只有绝对时间戳，对不上「活了多少」。
+        long up = sessionAgeSeconds();
         String line = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
                 .format(new java.util.Date(System.currentTimeMillis()))
                 + " " + (source == null ? "" : source)
                 + " " + (detail == null ? "" : detail)
+                + (up >= 0 ? " up=" + up + "s" : "")
                 + " pid=" + android.os.Process.myPid();
         line = line.replace('\n', ' ').replace('\r', ' ');
         if (line.length() > 400) line = line.substring(0, 400);
@@ -2036,6 +2065,19 @@ public final class AntiDetect {
             while (KICK_LOG.size() > KICK_LOG_MAX) KICK_LOG.removeLast();
         }
         appendLine(ENV_DIR, "qk_kick.log", line);
+    }
+
+    /** 本进程看到的「上线时刻」，由 hub 的状态监控在 online 翻转时写进来。0 表示未知。 */
+    private static final AtomicLong SESSION_START_MS = new AtomicLong();
+
+    public static void noteOnlineSince(long ms) { SESSION_START_MS.set(ms); }
+
+    /** 这次登录已经活了多久（秒）。没有上线时刻时返回 -1。 */
+    private static long sessionAgeSeconds() {
+        long start = SESSION_START_MS.get();
+        if (start <= 0) return -1;
+        long age = (System.currentTimeMillis() - start) / 1000L;
+        return age < 0 ? -1 : age;
     }
 
     /** 只更新状态、不落日志。单测跑在 JVM 上，碰 android.util.Log 会撞上桩实现。 */

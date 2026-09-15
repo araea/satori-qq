@@ -106,6 +106,7 @@ node tests/ws-health.js            # 健康与自检
 node tests/ws-kernel-extras.js     # 扩展读取动作
 node tests/ws-kernel-writes.js     # 扩展写入动作，自带清理
 node tests/internal-kernel-probe.js # 官方 internal 路由 + 0.8.9.39 新增动作
+node tests/media-live-probe.js voice # 语音条/文件/群文件能不能真发出去，见脚本头注释
 ```
 
 升级 QQ 之后先跑一次接口面自检，它会指出断在哪个类、哪个字段或哪个回调，再跑上面的巡检：

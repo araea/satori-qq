@@ -223,6 +223,10 @@ QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，
 
 媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，以及本端的 `/v1/assets/{id}`。入站图片优先返回无需 Bearer 令牌的本地资源地址，头像使用 QQ 头像 CDN。
 
+`<audio src>` 先转成 QQ 自己的 SILK 再发（mp3/wav/amr 都走这条路），转码整条带重试，最多三次：`MediaCodec` 的解码器在 QQ 进程里会被系统中途回收，`queueInputBuffer` 抛一个空消息的 `CodecException`，换一个解码器重来就好。不重试时同一条语音连发几条会随机丢——`node tests/media-live-probe.js voicerepeat` 是量这件事的探针。重试按时间收口（上一次失败的耗时乘二超过 20 秒就不试），因为一条 59 秒的语音转一次，QQ 在前台时约 8 秒、在后台时约 34 秒，多试两次客户端那条 HTTP 就超时了。`<video>` 需要本地能取到视频帧做缩略图；`<file>` 既发聊天气泡，也进群文件列表。
+
+`message.create` 是同步等 QQ 内核回调的：语音回调约 1 秒，文件要等上传，慢的时候会占满 20 秒的等待窗口（超时后按「无回调」放行，消息通常已经发出）。客户端超时不要低于 30 秒。
+
 ## 客户端注意事项
 
 - Koishi 的 `server.selfUrl` 须与 `server.port` 一致，QQ 进程才读得到资源地址

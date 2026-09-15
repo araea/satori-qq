@@ -29,24 +29,101 @@ public final class AudioTranscoder {
 
     private AudioTranscoder() {}
 
+    /**
+     * 语音转码是**偶发失败**的：同一个 mp3 连着发三条，中间那条可能报
+     * `record transcode/send failed`。日志里落的是
+     * `MediaCodec$CodecException`（消息为空）抛在 `queueInputBuffer` 上——解码器在
+     * 使用中途被系统回收/实例额度用尽，QQ 进程里同时还有它自己的编解码在跑。
+     * 换一个解码器重来一次通常就好，所以转码整体带重试：调用方不必知道这件事，
+     * 失败仍是失败，只是概率从「十几条里丢一条」降下来。
+     *
+     * 重试要按**时间**收口，不能只数次数：一条 59 秒的语音转一次要三十秒上下（息屏、
+     * 进程在后台时更慢），三次就是一分半，客户端那条 HTTP 早就超时了（调用方给的是
+     * 30–65 秒）。观察到的失败都是几秒内抛的，所以规则定成「上一次失败花掉的时间乘以
+     * 二已经超过预算就不再试」——快速失败才值得重来，慢失败多半不是这个毛病。
+     */
+    private static final int SILK_ATTEMPTS = 3;
+    private static final long SILK_BUDGET_MS = 20_000;
+    private static final long SILK_RETRY_DELAY_MS = 300;
+
     static File toSilk(Ref ref, File source, File dir) {
-        File pcm = null;
-        File silk = null;
+        long start = System.currentTimeMillis();
+        long lastCost = 0;
+        Throwable failure = null;
+        for (int attempt = 1; attempt <= SILK_ATTEMPTS; attempt++) {
+            long attemptStart = System.currentTimeMillis();
+            try {
+                File silk = transcodeSilk(ref, source, dir);
+                if (silk != null) {
+                    // 走 L.e 而不是 L.i：这两行是排查「语音为什么慢/为什么丢」的唯一入口，
+                    // 而 L.i/L.w 只在 verbose 下出，默认配置里等于没有。
+                    if (attempt > 1) L.e("silk transcode ok after " + attempt + " attempts ("
+                            + (System.currentTimeMillis() - start) + "ms)", null);
+                    return silk;
+                }
+                failure = new IllegalStateException("silk encoder produced no frames");
+            } catch (Throwable t) {
+                failure = t;
+            }
+            lastCost = System.currentTimeMillis() - attemptStart;
+            long spent = System.currentTimeMillis() - start;
+            if (attempt == SILK_ATTEMPTS || !worthRetry(failure)) break;
+            if (spent + lastCost >= SILK_BUDGET_MS) {
+                L.e("silk transcode gave up after " + attempt + " attempts (" + spent
+                        + "ms, next would exceed " + SILK_BUDGET_MS + "ms budget): "
+                        + describe(failure), null);
+                break;
+            }
+            L.e("silk transcode attempt " + attempt + " failed after " + lastCost + "ms ("
+                    + describe(failure) + "), retrying", null);
+            try {
+                Thread.sleep(SILK_RETRY_DELAY_MS * attempt);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        L.e("audio transcode silk (" + (System.currentTimeMillis() - start) + "ms total)", failure);
+        return null;
+    }
+
+    /** One decode+encode pass. Throws on failure so {@link #toSilk} can tell flake from bad input. */
+    private static File transcodeSilk(Ref ref, File source, File dir) throws Exception {
+        File pcm = File.createTempFile("obpcm", ".pcm", dir);
+        File silk = File.createTempFile("obsilk", ".silk", dir);
         try {
-            pcm = File.createTempFile("obpcm", ".pcm", dir);
-            silk = File.createTempFile("obsilk", ".silk", dir);
             decodeTo8kMonoPcm(ref, source, pcm);
             encodeSilk(ref, pcm, silk);
             if (silk.length() <= 12) throw new IllegalStateException("silk encoder produced no frames");
             L.i("Transcoded voice to SILK: " + source.length() + " -> " + silk.length() + " bytes");
             return silk;
         } catch (Throwable t) {
-            L.e("audio transcode silk", t);
-            if (silk != null) silk.delete();
-            return null;
+            silk.delete();
+            throw t;
         } finally {
-            if (pcm != null) pcm.delete();
+            pcm.delete();
         }
+    }
+
+    /** A file MediaExtractor cannot read at all will not get better on a second look. */
+    private static boolean worthRetry(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof IllegalArgumentException) return false;
+        }
+        return true;
+    }
+
+    /** CodecException carries the only useful wording; its getMessage() is usually empty. */
+    private static String describe(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof MediaCodec.CodecException) {
+                MediaCodec.CodecException e = (MediaCodec.CodecException) c;
+                return "CodecException transient=" + e.isTransient()
+                        + " recoverable=" + e.isRecoverable()
+                        + " diagnostic=" + e.getDiagnosticInfo();
+            }
+        }
+        return t == null ? "unknown" : String.valueOf(t);
     }
 
     /**

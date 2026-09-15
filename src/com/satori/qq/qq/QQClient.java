@@ -662,8 +662,13 @@ public final class QQClient {
             try {
                 String pre = describeElements(elements);
                 L.e("sendMsg pre " + pre.replace("\n", " | "), null);
-                try (java.io.FileWriter w = new java.io.FileWriter(LAST_SEND_DUMP, false)) {
-                    w.write("PRE\n" + pre);
+                // 落盘只在 verbose 下做，且写进 app 私有目录：原来无条件写外部
+                // Android/data 下那个路径，那个目录一旦不可写就每次发消息抛一次
+                // FileNotFoundException（logcat 里连着整串栈），既是噪声也是暴露面。
+                if (L.verbose()) {
+                    try (java.io.FileWriter w = new java.io.FileWriter(LAST_SEND_DUMP, false)) {
+                        w.write("PRE\n" + pre);
+                    }
                 }
             } catch (Throwable t0) {
                 L.e("sendMsg pre dump", t0);
@@ -685,7 +690,7 @@ public final class QQClient {
     }
 
     private static final String LAST_SEND_DUMP =
-            "/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-last-send.txt";
+            "/data/data/com.tencent.mobileqq/files/satori-last-send.txt";
 
     /** Write kernel-stored element types/pic fields after send (no peer identifiers). */
     public void dumpSent(int chatType, String peerUid, long msgId) {
@@ -1437,7 +1442,7 @@ public final class QQClient {
         // Same reasoning as dumpSent: the trace belongs in logcat, not in a file in Android/data.
         if (L.verbose()) try {
             java.io.File f = new java.io.File(
-                    "/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-history.txt");
+                    "/data/data/com.tencent.mobileqq/files/satori-history.txt");
             try (java.io.FileWriter w = new java.io.FileWriter(f, false)) { w.write(r.trace); }
         } catch (Throwable ignore) {}
         return r;

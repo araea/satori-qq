@@ -446,8 +446,25 @@ static int net_local_port_hidden(const char* line, size_t len) {
     return 0;
 }
 
+/*
+ * 模块自己在 app 私有目录里写的那些文件。
+ *
+ * <p>检测库不需要读 /proc 也能看见它们：`getFilesDir().listFiles()` 在**自己进程内**就能
+ * 列出来，`qk_env_maps_main.json` 的内容还直接写着模块打了多少个 GOT、拦了哪些库。这条路
+ * 不经过任何路径过滤，只能靠符号接管挡——目录项名和路径走的是同一张判定表，
+ * `dent_name_blocked` 就是那个入口。
+ *
+ * <p>`qk_` 是模块独占的前缀，按前缀拦不会误伤 QQ 自己的文件：41 个 dex 里一个 `qk_` 字符串
+ * 都没有。libfekit.so 里 grep 得到 4 处 `qk_`，但那是指令字节的假命中（附近是 `5280..`、
+ * `b97f0100` 这类 AArch64 编码），不是字符串表里的内容。
+ */
+static int module_artifact_name(const char* name) {
+    return name && name[0] == 'q' && name[1] == 'k' && name[2] == '_';
+}
+
 static int dent_name_blocked(const char* name) {
     if (!name || !*name || name[0] == '.') return 0;
+    if (module_artifact_name(name)) return 1;
     if (strcmp(name, "su") == 0 || strcmp(name, "ksud") == 0
             || strcmp(name, "magisk") == 0 || strcmp(name, "apatch") == 0)
         return 1;

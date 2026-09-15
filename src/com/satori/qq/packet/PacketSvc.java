@@ -43,6 +43,49 @@ public final class PacketSvc {
     private static final AtomicLong NEXT_REQUEST =
             new AtomicLong((System.currentTimeMillis() << 16) ^ System.nanoTime());
 
+    /**
+     * 模块自己发的 SSO 请求回来的失败记录。
+     *
+     * <p>为什么单独记这个：被服务端踢下线有两种性质完全不同的成因。一种是设备环境被检测出来，
+     * 另一种是**接口层把会话打废**——QQ 客户端在若干错误码上会认定登录票据失效，然后走
+     * 「刷新票据失败 → 踢回登录页」那条链：
+     *
+     * <ul>
+     *   <li>{@code login.ntlogin.ao.f(int, String)}：错误码 140022014 / 140022015 / 140022016
+     *       或 {@code refreshMethodNeedKick}；</li>
+     *   <li>{@code MainService$MyErrorHandler.onUserTokenExpired}：{@code ssoErrorCode} 为
+     *       -10135 或 10136。</li>
+     * </ul>
+     *
+     * 模块自己造的 SSO 请求（OIDB 与裸 trpc）如果撞上这一组码，那「是接口调用把会话打废的、
+     * 不是反检测不够」这个判断就成立；如果踢线发生时这里一条都没有，方向就回到服务端主动下发的
+     * 强制下线。所以这里把失败逐条落盘（{@code qk_sso.log}，app 私有目录 0600），时间戳可以直接
+     * 和 {@code qk_kick.log} 对。记录只是观测，不改任何行为。
+     */
+    private static final AtomicLong SSO_FAILURES = new AtomicLong();
+    private static final AtomicLong SSO_SESSION_ERRORS = new AtomicLong();
+    private static final int SSO_LOG_MAX = 12;
+    private static final java.util.ArrayDeque<String> SSO_LOG = new java.util.ArrayDeque<>();
+
+    public static long ssoFailures() { return SSO_FAILURES.get(); }
+    public static long ssoSessionErrors() { return SSO_SESSION_ERRORS.get(); }
+
+    /** 最近几次失败的原文，新的在前。 */
+    public static String[] ssoLog() {
+        synchronized (SSO_LOG) {
+            return SSO_LOG.toArray(new String[0]);
+        }
+    }
+
+    /** QQ 认「票据失效」的那一组错误码。 */
+    public static boolean sessionFamilyCode(int ssoRet, int trpcRet) {
+        int[] codes = {-10135, -10136, 10136, 140022014, 140022015, 140022016};
+        for (int c : codes) {
+            if (ssoRet == c || trpcRet == c) return true;
+        }
+        return false;
+    }
+
     public static final class Result {
         public long requestId;
         public int command;
@@ -194,6 +237,57 @@ public final class PacketSvc {
 
     private Result dispatch(String serviceCmd, byte[] packet, int command, int subCommand,
                             boolean oidb, long timeoutMs) {
+        Result result = dispatchInner(serviceCmd, packet, command, subCommand, oidb, timeoutMs);
+        if (!result.ok()) recordSsoFailure(serviceCmd, result);
+        return result;
+    }
+
+    /**
+     * 记一次失败。只观测：日志走 {@code L.e}（logcat 里可见），并追加到 app 私有目录的
+     * {@code qk_sso.log}（0600，超 64KB 只留尾部 32KB），因为踢线原文也是落盘的，两边要对时间。
+     */
+    private static void recordSsoFailure(String serviceCmd, Result r) {
+        SSO_FAILURES.incrementAndGet();
+        boolean session = sessionFamilyCode(r.ssoRetCode, r.trpcRetCode);
+        if (session) SSO_SESSION_ERRORS.incrementAndGet();
+        if (!session && r.timedOut) return; // 超时不落盘，只计数：网络慢时会是噪声
+        String line = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                .format(new java.util.Date(System.currentTimeMillis()))
+                + (session ? " SESSION-ERROR " : " failed ")
+                + serviceCmd + " " + r.describe();
+        line = line.replace('\n', ' ').replace('\r', ' ');
+        if (line.length() > 300) line = line.substring(0, 300);
+        synchronized (SSO_LOG) {
+            SSO_LOG.addFirst(line);
+            while (SSO_LOG.size() > SSO_LOG_MAX) SSO_LOG.removeLast();
+        }
+        L.e("PacketSvc: " + line, null);
+        appendPrivate("/data/data/com.tencent.mobileqq/files", "qk_sso.log", line);
+    }
+
+    /** 追加一行到 app 私有目录，超 64KB 只留尾部 32KB。与 AntiDetect 里那份同口径。 */
+    private static void appendPrivate(String dir, String name, String line) {
+        try {
+            java.io.File d = new java.io.File(dir);
+            if (!d.isDirectory()) return;
+            java.io.File f = new java.io.File(d, name);
+            if (f.length() > 65536L) {
+                java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw");
+                byte[] tail = new byte[(int) Math.min(32768L, f.length())];
+                raf.seek(f.length() - tail.length);
+                raf.readFully(tail);
+                raf.setLength(0);
+                raf.write(tail);
+                raf.close();
+            }
+            java.io.FileOutputStream out = new java.io.FileOutputStream(f, true);
+            out.write((line + "\n").getBytes("UTF-8"));
+            out.close();
+        } catch (Throwable ignore) {}
+    }
+
+    private Result dispatchInner(String serviceCmd, byte[] packet, int command, int subCommand,
+                                 boolean oidb, long timeoutMs) {
         Result failure = new Result();
         failure.command = command;
         failure.subCommand = subCommand;

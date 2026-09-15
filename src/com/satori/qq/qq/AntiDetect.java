@@ -89,19 +89,60 @@ public final class AntiDetect {
     private static final int KICK_LOG_MAX = 12;
     private static final java.util.ArrayDeque<String> KICK_LOG = new java.util.ArrayDeque<>();
     private static final AtomicLong KICK_LOG_TOTAL = new AtomicLong();
-    /** 被拦下踢线之后这段时间内，QQ 想关掉自动登录的都不算数。 */
-    private static final long AUTO_LOGIN_GUARD_MS = 60000L;
     private static final AtomicLong AUTO_LOGIN_KEPT = new AtomicLong();
     /**
      * 拦下踢线之后这段时间内不许把本机登出。
      *
-     * <p>比 {@link #AUTO_LOGIN_GUARD_MS} 长：踢线之后跟着来的登出往往在几十秒到几分钟后
-     * （实测 17:29:18 被踢，登出在十几秒内），要给整条后续链路留出窗口。
+     * <p>比 {@link #KICK_AFTERMATH_MS} 短：登出守卫要拦的只有「踢线之后 QQ 顺手把自己登出」
+     * 这一小段，窗口给太长会把用户自己按的退出登录也拦掉。善后期（保账号、保自动登录、
+     * 自愈）走 {@link #KICK_AFTERMATH_MS}，两者判据分开。
      */
     private static final long LOGOUT_GUARD_MS = 300000L;
     private static final AtomicLong LOGOUT_GUARD_BLOCKS = new AtomicLong();
     /** 登出守卫挂上了几个入口；0 表示这一版没拦住「踢线之后自己登出」这条路。 */
     private static volatile int logoutGuardHookCount;
+    /**
+     * 「刚被踢过」的善后期，比登出守卫长。
+     *
+     * <p>踢线会落盘毁掉两样东西——账号在已登录列表里的标记（{@code files/user/u_<uin>_t}
+     * 被改名成 {@code _f}）与自动登录开关（mmkv 里的 {@code mqq_account_auto_login_<uin>}
+     * 写成 1）。落盘的东西不会随进程消失，而看守恰恰会在这个窗口里 force-stop QQ 重启，
+     * 所以善后期必须跨重启成立：判据除了内存里的 {@code lastKickMs}，还看
+     * {@code qk_kick.log} 的最后修改时间。
+     */
+    private static final long KICK_AFTERMATH_MS = 900000L;
+    /** 摘账号、关自动登录这些落盘动作被顶回去的次数。 */
+    private static final AtomicLong LOGIN_STATE_KEPT = new AtomicLong();
+    /** 落盘状态的守卫挂上了几个入口。 */
+    private static volatile int loginStateHookCount;
+    /** 被顶回去的落盘写入，新的在前。 */
+    private static final java.util.ArrayDeque<String> STATE_LOG = new java.util.ArrayDeque<>();
+    /** 踢线原文里记下的 uin，善后期用它指名修哪一份账号标记。 */
+    private static volatile String lastKickUin = "";
+    /** {@code qk_kick.log} 的 mtime 缓存：跨重启的「刚被踢过」判据，每 5 秒最多 stat 一次。 */
+    private static volatile long markerCheckedMs;
+    private static volatile long markerLastMs;
+    /**
+     * 用户主动登出的时刻。用户自己退出了就别再替他保活——两件事都做会把「退出登录」
+     * 变成「退不掉」。参考值是 {@code AppRuntime.logout(reason)} 里 reason 为
+     * {@code user}/{@code switchAccount} 的调用。
+     */
+    private static volatile long deliberateLogoutMs;
+    /**
+     * 「软踢线事件」的时刻：{@code onGrayError} 这类 QQ 会自己登出、但我们不该让看守
+     * 立刻重启 QQ 的事件。
+     *
+     * <p>它不写 {@code qk_kick.log}（那份是看守的重启判据），只把善后窗口打开，让账号标记与
+     * 自动登录开关不被改坏——会话照样断，但本地凭据还在，下一次启动能自己登回来。
+     */
+    private static volatile long softKickMs;
+    /**
+     * 主进程里那个实例。善后期的自愈要能在模块自己的线程上被调起来（状态监控每秒跑一轮），
+     * 而 AntiDetect 是每个进程各一个实例，所以留一个主进程的引用。子进程为 null。
+     */
+    private static volatile AntiDetect mainInstance;
+    /** 自愈的节流：状态监控每秒调一次，真正动手最多 30 秒一次。 */
+    private static final AtomicLong LAST_HEAL_MS = new AtomicLong();
     private static final int GUARD_LOG_MAX = 12;
     private static final java.util.ArrayDeque<String> GUARD_LOG = new java.util.ArrayDeque<>();
 
@@ -113,6 +154,8 @@ public final class AntiDetect {
     public static long autoLoginKept() { return AUTO_LOGIN_KEPT.get(); }
     public static long logoutGuardBlocks() { return LOGOUT_GUARD_BLOCKS.get(); }
     public static int logoutGuardHooks() { return logoutGuardHookCount; }
+    public static long loginStateKept() { return LOGIN_STATE_KEPT.get(); }
+    public static int loginStateHooks() { return loginStateHookCount; }
 
     /** 踢线后窗口内被拦掉的登出，新的在前。 */
     public static String[] guardLog() {
@@ -121,10 +164,79 @@ public final class AntiDetect {
         }
     }
 
+    /** 被顶回去的落盘状态写入，新的在前。 */
+    public static String[] stateLog() {
+        synchronized (STATE_LOG) {
+            return STATE_LOG.toArray(new String[0]);
+        }
+    }
+
     /** 踢线之后的一段时间里，本机不许自己登出。public 是为了能在 JVM 单测里验边界。 */
     public static boolean inLogoutGuardWindow(long nowMs) {
         long last = lastKickMs;
         return last != 0 && nowMs - last >= 0 && nowMs - last <= LOGOUT_GUARD_MS;
+    }
+
+    /**
+     * 是否处在「刚被踢过」的善后期。跨进程重启成立，理由见 {@link #KICK_AFTERMATH_MS}。
+     *
+     * <p>用户在善后期里自己按了退出登录（{@code reason=user}/{@code switchAccount}）就不再
+     * 替他保活，否则「退出登录」会退不掉。
+     */
+    public static boolean inKickAftermath(long nowMs) {
+        long last = Math.max(lastKickMs, softKickMs);
+        long deliberate = deliberateLogoutMs;
+        if (deliberate != 0 && nowMs - deliberate >= 0 && nowMs - deliberate <= KICK_AFTERMATH_MS
+                && deliberate >= last) return false;
+        if (last != 0 && nowMs - last >= 0 && nowMs - last <= KICK_AFTERMATH_MS) return true;
+        long mark = kickMarkerMs(nowMs);
+        return mark != 0 && nowMs - mark >= 0 && nowMs - mark <= KICK_AFTERMATH_MS;
+    }
+
+    /**
+     * 记一次「软踢线」：开善后窗口，但不计入 {@code blocked_kicks}、不写 {@code qk_kick.log}。
+     *
+     * <p>{@code blocked_kicks} 的增长与踢线日志的行数都是看守「立刻重启 QQ」的判据，
+     * onGrayError 那种 QQ 自己就会登出、并且可能反复发生的事件混进去会变成重启循环。
+     */
+    public static void noteSoftKick(String detail) {
+        softKickMs = System.currentTimeMillis();
+        noteGuardLine("soft-kick", detail == null ? "" : detail);
+    }
+
+    /**
+     * {@code qk_kick.log} 的最后修改时间，0 表示没有这份文件。
+     *
+     * <p>只在善后期判据里用，所以带 5 秒缓存：状态监控每秒调一次，不该每秒 stat 一次盘。
+     */
+    private static long kickMarkerMs(long nowMs) {
+        if (markerCheckedMs != 0 && nowMs - markerCheckedMs >= 0 && nowMs - markerCheckedMs < 5000L) {
+            return markerLastMs;
+        }
+        markerCheckedMs = nowMs;
+        long value = 0;
+        try {
+            File f = new File(ENV_DIR, "qk_kick.log");
+            if (f.isFile()) value = f.lastModified();
+        } catch (Throwable ignore) {}
+        markerLastMs = value;
+        return value;
+    }
+
+    /** 记下一次用户主动登出，善后期的保活动作就此停手。 */
+    public static void noteDeliberateLogout() {
+        deliberateLogoutMs = System.currentTimeMillis();
+    }
+
+    /**
+     * 这个 {@code LogoutReason} 是不是用户自己按出来的。
+     *
+     * <p>只认 {@code user}（退出登录）与 {@code switchAccount}（切号）。{@code expired} /
+     * {@code gray} / {@code tips} / {@code restartProcess} 都是 QQ 自己的生命周期，把它们当成
+     * 「用户要退出」会让善后期在第一件 QQ 自己的事上就失效。
+     */
+    public static boolean userInitiatedLogout(String reason) {
+        return "user".equals(reason) || "switchAccount".equals(reason);
     }
 
     /** 踢线原文，新的在前。进程内环形，落盘那份由 {@link #recordBlockedKick} 追加。 */
@@ -136,6 +248,137 @@ public final class AntiDetect {
 
     /** 进程启动以来记下的踢线条数；落盘的 qk_kick.log 行数才是跨重启的判据。 */
     public static long kickLogTotal() { return KICK_LOG_TOTAL.get(); }
+
+    /**
+     * 踢线善后期的自愈入口，供模块的状态监控周期调用（只有主进程有实例，子进程直接返回）。
+     *
+     * <p>为什么要自愈：拦住踢线只是第一步，QQ 在踢线路径上还会把两样**落盘**的东西改掉
+     * （账号标记 {@code files/user/u_<uin>_t} → {@code _f}、自动登录开关 → 1）。改完之后
+     * 无论重启多少次 QQ 都停在登录页，外部看守只能一次次重启、等不来自动登录。这里在善后期内
+     * 把这两样修回来，QQ 下一次启动就能自己登回来。
+     */
+    public static void healLoginStateIfDue() {
+        AntiDetect self = mainInstance;
+        if (self == null) return;
+        self.healLoginState();
+    }
+
+    private void healLoginState() {
+        long now = System.currentTimeMillis();
+        long last = LAST_HEAL_MS.get();
+        if (last != 0 && now - last >= 0 && now - last < 30000L) return;
+        LAST_HEAL_MS.set(now);
+        if (!inKickAftermath(now)) return;
+        try {
+            String uin = healTargetUin();
+            if (uin.isEmpty()) return;
+            List<String> done = new ArrayList<>();
+            if (restoreAccountMarker(uin)) done.add("account");
+            if (restoreAutoLogin(uin)) done.add("auto_login");
+            if (!done.isEmpty()) noteGuardLine("self-heal", uin + " " + done);
+        } catch (Throwable t) {
+            L.e("AntiDetect.heal", t);
+        }
+    }
+
+    /**
+     * 要修哪个号。
+     *
+     * <p>只认踢线原文里那个 uin：内存里那份（{@link #lastKickUin}）没有就读落盘的
+     * {@code qk_kick.log} 末行——踢线之后看守会 force-stop QQ，重启后内存里那份就没了，
+     * 而善后期判据恰恰是跨重启成立的，两者必须配套。
+     *
+     * <p>**不要**拿 {@code files/user/u_<uin>_f} 当兜底。那个目录里除了本次被踢的号，
+     * 还留着用户自己注销掉的其他账号（本机就有一个 2026-09-11 退出登录的
+     * {@code u_1665757132_f}）。按「唯一那个 _f」去猜，踢线之后会把用户早就登出的号
+     * 重新标成已登录、还把它的自动登录打开。认不出来就什么都不做。
+     */
+    private static String healTargetUin() {
+        String uin = lastKickUin;
+        if (uin != null && !uin.isEmpty()) return uin;
+        try {
+            java.util.regex.Matcher m =
+                    java.util.regex.Pattern.compile("uin=(\\d+)").matcher(lastKick);
+            if (m.find()) return m.group(1);
+        } catch (Throwable ignore) {}
+        return persistedKickUin();
+    }
+
+    /** 读 {@code qk_kick.log} 尾部，取最后一条 {@code uin=}。 */
+    private static String persistedKickUin() {
+        File f = new File(ENV_DIR, "qk_kick.log");
+        if (!f.isFile()) return "";
+        try {
+            java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "r");
+            long len = raf.length();
+            if (len <= 0) { raf.close(); return ""; }
+            int take = (int) Math.min(4096L, len);
+            byte[] tail = new byte[take];
+            raf.seek(len - take);
+            raf.readFully(tail);
+            raf.close();
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("uin=(\\d+)").matcher(new String(tail, "UTF-8"));
+            String found = "";
+            while (m.find()) found = m.group(1);
+            return found;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * 把 {@code u_<uin>_f} 改回 {@code u_<uin>_t}；已经是 {@code _t} 就不动，两者都没有时新建
+     * {@code _t}。返回是否真的改了什么。
+     */
+    private boolean restoreAccountMarker(String uin) {
+        File dir = new File(ENV_DIR, "user");
+        if (!dir.isDirectory()) return false;
+        File active = new File(dir, "u_" + uin + "_t");
+        if (active.isFile()) return false;
+        File off = new File(dir, "u_" + uin + "_f");
+        if (off.isFile()) return off.renameTo(active);
+        try {
+            return active.createNewFile();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 把 mmkv 里的自动登录开关写回 2。**已经是自动登录就什么都不做**——否则每 30 秒的善后
+     * 循环会在 qk_guard.log 里刷一行同样的 self-heal。
+     *
+     * <p>先问 {@code AutoLoginUtil.canAutoLogin(uin)}（值为 2 才返回 true；值为 0 时它会自己
+     * 回落到缓存并顺手写一次），返回 false 才真正改。
+     */
+    private boolean restoreAutoLogin(String uin) {
+        try {
+            Class<?> cls = ref.clsOrNull("mqq.app.AutoLoginUtil");
+            if (cls == null) return false;
+            Method can = findMethod(cls, "canAutoLogin", 1);
+            Method set = null;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!"setAutoLogin".equals(m.getName())) continue;
+                Class<?>[] pt = m.getParameterTypes();
+                if (m.getReturnType() != void.class || pt.length != 2
+                        || pt[0] != String.class || pt[1] != boolean.class) continue;
+                m.setAccessible(true);
+                set = m;
+                break;
+            }
+            if (set == null) return false;
+            if (can != null) {
+                Object state = can.invoke(null, uin);
+                if (Boolean.TRUE.equals(state)) return false;
+            }
+            set.invoke(null, uin, Boolean.TRUE);
+            return true;
+        } catch (Throwable t) {
+            L.e("AntiDetect.heal.autoLogin", t);
+        }
+        return false;
+    }
 
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
                       boolean observeFekitAttach) {
@@ -165,6 +408,7 @@ public final class AntiDetect {
     }
 
     public void install() {
+        if ("main".equals(envProcessKey())) mainInstance = this;
         hookDetectMethod();
         hookGetXpsInfo();
         hookStarTrail();
@@ -1074,6 +1318,7 @@ public final class AntiDetect {
             hookMainServiceKick();
             hookAutoLoginGuard();
             hookLogoutGuard();
+            hookLoginStateGuard();
         }
 
         hookVoidMethods("com.tencent.mobileqq.msf.core.MsfCore", new String[]{
@@ -1223,20 +1468,85 @@ public final class AntiDetect {
     }
 
     /**
-     * MSF 侧强踢的唯一出口。
+     * MSF 侧强踢的处理口。
      *
      * <p>服务端下发的强制下线在客户端有另一条与 NTKickProcessor 完全独立的路：MSF 把它当错误
      * 事件抛给 {@code mqq.app.MainService$MyErrorHandler}。onKicked / onKickedAndClearToken /
-     * onUserTokenExpired / onServerSuspended / onCloneError 各处理各的，最后都落进
-     * popupNotification（6 参与 8 参两个重载）与 popupNotificationEx，那里做的是
-     * {@code appRuntime.logout(reason, true)} 再拿 LoginActivity 发 KICK_TO_LOGIN。只拦
-     * NTKickProcessor 的话，走这条路的踢线一次都拦不住，界面直接回登录页。
+     * onUserTokenExpired / onServerSuspended / onCloneError / onGrayError 各处理各的，界面上
+     * 最后都落进 popupNotification（6 参与 8 参两个重载）与 popupNotificationEx，那里做的是
+     * {@code appRuntime.logout(reason, true)} 再拿 LoginActivity 发 KICK_TO_LOGIN。
+     *
+     * <p><b>只拦 popupNotification 是不够的</b>——那是整条链路的最后一环，毁本地登录态的写在它
+     * 前面。2026-09-15 18:33 的真踢线是走 onKickedAndClearToken 进来的（reason=kicked、
+     * bSigKick != 1），进 onKickedInternal 之后依次做了：
+     *
+     * <pre>
+     * MsfSdkUtils.updateSimpleAccount(uin, false);   // files/user/u_&lt;uin&gt;_t 改名成 _f
+     * mApplication.setSortAccountList(...);          // 已登录列表里当场少一个号
+     * ... 之后才是被拦下的 popupNotification
+     * </pre>
+     *
+     * 另一支（onKicked，isTokenExpired=false）在更前面还有一句
+     * {@code mApplication.setAutoLogin(false)}，同样早于 popupNotification。
+     *
+     * <p>所以这里拦的是<b>处理器入口</b>：onKicked、onKickedAndClearToken、onKickedInternal
+     * 三个一拦，上面那些写操作一次都不会发生；onCloneError 会遍历已登录列表把每个号都摘掉，
+     * 也一并拦。popupNotification 那两个出口继续挂着，负责 onUserTokenExpired /
+     * onServerSuspended / onGrayError 这些按 reason 分类的回调。
      */
     private void hookMainServiceKick() {
         try {
             Class<?> cls = ref.clsOrNull("mqq.app.MainService$MyErrorHandler");
             if (cls == null) return;
             int hooked = 0;
+            // (1) 处理器入口。名字是固定的，参数形状都是 (ToServiceMsg, FromServiceMsg, ...)。
+            //     onKicked / onKickedAndClearToken / onKickedInternal 是强制下线那三个；
+            //     onCloneError 会把已登录列表里每个号都标成下线，一起拦。
+            String[] entries = {"onKicked", "onKickedAndClearToken", "onKickedInternal",
+                    "onCloneError"};
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!containsName(entries, m.getName())) continue;
+                if (m.getReturnType() != void.class) continue;
+                Class<?>[] pt = m.getParameterTypes();
+                if (pt.length < 2 || !pt[0].getName().endsWith("ToServiceMsg")
+                        || !pt[1].getName().endsWith("FromServiceMsg")) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (p == null || p.args == null || p.args.length < 2) return;
+                        recordBlockedKick("msf-kick-entry", describeMsfKick(p.args));
+                        p.setResult(null);
+                    }
+                });
+                hooked++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            // (1b) onGrayError 只当软事件：QQ 认为这个号进了风控灰名单，它自己会登出，
+            //      硬拦会让看守每来一次就 force-stop QQ 一次。这里只开善后窗口（保住账号标记
+            //      与自动登录开关），并把命令名记进 qk_guard.log 备查，登录流程照旧放行。
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!"onGrayError".equals(m.getName())) continue;
+                if (m.getReturnType() != void.class) continue;
+                Class<?>[] pt = m.getParameterTypes();
+                if (pt.length < 2 || !pt[0].getName().endsWith("ToServiceMsg")
+                        || !pt[1].getName().endsWith("FromServiceMsg")) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (p == null || p.args == null || p.args.length < 2) return;
+                        // onGrayError 兼管短信验证登录的响应：那条命令要原样放行，否则
+                        // 重新登录这一步直接被我们挡死。
+                        if (isLoginFlowMsg(p.args[1])) return;
+                        String uin = uinOf(p.args[1]);
+                        if (!uin.isEmpty()) lastKickUin = uin;
+                        noteSoftKick(describeMsfKick(p.args));
+                    }
+                });
+                hooked++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            // (2) 出口。上面三个入口被拦下之后这里到不了，但 onUserTokenExpired /
+            //     onServerSuspended / onGrayError 是 MSF 直接调进来的，只按 reason 过滤拦出口。
             for (Method m : cls.getDeclaredMethods()) {
                 String name = m.getName();
                 if (!"popupNotification".equals(name) && !"popupNotificationEx".equals(name)) continue;
@@ -1297,8 +1607,10 @@ public final class AntiDetect {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
                         if (p == null || p.args == null || p.args.length < 2) return;
                         if (!Boolean.FALSE.equals(p.args[1])) return;
-                        long last = lastKickMs;
-                        if (last == 0 || System.currentTimeMillis() - last > AUTO_LOGIN_GUARD_MS) return;
+                        // 善后期判据（跨重启），不是「拦下踢线后 60 秒」：真正的关自动登录
+                        // 发生在 onKickedInternal 里，早于被拦下的 popupNotification，
+                        // 那一刻 lastKickMs 还是 0，短窗口根本来不及。
+                        if (!inKickAftermath(System.currentTimeMillis())) return;
                         p.args[1] = Boolean.TRUE;
                         AUTO_LOGIN_KEPT.incrementAndGet();
                         L.e("AntiDetect: kept auto-login after blocked kick", null);
@@ -1369,9 +1681,12 @@ public final class AntiDetect {
         } catch (Throwable t) {
             L.e("AntiDetect.logoutGuard.uid", t);
         }
-        // 2) QQAppInterface.logout(boolean)：QQ 自己的实现在这里，kickPC 那条注释就在它里面。
+        // 2) 用户按得到的那个出口：{@code logout(boolean)} 既服务「用户点退出登录」（主线程），
+        //    也服务「踢线路径顺手把自己登出」（UidServiceImpl 在工作线程上调的就是它）；
+        //    reason 在它底下被写死成 user，分不出来——按调用线程区分。
         hookLogoutEntry("com.tencent.mobileqq.app.QQAppInterface", "logout", 1, false,
                 "qqapp.logout(boolean)");
+        hookLogoutEntry("mqq.app.AppRuntime", "logout", 1, false, "appruntime.logout(boolean)");
         // 3) AppRuntime 的核心出口：只有带踢线 reason 的那几种才拦，user / switchAccount /
         //    expired 这些正常生命周期照旧放行。
         hookLogoutEntry("mqq.app.AppRuntime", "logout", 2, true, "appruntime.logout(reason)");
@@ -1382,8 +1697,9 @@ public final class AntiDetect {
      * 挂一个登出入口。
      *
      * @param reasonFiltered true 表示只看第一个参数是不是踢线 reason（user / switchAccount /
-     *                       expired 等正常登出要放行）；false 表示这条入口的 reason 分不出来
-     *                       （{@code QQAppInterface.logout(boolean)} 底下写死 user），窗口内一律拦。
+     *                       expired 等正常登出要放行，并记下「用户主动退出」以免善后期替他保活）；
+     *                       false 表示这条入口的 reason 分不出来（{@code logout(boolean)} 底下
+     *                       写死 user），此时按调用线程区分：主线程当用户点的，不拦。
      */
     private void hookLogoutEntry(String className, String name, int argc, boolean reasonFiltered,
             String label) {
@@ -1400,7 +1716,18 @@ public final class AntiDetect {
                         if (!inLogoutGuardWindow(System.currentTimeMillis())) return;
                         if (reasonFiltered) {
                             if (p == null || p.args == null || p.args.length < 1) return;
-                            if (!kickReasonBlocked(String.valueOf(p.args[0]))) return;
+                            String reason = String.valueOf(p.args[0]);
+                            if (!kickReasonBlocked(reason)) {
+                                // 只有用户自己按下的才算「主动退出」。expired / gray / tips /
+                                // restartProcess 都是 QQ 自己的生命周期，善后期照旧保活。
+                                if (userInitiatedLogout(reason)) noteDeliberateLogout();
+                                return;
+                            }
+                        } else if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                            // logout(boolean) 的 reason 在下面被写死成 user，但主线程上那次
+                            // 是用户点「退出登录」走的路，工作线程上那次才是踢线顺手登出。
+                            noteDeliberateLogout();
+                            return;
                         }
                         noteLogoutGuard(label);
                         p.setResult(null);
@@ -1419,22 +1746,81 @@ public final class AntiDetect {
     }
 
     /**
+     * 别让踢线把「账号在已登录列表里」这件事从盘上抹掉。
+     *
+     * <p>{@code MsfSdkUtils.updateSimpleAccount(uin, false)} 做的事是把
+     * {@code /data/data/com.tencent.mobileqq/files/user/u_<uin>_t} 改名成 {@code _f}：
+     * {@code getLoginedAccountList()} 只认 {@code _t}，改名之后下次启动没有可自动登录的对象，
+     * 于是停在登录页要短信验证。这是**盘上的**状态，进程重启也不会自己回来，所以是那一串
+     * 「拦住了踢线却还是要重新登录」的根本原因。
+     *
+     * <p>善后期内把 {@code false} 顶成 {@code true}：改名仍然发生，但改成 {@code _t}，
+     * 账号留在已登录列表里。{@code updateSimpleAccountNotCreate} 只在既有文件之间改名，
+     * 顶成 true 正好把 {@code _f} 改回 {@code _t}。
+     */
+    private void hookLoginStateGuard() {
+        try {
+            Class<?> cls = ref.clsOrNull("com.tencent.mobileqq.msf.sdk.MsfSdkUtils");
+            if (cls == null) return;
+            int n = 0;
+            String[] names = {"updateSimpleAccount", "updateSimpleAccountNotCreate"};
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!containsName(names, m.getName())) continue;
+                Class<?>[] pt = m.getParameterTypes();
+                if (m.getReturnType() != void.class || pt.length != 2
+                        || pt[0] != String.class || pt[1] != boolean.class) continue;
+                m.setAccessible(true);
+                final String label = m.getName();
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (p == null || p.args == null || p.args.length < 2) return;
+                        if (!Boolean.FALSE.equals(p.args[1])) return;
+                        if (!inKickAftermath(System.currentTimeMillis())) return;
+                        p.args[1] = Boolean.TRUE;
+                        LOGIN_STATE_KEPT.incrementAndGet();
+                        noteGuardLine("kept-login-state",
+                                label + "(" + Ref.asStr(p.args[0]) + ", false->true)");
+                    }
+                });
+                n++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (n > 0) {
+                loginStateHookCount += n;
+                L.i("AntiDetect: login-state guard (" + n + ")");
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.loginState", t);
+        }
+    }
+
+    /**
      * 记一次被拦下的登出。**不写 qk_kick.log**：那个文件是看守「踢线 = 会话已作废，立刻重启」
      * 的判据，多写几行会让看守反复重启 QQ。这里写到旁边的 qk_guard.log。
      */
     private static void noteLogoutGuard(String what) {
+        LOGOUT_GUARD_BLOCKS.incrementAndGet();
+        noteGuardLine("blocked-logout", what);
+    }
+
+    /**
+     * 记一行善后动作：被顶回去的落盘写入、自愈修回来的东西。
+     *
+     * <p>和 {@link #noteLogoutGuard} 落同一个文件（{@code qk_guard.log}，0600），靠行首的
+     * 动作名区分。同样不写 {@code qk_kick.log}——那一份是看守「立刻重启 QQ」的判据。
+     */
+    private static void noteGuardLine(String kind, String what) {
         String line = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
                 .format(new java.util.Date(System.currentTimeMillis()))
-                + " blocked-logout " + what
+                + " " + kind + " " + what
                 + " (last kick " + lastKickSource + " " + (lastKickMs == 0 ? "-"
                         : ((System.currentTimeMillis() - lastKickMs) / 1000) + "s ago") + ")"
                 + " pid=" + android.os.Process.myPid();
-        LOGOUT_GUARD_BLOCKS.incrementAndGet();
         synchronized (GUARD_LOG) {
             GUARD_LOG.addFirst(line);
             while (GUARD_LOG.size() > GUARD_LOG_MAX) GUARD_LOG.removeLast();
         }
-        L.e("AntiDetect: logout blocked after kick — " + line, null);
+        L.e("AntiDetect: " + kind + " — " + line, null);
         appendLine(ENV_DIR, "qk_guard.log", line);
     }
 
@@ -1489,6 +1875,136 @@ public final class AntiDetect {
         if (args != null && args.length > 2 && args[2] != null)
             sb.append(" reason=").append(args[2]);
         return sb.toString();
+    }
+
+    /**
+     * MSF 侧踢线的参数：把服务端推下来的强制下线包解开，逐字段记下来。
+     *
+     * <p>{@code RequestMSFForceOffline} 里有两个字段是别处拿不到的判据：
+     *
+     * <ul>
+     *   <li>{@code bKickType} —— 只有它能区分「被另一台手机顶下线」「改密码」「多开」「版本过低」。
+     *       全 APK 里 Java 侧没人读它（只有一个 dex 带着这个字段名），说明字节到
+     *       {@code KickedType} 的映射在 native，这里按 {@code KickedType} 的声明顺序解释，
+     *       所以名称后面带 {@code ?}，表示是推定而不是读出来的。</li>
+     *   <li>{@code bSigKick} —— 1 表示带 {@code vecSigKickData} 的安全强踢（reason 取
+     *       {@code secKicked}），0 是普通强踢（{@code kicked}）。</li>
+     * </ul>
+     *
+     * <p>只记 reason 与服务端文案的话，现场只能看到「下线通知 / 你的账号当前登录已失效」，
+     * 分不出是风控打击还是账号在别处登录。这两个字段是唯一能把它们分开的东西。
+     */
+    private String describeMsfKick(Object[] args) {
+        StringBuilder sb = new StringBuilder();
+        Object from = null;
+        for (Object a : args) {
+            if (a != null && a.getClass().getName().endsWith("FromServiceMsg")) { from = a; break; }
+        }
+        Object decoded = decodeForceOffline(from);
+        if (decoded != null) {
+            Object kind = ref.get(decoded, "bKickType");
+            sb.append("kickType=").append(kind);
+            String name = kickedTypeName(kind);
+            if (!name.isEmpty()) sb.append("(").append(name).append("?)");
+            sb.append(" sigKick=").append(ref.get(decoded, "bSigKick"));
+            sb.append(" sameDevice=").append(ref.get(decoded, "bSameDevice"));
+            String title = Ref.asStr(ref.get(decoded, "strTitle"));
+            if (!title.isEmpty()) sb.append(" title=").append(title);
+            String info = Ref.asStr(ref.get(decoded, "strInfo"));
+            if (!info.isEmpty()) sb.append(" msg=").append(info);
+        }
+        String uin = uinOf(from);
+        if (!uin.isEmpty()) {
+            sb.append(" uin=").append(uin);
+            lastKickUin = uin;
+        }
+        String cmd = msfCommandName(from);
+        if (!cmd.isEmpty()) sb.append(" cmd=").append(cmd);
+        if (sb.length() == 0) sb.append("no-payload");
+        return clip(sb.toString(), 260);
+    }
+
+    /**
+     * 解出服务端推下来的 {@code RequestMSFForceOffline}，解不出来就返回 null。
+     *
+     * <p>复用 QQ 自己的 {@code mqq.app.Packet.decodePacket}——那就是 MainService 解这个包用的
+     * 入口。别的回调（onUserTokenExpired / onGrayError）带的是另一种包，硬解会得到一堆垃圾字段，
+     * 所以解完必须校验：标题或正文至少有一个非空，且 uin 非 0，否则当成没解出来。
+     */
+    private Object decodeForceOffline(Object fromServiceMsg) {
+        if (fromServiceMsg == null) return null;
+        try {
+            Object raw = fromServiceMsg.getClass().getMethod("getWupBuffer").invoke(fromServiceMsg);
+            if (!(raw instanceof byte[]) || ((byte[]) raw).length == 0) return null;
+            Class<?> packetCls = ref.clsOrNull("mqq.app.Packet");
+            Class<?> structCls = ref.clsOrNull(
+                    "com.tencent.msf.service.protocol.push.RequestMSFForceOffline");
+            if (packetCls == null || structCls == null) return null;
+            Object struct = structCls.newInstance();
+            for (Method m : packetCls.getDeclaredMethods()) {
+                Class<?>[] pt = m.getParameterTypes();
+                if (pt.length != 3 || pt[0] != byte[].class || pt[1] != String.class) continue;
+                m.setAccessible(true);
+                Object out = m.invoke(null, raw, "RequestMSFForceOffline", struct);
+                if (out == null) return null;
+                String title = Ref.asStr(ref.get(out, "strTitle"));
+                String info = Ref.asStr(ref.get(out, "strInfo"));
+                long uin = Ref.asLong(ref.get(out, "lUin"));
+                if (title.isEmpty() && info.isEmpty() && uin == 0L) return null;
+                return out;
+            }
+        } catch (Throwable ignore) {}
+        return null;
+    }
+
+    /** {@code KickedType} 按声明顺序取名字；超出范围返回空串。 */
+    private String kickedTypeName(Object value) {
+        try {
+            int i = Ref.asInt(value);
+            Class<?> cls = ref.clsOrNull("com.tencent.qqnt.kernel.nativeinterface.KickedType");
+            if (cls == null || !cls.isEnum()) return "";
+            Object[] constants = cls.getEnumConstants();
+            if (i < 0 || i >= constants.length) return "";
+            return String.valueOf(constants[i]);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** 从 FromServiceMsg 上取 uin。取不到返回空串。 */
+    private static String uinOf(Object fromServiceMsg) {
+        if (fromServiceMsg == null) return "";
+        try {
+            Object uin = fromServiceMsg.getClass().getMethod("getUin").invoke(fromServiceMsg);
+            String s = Ref.asStr(uin);
+            return s == null ? "" : s.trim();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** {@code fromServiceMsg.getMsfCommand()} 的名字，用于日志。 */
+    private static String msfCommandName(Object fromServiceMsg) {
+        if (fromServiceMsg == null) return "";
+        try {
+            Object cmd = fromServiceMsg.getClass().getMethod("getMsfCommand").invoke(fromServiceMsg);
+            if (cmd == null) return "";
+            return cmd instanceof Enum ? ((Enum<?>) cmd).name() : String.valueOf(cmd);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * 这条 MSF 响应是不是短信验证登录链路的一部分。
+     *
+     * <p>{@code onGrayError} 兼管 {@code wt_GetStViaSMSVerifyLogin} 与 {@code wt_loginAuth}
+     * 的响应——它先把这两个命令转给 {@code receiveMessageFromMSF} 再干别的。整条拦掉会把
+     * 「被踢之后靠短信验证登回来」这一步一起封死，所以这两个命令必须原样放行。
+     */
+    private static boolean isLoginFlowMsg(Object fromServiceMsg) {
+        String cmd = msfCommandName(fromServiceMsg);
+        return cmd.contains("SMSVerifyLogin") || cmd.contains("loginAuth");
     }
 
     /** 记下这次踢线。日志走 L.e，不开 verbose 也要能在 logcat 里看到。 */

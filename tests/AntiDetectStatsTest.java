@@ -135,6 +135,24 @@ public final class AntiDetectStatsTest {
         check(AntiDetect.inLogoutGuardWindow(now + 60_000L), "logout guard open at +60s");
         check(!AntiDetect.inLogoutGuardWindow(now + 300_001L), "logout guard closed after 5min");
 
+        // 善后期比登出守卫长：踢线把账号标记与自动登录写坏之后，看守会 force-stop QQ 重启，
+        // 修盘上那两样东西的动作必须在这个窗口里还有效。窗口一过同样要停手。
+        check(AntiDetect.inKickAftermath(now + 300_001L), "aftermath open past guard window");
+        check(AntiDetect.inKickAftermath(now + 899_000L), "aftermath open at 15min");
+        check(!AntiDetect.inKickAftermath(now + 900_100L), "aftermath closed after 15min");
+        // 只有用户自己按的退出登录才停手；expired/gray/tips 是 QQ 自己的生命周期，
+        // 把它们当成用户意图会让善后期在一件跟用户无关的事上失效。
+        for (String reason : new String[]{"user", "switchAccount"}) {
+            check(AntiDetect.userInitiatedLogout(reason), "user logout " + reason);
+        }
+        for (String reason : new String[]{"expired", "gray", "tips", "restartProcess", "kicked",
+                "secKicked", "forceLogout", "suspend", "", null}) {
+            check(!AntiDetect.userInitiatedLogout(reason), "not user logout " + reason);
+        }
+        // 用户自己点了退出登录就不再替他保活，否则「退出登录」会退不掉。
+        AntiDetect.noteDeliberateLogout();
+        check(!AntiDetect.inKickAftermath(System.currentTimeMillis()), "user logout stops aftermath");
+
         System.out.println("AntiDetectStatsTest OK");
     }
 

@@ -80,7 +80,13 @@ plugins:
 
 分不清断在哪一层时用 [`scripts/netwatch.sh`](scripts/netwatch.sh)，每 60 秒记录物理链路、本地代理、经 TUN 出站、模块状态与电源状态。
 
-模块自报在线、消息却一条收不到，多半是被服务端踢线了。`block_server_kick` 挡掉了 QQ 处理踢线的四个入口（内核 `IKickApi`、票据刷新、取 UID 失败、MSF 错误事件），并处 5 分钟窗口内不许本机自己登出（`UidServiceImpl.logoutWhenReqUidFail` 那条会在踢线后真登出、把账号从已登录列表里摘掉，导致下次要短信验证）。好处是不被踢下线，代价是会话已经作废但本机不会重连，只能重启 QQ。`/healthz` 的 `blocked_kicks` 一涨就是这种情况，`kick_hook` 为 0 表示这一版没拦住踢线（0.8.9.44 起正常为 7），`logout_guard.hooks` 为 0 表示没拦住踢线后的登出（0.8.9.45 起正常为 4）。逐条原文在 `kick_log` 与 `logout_guard.log`，也落盘到 `qk_kick.log` / `qk_guard.log`，重启后仍看得到。踢线的同时 QQ 会关掉"下次自动登录"（写进 mmkv，落盘），模块会在 60 秒窗口里把它顶回去，否则重启多少次都只会停在登录页（`auto_login_kept` 记命中次数）。用 [`scripts/qq-revive.sh`](scripts/qq-revive.sh) 看守：它按踢线记录行数增长、`online=false` 与「MSF 进程没有上游连接」判断，必要时重启 QQ，装法见 [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh) 开头。
+模块自报在线、消息却一条收不到，多半是被服务端踢线了。踢线在客户端有两条互不经过的处理链，模块两条都拦：内核那条（`IKickApi`、票据刷新、取 UID 失败）拦在 `NTKickProcessor` 与另外两个入口，MSF 那条拦在 `MainService$MyErrorHandler` 的**处理器入口**——`onKicked` / `onKickedAndClearToken` / `onKickedInternal` / `onCloneError`。
+
+拦处理器入口而不是它最后的 `popupNotification`，是因为毁本地登录态的写在出口之前：`onKickedInternal` 里先做 `setAutoLogin(false)` 与 `MsfSdkUtils.updateSimpleAccount(uin, false)`——后者把 `files/user/u_<uin>_t` 改名成 `_f`，账号就从已登录列表里没了，下次启动没有可自动登录的对象，才会停在登录页要短信验证。这是**盘上的**状态，跟 `blocked_kicks` 一样不随进程重启消失。
+
+所以除了拦踢线，模块在踢线后的 15 分钟"善后期"里还做两件事：把要摘账号/关自动登录的写入顶回去（`login_state.kept` 记命中次数），以及在离线时把 `u_<uin>_t` 与自动登录开关修回来（`qk_guard.log` 里的 `self-heal` 行）。善后期跨进程重启成立——判据除了内存计数还看 `qk_kick.log` 的修改时间，因为看守恰好在窗口里 force-stop QQ。用户自己按的退出登录（reason `user`/`switchAccount`）会让善后期立即停手。
+
+`/healthz` 里：`kick_hook` 为 0 表示这一版没拦住踢线（0.8.9.46 起正常为 12），`logout_guard.hooks` 为 0 表示没拦住踢线后的登出（0.8.9.46 起正常为 5），`login_state.hooks` 为 0 表示没拦住摘账号（正常为 2）。逐条原文在 `kick_log` / `logout_guard.log`，落盘到 `qk_kick.log` / `qk_guard.log`，`kick_log` 里现在带 `kickType=`（能区分「被另一台手机顶下线」「改密码」「多开」「版本过低」）与 `sigKick=`。`sso.session_errors` 是模块自己发的 SSO 请求撞上 QQ 认「票据失效」那组错误码的次数——它涨了才说明踢线是接口调用把会话打废的，而不是环境检测；原文在 `qk_sso.log`。用 [`scripts/qq-revive.sh`](scripts/qq-revive.sh) 看守：它按踢线记录行数增长、`online=false` 与「MSF 进程没有上游连接」判断，必要时重启 QQ，装法见 [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh) 开头。
 
 ## 构建与测试
 

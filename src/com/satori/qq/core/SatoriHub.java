@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.45";
+    public static final String APP_VERSION = "0.8.9.46";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -344,6 +344,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                                 .put("hooks", AntiDetect.logoutGuardHooks())
                                 .put("blocked", AntiDetect.logoutGuardBlocks())
                                 .put("log", new org.json.JSONArray(AntiDetect.guardLog())))
+                        // 善后期里被顶回去的落盘写入（摘账号、关自动登录）。这一项涨了说明
+                        // 踢线确实发生过，而且模块把账号留在了已登录列表里。
+                        .put("login_state", new JSONObject()
+                                .put("hooks", AntiDetect.loginStateHooks())
+                                .put("kept", AntiDetect.loginStateKept())
+                                .put("log", new org.json.JSONArray(AntiDetect.stateLog())))
+                        // 模块自己发的 SSO 请求失败了几条。`session_errors` 涨了说明有请求
+                        // 撞上 QQ 认「票据失效」的那组错误码——即「接口层把会话打废」，
+                        // 而不是环境检测。这是把踢线成因分开的判据，详见 PacketSvc。
+                        .put("sso", new JSONObject()
+                                .put("failures", PacketSvc.ssoFailures())
+                                .put("session_errors", PacketSvc.ssoSessionErrors())
+                                .put("log", new org.json.JSONArray(PacketSvc.ssoLog())))
                         .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");
@@ -6568,6 +6581,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         nextHeartbeat = now + interval;
                     }
                     flushAwaitingReady();
+                    // 被踢之后把落盘的登录态修回来（账号标记与自动登录开关）。只在本进程
+                    // 报离线时动手：在线时改这两个没有意义，也省得跟 QQ 自己的写入打架。
+                    // 内部还有善后期判定与 30 秒节流。
+                    if (!online) AntiDetect.healLoginStateIfDue();
                     // Hold the wake lock from startup even when the status notification is off.
                     if (cfg.wakeLockControl || cfg.wifiSustain) ensureWakeLockController();
                     refreshNotice();

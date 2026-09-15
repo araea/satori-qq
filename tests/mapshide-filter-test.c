@@ -77,6 +77,15 @@ int main(void) {
     }
     if ((rc = expect(dent_name_blocked("su"), 1, 23))) return rc;
     if ((rc = expect(dent_name_blocked("maps"), 0, 24))) return rc;
+    // 模块自己在 app 私有目录下的文件：检测库在自己进程里 listFiles() 就能看见，
+    // qk_env_maps_main.json 的内容还写着打了多少 GOT。按 qk_ 前缀从目录列举里去掉。
+    if ((rc = expect(dent_name_blocked("qk_env_maps_main.json"), 1, 44))) return rc;
+    if ((rc = expect(dent_name_blocked("qk_kick.log"), 1, 45))) return rc;
+    if ((rc = expect(dent_name_blocked("qk_guard.log"), 1, 46))) return rc;
+    if ((rc = expect(dent_name_blocked("qk_sso.log"), 1, 47))) return rc;
+    // QQ 自己的文件名不能受影响。
+    if ((rc = expect(dent_name_blocked("config.json"), 0, 48))) return rc;
+    if ((rc = expect(dent_name_blocked("msf_statistics"), 0, 49))) return rc;
         if ((rc = expect(line_blocked(frida, sizeof(frida) - 1), 1, 25))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/self/environ"), 1, 28))) return rc;
     if ((rc = expect(is_environ_path("/proc/1/environ"), 1, 29))) return rc;

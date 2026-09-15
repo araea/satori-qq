@@ -45,15 +45,42 @@ Java 层在 `qq/AntiDetect`，装在每个 QQ 进程：
 | `com.tencent.mobileqq.kick.NTKickProcessor` | 内核 `IKickApi` 收到的踢线 | `a(AppRuntime, KickedInfo)`、`b(AppRuntime, KickedInfo, LogoutReason)` | `nt-kick` |
 | `com.tencent.mobileqq.login.ntlogin.ao` | `NTLoginTicketManager` 刷新登录票据失败，错误码 140022014/140022015/140022016 或 `refreshMethodNeedKick` | `f(int, String)` | `ticket-refresh` |
 | `com.tencent.mobileqq.login.api.impl.UidServiceImpl` | 取不到 UID | `kickToLoginPage()` | `uid-fail` |
+| `com.tencent.mobileqq.login.api.impl.UidServiceImpl` | 取不到 UID（同一方法的**前一步**） | `logoutWhenReqUidFail()` | 见下面「踢线之后：本机还会把自己登出」 |
 | `mqq.app.MainService$MyErrorHandler` | MSF 把强踢当错误事件抛上来 | `popupNotification(...)`（6 参与 8 参两个重载）、`popupNotificationEx(...)` | `msf-kick` |
 
 `NTKickProcessor` 那条：`a` 是接口 `IKickApi.b` 的实现，`b` 是它调用的私有方法。只拦 `b` 的话，`a` 里在它之前做的几件事照旧执行——`kick.a` 线程（清登录数据）、`updateSimpleAccount(uin,false)`、`reportClearLoginData(uin,"2004")`、`setSortAccountList`，本地账号列表当场被标成已下线。两个都拦。
 
-`MainService$MyErrorHandler` 那条是 0.8.9.44 补上的，也是之前"还是会掉线"的直接原因。它自己有一堆回调：`onKicked`、`onKickedAndClearToken`、`onUserTokenExpired`、`onServerSuspended`、`onCloneError`、`onGrayError`，各自解完包（`RequestPushForceOffline` / `RequestMSFForceOffline`，`RequestMSFForceOffline.bSigKick == 1` 就是带签名数据的安全强踢、reason 取 `secKicked`），最后都落进 `popupNotification` / `popupNotificationEx` 这两个出口。出口里做的是 `appRuntime.logout(reason, true)`，再拿 `LoginActivity` 发 `ACTION_KICK_TO_LOGIN`。拦这里等于一次盖住上面所有回调。
+`MainService$MyErrorHandler` 那条是 0.8.9.44 补上的，也是之前"还是会掉线"的直接原因。它自己有一堆回调：`onKicked`、`onKickedAndClearToken`、`onUserTokenExpired`、`onServerSuspended`、`onCloneError`、`onGrayError`，各自解完包（`RequestPushForceOffline` / `RequestMSFForceOffline`，`RequestMSFForceOffline.bSigKick == 1` 就是带签名数据的安全强踢、reason 取 `secKicked`），最后都落进 `popupNotification` / `popupNotificationEx` 这两个出口。出口里做的是 `appRuntime.logout(reason, true)`，再拿 `LoginActivity` 发 `ACTION_KICK_TO_LOGIN`。拦这里能一次盖住上面所有回调——但**不够**：踢线之后 QQ 还会在别处把自己登出，见下面那节。
 
 不是所有 `LogoutReason` 都该拦。拦的是 `kicked`、`secKicked`、`forceLogout`、`suspend`；放行 `user`（用户自己退出）、`switchAccount`（切号）、`expired`（票据自然过期，QQ 自己会重登）、`tips`、`gray`、`restartProcess`——拦这些才是真出问题。判定在 `AntiDetect.kickReasonBlocked`，有单测。
 
-`/healthz` 的 `kick_hook` 是四个入口的 hook 数之和（0.8.9.44 起正常为 **7**：nt-kick 2 + ticket-refresh 1 + uid-fail 1 + msf-kick 3），`last_kick_source` 记下最近一次是哪个入口拦下的，`last_kick` 记参数，`kick_log` 是最近 12 次的原文。
+`/healthz` 的 `kick_hook` 是四个入口的 hook 数之和（0.8.9.44 起正常为 **7**：nt-kick 2 + ticket-refresh 1 + uid-fail 1 + msf-kick 3），`last_kick_source` 记下最近一次是哪个入口拦下的，`last_kick` 记参数，`kick_log` 是最近 12 次的原文。另有一个独立的登出守卫，hook 数在 `logout_guard.hooks`（0.8.9.45 起正常为 **4**）。
+
+### 踢线之后：本机还会把自己登出（0.8.9.45）
+
+拦下 `popupNotification` 并不等于不掉线。2026-09-15 17:29 的一次真踢线上实测：`blocked_kicks=1`、自动登录也保住了，**但账号还是被登出、要短信验证才能登回来**。漏的是 UID 那条线：
+
+```text
+com.tencent.mobileqq.login.api.impl.UidServiceImpl.logoutWhenReqUidFail()
+  setAutoLogin(false);                                  // ← 命中自动登录守卫，所以 auto_login_kept 涨了
+  peekAppRuntime.logout(true);                          // ← 真登出，之前没人拦
+  MsfSdkUtils.updateSimpleAccountNotCreate(uin, false); // ← 把账号从已登录列表里摘掉
+  MobileQQ.sMobileQQ.refreAccountList();
+  ILoginReporter.reportClearLoginData(uin, "2011");
+```
+
+最后那两步是要害：账号从已登录列表里没了，下次启动没有可自动登录的对象，于是停在登录页、要短信验证。之前记的 uid-fail 只拦了它**后面**的 `kickToLoginPage()`（名字看着像终点，其实登出已经在前一步发生了）。
+
+这条不能按 reason 过滤：`logout(true)` 走的是 `QQAppInterface.logout(boolean)`（它是 override，不经过 `AppRuntime.logout(reason, ...)`），而 `AppRuntime.logout(boolean)` 底下会把 reason 写死成 `user`。所以改成**按时间窗口**拦：拦下踢线后的 5 分钟内（`LOGOUT_GUARD_MS`），下面四个入口一律停掉，窗口之外一律不动，正常登出不受影响。
+
+| 入口 | 拦法 |
+| --- | --- |
+| `UidServiceImpl.logoutWhenReqUidFail()` | 窗口内整体 no-op（连带摘账号、报清数据一起停） |
+| `QQAppInterface.logout(boolean)` | 窗口内 no-op；reason 分不出来，只能按窗口 |
+| `AppRuntime.logout(LogoutReason, boolean)` | 窗口内**且** reason 是 `kicked`/`secKicked`/`forceLogout`/`suspend` 才拦 |
+| `AppRuntime.ntTriggerLogout(LogoutReason)` | 同上 |
+
+被拦下的登出记在 `/healthz` 的 `logout_guard`（`hooks` / `blocked` / `log`），落盘到 app 私有目录的 `qk_guard.log`。**故意不写进 `qk_kick.log`**：那份是看守「踢线 = 会话已作废，立刻重启」的判据，混进去会让看守反复重启 QQ。
 
 ### 踢线之后：自动登录会被关掉
 

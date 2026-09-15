@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.8.9.44";
+    public static final String APP_VERSION = "0.8.9.45";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -338,6 +338,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("last_kick", AntiDetect.lastKick())
                         .put("kick_log", new org.json.JSONArray(AntiDetect.kickLog()))
                         .put("auto_login_kept", AntiDetect.autoLoginKept())
+                        // 踢线窗口里被拦掉的登出。落盘在 qk_guard.log——故意不并进
+                        // qk_kick.log，那份是看守「立刻重启」的判据，混进去会反复重启。
+                        .put("logout_guard", new JSONObject()
+                                .put("hooks", AntiDetect.logoutGuardHooks())
+                                .put("blocked", AntiDetect.logoutGuardBlocks())
+                                .put("log", new org.json.JSONArray(AntiDetect.guardLog())))
                         .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");

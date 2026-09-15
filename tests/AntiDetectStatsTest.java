@@ -127,6 +127,14 @@ public final class AntiDetectStatsTest {
             check(!AntiDetect.kickReasonBlocked(reason), "pass reason " + reason);
         }
 
+        // 踢线之后 5 分钟内不许本机登出（UID 那条线走的是 logout(true)，reason 分不出来，
+        // 只能按窗口拦）；窗口一过必须放行，否则会一辈子拦着正常登出。
+        AntiDetect.noteBlockedKick("guard-window", "probe");
+        long now = System.currentTimeMillis();
+        check(AntiDetect.inLogoutGuardWindow(now), "logout guard open right after kick");
+        check(AntiDetect.inLogoutGuardWindow(now + 60_000L), "logout guard open at +60s");
+        check(!AntiDetect.inLogoutGuardWindow(now + 300_001L), "logout guard closed after 5min");
+
         System.out.println("AntiDetectStatsTest OK");
     }
 

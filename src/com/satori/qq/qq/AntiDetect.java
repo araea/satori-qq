@@ -92,6 +92,18 @@ public final class AntiDetect {
     /** 被拦下踢线之后这段时间内，QQ 想关掉自动登录的都不算数。 */
     private static final long AUTO_LOGIN_GUARD_MS = 60000L;
     private static final AtomicLong AUTO_LOGIN_KEPT = new AtomicLong();
+    /**
+     * 拦下踢线之后这段时间内不许把本机登出。
+     *
+     * <p>比 {@link #AUTO_LOGIN_GUARD_MS} 长：踢线之后跟着来的登出往往在几十秒到几分钟后
+     * （实测 17:29:18 被踢，登出在十几秒内），要给整条后续链路留出窗口。
+     */
+    private static final long LOGOUT_GUARD_MS = 300000L;
+    private static final AtomicLong LOGOUT_GUARD_BLOCKS = new AtomicLong();
+    /** 登出守卫挂上了几个入口；0 表示这一版没拦住「踢线之后自己登出」这条路。 */
+    private static volatile int logoutGuardHookCount;
+    private static final int GUARD_LOG_MAX = 12;
+    private static final java.util.ArrayDeque<String> GUARD_LOG = new java.util.ArrayDeque<>();
 
     public static int blockedKicks() { return BLOCKED_KICKS.get(); }
     public static long lastKickMs() { return lastKickMs; }
@@ -99,6 +111,21 @@ public final class AntiDetect {
     public static String lastKickSource() { return lastKickSource; }
     public static int serverKickHooks() { return serverKickHookCount; }
     public static long autoLoginKept() { return AUTO_LOGIN_KEPT.get(); }
+    public static long logoutGuardBlocks() { return LOGOUT_GUARD_BLOCKS.get(); }
+    public static int logoutGuardHooks() { return logoutGuardHookCount; }
+
+    /** 踢线后窗口内被拦掉的登出，新的在前。 */
+    public static String[] guardLog() {
+        synchronized (GUARD_LOG) {
+            return GUARD_LOG.toArray(new String[0]);
+        }
+    }
+
+    /** 踢线之后的一段时间里，本机不许自己登出。public 是为了能在 JVM 单测里验边界。 */
+    public static boolean inLogoutGuardWindow(long nowMs) {
+        long last = lastKickMs;
+        return last != 0 && nowMs - last >= 0 && nowMs - last <= LOGOUT_GUARD_MS;
+    }
 
     /** 踢线原文，新的在前。进程内环形，落盘那份由 {@link #recordBlockedKick} 追加。 */
     public static String[] kickLog() {
@@ -1046,6 +1073,7 @@ public final class AntiDetect {
                     new String[]{"kickToLoginPage"}, "uid-fail", false);
             hookMainServiceKick();
             hookAutoLoginGuard();
+            hookLogoutGuard();
         }
 
         hookVoidMethods("com.tencent.mobileqq.msf.core.MsfCore", new String[]{
@@ -1291,6 +1319,150 @@ public final class AntiDetect {
         return t.length() > max ? t.substring(0, max) : t;
     }
 
+    /**
+     * 踢线之后的一段时间里，不许本机自己登出。
+     *
+     * <p>2026-09-15 17:29 的真踢线上暴露出来的漏洞：拦住了 {@code popupNotification}，
+     * {@code blocked_kicks=1}、自动登录也保住了，**但账号还是被登出、要短信验证才能登回来**。
+     * 漏的是 UID 那条线——{@code com.tencent.mobileqq.login.api.impl.UidServiceImpl
+     * .logoutWhenReqUidFail()}：
+     *
+     * <pre>
+     * peekAppRuntime.setAutoLogin(false);   // ← 命中自动登录守卫，所以 auto_login_kept 涨了
+     * peekAppRuntime.logout(true);          // ← 真登出，之前没人拦
+     * MsfSdkUtils.updateSimpleAccountNotCreate(uin, false);  // ← 把账号从已登录列表里摘掉
+     * </pre>
+     *
+     * 最后那一步是关键：账号从列表里没了，下次启动没有可自动登录的对象，于是就停在登录页、
+     * 要短信验证。之前的 uid-fail 只拦了它**后面**的 {@code kickToLoginPage()}，前一步的真登出
+     * 一次都没拦到。
+     *
+     * <p>{@code logout(true)} 走的 {@code QQAppInterface.logout(boolean)} 不经过
+     * {@code AppRuntime.logout(reason,...)}，而且底下会把 reason 写成 {@code user}，
+     * 所以按 reason 过滤对它无效——这条只能按窗口拦。
+     */
+    private void hookLogoutGuard() {
+        // 1) UID 拿不到时真登出的那条：拦它，连带它后面的摘账号、报清数据一起停掉。
+        try {
+            Class<?> cls = ref.clsOrNull("com.tencent.mobileqq.login.api.impl.UidServiceImpl");
+            if (cls != null) {
+                int n = 0;
+                for (Method m : cls.getDeclaredMethods()) {
+                    if (!"logoutWhenReqUidFail".equals(m.getName())) continue;
+                    if (m.getReturnType() != void.class || m.getParameterTypes().length != 0) continue;
+                    m.setAccessible(true);
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override protected void beforeHookedMethod(MethodHookParam p) {
+                            if (!inLogoutGuardWindow(System.currentTimeMillis())) return;
+                            noteLogoutGuard("uid.logoutWhenReqUidFail");
+                            p.setResult(null);
+                        }
+                    });
+                    n++;
+                    HARDENING_HOOKS.incrementAndGet();
+                }
+                if (n > 0) {
+                    logoutGuardHookCount += n;
+                    L.i("AntiDetect: logout guard on UidServiceImpl (" + n + ")");
+                }
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.logoutGuard.uid", t);
+        }
+        // 2) QQAppInterface.logout(boolean)：QQ 自己的实现在这里，kickPC 那条注释就在它里面。
+        hookLogoutEntry("com.tencent.mobileqq.app.QQAppInterface", "logout", 1, false,
+                "qqapp.logout(boolean)");
+        // 3) AppRuntime 的核心出口：只有带踢线 reason 的那几种才拦，user / switchAccount /
+        //    expired 这些正常生命周期照旧放行。
+        hookLogoutEntry("mqq.app.AppRuntime", "logout", 2, true, "appruntime.logout(reason)");
+        hookLogoutEntry("mqq.app.AppRuntime", "ntTriggerLogout", 1, true, "appruntime.ntTriggerLogout");
+    }
+
+    /**
+     * 挂一个登出入口。
+     *
+     * @param reasonFiltered true 表示只看第一个参数是不是踢线 reason（user / switchAccount /
+     *                       expired 等正常登出要放行）；false 表示这条入口的 reason 分不出来
+     *                       （{@code QQAppInterface.logout(boolean)} 底下写死 user），窗口内一律拦。
+     */
+    private void hookLogoutEntry(String className, String name, int argc, boolean reasonFiltered,
+            String label) {
+        try {
+            Class<?> cls = ref.clsOrNull(className);
+            if (cls == null) return;
+            int n = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!name.equals(m.getName())) continue;
+                if (m.getReturnType() != void.class || m.getParameterTypes().length != argc) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (!inLogoutGuardWindow(System.currentTimeMillis())) return;
+                        if (reasonFiltered) {
+                            if (p == null || p.args == null || p.args.length < 1) return;
+                            if (!kickReasonBlocked(String.valueOf(p.args[0]))) return;
+                        }
+                        noteLogoutGuard(label);
+                        p.setResult(null);
+                    }
+                });
+                n++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (n > 0) {
+                logoutGuardHookCount += n;
+                L.i("AntiDetect: logout guard " + label + " (" + n + ")");
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.logoutGuard " + label, t);
+        }
+    }
+
+    /**
+     * 记一次被拦下的登出。**不写 qk_kick.log**：那个文件是看守「踢线 = 会话已作废，立刻重启」
+     * 的判据，多写几行会让看守反复重启 QQ。这里写到旁边的 qk_guard.log。
+     */
+    private static void noteLogoutGuard(String what) {
+        String line = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                .format(new java.util.Date(System.currentTimeMillis()))
+                + " blocked-logout " + what
+                + " (last kick " + lastKickSource + " " + (lastKickMs == 0 ? "-"
+                        : ((System.currentTimeMillis() - lastKickMs) / 1000) + "s ago") + ")"
+                + " pid=" + android.os.Process.myPid();
+        LOGOUT_GUARD_BLOCKS.incrementAndGet();
+        synchronized (GUARD_LOG) {
+            GUARD_LOG.addFirst(line);
+            while (GUARD_LOG.size() > GUARD_LOG_MAX) GUARD_LOG.removeLast();
+        }
+        L.e("AntiDetect: logout blocked after kick — " + line, null);
+        appendLine(ENV_DIR, "qk_guard.log", line);
+    }
+
+    /** 追加一行到 app 私有目录下的某个日志文件，超 64KB 只留尾部 32KB。 */
+    private static void appendLine(String dir, String name, String line) {
+        try {
+            File d = new File(dir);
+            if (!d.isDirectory()) return;
+            File f = new File(d, name);
+            if (f.length() > 65536L) {
+                java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw");
+                byte[] tail = new byte[(int) Math.min(32768L, f.length())];
+                raf.seek(f.length() - tail.length);
+                raf.readFully(tail);
+                raf.setLength(0);
+                raf.write(tail);
+                raf.close();
+            }
+            FileOutputStream out = new FileOutputStream(f, true);
+            out.write((line + "\n").getBytes("UTF-8"));
+            out.close();
+            f.setReadable(false, false);
+            f.setReadable(true, true);
+            f.setWritable(false, false);
+            f.setWritable(true, true);
+        } catch (Throwable ignore) {}
+    }
+
     /** 踢线入口的参数形状不一：NTKickProcessor 带 KickedInfo，其余入口按原样记。 */
     private String describeArgs(Object[] args, boolean kickedInfoArgs) {        if (kickedInfoArgs) return describeKick(args);
         if (args == null || args.length == 0) return "no-args";
@@ -1347,28 +1519,7 @@ public final class AntiDetect {
             KICK_LOG.addFirst(line);
             while (KICK_LOG.size() > KICK_LOG_MAX) KICK_LOG.removeLast();
         }
-        try {
-            File dir = new File(ENV_DIR);
-            if (!dir.isDirectory()) return;
-            File f = new File(dir, "qk_kick.log");
-            /* 只留最近 200 行，避免长期运行把它撑大。 */
-            if (f.length() > 65536L) {
-                java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw");
-                byte[] tail = new byte[(int) Math.min(32768L, f.length())];
-                raf.seek(f.length() - tail.length);
-                raf.readFully(tail);
-                raf.setLength(0);
-                raf.write(tail);
-                raf.close();
-            }
-            FileOutputStream out = new FileOutputStream(f, true);
-            out.write((line + "\n").getBytes("UTF-8"));
-            out.close();
-            f.setReadable(false, false);
-            f.setReadable(true, true);
-            f.setWritable(false, false);
-            f.setWritable(true, true);
-        } catch (Throwable ignore) {}
+        appendLine(ENV_DIR, "qk_kick.log", line);
     }
 
     /** 只更新状态、不落日志。单测跑在 JVM 上，碰 android.util.Log 会撞上桩实现。 */

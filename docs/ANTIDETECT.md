@@ -102,7 +102,19 @@ MSF 那条要拦处理器入口，不拦 `popupNotification`。`popupNotificatio
 
 `last_kick` 带的字段：`entry=` 是被拦下的处理器入口名（`onKickedAndClearToken` 是带清票据的那一支，`onKicked` 是另一支），`args=` 是 QQ 传进来的那几个布尔（`onKickedInternal` 的 `isTokenExpired` 与 `isSameDevice`），`svcCmd=` 是这个响应的服务命令、`ssoErr=` 是它带的 SSO 错误码。加上服务端那个包里的 `kickType=`（`RequestMSFForceOffline.bKickType`，名字按 `KickedType` 的声明顺序取）与 `sigKick=`（1 表示带 `vecSigKickData` 的安全强踢，reason 取 `secKicked`；0 是普通强踢），另有 `seqno=` / `sigLen=` / `sameDevice=`。内核那条路（`nt-kick`）参数是 `KickedInfo`，字段比 MSF 包多，单独记 `appId=` / `instanceId=` / `securityKickedType=`。只记 reason 与服务端文案的话，现场分不出「在别处登录被顶」和「风控打击」。
 
-0.13.0 起 `cmd=` 取不到时会写成 `cmd=-`。0.12.0 及之前这一项取不到就整段省略，日志里看到的是更早版本留下的 `cmd=unknown` 占位，不是「真的拿到了 unknown」。
+`cmd=` 那一项要按 2026-09-16 19:39 的实测读：**`cmd=unknown` 不是「取不到」，它是 `MsfCommand` 枚举里的 `unknown` 常量**（`FromServiceMsg.getMsfCommand()` 在这个包里没被设值，默认就是它）。真正有用的是 `svcCmd=`。也就是说旧记录里的 `cmd=unknown` 一直是有意义的：它说明这个包不是按 MSF 命令解析的，而是按服务命令（`getServiceCmd`）走的。0.13.0 起 `cmd=` 取不到时会写成 `cmd=-`，那是另一个含义（反射失败）。
+
+2026-09-16 19:39:26 那次踢线是带新字段的第一条，形态可以直接当模板用：
+
+```text
+msf-kick-entry entry=onKickedAndClearToken kickType=0(KKICKBYMULTIINST?) sigKick=0 sameDevice=0
+seqno=3721231761 sigLen=0 title=下线通知 msg=你的账号当前登录已失效，请重新登录。
+uin=3373167460 args=false svcCmd=StatSvc.ReqMSFOffline cmd=unknown up=637s pid=20713
+```
+
+读法：`entry=onKickedAndClearToken` 说明走的是 `onInterceptKicked(..., isTokenExpired=true)` 那一支（也就是会 `updateSimpleAccount(uin, false)` 摘账号的那支），`svcCmd=StatSvc.ReqMSFOffline` 是服务端下发的 MSF 命令名，`args=false` 是 QQ 传进来的那个布尔。**没有 `token-expired` 行**，说明它没经过 `onUserTokenExpired`——即这一次是纯服务端踢线，不是票据过期那条路。
+
+同一次踢线的 3 分半后（19:42:49，pid 14266）`qk_guard.log` 里出现了 8 行 `kept-login-state ... (last kick  -)`：那个进程内存里一次踢线都没记到，靠的是 `qk_kick.log` 的 mtime——也就是 0.13.1 的跨重启窗口在真机上第一次被看见生效。要是没有那次改动，这几行守卫会直接 return，账号就被摘成 `_f` 了。
 
 踢线原文用 `Packet.decodePacket(buf, "RequestMSFForceOffline", new RequestMSFForceOffline())` 解：那就是 `MainService` 自己解这个包用的入口。别的回调带的是另一种包，硬解会得到垃圾字段，所以解完要校验（标题或正文至少一个非空，或 uin 非 0），过不了就只记 `cmd=` 与 `uin=`。QQ 自己那两份 `QQXlog_*.qqxlog` 解不开，要证据读模块自己落盘的 `qk_kick.log` / `qk_guard.log` / `qk_sso.log`。
 

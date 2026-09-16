@@ -24,3 +24,15 @@ qk_guard.log   2026-09-16T16:34:37 allowed-logout reason=expired ...         ←
 ```
 
 升级提示：沿用包名与签名，直接覆盖升级，装完重启一次 QQ。
+
+### 装上之后第一次踢线就给出了答案
+
+升级到 0.13.2 之后本机立刻碰上了一次真踢线（19:39:26），带新字段的第一条记录长这样：
+
+```text
+msf-kick-entry entry=onKickedAndClearToken kickType=0 sigKick=0 sameDevice=0
+seqno=3721231761 title=下线通知 msg=你的账号当前登录已失效，请重新登录。
+uin=3373167460 args=false svcCmd=StatSvc.ReqMSFOffline cmd=unknown up=637s
+```
+
+三件事定下来了：走的是 `onKickedAndClearToken`（会摘账号的那一支）；服务端下发的命令名是 `StatSvc.ReqMSFOffline`；这次没有 `token-expired` 行，说明它没经过 `onUserTokenExpired`。另外 19:42:49 有个进程在内存里没有踢线记录的情况下把账号标记顶了回去（`kept-login-state ... (last kick  -)`），那是 0.13.1 的跨重启窗口在真机上第一次生效。

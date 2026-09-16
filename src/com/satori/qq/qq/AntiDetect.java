@@ -138,6 +138,16 @@ public final class AntiDetect {
      */
     private static volatile long softKickMs;
     /**
+     * 「会话刚被判死」的时刻：{@code onUserTokenExpired} 一进来就记。
+     *
+     * <p>2026-09-16 20:52 的真机样本暴露的缺口：那一次 `身份验证失败，请你重新登录。(w21)`
+     * 是踢线之后 28 分钟才到的（`kick marker 1673s ago`），已经出了 15 分钟的善后期窗口，
+     * 于是账号标记被摘成 {@code _f}、`login_state.kept=0`，下一次登录不再是一键。
+     * 但这条事件的语义和踢线一样：会话死了。所以把它也算作善后的锚点，
+     * 窗口长度不变（仍然是 {@link #KICK_AFTERMATH_MS}），锚点从「踢线」扩到「会话被判死」。
+     */
+    private static volatile long sessionDeadMs;
+    /**
      * 主进程里那个实例。善后期的自愈要能在模块自己的线程上被调起来（状态监控每秒跑一轮），
      * 而 AntiDetect 是每个进程各一个实例，所以留一个主进程的引用。子进程为 null。
      */
@@ -366,7 +376,7 @@ public final class AntiDetect {
      * 替他保活，否则「退出登录」会退不掉。
      */
     public static boolean inKickAftermath(long nowMs) {
-        long last = Math.max(lastKickMs, softKickMs);
+        long last = Math.max(Math.max(lastKickMs, softKickMs), sessionDeadMs);
         long deliberate = deliberateLogoutMs;
         if (deliberate != 0 && nowMs - deliberate >= 0 && nowMs - deliberate <= KICK_AFTERMATH_MS
                 && deliberate >= last) return false;
@@ -2061,6 +2071,9 @@ public final class AntiDetect {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
                         if (p == null || p.args == null || p.args.length < 2) return;
                         Object from = p.args[1];
+                        // 先记时刻再记别的：这一支接下来就会摘账号（updateSimpleAccount*(uin,false)），
+                        // 而登录态守卫看的就是这个时刻开没开善后窗口。
+                        sessionDeadMs = System.currentTimeMillis();
                         Object code = attribute(from, "attr_sso_error_code");
                         // 归因标记：让同一个线程内后续的 updateSimpleAccount*(uin,false) 知道
                         // 自己是这条支调的。0.13.3 漏了这一句，实测 by= 一直是 -（靠 frames= 兜住）。

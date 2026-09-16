@@ -184,6 +184,7 @@ typedef struct {
 
 #define PT_LOAD 1
 #define PT_DYNAMIC 2
+#define PT_GNU_RELRO 0x6474e552
 #define DT_STRTAB 5
 #define DT_SYMTAB 6
 #define DT_RELA 7
@@ -1249,7 +1250,8 @@ static uintptr_t norm_ptr(uintptr_t base, uintptr_t p) {
     return p < base ? p + base : p;
 }
 
-static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
+static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx,
+        uintptr_t relro_lo, uintptr_t relro_hi) {
     const char* strtab = 0;
     const Elf64_Sym* symtab = 0;
     const Elf64_Rela* jmprel = 0;
@@ -1329,8 +1331,24 @@ static void do_patch_dyn(uintptr_t base, const Elf64_Dyn* dyn, ctx_t* ctx) {
                     && mprotect((void*)pg, (size_t)g_page, PROT_READ | PROT_WRITE) != 0)
                 continue;
             *got = repl;
-            if (raw_svc(SYS_mprotect, (long)pg, (long)g_page, (long)PROT_READ, 0, 0, 0) != 0)
-                mprotect((void*)pg, (size_t)g_page, PROT_READ);
+            /*
+             * 补完恢复权限：**要按这一页原本是什么来定**，不能无条件设成 PROT_READ。
+             *
+             * PT_GNU_RELRO 里的页（.got 都在里面）装完之后本来就是只读，回落 PROT_READ 正确；
+             * 不在 RELRO 里的页是 .data，里面除了我们补的那几个 libc 指针副本，还有同页的活数据
+             * ——libfekit 的 emutls 控制块 index 就在 base+0x749e18，与它第一个补丁槽 0x749ec0
+             * 只差 0xa8 字节、同属 0x749000 那一页。无条件设成 PROT_READ 会把整页冻住，
+             * 于是新起的进程里第一个访问那个 thread_local 的线程（:MSF 是 MSFNewServiceSe）
+             * 必然去写只读页 → SIGSEGV。
+             *
+             * 2026-09-16 实测：dropbox 里 82 份 :MSF 原生崩溃全是这个签名（libfekit
+             * __emutls_get_address+128，pc/写入地址恒定、进程活 1~2 秒），最早一份能追到 09-13；
+             * 当晚被「踢线 → 反复拉起 :MSF」放大成一小时 57 条。
+             */
+            long restore = (relro_hi > relro_lo && pg >= relro_lo && pg < relro_hi)
+                    ? (long)PROT_READ : (long)(PROT_READ | PROT_WRITE);
+            if (raw_svc(SYS_mprotect, (long)pg, (long)g_page, restore, 0, 0, 0) != 0)
+                mprotect((void*)pg, (size_t)g_page, (int)restore);
             ctx->patched++;
             g_lib_patched[g_lib_id]++;
             if (repl == ctx->my_dlsym) ctx->dlsym_n++;
@@ -1372,10 +1390,24 @@ static void patch_module_at(uintptr_t map_base, ctx_t* ctx) {
     uintptr_t bias = load_bias(map_base);
     const Elf64_Ehdr* eh = (const Elf64_Ehdr*)map_base;
     const Elf64_Phdr* ph = (const Elf64_Phdr*)(map_base + eh->e_phoff);
+    /*
+     * PT_GNU_RELRO 的页对齐范围。装载器就是按页把这段设成只读的，所以：
+     * 范围里的页补完回落 PROT_READ，范围外的（.data）恢复可写。取不到就当成没有 RELRO，
+     * 全部按可写恢复——比把 .data 冻成只读安全得多（后者会打出上面那种崩溃）。
+     */
+    uintptr_t relro_lo = 0, relro_hi = 0;
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (ph[i].p_type != PT_GNU_RELRO) continue;
+        uintptr_t lo = bias + ph[i].p_vaddr;
+        uintptr_t hi = lo + ph[i].p_memsz;
+        relro_lo = lo & ~(uintptr_t)(g_page - 1);
+        relro_hi = (hi + (uintptr_t)g_page - 1) & ~(uintptr_t)(g_page - 1);
+        break;
+    }
     for (int i = 0; i < eh->e_phnum; i++) {
         if (ph[i].p_type != PT_DYNAMIC) continue;
         const Elf64_Dyn* dyn = (const Elf64_Dyn*)(bias + ph[i].p_vaddr);
-        do_patch_dyn(bias, dyn, ctx);
+        do_patch_dyn(bias, dyn, ctx, relro_lo, relro_hi);
     }
 }
 

@@ -461,10 +461,12 @@ while true; do
         fi
         kick_at=0
         log "kick: 踢线后已等 ${waited}s，按重启预算处理"
-        if device_online; then
-            restart_qq "踢线后会话已作废（up 由模块记录）"
-        else
+        if ! device_online; then
             log "skip: 踢线后设备没网，先不动 QQ"
+        elif session_dead_recently; then
+            log "skip: 踢线后 qk_guard.log 已出现 token-expired —— 这次会话被服务端判死，重启救不回来（今天的恢复都是人工登录），等人工"
+        else
+            restart_qq "踢线后会话已作废（up 由模块记录）"
         fi
         continue
     fi

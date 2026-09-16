@@ -11,8 +11,8 @@
      versionCode and versionName in sync (tests enforce this). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.satori.qq"
-    android:versionCode="87"
-    android:versionName="0.11.1">
+    android:versionCode="88"
+    android:versionName="0.11.2">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <queries><package android:name="com.tencent.mobileqq" /></queries>

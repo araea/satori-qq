@@ -4,19 +4,14 @@
 
 ## 连接约定
 
-- HTTP：`POST /v1/{resource}.{method}`，请求体为 JSON，`upload.create` 使用 multipart
-  - 请求头 `Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时都按未指定处理，照常应答；只有明确指向另一账号（平台不是 `red`，账号不是本机 QQ 号）的选择器才回 404
-- 事件：`GET /v1/events` 升级为 WebSocket。客户端须在 10 秒内发送 `IDENTIFY`，服务端随后发送 `READY` 与 `EVENT`。省略 `sn` 创建新会话，显式指定 `sn=0` 可回放缓冲区内 `sn > 0` 的事件
-  - `READY` 里的登录账号就是客户端之后每个请求要带回来的 `Satori-User-ID`。QQ 账号尚未可知时不发 `READY`，等账号可知（每秒轮询）后补发，不把占位账号发给客户端
+- HTTP：`POST /v1/{resource}.{method}`，请求体为 JSON，`upload.create` 使用 multipart。请求头 `Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时都按未指定处理，照常应答；只有明确指向另一账号（平台不是 `red`，账号不是本机 QQ 号）的选择器回 404
+- 事件：`GET /v1/events` 升级为 WebSocket。客户端须在 10 秒内发送 `IDENTIFY`，服务端随后发 `READY` 与 `EVENT`。省略 `sn` 创建新会话，显式指定 `sn=0` 可回放缓冲区内 `sn > 0` 的事件
+- `READY` 里的登录账号就是客户端之后每个请求要带回来的 `Satori-User-ID`。QQ 账号尚未可知时不发 `READY`，等账号可知（每秒轮询）后补发，不把占位账号发给客户端
 - 元信息：`POST /v1/meta`；资源代理：`GET /v1/proxy/{url}`
-- 官方客户端的登录域内路由：`POST /v1/internal/{platform}/{selfId}/_api/{name}` 与 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`。
-  前者是 `@satorijs/adapter-satori` 的 `bot.internal.*` 走法（参数按 `JsonForm` 编码，纯 JSON 时是数组，带文件时是 `multipart/form-data` 且 JSON 在 `$` 字段；
-  带 `Satori-Pagination: true` 时回 `{data, …}`），后者是 `upload.create` 返回的 `internal:{platform}/{selfId}/_tmp/{id}` 被客户端解析后回落到的地址。
-  这两条只服务本机登录自身的资源与动作，`_tmp` 与 `/v1/assets/{id}` 一样不带令牌，其他登录回 404。`POST /v1/internal/{name}` 仍可用，是模块自己的简写。
+- 官方客户端的登录域内路由：`POST /v1/internal/{platform}/{selfId}/_api/{name}` 与 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`。前者是 `@satorijs/adapter-satori` 的 `bot.internal.*` 走法，参数按 `JsonForm` 编码（纯 JSON 时是数组，带文件时是 `multipart/form-data` 且 JSON 在 `$` 字段），带 `Satori-Pagination: true` 时回 `{data, …}`；后者是 `upload.create` 返回的 `internal:{platform}/{selfId}/_tmp/{id}` 被客户端解析后回落到的地址。这两条只服务本机登录自身的资源与动作，`_tmp` 与 `/v1/assets/{id}` 一样不带令牌，其他登录回 404。`POST /v1/internal/{name}` 仍可用，是模块自己的简写
 - 分页：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next}`。不带 `next` 与 `limit` 时返回完整结果；带 `limit` 或 `next` 时按偏移分页，`next` 为下一次要传回的偏移量。`message.list` 是双向分页，另见下表
 - 平台为 `red`，适配器为 `satori-qq`
-- 群频道的 `channel.id` 与 `guild.id` 均为群号，`channel.type=0`
-- 私聊频道为 `private:{uin}`，`channel.type=1`
+- 群频道的 `channel.id` 与 `guild.id` 均为群号，`channel.type=0`；私聊频道为 `private:{uin}`，`channel.type=1`
 - 消息 ID 使用 QQ NT `msgId` 字符串，历史游标使用 `message_seq`
 - `<quote>` 与 `[CQ:reply]` 的 `id` 可直接用于 `message.get` 与 `message.delete`
 
@@ -85,96 +80,76 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | --- | --- | --- |
 | 互动 | `poke` / `like` / `invite` | 戳一戳、资料卡点赞、邀请入群 |
 | 群成员 | `special_title` / `card` | 设置群头衔或群名片 |
+| 群成员 | `group_member_card` / `group_check_member` | 成员群名片；或校验一批成员是否已在本地缓存 |
+| 群成员 | `member_identity` / `member_common` | 成员群身份（等级、头衔、互动与业务标签）；缓存之外的扩展字段 |
+| 群成员 | `group_member_search` / `member_info` | 搜索群成员或读取单个成员详情 |
 | 群显示 | `title_display` / `honor_display` | 设置成员群头衔或群荣誉显示开关 |
 | 群设置 | `group_remark` / `group_extra` | 设置本地群备注，或读取群扩展标志 |
+| 群设置 | `group_msg_mask` | 群消息提醒方式：`notify`、`assistant`、`shield`、`receive` |
 | 群管理 | `group_refresh` / `group_leave` | 刷新群列表；退群须指定 `confirm=true` |
+| 群管理 | `group_transfer` / `group_destroy` | 转让群、解散群，都必须带 `confirm=true` |
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息 |
 | 群概览 | `group_overview` | 返回频道、成员、角色、活跃统计与展示开关 |
-| 成员查询 | `group_member_search` / `member_info` | 搜索群成员或读取单个成员详情 |
-| 活跃度 | `group_active` / `group_anniversary` | 查询活跃排行或入群周年日历 |
-| 随机选择 | `random_member` / `random_team` | 无重复抽取成员或均衡随机分队 |
-| 联系人 | `contact_search` | 按号码、昵称、备注或群名搜索好友与群 |
-| 群文件 | `group_file` | 查询、上传、移动、重命名或删除群文件与目录 |
-| 消息读取 | `get_forward` / `get_resource` | 读取合并转发或已登记资源 |
-| 消息查询 | `message_context` / `message_search` | 查询消息上下文或近期本地历史 |
-| 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳 |
-| 个人资料 | `profile_set_signature` / `profile_set_nickname` | 修改个性签名或昵称 |
-| 个人资料 | `profile_set_avatar` | 修改头像，接受本地路径、`file:`、`http(s):`、`data:` 与 `internal:` |
-| 个人资料 | `profile_self` | 读取自己的资料、个性签名与在线状态 |
-| 群设置 | `group_msg_mask` | 设置群消息提醒方式：`notify`、`assistant`、`shield`、`receive` |
-| 群查询 | `group_shut_up_list` | 查询群内被禁言的成员 |
-| 群查询 | `group_honor` | 查询群荣誉 |
+| 群概览 | `group_active` / `group_anniversary` | 查询活跃排行或入群周年日历 |
+| 群概览 | `random_member` / `random_team` | 无重复抽取成员或均衡随机分队 |
+| 群查询 | `group_shut_up_list` / `group_honor` | 群内被禁言的成员；群荣誉 |
 | 群详情 | `group_detail` / `group_all_info` | 群容量、等级、群主与扩展标志 |
 | 群详情 | `group_bulletin` | 读取群公告；`op=list` 读公告列表（见限制） |
 | 群详情 | `group_essence_list` | 按页读取精华消息 |
 | 群详情 | `group_statistic` / `group_member_level` | 群统计与成员等级刻度 |
 | 群详情 | `group_avatar_wall` / `group_medal` | 群头像墙与群勋章（见限制） |
 | 群详情 | `group_capacity` / `group_msg_limit` | 群成员上限与发言频率限制 |
-| 群详情 | `group_join_link` | 群分享/加群链接，`short_url` 取短链 |
-| 群详情 | `group_apps` | 群应用中心列表 |
-| 群详情 | `group_related` | `op=related` 关联群、`op=sub` 子群（见限制） |
-| 群详情 | `group_illegal` | 违规成员名单 |
-| 群详情 | `group_notify` | 未读群通知数，`force=true` 先向服务端要一次 |
-| 群详情 | `group_signin_status` | 本号在群里的签到状态 |
-| 群管理 | `group_transfer` / `group_destroy` | 转让群、解散群，都必须带 `confirm=true` |
-| 群成员 | `group_member_card` / `group_check_member` | 成员群名片；或校验一批成员是否已在本地缓存 |
-| 群成员 | `member_identity` | 成员群身份：等级、头衔、互动与业务标签 |
-| 群成员 | `member_common` | 成员缓存之外的扩展字段 |
-| 好友 | `friend_remark` | 查询或设置好友备注 |
-| 好友 | `friend_top` | 置顶或取消置顶与好友的会话 |
-| 好友 | `friend_msg_notify` | 开启或关闭单个好友的消息提醒 |
-| 好友 | `friend_block` | 拉黑或取消拉黑好友 |
-| 好友 | `friend_relation` | 查询是否为好友、是否已拉黑及备注 |
-| 好友 | `friend_add` | 发送好友申请 |
-| 好友 | `buddy_category` | 查询好友分组；`op=add/delete/rename/set` 增删改名或移动好友 |
-| 好友 | `buddy_nick` | 读取指定好友的昵称 |
-| 好友 | `special_care` | 设置特别关心及其铃声、空间开关 |
-| 好友 | `add_me_setting` | 读取或修改加好友设置 |
-| 好友 | `doubt_buddy` | 查询陌生好友申请，或通过、拒绝其中一条 |
-| 好友 | `buddy_req_unread` | 未读好友申请数 |
-| 资料 | `user_detail` | 资料详情：等级、会员、生日、地区、标签 |
-| 资料 | `vas_info` | 会员、铭牌、字体等增值信息 |
-| 资料 | `profile_status` | 在线状态：设备、网络、电量、自定义状态 |
-| 资料 | `profile_intimate` | 亲密关系 |
-| 资料 | `profile_relation_flag` | 拉黑、置顶、免打扰、特别关心等关系标志 |
-| 资料 | `profile_set_birthday` | 修改生日 |
-| 消息 | `voice_to_text` | 语音转文字。听写是异步的，动作会等到结果写回再返回；主入口没结果时加 `ai: true` 走 AI 变体 |
-| 消息 | `fav_emoji` | 表情栏（内核只开放最近使用表情） |
-| 消息 | `auto_reply` | 读取自动回复文本 |
-| 消息 | `unread_summary` | 查询指定频道的未读数 |
-| 消息 | `mark_read` | 将会话标记为已读 |
+| 群详情 | `group_join_link` / `group_apps` | 群分享或加群链接（`short_url` 取短链）；群应用中心列表 |
+| 群详情 | `group_related` / `group_illegal` | `op=related` 关联群、`op=sub` 子群（见限制）；违规成员名单 |
+| 群详情 | `group_notify` / `group_signin_status` | 未读群通知数（`force=true` 先向服务端要一次）；本号在群里的签到状态 |
+| 群文件 | `group_file` | 查询、上传、移动、重命名或删除群文件与目录 |
+| 消息读取 | `get_forward` / `get_resource` | 读取合并转发或已登记资源 |
+| 消息查询 | `message_context` / `message_search` | 查询消息上下文或近期本地历史 |
 | 消息 | `message_by_id` / `recall_history` | 按消息 ID 批量取消息；取被撤回的消息 |
 | 消息 | `msg_abstract` / `reaction.likes` | 消息摘要行；某个表态的操作者名单 |
-| 消息 | `first_unread` | 会话首条未读的序号 |
-| 消息 | `draft` | 会话草稿，`op=delete` 清除（无草稿时内核回 `code=4 Data Not Existed!`） |
+| 消息 | `first_unread` / `unread_summary` | 会话首条未读的序号；指定频道的未读数 |
+| 消息 | `mark_read` / `draft` | 将会话标记为已读；会话草稿，`op=delete` 清除 |
+| 消息 | `voice_to_text` | 语音转文字。听写是异步的，动作会等到结果写回再返回；主入口没结果时加 `ai: true` 走 AI 变体 |
+| 消息 | `fav_emoji` / `fav_emoji_write` | 表情栏（内核只开放最近使用表情）；收藏表情，`op=add` 加本地文件、`op=desc` 改描述 |
+| 消息 | `recent_faces` / `auto_reply` | 最近用过的 QQ 表情；自动回复文本 |
 | 消息 | `temp_chat` | 临时会话信息（群会话回 `code=5 :no temp chat info`） |
-| 消息 | `recent_faces` | 最近使用过的 QQ 表情 |
-| 消息 | `fav_emoji_write` | 收藏表情：`op=add` 加本地文件，`op=desc` 改描述 |
 | 会话 | `hidden_session` | `op=get` 读隐藏会话，`op=hide` / `op=unhide` 隐藏或恢复 |
-| 会话 | `session_top` | 置顶或取消置顶会话 |
+| 会话 | `session_top` / `recent_contacts` | 置顶或取消置顶会话；查询最近联系人及未读数 |
 | 会话 | `recent_snapshot` / `unread_details` | 最近联系人快照；会话未读明细 |
-| 媒体 | `media_dir` | 富媒体落盘目录与图片/语音/视频/文件的临时目录 |
-| 媒体 | `batch_file_count` | 批量查群文件数量 |
+| 媒体 | `media_dir` / `batch_file_count` | 富媒体落盘目录与图片、语音、视频、文件的临时目录；批量查群文件数量 |
+| 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳 |
+| 个人资料 | `profile_set_signature` / `profile_set_nickname` | 修改个性签名或昵称 |
+| 个人资料 | `profile_set_avatar` | 修改头像，接受本地路径、`file:`、`http(s):`、`data:` 与 `internal:` |
+| 个人资料 | `profile_self` | 读取自己的资料、个性签名与在线状态 |
+| 资料 | `user_detail` / `vas_info` | 资料详情（等级、会员、生日、地区、标签）；会员、铭牌、字体等增值信息 |
+| 资料 | `profile_status` / `profile_intimate` | 在线状态（设备、网络、电量、自定义状态）；亲密关系 |
+| 资料 | `profile_relation_flag` / `profile_set_birthday` | 拉黑、置顶、免打扰、特别关心等关系标志；修改生日 |
+| 好友 | `friend_remark` | 查询或设置好友备注 |
+| 好友 | `friend_top` / `friend_msg_notify` | 置顶或取消置顶会话；开关单个好友的消息提醒 |
+| 好友 | `friend_block` / `friend_relation` | 拉黑或取消拉黑；查询是否为好友、是否已拉黑及备注 |
+| 好友 | `friend_add` / `doubt_buddy` | 发送好友申请；查询陌生好友申请，或通过、拒绝其中一条 |
+| 好友 | `buddy_category` / `buddy_nick` | 查询好友分组，`op=add/delete/rename/set` 增删改名或移动好友；读取指定好友的昵称 |
+| 好友 | `special_care` / `add_me_setting` | 设置特别关心及其铃声、空间开关；读取或修改加好友设置 |
+| 好友 | `buddy_req_unread` | 未读好友申请数 |
+| 联系人 | `contact_search` | 按号码、昵称、备注或群名搜索好友与群 |
 | 机器人 | `robot_list` / `robot_owned` | 可加入群创建的机器人列表；群成员各自拥有的机器人 |
-| 联系人 | `recent_contacts` | 查询最近联系人及未读数 |
-| 能力查询 | `capabilities` / `help` | 返回扩展动作与参数清单 |
-| 能力查询 | `compat` | 内核接口面静态自检与运行时调用观测，QQ 升级后先跑它；`force=true` 强制重算 |
-| 状态查询 | `status` / `version` | 返回健康状态或版本 |
-| QQ 空间 | `qzone.publish` / `qzone.create` | 发布说说 |
-| QQ 空间 | `qzone.delete` / `qzone.list` | 删除或列出说说 |
-| QQ 空间 | `qzone.clear` / `qzone.delete_all` / `qzone.delete-all` | 删除全部说说 |
-| QQ 空间 | `qzone.auth` | 读取调试用鉴权信息 |
+| QQ 空间 | `qzone.publish` / `qzone.create` / `qzone.delete` / `qzone.list` | 发布、删除或列出说说 |
+| QQ 空间 | `qzone.clear` / `qzone.delete_all` / `qzone.delete-all` / `qzone.auth` | 删除全部说说；读取调试用鉴权信息 |
+| 能力查询 | `capabilities` / `help` / `compat` | 扩展动作与参数清单；内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
+| 状态查询 | `status` / `version` | 健康状态或版本 |
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程或清理临时文件 |
 
-`voice_to_text` 的结果不在回调里：`translatePtt2Text` 用 `IOperateCallback`，只有状态码。内核把转写文字写回语音元素自己（`PttElement.text`），所以动作在交任务之后盯着元素看最多 3 秒再返回。**第一次调用某条语音会慢**（冷启动听写，实测约 15 秒），之后读同一条只要一两百毫秒。听写没跑起来的语音会返回 `text` 为空，同时带上 `translate_status` / `duration` / `can_convert`，便于区分「内核还没转」和「这段本来就转不了」。
+`voice_to_text` 的结果不在回调里：`translatePtt2Text` 用 `IOperateCallback`，只有状态码，内核把转写文字写回语音元素自己（`PttElement.text`），所以动作在交任务之后盯着元素看最多 3 秒再返回。第一次调用某条语音会慢（冷启动听写，实测约 15 秒），之后读同一条只要一两百毫秒。听写没跑起来的语音返回空 `text`，同时带上 `translate_status` / `duration` / `can_convert`，便于区分「内核还没转」和「这段本来就转不了」。
 
 完整参数用 `capabilities` 或 `help` 查询，返回里的 `params` 字段逐条列出参数。`group_member_search.next` 可直接用于下一次扩展调用，`next_offset` 供 HTTP 客户端分页。
 
-扩展动作返回的内核原始数据由反射导出，因此 QQ 增删字段时会跟着变而不是静默丢字段。读操作的返回形如 `{guild_id?, ok, result, <数据>}`，其中 `result` 是内核回调的原文；写操作的返回带 `result` 与写入后的值。
+扩展动作返回的内核原始数据由反射导出，QQ 增删字段时跟着变而不是静默丢字段。读操作的返回形如 `{guild_id?, ok, result, <数据>}`，其中 `result` 是内核回调的原文；写操作的返回带 `result` 与写入后的值。
+
+个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑，`special_care` 缺省开启。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 不带 `mask` 时读取当前设置，除 `mask` 外也接受 `shield` 布尔简写。`buddy_category` 的写操作会先拉取一次分组成员表再返回，否则调用方会看到写入成功而列表里没有新分组。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态，`profile_relation_flag` 带回拉黑与特别关心标志。这些动作受 QQ 自身权限与账号状态限制。
 
 ## 内核可用性
 
-以下项在 9.3.60.40970 上核验过，属于 QQ 自身限制而非模块缺陷：
+以下项在 9.3.60.40970 上核验过，属 QQ 自身限制而非模块缺陷：
 
 | 项 | 现状 |
 | --- | --- |
@@ -186,14 +161,12 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | `searchGroupFile` / `searchGroupFileByWord` | 前者同步返回 -1，后者不回调，未提供群文件搜索动作 |
 | `getOnLineDev`（在线设备） | 接受调用但不回调，未提供对应动作 |
 | `getNextMemberList` / `getPrevMemberList`（成员翻页） | 要先 `createMemberListScene` 建场景；实测各游标都回空页（`finish=true`、无成员），未提供对应动作，成员列表用 `guild.member.list` |
-| `enumProvinceOptions` 等地区枚举 | 内核地区表要 `prepareRegionConfig` 先准备好，而该入口不回调（15 秒超时），枚举一律回空表，未提供对应动作 |
-| `getRelatedGroup`（关联群） | 链路通，服务端回 `code=10014 AuthInfo not found`，属风控/权限限制 |
+| `enumProvinceOptions` 等地区枚举 | 内核地区表要 `prepareRegionConfig` 先准备好，而该入口不回调（15 秒超时），枚举一律回空表 |
+| `getRelatedGroup`（关联群） | 链路通，服务端回 `code=10014 AuthInfo not found`，属风控或权限限制 |
 | `destroyGroup` / `transferGroupV2` | 只有群主可用；模块要求 `confirm=true` 才发出去 |
-| `getGroupNotifiesUnreadCount` | 账号级未读，不带群号也能读（早期实现要求 `guild_id`，0.8.9.39 起不必） |
-| `getGroupDetailInfo` / `getGroupAllInfo` / `getGroupStatisticInfo` / `getGroupMemberLevelInfo` / `getGroupBulletin` / `getGroupMsgMask` / `getBuddyReqUnreadCnt` / `getAddMeSetting` / `getDoubtBuddyReq` | 这些入口只回 `code=0`（本机的 `IOperateCallback.onResult` 只有 `(int, String)` 两个参数，没有载荷）。0.8.9.41 起：群详情改走 `batchQueryCachedGroupDetailInfo`（回调直接给 `ArrayList<GroupDetailInfo>`，含 `cmdUinMsgMask`、`cmdUinPrivilege`、`activeMemberNum`），群消息提醒方式与群统计从这份缓存里取；其余仍无数据的动作在响应里带 `payload: false`，不假装成功 |
-| `group_member_level` | 一个 QQ 进程里**只有第一次**会回调；之后再调就 15 秒超时，返回 `ok:false, result:"getGroupMemberLevelInfo timeout"`。2026-09-15 在 0.8.9.43 与 0.8.9.44 上各复现过（`ws-kernel-extras.js` 因此第一次跑 28/28、之后几次 27/28）。判回归时要么刚重启过 QQ，要么别拿这一项当判据 |
-
-个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑，`special_care` 缺省开启。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 不带 `mask` 时读取当前设置，除 `mask` 外也接受 `shield` 布尔简写。`buddy_category` 的写操作会先拉取一次分组成员表再返回，否则调用方会看到写入成功而列表里没有新分组。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态，`profile_relation_flag` 带回拉黑与特别关心标志。这些动作受 QQ 自身权限与账号状态限制。
+| `getGroupNotifiesUnreadCount` | 账号级未读，不带群号也能读（0.8.9.39 起不必） |
+| `getGroupDetailInfo` / `getGroupAllInfo` / `getGroupStatisticInfo` / `getGroupMemberLevelInfo` / `getGroupBulletin` / `getGroupMsgMask` / `getBuddyReqUnreadCnt` / `getAddMeSetting` / `getDoubtBuddyReq` | 这些入口只回 `code=0`（本机的 `IOperateCallback.onResult` 只有 `(int, String)` 两个参数，没有载荷）。0.8.9.41 起群详情改走 `batchQueryCachedGroupDetailInfo`（回调直接给 `ArrayList<GroupDetailInfo>`，含 `cmdUinMsgMask`、`cmdUinPrivilege`、`activeMemberNum`），群消息提醒方式与群统计从这份缓存取；其余仍无数据的动作在响应里带 `payload: false` |
+| `group_member_level` | 一个 QQ 进程里只有第一次会回调，之后再调就 15 秒超时，返回 `ok:false, result:"getGroupMemberLevelInfo timeout"`。2026-09-15 在 0.8.9.43 与 0.8.9.44 上各复现过（`ws-kernel-extras.js` 因此第一次 28/28、之后几次 27/28）。判回归时要么刚重启过 QQ，要么别拿这一项当判据 |
 
 ## 事件
 
@@ -223,7 +196,7 @@ QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，
 
 媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，以及本端的 `/v1/assets/{id}`。入站图片优先返回无需 Bearer 令牌的本地资源地址，头像使用 QQ 头像 CDN。
 
-`<audio src>` 先转成 QQ 自己的 SILK 再发（mp3/wav/amr 都走这条路），转码整条带重试，最多三次：`MediaCodec` 的解码器在 QQ 进程里会被系统中途回收，`queueInputBuffer` 抛一个空消息的 `CodecException`，换一个解码器重来就好。不重试时同一条语音连发几条会随机丢——`node tests/media-live-probe.js voicerepeat` 是量这件事的探针。重试按时间收口（上一次失败的耗时乘二超过 20 秒就不试），因为一条 59 秒的语音转一次，QQ 在前台时约 8 秒、在后台时约 34 秒，多试两次客户端那条 HTTP 就超时了。`<video>` 需要本地能取到视频帧做缩略图；`<file>` 既发聊天气泡，也进群文件列表。
+`<audio src>` 先转成 QQ 自己的 SILK 再发（mp3、wav、amr 都走这条路），转码整条带重试，最多三次：`MediaCodec` 的解码器在 QQ 进程里会被系统中途回收，`queueInputBuffer` 抛一个空消息的 `CodecException`，换一个解码器重来就好。不重试时同一条语音连发几条会随机丢，`node tests/media-live-probe.js voicerepeat` 是量这件事的探针。重试按时间收口（上一次失败的耗时乘二超过 20 秒就不试），因为一条 59 秒的语音转一次，QQ 在前台时约 8 秒、在后台时约 34 秒，多试两次客户端那条 HTTP 就超时了。`<video>` 需要本地能取到视频帧做缩略图；`<file>` 既发聊天气泡，也进群文件列表。
 
 `message.create` 是同步等 QQ 内核回调的：语音回调约 1 秒，文件要等上传，慢的时候会占满 20 秒的等待窗口（超时后按「无回调」放行，消息通常已经发出）。客户端超时不要低于 30 秒。
 

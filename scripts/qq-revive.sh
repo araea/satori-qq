@@ -53,6 +53,10 @@ MAX_RESTARTS_PER_HOUR=${QQ_REVIVE_MAX_RESTARTS_PER_HOUR:-3}
 # 连续几次重启都没换来在线就停手。默认 2：一次踢线重启就能在线回来，第二次还不行，
 # 就不是「自动登录能救」的情形了。
 FAIL_LIMIT=${QQ_REVIVE_FAIL_LIMIT:-2}
+# 一次重启要给它多久才判定「没换回在线」。原来是在 restart_qq 末尾立刻 +1，
+# 于是 2026-09-16 21:06:39 重启、21:06:51 就 giveup（只隔 12 秒），而账号 21:10:22
+# 自己 recovered —— 登录本来就慢，立刻判失败会让看守过早停手。
+RECOVER_CHECK=${QQ_REVIVE_RECOVER_CHECK:-300}
 # 解冻：进程还在但 /healthz 无响应时，多半是被冻住（/proc/<pid>/wchan 是 do_freezer_trap）。
 # 打到前台就能解冻，**不需要 force-stop** —— 强停会多一次重新登录，也挡不住下一次冻结。
 # 判据（2026-09-16 实测校正）：wchan=do_freezer_trap + /sys/fs/cgroup/apps/uid_<qq uid>/cgroup.freeze=1
@@ -258,16 +262,7 @@ restart_qq() {
     else
         log "restart: 进程 $before -> $after"
     fi
-    # 这次重启能不能换来在线，由后续几轮判据回答。连续几次都换不来就停手：那说明不是
-    # 「会话作废、自动登录能救」的情形，多半是服务端要求重新验证、只能人工登录，
-    # 继续重启只会变成一串没人需要的登录尝试。
-    restarts_no_online=$((restarts_no_online + 1))
-    flag_set failures "$restarts_no_online"
-    if [ "$restarts_no_online" -ge "$FAIL_LIMIT" ]; then
-        giveup=1
-        flag_set giveup 1
-        log "giveup: 连续 ${restarts_no_online} 次重启都没换来在线，停止自动重启（账号重新上线或再来一次踢线后自动恢复）"
-    fi
+    # 这次重启算不算失败，留给主循环在 RECOVER_CHECK 秒后判（登录要时间，不能立刻定罪）。
     sleep "$RECOVER_WAIT"
 }
 
@@ -276,6 +271,8 @@ restart_qq() {
 restarts_no_online=$(flag_get failures)
 giveup=$(flag_get giveup)
 thaws=0
+counted_restart=$(flag_get counted)
+[ "$counted_restart" = "0" ] && counted_restart=""
 
 # 只看一轮判据、不动 QQ，用来确认探针本身工作正常。
 if [ "${1:-}" = "--check" ]; then
@@ -286,6 +283,7 @@ if [ "${1:-}" = "--check" ]; then
     echo "restarts_1h: $(restart_history | grep -c .) (上次 $(last_restart || echo -), gap ${MIN_RESTART_GAP}s, 上限 ${MAX_RESTARTS_PER_HOUR}/h)"
     echo "giveup: ${giveup} (连续 ${restarts_no_online} 次重启没换回在线，上限 ${FAIL_LIMIT})"
     echo "thaws: ${thaws} (解冻计数，上限 ${THAW_LIMIT}，超过才走重启预算)"
+    echo "recover_check: ${RECOVER_CHECK}s（重启后给这么久才判失败；已计过的那次 ${counted_restart:-无}）"
     if [ -n "$hz" ]; then
         echo "healthz: online=$(field "$hz" online) blocked_kicks=$(field "$hz" blocked_kicks) kick_hook=$(field "$hz" kick_hook) self_id=$(field "$hz" self_id)"
     else
@@ -353,10 +351,28 @@ while true; do
     kicks=$(field "$hz" blocked_kicks)
     [ -n "$kicks" ] || kicks=0
 
+    # 上一次重启到点了还没换回在线 → 计一次失败。计过的不重复计。
+    last_r=$(last_restart)
+    if [ -n "$last_r" ] && [ "$last_r" != "$counted_restart" ] \
+            && [ $(( $(now) - last_r )) -ge "$RECOVER_CHECK" ] && [ "$online" != "true" ]; then
+        counted_restart=$last_r
+        flag_set counted "$counted_restart"
+        restarts_no_online=$((restarts_no_online + 1))
+        flag_set failures "$restarts_no_online"
+        log "fail: 上次重启（$(( $(now) - last_r ))s 前）至今没换回在线，计第 ${restarts_no_online}/${FAIL_LIMIT} 次失败"
+        if [ "$restarts_no_online" -ge "$FAIL_LIMIT" ]; then
+            giveup=1
+            flag_set giveup 1
+            log "giveup: 连续 ${restarts_no_online} 次重启都没换来在线，停止自动重启（账号重新上线或再来一次踢线后自动恢复）"
+        fi
+    fi
+
     # 账号回到在线：把「连续几次重启都没换回在线」这笔账清掉，重新允许重启。
     if [ "$online" = "true" ] && [ "$restarts_no_online" -ne 0 ]; then
         log "recovered: 账号已回到在线，重置重启计数（之前连续 ${restarts_no_online} 次没换回在线）"
         reset_stop_state
+        counted_restart=$(last_restart)
+        flag_set counted "$counted_restart"
     fi
 
     # 落盘的踢线记录：行数增长说明这一轮里刚有踢线被拦下。跨进程重启还看得见，

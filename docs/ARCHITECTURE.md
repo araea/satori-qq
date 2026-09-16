@@ -7,7 +7,9 @@
 | 组件 | 职责 |
 | --- | --- |
 | `Main` | 在所有 QQ 进程安装过检测；仅在主进程启动 Satori 服务 |
-| `Cfg` / `L` | 配置与日志，详细日志默认关闭 |
+| `Cfg` / `L` | 文件配置与日志，详细日志默认关闭 |
+| `ui` | 知弦管理页，应用自身进程运行；前台只读探测状态 |
+| `control` | 私有设置、UID 校验的 Provider、启动时配置同步 |
 | `net` | HTTP 与事件 WebSocket，仅监听 `127.0.0.1` |
 | `core` | 方法分发、事件、消息与文件标识管理 |
 | `satori` | Satori 元素与数据结构转换 |
@@ -16,6 +18,14 @@
 | `native` | 检测库 GOT、`/proc` 与直接系统调用过滤 |
 
 主进程与 `:MSF` 进程都加载 `AntiDetect` 与 `MapsHide`。HTTP 服务、消息监听与保活组件只在主进程运行。
+
+## 知弦管理通道
+
+普通 APK 声明 `ui.MainActivity`；stealth APK 不声明 Activity，两者都声明 `control.ControlProvider`。Provider 只允许模块自身 UID 与当前安装的 `com.tencent.mobileqq` UID 调用，其他调用方（包括 shell）抛出 `SecurityException`。只支持获取配置和发布运行快照，不接受文件路径、命令或 HTTP 写设置。
+
+`Main` 保持尽早安装 QQ hooks。`SatoriHub.start()` 在独立工作线程等待 Application 基础 Context 完成 attach（至多 10 秒，Provider 短暂不可用时额外重试至多 1.2 秒），然后通过 Provider 读取经完整校验的端口、令牌和四个运行偏好，应用后才绑定 HTTP 端口。其他高级配置不被覆盖。Provider 不可用时保留原文件/默认行为。`/healthz.config_revision` 表示此进程读取的配置修订号；应用用它区分已保存与已生效。
+
+运行快照包含实际端口和配置，与设置共同写入 `noBackupFilesDir/zhixian-control.json`，通过 AtomicFile 原子更新；不使用可能被模块框架重定向的 SharedPreferences，保证普通版与 stealth 版切换使用同一份私有配置。状态页读取现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。诊断报告按字段白名单构造，排除账号、令牌与消息。配置保存不会强停 QQ，也不热切换端口，避免破坏正在工作的客户端会话。
 
 ## HTTP 路由
 
@@ -116,3 +126,5 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'   # 或走客�
 8. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（跑 `tests/internal-kernel-probe.js` 之后看 `internal/compat` 的 `observed`）
 9. 检测库 import 的字符串搜索符号有没有变（`llvm-nm -D lib*.so | grep ' U '` 看是否新增 `strcasecmp`/`strnstr` 一类），变了就把 `native/mapshide.c` 的 `BLOCK` 判定接到同一个入口上，见 [`ANTIDETECT.md`](ANTIDETECT.md)
 10. Turing 的 POSIX ERE 黑名单（进程名/线程名/路径）有没有新增模式
+
+ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试后回退原文件配置，并通过 `config_status` 暴露无敏感信息的原因；管理页提示允许关联启动。引导线程在 QQ 主线程初始化任务之后启动，不阻塞 Application 创建。

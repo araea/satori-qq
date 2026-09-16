@@ -49,7 +49,12 @@ public final class ManifestStealthTest {
         NodeList apps = stealth.getElementsByTagName("application");
         eq(1, apps.getLength(), "stealth application node");
         Element app = (Element) apps.item(0);
-        check("Kernel Bridge".equals(app.getAttribute("android:label")), "stealth label unchanged");
+        check("@string/app_name".equals(app.getAttribute("android:label")), "shared short brand label");
+        Element normalApp = (Element) normal.getElementsByTagName("application").item(0);
+        eq(normalApp.getAttribute("android:label"), app.getAttribute("android:label"), "label sync");
+        eq(1, normal.getElementsByTagName("activity").getLength(), "normal has management activity");
+        eq(0, stealth.getElementsByTagName("activity").getLength(), "stealth has no activity");
+        eq(1, stealth.getElementsByTagName("provider").getLength(), "stealth retains settings bridge");
         check(!"false".equals(app.getAttribute("android:hasCode")), "stealth hasCode");
 
         System.out.println("ManifestStealthTest passed");

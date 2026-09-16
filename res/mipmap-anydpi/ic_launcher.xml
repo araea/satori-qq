@@ -4,9 +4,13 @@
     <group android:translateX="-18" android:translateY="-18">
         <clip-path android:pathData="M40 18H68Q90 18 90 40V68Q90 90 68 90H40Q18 90 18 68V40Q18 18 40 18Z" />
         <path android:pathData="M0 0H108V108H0Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#E9DFFF" />
-        <path android:pathData="M43 31H60Q72 31 72 43V47H58Q45 47 45 60H43L33 67V57Q30 54 30 48V44Q30 31 43 31Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#5D438B" />
-        <path android:pathData="M41 41H60Q62 41 62 43Q62 45 60 45H41Q39 45 39 43Q39 41 41 41Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#FFFBFF" />
-        <path android:pathData="M59 51H66Q78 51 78 63V65Q78 71 75 73V79L66 75H59Q49 75 49 65V62Q49 51 59 51Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#316960" />
-        <path android:pathData="M58 60H68Q70 60 70 62Q70 64 68 64H58Q56 64 56 62Q56 60 58 60Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#D1F7E8" />
+        <path android:pathData="M43 74Q37 77 39 80Q41 82 51 79L52 75Z M58 75L57 79Q67 82 69 80Q71 77 65 74Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#A86217" />
+        <path android:pathData="M54 28Q68 28 69 43L70 51Q77 55 80 66Q80 70 76 69L72 65Q72 77 61 79H47Q36 77 36 65L32 69Q28 70 28 66Q31 55 38 51L39 43Q40 28 54 28Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#342B48" />
+        <path android:pathData="M48 36Q43 36 43 42Q43 47 48 47Q52 47 52 42Q52 36 48 36Z M60 36Q56 36 56 42Q56 47 60 47Q65 47 65 42Q65 36 60 36Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#FFFBFF" />
+        <path android:pathData="M49 39Q47 39 47 42Q47 44 49 44Q51 44 51 42Q51 39 49 39Z M59 39Q57 39 57 42Q57 44 59 44Q61 44 61 42Q61 39 59 39Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#342B48" />
+        <path android:pathData="M50 48Q54 45 58 48Q60 49 57 51L54 53L51 51Q48 49 50 48Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#A86217" />
+        <path android:pathData="M48 56H60Q67 56 67 64V67Q67 71 63 73L65 77L59 75H48Q41 75 41 68V64Q41 56 48 56Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#FFFBFF" />
+        <path android:pathData="M39 51Q54 55 69 51L70 56Q54 60 38 56Z M63 56L69 55L74 63Q69 66 65 64Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#B83C57" />
+        <path android:pathData="M48 64H59Q61 64 61 66Q61 68 59 68H48Q46 68 46 66Q46 64 48 64Z" android:fillAlpha="1" android:fillType="nonZero" android:fillColor="#5D438B" />
     </group>
 </vector>

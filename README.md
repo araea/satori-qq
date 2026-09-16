@@ -1,4 +1,4 @@
-# satori-qq
+# 知弦 · Satori QQ
 
 <img src="artwork/icon.svg" width="96" height="96" alt="软件图标" />
 
@@ -6,9 +6,24 @@
 
 已核验 QQ 9.3.55 与 9.3.60.40970（NT）。
 
-## 外观
+## 知弦应用
 
-Material 3 Expressive 风格的双色对话图标，同步适配自适应图标、Android 13 主题单色图标与模块市场。模块没有独立设置界面；常驻通知沿用系统模板，使用同源单色图标，折叠时展示连接数量与端口，展开后展示账号与在线时长，保留唤醒锁操作。
+普通版提供 Material 3 Expressive 管理界面，支持深浅色、系统动态配色、大字体与按压形状反馈：
+
+- **状态**：QQ、本机服务、客户端数量、在线时长；一键复制实际运行端口的连接地址。
+- **设置**：端口、令牌、状态通知、前台保活、自动唤醒与 Wi-Fi 保持。区分未保存、已保存和已生效；重建界面保留草稿。
+- **诊断**：应用与运行版本、接口检查、离线和请求错误计数；复制或保存不含令牌、账号、消息内容的报告。
+
+图标用企鹅和珊瑚红围巾呼应 QQ，白色腹部化作对话气泡；启动器、主题图标、通知与市场使用同源矢量。
+
+<details>
+<summary>查看应用界面</summary>
+
+<img src="artwork/screenshots/status-light.png" width="260" alt="知弦状态页" /> <img src="artwork/screenshots/settings-dark.png" width="260" alt="知弦深色设置页" /> <img src="artwork/screenshots/diagnostics-light.png" width="260" alt="知弦诊断页" />
+
+原生界面测试截图，状态使用演示数据；实际配色随系统主题变化。
+
+</details>
 
 ## 运行条件
 
@@ -21,9 +36,9 @@ Material 3 Expressive 风格的双色对话图标，同步适配自适应图标�
 1. 安装市场发布的 `SatoriQQ.apk`
 2. 在框架中启用模块，把 QQ 加入作用域
 3. 重启 QQ
-4. 访问 `http://127.0.0.1:3001/healthz`，`online` 为 `true` 即就绪
+4. 打开「知弦」，在状态页检查 QQ、本机服务与客户端连接
 
-需要隐藏模块清单标记时，先用普通 APK 完成启用与作用域设置，再覆盖安装同版本的 `SatoriQQ.stealth.apk`。调整作用域前先装回普通 APK。
+需要隐藏模块清单标记时，先用普通 APK 完成启用与作用域设置，再覆盖安装同版本的 `SatoriQQ.stealth.apk`。stealth 版没有桌面界面，但保留已保存的配置；需要修改设置或作用域时，覆盖安装同版本普通包。两个版本的包名、签名及数据保持一致。
 
 ## 连接
 
@@ -42,7 +57,11 @@ plugins:
 
 ## 配置
 
-按顺序读取，取第一份有效配置：
+首次使用仍按文件或默认值运行。管理页保存后，页面中的六项设置在 **QQ 下次启动时** 覆盖文件同名项；高级选项继续按文件配置。「使用文件配置」可解除页面覆盖，同样在下次启动生效。
+
+后台模块启动时通过校验调用方 UID 的 Binder 接口读取应用私有设置；不需要为管理页授予 root 或存储权限。令牌默认隐藏，显示时禁止系统截屏，复制时标记为敏感内容；备份已关闭。管理页每 5 秒读取本机状态，仅在前台轮询，退出不影响服务。
+
+文件按顺序读取，取第一份有效配置：
 
 ```text
 /sdcard/Android/data/com.tencent.mobileqq/files/satori-qq.json
@@ -151,3 +170,11 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}' | head -c 400
 过检测实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)。模块清单的 stealth 变体是为避开 [Duck Detector](https://github.com/eltavine/Duck-Detector-Refactoring) 的安装包元数据检查而加。
 
 本项目可按 [Apache-2.0](LICENSE-APACHE) 或 [MIT](LICENSE-MIT) 许可证使用。
+
+## 管理界面验证
+
+`bash test.sh` 覆盖配置校验、只读健康探测、诊断脱敏与普通/stealth 清单契约。`bash tests/ui/build.sh` 构建独立的真机测试包；安装后执行 `am instrument -w com.satori.qq.test/.DesignSmoke`，覆盖保存、生效桥接、未保存草稿重建、令牌保护、三页深浅色对比度与 320dp / 200% 字号。测试备份并恢复原设置，不发送消息或自动重启 QQ。
+
+### 系统限制关联启动时
+
+部分 ColorOS 设备会拦截 QQ 在后台启动知弦的配置提供程序。请在「知弦 → 设置 → 后台启动设置」允许关联启动；也可先打开知弦，再重启 QQ。设置未读取时页面会明确提示，QQ 暂时继续使用原文件/默认配置。stealth 版同样需要允许关联启动，建议在普通版完成设置后再切换。

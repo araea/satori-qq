@@ -46,7 +46,7 @@ public final class Main implements IXposedHookLoadPackage {
             SatoriHub hub = new SatoriHub(cfg, qq, store);
             hub.start();
             qq.installHooks();
-            L.i("bridge started on local port " + cfg.port);
+            L.i("bridge initialization scheduled");
         } catch (Throwable t) {
             L.e("bridge failed to start", t);
         }

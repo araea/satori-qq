@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.10.1";
+    public static final String APP_VERSION = "0.11.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -49,6 +49,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     // HTTP requests run on separate threads; never share a send condition between callers.
     private final ThreadLocal<MessageFreshness.Condition> sendCondition = new ThreadLocal<>();
     private HttpServer server;
+    private volatile long managedRevision = -1;
     private volatile StatusNotice notice;
     private volatile com.satori.qq.qq.Keepalive keepalive;
     private volatile com.satori.qq.qq.WakeLockCtl wakeLock;
@@ -104,17 +105,37 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     public void start() {
         server = new HttpServer(cfg, this);
-        server.start();
         qq.setListener(this);
-        refreshNotice(); // usually a no-op this early (QQ Application not up yet); the monitor retries
-        startStatusMonitor();
+        Thread bootstrap = new Thread(() -> {
+            // QQ hooks are installed immediately by Main. Only the listener waits for a Context.
+            android.content.Context context = qq.appContext();
+            for (int retry = 0; !contextReady(context) && retry < 200; retry++) {
+                try { Thread.sleep(50); } catch (InterruptedException stopped) { return; }
+                context = qq.appContext();
+            }
+            if (contextReady(context)) managedRevision = com.satori.qq.control.ControlBridge.bootstrap(context, cfg, APP_VERSION);
+            server.start();
+            refreshNotice();
+            startStatusMonitor();
+        }, "pool-4-bootstrap");
+        bootstrap.setDaemon(true);
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(bootstrap::start);
     }
 
-    /** Refresh the resident notification and drive foreground-service keepalive. No-op when both are
+    private static boolean contextReady(android.content.Context context) {
+        return context != null && (!(context instanceof android.content.ContextWrapper)
+                || ((android.content.ContextWrapper) context).getBaseContext() != null);
+    }
+
+    /** Refresh the resident notification and drive foreground-service keepalive. Only radio sustain when both are
      *  disabled. The Context-bound helpers are created lazily: at hub start QQ's Application (and thus
      *  its Context) is not ready yet, so we keep retrying each monitor tick until it is. */
     private void refreshNotice() {
-        if (!cfg.statusNotification && !cfg.foregroundKeepalive) return;
+        if (!cfg.statusNotification && !cfg.foregroundKeepalive) {
+            // Radio sustain is independent of whether a notification is requested.
+            driveWifiSustain(qq.isOnline(), server != null && server.isListening());
+            return;
+        }
         StatusNotice n = notice;
         if (n == null || !n.available()) {
             android.content.Context ctx = qq.appContext();
@@ -319,6 +340,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 boolean online = qq.isOnline();
                 return HttpServer.HttpResult.json(online ? 200 : 503, new JSONObject()
                         .put("name", APP_NAME).put("version", APP_VERSION)
+                        .put("config_revision", managedRevision)
+                        .put("config_status", com.satori.qq.control.ControlBridge.status())
                         .put("online", online)
                         .put("listening", server != null && server.isListening())
                         .put("self_id", selfUin())

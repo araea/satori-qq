@@ -27,7 +27,7 @@ import com.satori.qq.L;
  */
 public final class StatusNotice {
     private static final String CHANNEL_ID = "satori-qq-status";
-    private static final String CHANNEL_NAME = "Satori 服务状态";
+    private static final String CHANNEL_NAME = "知弦服务状态";
     // Stable id so every update() replaces the same entry in place, and so startForeground()
     // and notify() address one and the same notification.
     public static final int NOTIFY_ID = 0x5A710001;
@@ -78,7 +78,7 @@ public final class StatusNotice {
         try {
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("Satori QQ 常驻服务的运行状态");
+            ch.setDescription("知弦 Satori QQ 服务的运行状态");
             ch.setShowBadge(false);
             ch.enableVibration(false);
             ch.enableLights(false);
@@ -99,7 +99,7 @@ public final class StatusNotice {
                         int port, int connections, long onlineSinceMs) {
         View v = new View();
         if (online && listening) {
-            v.title = "Satori QQ · 运行中";
+            v.title = "知弦 · 运行中";
             StringBuilder who = new StringBuilder(uin == null || uin.isEmpty() ? "未知账号" : uin);
             if (nick != null && !nick.isEmpty()) who.append(" (").append(nick).append(')');
             v.text = connections == 0 ? "等待客户端连接 · 端口 " + port
@@ -107,11 +107,11 @@ public final class StatusNotice {
             v.big = "QQ " + who + "\n" + v.text;
             v.color = COLOR_ONLINE;
         } else if (!online) {
-            v.title = "Satori QQ · 等待登录";
+            v.title = "知弦 · 等待登录";
             v.text = listening ? "打开 QQ 登录，即可连接服务" : "等待 QQ 登录与本地服务启动";
             v.color = COLOR_WAIT;
         } else {
-            v.title = "Satori QQ · 服务异常";
+            v.title = "知弦 · 服务异常";
             v.text = "本地端口 " + port + " 未监听";
             v.color = COLOR_DEGRADED;
         }

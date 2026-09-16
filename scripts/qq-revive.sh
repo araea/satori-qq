@@ -57,6 +57,13 @@ FAIL_LIMIT=${QQ_REVIVE_FAIL_LIMIT:-2}
 # 于是 2026-09-16 21:06:39 重启、21:06:51 就 giveup（只隔 12 秒），而账号 21:10:22
 # 自己 recovered —— 登录本来就慢，立刻判失败会让看守过早停手。
 RECOVER_CHECK=${QQ_REVIVE_RECOVER_CHECK:-300}
+# 服务端把这次会话判死之后，重启救不回来。证据（2026-09-16 全天）：每一次「恢复」都是
+# 人工登录完成的（20:30、21:10），没有一次是重启换回来的；而重启只会让新进程拿着同一份
+# 已失效的 D2 把十几条请求再锤一遍服务端（21:43:51 重启后 21:43:59~21:44:03 有 13 条
+# 互不相干的命令全被判 -10003），那正是给风控添料。
+# 判据：qk_guard.log 刚被写过、且尾部有 token-expired 行 → 这次登出是服务端判死，不重启。
+DEAD_SESSION_WINDOW=${QQ_REVIVE_DEAD_SESSION_WINDOW:-900}
+GUARD_LOG=${QQ_REVIVE_GUARD_LOG:-/data/data/com.tencent.mobileqq/files/qk_guard.log}
 # 解冻：进程还在但 /healthz 无响应时，多半是被冻住（/proc/<pid>/wchan 是 do_freezer_trap）。
 # 打到前台就能解冻，**不需要 force-stop** —— 强停会多一次重新登录，也挡不住下一次冻结。
 # 判据（2026-09-16 实测校正）：wchan=do_freezer_trap + /sys/fs/cgroup/apps/uid_<qq uid>/cgroup.freeze=1
@@ -158,7 +165,7 @@ reset_stop_state() {
 # MSF 进程持有的、对端不是回环的 ESTABLISHED 连接数。
 upstream_links() {
     local pid ins
-    pid=$(pgrep -f "com.tencent.mobileqq:MSF" 2>/dev/null | head -1)
+    pid=$(pgrep -f "^com.tencent.mobileqq:MSF" 2>/dev/null | head -1)
     [ -n "$pid" ] || { printf '0'; return; }
     ins=$(ls -l "/proc/$pid/fd" 2>/dev/null \
           | sed -n 's/.*socket:\[\([0-9]*\)\].*/\1/p' | sort -u | tr '\n' ' ')
@@ -229,6 +236,20 @@ can_restart() {
     return 0
 }
 
+# 这次登出是不是「服务端刚把会话判死」。是的话重启无意义（见 DEAD_SESSION_WINDOW 那段）。
+session_dead_recently() {
+    [ -r "$GUARD_LOG" ] || return 1
+    local mt age
+    mt=$(stat -c %Y "$GUARD_LOG" 2>/dev/null) || return 1
+    age=$(( $(now) - mt ))
+    [ "$age" -ge 0 ] && [ "$age" -le "$DEAD_SESSION_WINDOW" ] || return 1
+    tail -n 12 "$GUARD_LOG" 2>/dev/null | grep -q 'token-expired'
+}
+
+# 注意 pgrep 的模式一律锚定成 ^包名：不锚的话它会匹配到任何命令行里提到包名的进程
+# （诊断用的 shell、monkey/am 的临时进程），下面的 kill -9 兜底就会误杀它们。
+# 2026-09-16 干跑时实测过一次：看守把发起测试的那个 shell 杀了。
+
 # 把被冻住的 QQ 打到前台。不消耗重启预算，也不会多一次登录。
 thaw_qq() {
     log "thaw: $PKG 进程还在但 /healthz 无响应，打到前台解冻（第 ${thaws}/${THAW_LIMIT} 次，不重启）"
@@ -249,21 +270,21 @@ restart_qq() {
     log "restart: $why"
     ask_clean_offline
     record_restart
-    before=$(pgrep -f "$PKG" 2>/dev/null | tr '\n' ' ')
+    before=$(pgrep -f "^$PKG" 2>/dev/null | tr '\n' ' ')
     "$AM" force-stop "$PKG" >/dev/null 2>&1
     rc=$?
     sleep 3
-    if pgrep -f "$PKG" >/dev/null 2>&1; then
+    if pgrep -f "^$PKG" >/dev/null 2>&1; then
         # 杀了还活着：多半是 am 取到了别的东西（Termux 的 am 以 root 跑不通），必须喊出来。
         # 一次失败的重启如果只留在日志里像成功，僵尸会话就永远等不到救。
         log "restart: force-stop 之后 $PKG 仍在 (am=$AM rc=$rc，重启前 pid: $before)，改用 kill -9 兜底"
-        for p in $(pgrep -f "$PKG" 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
+        for p in $(pgrep -f "^$PKG" 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
         sleep 2
     fi
     "$MONKEY" -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
     # monkey 是异步的，拉起后进程要过几秒才出现；这里只做记录，不据此判定失败。
     sleep 8
-    after=$(pgrep -f "$PKG" 2>/dev/null | tr '\n' ' ')
+    after=$(pgrep -f "^$PKG" 2>/dev/null | tr '\n' ' ')
     if [ -z "$after" ]; then
         log "restart: 拉起 8 秒后还没看到 $PKG 进程（monkey=$MONKEY），交给下一轮判据"
     else
@@ -330,7 +351,7 @@ while true; do
         hz_oks=0
         log "offline: /healthz 无响应 ${offline}/${OFFLINE_LIMIT} (窗口内累计 ${hz_fails}/${THAW_FAILS})"
         if [ "$offline" -ge "$OFFLINE_LIMIT" ] || [ "$hz_fails" -ge "$THAW_FAILS" ]; then
-            if pgrep -f "com.tencent.mobileqq" >/dev/null 2>&1; then
+            if pgrep -f "^com.tencent.mobileqq" >/dev/null 2>&1; then
                 # 进程在、端口不听或听了不回：先当成被冻住，打到前台试试。
                 # 这样既不消耗重启预算，也不会多一次重新登录。
                 if [ "$thaws" -lt "$THAW_LIMIT" ]; then
@@ -456,10 +477,12 @@ while true; do
         log "logout: /healthz online=false ${logouts}/${LOGOUT_LIMIT} (pid_age=$(main_age)s)"
         if [ "$logouts" -ge "$LOGOUT_LIMIT" ]; then
             logouts=0
-            if device_online; then
-                restart_qq "已退出登录，靠自动登录登回来"
-            else
+            if ! device_online; then
                 log "skip: 已退出登录但设备没网，先不动 QQ"
+            elif session_dead_recently; then
+                log "skip: 已退出登录，且 qk_guard.log 刚写过 token-expired —— 服务端把会话判死，重启救不回来（今天的恢复都是人工登录），等人工"
+            else
+                restart_qq "已退出登录，靠自动登录登回来"
             fi
             continue
         fi

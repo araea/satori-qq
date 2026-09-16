@@ -16,6 +16,8 @@
 #      （「重启前先请模块补一次干净下线」这个做法实测有害，默认关，见 OFFLINE_FIRST 那段。）
 #   2. 重启有硬预算：两次重启之间至少 MIN_RESTART_GAP 秒，任何 1 小时内最多
 #      MAX_RESTARTS_PER_HOUR 次。超预算只记一行 skip，不动 QQ。
+#   2b. 连续 FAIL_LIMIT 次重启都没换来在线就停手（giveup），等账号自己回到在线或再来一次
+#      踢线。那种情况不是「自动登录能救」，继续重启只是一串没人需要的登录尝试。
 #   3. 宽限期改看自己写的状态文件：刚重启过 GRACE 秒内一律不判。
 #      （旧版看 main_age，风暴里它取到的不是刚拉起来的那个进程，宽限期形同虚设。）
 #
@@ -48,6 +50,9 @@ MAX_LOG_BYTES=${QQ_REVIVE_MAX_LOG_BYTES:-2000000}
 # 重启预算。默认值偏保守：这台机器上「晚几分钟恢复」远比「被服务端再踢一次」便宜。
 MIN_RESTART_GAP=${QQ_REVIVE_MIN_RESTART_GAP:-600}
 MAX_RESTARTS_PER_HOUR=${QQ_REVIVE_MAX_RESTARTS_PER_HOUR:-3}
+# 连续几次重启都没换来在线就停手。默认 2：一次踢线重启就能在线回来，第二次还不行，
+# 就不是「自动登录能救」的情形了。
+FAIL_LIMIT=${QQ_REVIVE_FAIL_LIMIT:-2}
 # 踢线之后先等一会儿再动手：给模块把「干净下线」发出去的时间，也避开踢线后立刻重登。
 AFTER_KICK_WAIT=${QQ_REVIVE_AFTER_KICK_WAIT:-120}
 # 重启前先请模块补一次干净下线（走 AppRuntime.logout 那条，服务端才收得到 offline）。
@@ -182,6 +187,10 @@ can_restart() {
 
 restart_qq() {
     local why=$1 blocked before after rc
+    if [ "$giveup" -ne 0 ]; then
+        log "skip: 想重启（$why）但已经放弃自动重启（连续 ${restarts_no_online} 次没换来在线），等账号回到在线或人工处理"
+        return 0
+    fi
     if ! blocked=$(can_restart); then
         log "skip: 想重启（$why）但 $blocked，不动 QQ"
         return 0
@@ -209,6 +218,14 @@ restart_qq() {
     else
         log "restart: 进程 $before -> $after"
     fi
+    # 这次重启能不能换来在线，由后续几轮判据回答。连续几次都换不来就停手：那说明不是
+    # 「会话作废、自动登录能救」的情形，多半是服务端要求重新验证、只能人工登录，
+    # 继续重启只会变成一串没人需要的登录尝试。
+    restarts_no_online=$((restarts_no_online + 1))
+    if [ "$restarts_no_online" -ge "$FAIL_LIMIT" ]; then
+        giveup=1
+        log "giveup: 连续 ${restarts_no_online} 次重启都没换来在线，停止自动重启（账号重新上线或再来一次踢线后自动恢复）"
+    fi
     sleep "$RECOVER_WAIT"
 }
 
@@ -219,6 +236,7 @@ if [ "${1:-}" = "--check" ]; then
     echo "main_age: $(main_age)s (grace ${GRACE}s)"
     echo "kick_log: $(kick_log_lines) 行 ($KICK_LOG)"
     echo "restarts_1h: $(restart_history | grep -c .) (上次 $(last_restart || echo -), gap ${MIN_RESTART_GAP}s, 上限 ${MAX_RESTARTS_PER_HOUR}/h)"
+    echo "giveup: ${giveup} (连续 ${restarts_no_online} 次重启没换回在线，上限 ${FAIL_LIMIT})"
     if [ -n "$hz" ]; then
         echo "healthz: online=$(field "$hz" online) blocked_kicks=$(field "$hz" blocked_kicks) kick_hook=$(field "$hz" kick_hook) self_id=$(field "$hz" self_id)"
     else
@@ -230,7 +248,7 @@ fi
 
 echo $$ > "$PIDFILE" 2>/dev/null
 chmod 0600 "$PIDFILE" 2>/dev/null
-log "watchdog start pid=$$ pkg=$PKG interval=${INTERVAL}s stale_limit=$STALE_LIMIT grace=${GRACE}s restart<=${MAX_RESTARTS_PER_HOUR}/h gap=${MIN_RESTART_GAP}s"
+log "watchdog start pid=$$ pkg=$PKG interval=${INTERVAL}s stale_limit=$STALE_LIMIT grace=${GRACE}s restart<=${MAX_RESTARTS_PER_HOUR}/h gap=${MIN_RESTART_GAP}s fail_limit=${FAIL_LIMIT}"
 
 stale=0
 offline=0
@@ -238,6 +256,8 @@ logouts=0
 last_kicklog=""
 last_kicks=""
 kick_at=0
+restarts_no_online=0
+giveup=0
 
 while true; do
     hz=$(healthz)
@@ -268,6 +288,13 @@ while true; do
     kicks=$(field "$hz" blocked_kicks)
     [ -n "$kicks" ] || kicks=0
 
+    # 账号回到在线：把「连续几次重启都没换回在线」这笔账清掉，重新允许重启。
+    if [ "$online" = "true" ] && [ "$restarts_no_online" -ne 0 ]; then
+        log "recovered: 账号已回到在线，重置重启计数（之前连续 ${restarts_no_online} 次没换回在线）"
+        restarts_no_online=0
+        giveup=0
+    fi
+
     # 落盘的踢线记录：行数增长说明这一轮里刚有踢线被拦下。跨进程重启还看得见，
     # 而 /healthz 里的 blocked_kicks 会随 QQ 重启归零。
     kicklog=$(kick_log_lines)
@@ -276,6 +303,8 @@ while true; do
         last_kicklog=$kicklog
         stale=0
         logouts=0
+        giveup=0
+        restarts_no_online=0
         kick_at=$(now)
         sleep "$INTERVAL"
         continue
@@ -287,6 +316,8 @@ while true; do
         last_kicks=$kicks
         stale=0
         logouts=0
+        giveup=0
+        restarts_no_online=0
         kick_at=$(now)
         sleep "$INTERVAL"
         continue

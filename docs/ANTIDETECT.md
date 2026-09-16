@@ -245,7 +245,9 @@ logout(reason, true)
 | `online=false` 连续 `LOGOUT_LIMIT` 轮（默认 3） | 按预算重启，靠自动登录登回来 |
 | `online` 且 MSF 无上游连接连续 `STALE_LIMIT` 轮（默认 5） | 按预算重启 |
 
-预算：两次重启间隔至少 `MIN_RESTART_GAP`（默认 600s），任何 1 小时内最多 `MAX_RESTARTS_PER_HOUR`（默认 3）次；超预算只记一行 `skip: ... budget N/N in 1h`，不动 QQ。重启前先 `POST /v1/internal/offline`，让服务端收到下线再重启（`OFFLINE_FIRST=1`，失败不影响重启）。
+预算：两次重启间隔至少 `MIN_RESTART_GAP`（默认 600s），任何 1 小时内最多 `MAX_RESTARTS_PER_HOUR`（默认 3）次；超预算只记一行 `skip: ... budget N/N in 1h`，不动 QQ。（`QQ_REVIVE_OFFLINE_FIRST` 能在重启前请模块补一次干净下线，默认 0，理由见上一节。）
+
+再有一条停手规则：连续 `FAIL_LIMIT`（默认 2）次重启都没换来 `online=true`，就看守记一行 `giveup` 并停止自动重启。那种情形不是「会话作废、自动登录能救」，多半是服务端要求重新验证、只能人工登录；继续重启只会变成一串没人需要的登录尝试。账号自己回到在线、或 `qk_kick.log` 再涨一行（服务端又开始跟这个客户端打交道）时，这条状态自动清掉。`--check` 里能直接看到 `giveup:` 与连续失败次数。
 
 恢复时间因此有了上限，也有了代价：刚重启过的那次故障要等满 `MIN_RESTART_GAP` 才动手，最坏情况是 `LOGOUT_LIMIT × INTERVAL + GRACE` 约 8 分钟，其中不含被冷却推迟的部分（2026-09-16 实测有一次被 `cooldown 137s` 推迟到第 12 分钟）。判据本身每轮都要重新数满 `LOGOUT_LIMIT`。要更快就把 `QQ_REVIVE_MIN_RESTART_GAP` 调小，代价是重启更密。
 

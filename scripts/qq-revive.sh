@@ -53,9 +53,12 @@ MAX_RESTARTS_PER_HOUR=${QQ_REVIVE_MAX_RESTARTS_PER_HOUR:-3}
 # 连续几次重启都没换来在线就停手。默认 2：一次踢线重启就能在线回来，第二次还不行，
 # 就不是「自动登录能救」的情形了。
 FAIL_LIMIT=${QQ_REVIVE_FAIL_LIMIT:-2}
-# 解冻：进程还在但 /healthz 无响应时，多半是被 app freezer 冻住（/proc/<pid>/wchan 是
-# do_freezer_trap、oom_score_adj=200）。打到前台就能解冻，**不需要 force-stop** ——
-# 强停会多一次重新登录，也挡不住下一次冻结。
+# 解冻：进程还在但 /healthz 无响应时，多半是被冻住（/proc/<pid>/wchan 是 do_freezer_trap）。
+# 打到前台就能解冻，**不需要 force-stop** —— 强停会多一次重新登录，也挡不住下一次冻结。
+# 判据（2026-09-16 实测校正）：wchan=do_freezer_trap + /sys/fs/cgroup/apps/uid_<qq uid>/cgroup.freeze=1
+#   （本机是 ColorOS 的 OplusHansManager，按 uid 冻、而且**前台服务不在它的判据里**，
+#    所以 dumpsys 里 FGS 正常也可能照样被冻）。oom_score_adj=200 不是「掉 cached 档」，
+#    200 是前台服务/PERCEPTIBLE 档，被冻时才抬到 1001，别拿 200 当判据。
 THAW_WAIT=${QQ_REVIVE_THAW_WAIT:-25}
 THAW_LIMIT=${QQ_REVIVE_THAW_LIMIT:-3}
 # 踢线之后先等一会儿再动手：给模块把「干净下线」发出去的时间，也避开踢线后立刻重登。

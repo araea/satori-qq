@@ -304,6 +304,32 @@ logout(reason, true)
 
 做法（可回滚）：把 `AntiDetect.FEKIT_CHANNEL_REPORT_CMDS` 里的 `"OidbSvcTrpcTcp.0x9cdf_"` 去掉，只留另外四条，跑 3~7 天，比 `qk_kick.log` 的日均行数；同时看 `qk_env_maps_*.json` 的 `reports_dropped` 里 0x9cdf 那一项是否真的归零（确认改动生效）。对照期取改动前的同期天数。这个 A/B 只有一台设备，只能看出「差得很多」与「看不出差别」，看不出小效应；结论按「日均踢线次数是否减半以上」判。
 
+### 进程被冻住（不是踢线，也不是模块坏了）
+
+2026-09-16 20:31 实测。表现和踢线很像（`/healthz` 不回、消息不进），但处置完全不同，所以判据要分开：
+
+```text
+端口 3001 仍在 LISTEN（pid 是 QQ 主进程）
+curl 能连上、5 秒超时不出数据
+/proc/<pid>/wchan = do_freezer_trap
+/sys/fs/cgroup/apps/uid_10420/cgroup.freeze = 1      ← 按 uid 冻
+/sys/fs/cgroup/apps/uid_10420/pid_<pid>/cgroup.freeze = 0  ← 逐 pid 反而是 0
+dumpsys activity services com.tencent.mobileqq → QQDataSyncService isForeground=true
+dumpsys notification → 模块的常驻通知在（channel satori-qq-status，带 FOREGROUND_SERVICE）
+```
+
+冻它的是 **ColorOS 的 OplusHansManager**，按 uid 写 cgroup，而且它自己的日志同一行写着 `mForegroundCnt=0 isFg=false`——**前台服务不在它的判据里**。所以「常驻通知 + FGS + WakeLock + 电池白名单」四张牌同时成立也照样被冻，别把 FGS 当免冻牌。AOSP 的 CachedAppOptimizer 可以排除（它只冻逐 pid 的 cached 进程，而 QQ 当时 `curProcState=4`、`cached=false`，events 里也没有针对这个 uid 的 `am_freeze`）。Doze 与息屏也排除了（`mState=ACTIVE`、`mScreenOn=true`、`mCharging=true`）。
+
+而且**不是持续冻**：`:MSF` 每约 5 分钟被 `startmsf` 广播唤醒一次，窗口内 `freeze=0`、`/healthz` 直接返 200，窗口一过又被冻。所以抓现场要看那个窗口，别只测一次就下结论。
+
+处置：
+
+- 打到前台就能解冻（实测 20:47:17 触发、20:48 起 `/healthz` 恢复），**不需要 force-stop**——强停会多一次重新登录，也挡不住下一次冻结。本机看守的 `thaw_qq()` 走的就是这条，独立于重启预算
+- 判据别用 `oom_score_adj=200`：200 是前台服务/PERCEPTIBLE 档，cached 从 900 起，被冻时才抬到 1001。用 `wchan=do_freezer_trap` + `uid_<uid>/cgroup.freeze=1`
+- 判「模块的常驻通知在不在」也不要 `dumpsys notification | grep 包名`（dump 会截断，20:32 就这么误判过一次），看 `logcat -b events` 里的 `notification_enqueue` / `notification_canceled` 序列
+
+治本只能动 ColorOS 的后台策略（本机没有可读的 settings key，只能对着 Hans 的 `freeze uid: ... scene: |miniMultiWindow|StrictMode-3|LcdOn` 那行日志试）。
+
 ### 踢线成因 · 环境检测还是接口把会话打废
 
 - **环境检测**：设备风险被打分，服务端主动下发强制下线

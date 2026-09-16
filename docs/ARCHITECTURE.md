@@ -103,7 +103,7 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'   # 或走客�
 
 - `static.types`：模块引用到的 128 个内核类（接口、结构体、枚举）在不在。表由源码里的类名字面量生成，重新生成的办法写在 `qq/Compat` 的注释里
 - `static.services`：会话上 7 个服务入口（`getMsgService` 等）与它们必须实现的接口
-- `static.structs`：模块会写入的结构体字段名。字段改名是静默失败——`Ref.put` 找不到字段就退化，值写不进去，服务端只回参数错误
+- `static.structs`：模块会写入的结构体字段名。字段改名是静默失败：`Ref.put` 找不到字段就退化，值写不进去，服务端只回参数错误
 - `static.callbacks`：回调接口有没有 `on*` 方法（参数个数按「至少」算，内核回调常多带参数）
 - `observed`：`ExtraSvc.call` 记录的每次内核调用结果（成功、超时、其它失败），按 label 分列。哪个入口开始不回调看这里
 

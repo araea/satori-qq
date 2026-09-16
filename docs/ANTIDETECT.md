@@ -38,17 +38,17 @@ Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
 - 命中库：libfekit、libturingxq、libturingmfa、ckguard、wtecdh、libQSec、dandelion、libmsfbootV2
 - 接管这些库 import 的 `open`、`openat`、`fopen`、`stat`、`access`、`readlink`、`getdents64`、`readdir`、`syscall`、`__system_property_get` 等符号，换成自己的包装
 - 包中的 `/proc` 路径做行过滤：maps、smaps、smaps_rollup、mountinfo、mounts、status、environ、cmdline、tcp/tcp6，0.8.9.44 起加上 `fdinfo`（`name:\t<路径>` 行）与 `numa_maps`（`file=<路径>` 行）；路径命中黑名单直接返回 `ENOENT`
-- 目录列举的条目名也过同一张表（`dent_name_blocked`，`getdents64` 与 `readdir` 共用）。0.8.9.46 起多一条前缀规则：`qk_` 开头的条目一律不列出——模块自己在 `files/` 下的 `qk_env_*.json`、`qk_kick.log`、`qk_guard.log`、`qk_sso.log` 属这一类。检测库不需要读 `/proc` 也能在自己进程内 `getFilesDir().listFiles()` 看见它们，而 `qk_env_maps_main.json` 直接写着模块打了多少 GOT、拦了哪些库、`loop_ok` 是多少。这个前缀是模块独占的：41 个 dex 里一个 `qk_` 字符串都没有（`libfekit.so` 里 grep 到的 4 处是 AArch64 指令字节的假命中）
+- 目录列举的条目名也过同一张表（`dent_name_blocked`，`getdents64` 与 `readdir` 共用）。0.8.9.46 起多一条前缀规则：`qk_` 开头的条目一律不列出。模块自己在 `files/` 下的 `qk_env_*.json`、`qk_kick.log`、`qk_guard.log`、`qk_sso.log` 属这一类。检测库不需要读 `/proc` 也能在自己进程内 `getFilesDir().listFiles()` 看见它们，而 `qk_env_maps_main.json` 直接写着模块打了多少 GOT、拦了哪些库、`loop_ok` 是多少。这个前缀是模块独占的：41 个 dex 里一个 `qk_` 字符串都没有（`libfekit.so` 里 grep 到的 4 处是 AArch64 指令字节的假命中）
 - 无路径的可执行映射一律从行过滤里去掉（0.8.9.44 起 `rwxp` 也算，此前只滤 `r-xp`）。真机上核对过主进程那两条无路径 `rwxp`：一条 4KB（与 `:MSF` 同地址）、一条约 1.9MB（只有主进程有），读出来的字节都是 aarch64 蹦床（`ldr x17,#8; br x17` 这类），也就是 inline hook 的落地页。带 `[anon:...]` / `[anon_shmem:...]` 名字的映射不受影响
 - 无路径的 RX 映射改名成 `dalvik-jit-code-cache`，模块自己的 `.so` 从 memfd 以同名载入；`BLOCK` 表里多一条 `/memfd:dalvik-jit-code-cache`，把模块那三行映射（r-xp / r--p / rw-p，同一个 inode）从 maps、smaps 里一并去掉
 - `readlink` / `readlinkat` 除输入路径外还看返回值：`/proc/self/fd/<n>`、`/proc/self/map_files/<range>` 这类入口本身没有可拦的关键字，泄漏全在目标路径上
-- `dl_iterate_phdr` 的过滤除按名字，还按加载基址跳过模块自己——libmapshide 从 memfd 载入，`dlpi_name` 就是当初 `dlopen` 的参数 `/proc/self/fd/<n>`，名字过滤认不出来
-- 用 seccomp 对模块自身文本段里的裸 svc 做 TRAP 兜底，覆盖 openat、openat2、faccessat、faccessat2、newfstatat、statx、readlinkat、getdents64
+- `dl_iterate_phdr` 的过滤除按名字，还按加载基址跳过模块自己：libmapshide 从 memfd 载入，`dlpi_name` 就是当初 `dlopen` 的参数 `/proc/self/fd/<n>`，名字过滤认不出来
+- 用 seccomp 对模块自身文本段里的裸 svc 用 TRAP 拦住，覆盖 openat、openat2、faccessat、faccessat2、newfstatat、statx、readlinkat、getdents64
 - 装完后自己再读一遍 maps、tcp、environ，把 `leak_*` 与 `loop_ok` 落盘自证
 
 memfd 名字为什么这么取：ART 自己的两份 JIT 缓存是 `/memfd:jit-cache` 与 `/memfd:jit-zygote-cache`，`dalvik-jit-code-cache` 只作为它们的 `[anon_shmem:...]` 名字出现，带 `/memfd:` 前缀的从来没有。用 `dalvik-jit-code-cache` 当 memfd 名，再用 `/memfd:dalvik-jit-code-cache` 把模块那三行映射从检测库视野里去掉，ART 自己的行不受影响。早先用 `jit-cache` 会与 ART 撞成同进程两个同名不同 inode，那正是「加载器藏在 memfd」的判据。
 
-0.8.9.39 起 token 扫描按「符号集合」而不是单个符号接管。libfekit 同时 import `strstr`、`strcasestr`、`memmem`，此前只接管 `strstr`，且只在 needle 恰好等于黑名单里的某个词时才返回 NULL：`strstr(maps_line, "com.topjohnwu.magisk-1.2")` 这类更长的 needle 会照常命中。现在三个入口共用一条规则——needle 里只要出现 `BLOCK` 表中任一条（子串、大小写不敏感），就返回未找到，判定集与 `path_denied` 一致。实测主进程补丁数 63 → 65，MSF 40 → 42。
+0.8.9.39 起 token 扫描按「符号集合」而不是单个符号接管。libfekit 同时 import `strstr`、`strcasestr`、`memmem`，此前只接管 `strstr`，且只在 needle 恰好等于黑名单里的某个词时才返回 NULL：`strstr(maps_line, "com.topjohnwu.magisk-1.2")` 这类更长的 needle 会照常命中。现在三个入口共用一条规则：needle 里只要出现 `BLOCK` 表中任一条（子串、大小写不敏感），就返回未找到，判定集与 `path_denied` 一致。实测主进程补丁数 63 → 65，MSF 40 → 42。
 
 检测库自己扫字符串的入口不止这三个。libturingxq 还 `regcomp` / `regexec` 一批 POSIX ERE，用在进程名、线程名与路径上：
 
@@ -81,19 +81,19 @@ logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前�
 | `mqq.app.MainService$MyErrorHandler` | 同上，最后一步的界面出口 | `popupNotification(...)`（6 参与 8 参两个重载）、`popupNotificationEx(...)` | `msf-kick` |
 | `mqq.app.MainService$MyErrorHandler` | 账号进风控灰名单 | `onGrayError(...)`，只当软事件 | `soft-kick` |
 
-`NTKickProcessor` 那条：`a` 是接口 `IKickApi.b` 的实现，`b` 是它调用的私有方法。只拦 `b` 的话，`a` 里在它之前做的几件事照旧执行——`kick.a` 线程（清登录数据）、`updateSimpleAccount(uin, false)`、`reportClearLoginData(uin, "2004")`、`setSortAccountList`，本地账号列表当场被标成已下线。两个都拦。
+`NTKickProcessor` 那条：`a` 是接口 `IKickApi.b` 的实现，`b` 是它调用的私有方法。只拦 `b` 的话，`a` 里在它之前做的几件事照旧执行：`kick.a` 线程（清登录数据）、`updateSimpleAccount(uin, false)`、`reportClearLoginData(uin, "2004")`、`setSortAccountList`，本地账号列表当场被标成已下线。两个都拦。
 
 MSF 那条要拦处理器入口，不拦 `popupNotification`。`popupNotification` / `popupNotificationEx` 是 `MyErrorHandler` 一堆回调（`onKicked`、`onKickedAndClearToken`、`onUserTokenExpired`、`onServerSuspended`、`onCloneError`、`onGrayError`）共同的最后一环，里面做的是 `appRuntime.logout(reason, true)` 再拿 `LoginActivity` 发 `ACTION_KICK_TO_LOGIN`。但毁本地登录态的写在它前面，只拦出口等于只挡住界面动作。0.8.9.46 起四个处理器入口整体 no-op，出口那两个继续挂着，负责按 reason 过滤 `onUserTokenExpired` 与 `onServerSuspended`。
 
 `onGrayError` 单独处理：它兼管 `wt_GetStViaSMSVerifyLogin` 与 `wt_loginAuth` 的响应，整条拦掉会把「被踢之后靠短信验证登回来」封死；而它又可能反复发生，当成硬踢线会让看守每来一次就 force-stop QQ 一次。所以只做两件事：放行（除上述登录命令外），并把善后窗口打开、记一行 `soft-kick` 到 `qk_guard.log`（不算 `blocked_kicks`、不写 `qk_kick.log`）。
 
-不是所有 `LogoutReason` 都该拦。拦的是 `kicked`、`secKicked`、`forceLogout`、`suspend`；放行 `user`（用户自己退出）、`switchAccount`（切号）、`expired`（票据自然过期，QQ 自己会重登）、`tips`、`gray`、`restartProcess`——拦这些才是真出问题。判定在 `AntiDetect.kickReasonBlocked`，有单测。
+不是所有 `LogoutReason` 都该拦。拦的是 `kicked`、`secKicked`、`forceLogout`、`suspend`；放行 `user`（用户自己退出）、`switchAccount`（切号）、`expired`（票据自然过期，QQ 自己会重登）、`tips`、`gray`、`restartProcess`；拦这些才是真出问题。判定在 `AntiDetect.kickReasonBlocked`，有单测。
 
 `/healthz` 的 `kick_hook` 是踢线入口的 hook 数之和（0.8.9.46 起正常为 **12**：nt-kick 2 + ticket-refresh 1 + uid-fail 1 + msf 入口 4 + msf 出口 3 + 灰名单软事件 1），`last_kick_source` 记最近一次是哪个入口拦下的，`last_kick` 记参数，`kick_log` 是最近 12 次的原文。另有一个独立的登出守卫，hook 数在 `logout_guard.hooks`（0.8.9.46 起正常为 **5**），以及保住盘上登录态的守卫，在 `login_state.hooks`（正常为 **2**）。
 
 `last_kick` 带的字段：`kickType=`（`RequestMSFForceOffline.bKickType`，名字按 `KickedType` 的声明顺序取）与 `sigKick=`（1 表示带 `vecSigKickData` 的安全强踢，reason 取 `secKicked`；0 是普通强踢），另有 `seqno=` / `sigLen=` / `sameDevice=`。内核那条路（`nt-kick`）参数是 `KickedInfo`，字段比 MSF 包多，单独记 `appId=` / `instanceId=` / `securityKickedType=`。只记 reason 与服务端文案的话，现场分不出「在别处登录被顶」和「风控打击」。
 
-踢线原文用 `Packet.decodePacket(buf, "RequestMSFForceOffline", new RequestMSFForceOffline())` 解——那就是 `MainService` 自己解这个包用的入口。别的回调带的是另一种包，硬解会得到垃圾字段，所以解完要校验（标题或正文至少一个非空，或 uin 非 0），过不了就只记 `cmd=` 与 `uin=`。QQ 自己那两份 `QQXlog_*.qqxlog` 解不开，要证据读模块自己落盘的 `qk_kick.log` / `qk_guard.log` / `qk_sso.log`。
+踢线原文用 `Packet.decodePacket(buf, "RequestMSFForceOffline", new RequestMSFForceOffline())` 解：那就是 `MainService` 自己解这个包用的入口。别的回调带的是另一种包，硬解会得到垃圾字段，所以解完要校验（标题或正文至少一个非空，或 uin 非 0），过不了就只记 `cmd=` 与 `uin=`。QQ 自己那两份 `QQXlog_*.qqxlog` 解不开，要证据读模块自己落盘的 `qk_kick.log` / `qk_guard.log` / `qk_sso.log`。
 
 ### `kickType` 能读到什么程度
 
@@ -103,7 +103,7 @@ MSF 那条要拦处理器入口，不拦 `popupNotification`。`popupNotificatio
 KKICKBYMULTIINST(0), KKICKBYMOBILE(1), KKICKBYPASSWORDCHANGE(2), KKCIKBYLOWVERSION(3)
 ```
 
-`KickedInfo` 的字段是 `appId, instanceId, kickedType, sameDevice, securityKickedType, tipsDesc, tipsTitle`——`appId` 是判「谁把我顶了」的唯一字段（PC、手机、平板各有自己的 appId），MSF 那个包里没有它。
+`KickedInfo` 的字段是 `appId, instanceId, kickedType, sameDevice, securityKickedType, tipsDesc, tipsTitle`。其中 `appId` 是判「谁把我顶了」的唯一字段（PC、手机、平板各有自己的 appId），MSF 那个包里没有它。
 
 仍然不确定的两件事，别当结论用：
 
@@ -161,13 +161,13 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 1. **拦入口**：四个处理器入口整体 no-op，上面那些写操作一次都不会发生
 2. **顶回去**：善后期内 `updateSimpleAccount` / `updateSimpleAccountNotCreate` 的 `false` 顶成 `true`（改名仍然发生，但改成 `_t`，账号留在列表里），`AutoLoginUtil.setAutoLogin(uin, false)` 顶成 `true`
-3. **修回来**：离线时把 `u_<uin>_f` 改回 `u_<uin>_t`、把自动登录开关写回 2，各记一行 `self-heal`。要修哪个号只认踢线原文里的 `uin=`（内存里没有就读 `qk_kick.log` 末行）——不要拿「`user/` 里唯一那个 `_f`」当兜底，本机就有一个用户 2026-09-11 自己注销掉的 `u_1665757132_f`，按这个猜会把早就登出的号重新标成已登录
+3. **修回来**：离线时把 `u_<uin>_f` 改回 `u_<uin>_t`、把自动登录开关写回 2，各记一行 `self-heal`。要修哪个号只认踢线原文里的 `uin=`（内存里没有就读 `qk_kick.log` 末行）。不要拿「`user/` 里唯一那个 `_f`」当判据，本机就有一个用户 2026-09-11 自己注销掉的 `u_1665757132_f`，按这个猜会把早就登出的号重新标成已登录
 
-善后期是 15 分钟且跨重启成立。判据除内存里的 `lastKickMs`，还看 `qk_kick.log` 的修改时间（带 5 秒缓存）——看守恰好在踢线后 force-stop QQ，重启之后内存计数归零，只靠内存的话善后期在新进程里等于不存在。
+善后期是 15 分钟且跨重启成立。判据除内存里的 `lastKickMs`，还看 `qk_kick.log` 的修改时间（带 5 秒缓存）。看守恰好在踢线后 force-stop QQ，重启之后内存计数归零，只靠内存的话善后期在新进程里等于不存在。
 
 ### 踢线之后：不许本机自己登出
 
-拦下踢线入口并不覆盖所有登出路径，所以另有一层登出守卫。`AppRuntime.logout(boolean)` 底下会把 reason 写死成 `user`，`QQAppInterface.logout(boolean)` 是它的 override 且带 kickPC 的注释——这两个入口既服务「用户点退出登录」（主线程），也服务「踢线路径顺手登出」（`UidServiceImpl` 在工作线程上调的就是它），reason 分不出来，按调用线程分：主线程那次当用户点的，放行并记下「用户主动退出」；工作线程那次窗口内 no-op。
+拦下踢线入口并不覆盖所有登出路径，所以另有一层登出守卫。`AppRuntime.logout(boolean)` 底下会把 reason 写死成 `user`，`QQAppInterface.logout(boolean)` 是它的 override 且带 kickPC 的注释。这两个入口既服务「用户点退出登录」（主线程），也服务「踢线路径顺手登出」（`UidServiceImpl` 在工作线程上调的就是它），reason 分不出来，按调用线程分：主线程那次当用户点的，放行并记下「用户主动退出」；工作线程那次窗口内 no-op。
 
 | 入口 | 拦法 |
 | --- | --- |
@@ -180,7 +180,7 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 被拦下的登出记在 `/healthz` 的 `logout_guard`（`hooks` / `blocked` / `log`），落盘到 app 私有目录的 `qk_guard.log`，故意不写进 `qk_kick.log`：那份是看守「踢线 = 会话已作废，立刻重启」的判据，混进去会让看守反复重启 QQ。
 
-这一层能保证的是盘上那两处状态没被改坏（账号留在已登录列表、自动登录开关没被关成手动），计数在 `login_state.kept` / `auto_login_kept` / `qk_guard.log`。不能保证「被踢之后本机自己登回来」——本机重新上线主要是用户自己手动登录的。所以判「这套机制有没有生效」只看那几个计数，不要拿「online 又变 true 了」当判据，那个时间点可能是人做的动作。要证的「踢线后能自动重登」这条链，目前未验证。
+这一层能保证的是盘上那两处状态没被改坏（账号留在已登录列表、自动登录开关没被关成手动），计数在 `login_state.kept` / `auto_login_kept` / `qk_guard.log`。不能保证「被踢之后本机自己登回来」，本机重新上线主要是用户自己手动登录的。所以判「这套机制有没有生效」只看那几个计数，不要拿「online 又变 true 了」当判据，那个时间点可能是人做的动作。要证的「踢线后能自动重登」这条链，目前未验证。
 
 一个已知副作用：善后期内（被拦下踢线后的 15 分钟）用户按退出登录，QQ 的账号标记可能已经被顶成 `_t`，于是下次启动会自己登回来，用户得再退一次（那时已在窗口之外）。窗口很短，且比「被踢之后退不出来、登不回去」轻，不做额外处理。
 

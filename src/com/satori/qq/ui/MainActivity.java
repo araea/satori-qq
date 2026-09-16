@@ -186,9 +186,9 @@ public final class MainActivity extends Activity {
         dirtyLabel = ui.text("", 12, ui.primary, true); content.addView(dirtyLabel, params(20));
         saveButton = ui.button("保存设置", true); saveButton.setOnClickListener(v -> save(false)); content.addView(saveButton, params(10));
         content.addView(ui.text("保存后，下次启动 QQ 时生效。需要立即应用时，请在 QQ 应用信息页停止 QQ，再重新打开；客户端会短暂断开。", 12, ui.muted, false), params(12));
-        Button appInfo = ui.button("QQ 应用信息", false); appInfo.setOnClickListener(v -> openAppInfo()); content.addView(appInfo, params(12));
-        content.addView(ui.text("若系统限制关联启动，请在「后台启动设置」中允许知弦关联启动。否则 QQ 可能无法在后台读取设置；也可先打开知弦，再重启 QQ。", 12, ui.muted, false), params(16));
-        Button ownInfo = ui.button("后台启动设置", false); ownInfo.setOnClickListener(v -> { try { startActivity(new Intent().setComponent(new android.content.ComponentName("com.oplus.battery", "com.oplus.startupapp.view.AssociateStartActivity"))); } catch (Exception unsupported) { try { startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))); } catch (Exception e) { toast("请在系统设置中打开知弦应用信息"); } } }); content.addView(ownInfo, params(8));
+        Button appInfo = ui.button("QQ 应用信息", false); appInfo.setOnClickListener(v -> openAppInfo("com.tencent.mobileqq")); content.addView(appInfo, params(12));
+        content.addView(ui.text("若系统限制关联启动，请在系统设置的「应用 → 关联启动」里允许知弦。否则 QQ 可能无法在后台读取设置；也可先打开知弦，再重启 QQ。", 12, ui.muted, false), params(16));
+        Button ownInfo = ui.button("知弦应用信息", false); ownInfo.setOnClickListener(v -> openAppInfo(getPackageName())); content.addView(ownInfo, params(8));
         LinearLayout advanced = card(ui.container, 24); sourceLabel = ui.text("", 14, ui.muted, false); advanced.addView(sourceLabel, params(0));
         advanced.addView(ui.text("其他高级选项继续读取原 JSON 配置文件。", 12, ui.muted, false), params(8));
         Button reset = ui.button("使用文件配置", false); reset.setOnClickListener(v -> confirm("使用文件配置？", "下次启动 QQ 时，页面中的连接与运行偏好将改为读取原 JSON 文件；没有文件时使用默认值。", "确认切换", () -> resetToFile())); advanced.addView(reset, params(16));
@@ -390,7 +390,7 @@ public final class MainActivity extends Activity {
         if (intent == null) { toast("未找到 QQ，请先安装 QQ"); return; }
         try { startActivity(intent); } catch (Exception e) { toast("无法打开 QQ，请从桌面打开"); }
     }
-    private void openAppInfo() { try { startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:com.tencent.mobileqq"))); } catch (Exception e) { toast("请从系统设置打开 QQ 应用信息"); } }
+    private void openAppInfo(String packageName) { try { startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + packageName))); } catch (Exception e) { toast("请从系统设置打开应用信息"); } }
     private String report() { return HealthClient.report(health, appVersion(), currentPort, checkedAt); }
     private void copy(String label, String value, boolean sensitive) {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE); ClipData clip = ClipData.newPlainText(label, value);

@@ -127,4 +127,4 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'   # 或走客�
 9. 检测库 import 的字符串搜索符号有没有变（`llvm-nm -D lib*.so | grep ' U '` 看是否新增 `strcasecmp`/`strnstr` 一类），变了就把 `native/mapshide.c` 的 `BLOCK` 判定接到同一个入口上，见 [`ANTIDETECT.md`](ANTIDETECT.md)
 10. Turing 的 POSIX ERE 黑名单（进程名/线程名/路径）有没有新增模式
 
-ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试后回退原文件配置，并通过 `config_status` 暴露无敏感信息的原因；管理页提示允许关联启动。引导线程在 QQ 主线程初始化任务之后启动，不阻塞 Application 创建。
+ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试后回退原文件配置，并通过 `config_status` 暴露无敏感信息的原因；管理页给出系统设置中的路径（应用 → 关联启动）。引导线程在 QQ 主线程初始化任务之后启动，不阻塞 Application 创建。

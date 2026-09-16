@@ -288,6 +288,24 @@ logout(reason, true)
 
 这条状态**落盘**在 `qq-revive.flags`（`giveup=` / `failures=` 两行，0600）。不落盘就没有意义：看守本身由 `service.d/98-qq-revive.sh` 在开机时拉起，重启一次内存里的计数就归零，「连续两次就停手」会退化成「每 10 分钟再试一次，永远试下去」。
 
+#### 看守现在的判据一览（2026-09-16 深夜定稿）
+
+| 看到什么 | 做什么 |
+| --- | --- |
+| `/healthz` 无响应，且进程还在 | 先**打到前台解冻**（不 force-stop、不吃重启预算）。窗口内连续 `THAW_FAILS`(2) 次失败就动手，不必等 `OFFLINE_LIMIT`(5)；连续 `THAW_LIMIT`(3) 次解冻无效才升级到重启 |
+| `/healthz` 无响应，进程不在 | 按预算重启 |
+| `qk_kick.log` 增行 / `blocked_kicks` 增 | 等 `AFTER_KICK_WAIT`(120s) 再按预算重启 |
+| `online=false`，但 `qk_guard.log` **刚写过且尾部有 `token-expired`** | **不重启**：服务端已把会话判死，重启救不回来，只会让新进程拿着死凭据锤一遍服务端（21:43:51 重启后 13 条命令全被拒）。记一行「等人工」 |
+| `online=false`，没有上面那个信号 | 按预算重启（这种是自动登录能救的情况，18:25 验过） |
+| `online=true` 但 MSF 无上游连接 | 连续 `STALE_LIMIT`(5) 轮后按预算重启 |
+
+时间参数：`INTERVAL=60`、`RECOVER_WAIT=90`、`GRACE=300`、`RECOVER_CHECK=300`（重启后给这么久才判失败）、`MIN_RESTART_GAP=600`、`MAX_RESTARTS_PER_HOUR=3`。
+
+两条容易踩的坑（都是实测来的）：
+
+- `pgrep` 的模式一律锚定成 `^包名`。不锚的话它会匹配到任何命令行里提到包名的进程（诊断用的 shell、`monkey`/`am` 的临时进程），`kill -9` 兜底会误杀它们 —— 干跑时实测误杀了发起测试的那个 shell
+- 一次重启后要给足登录时间（`RECOVER_CHECK`）才判失败。21:06:39 重启、21:06:51 就 `giveup`（12 秒），而账号 21:10:22 自己回来了
+
 恢复时间因此有了上限，也有了代价：刚重启过的那次故障要等满 `MIN_RESTART_GAP` 才动手，最坏情况是 `LOGOUT_LIMIT × INTERVAL + GRACE` 约 8 分钟，其中不含被冷却推迟的部分（2026-09-16 实测有一次被 `cooldown 137s` 推迟到第 12 分钟）。判据本身每轮都要重新数满 `LOGOUT_LIMIT`。要更快就把 `QQ_REVIVE_MIN_RESTART_GAP` 调小，代价是重启更密。
 
 这套预算的实测（A/B 干跑，`am` / `monkey` / `/healthz` 全换成桩，同一事件序列跑 90 秒）：旧版 force-stop 8 次，新版 3 次并开始记 `budget 3/3`。

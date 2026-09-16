@@ -137,7 +137,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | QQ 空间 | `qzone.clear` / `qzone.delete_all` / `qzone.delete-all` / `qzone.auth` | 删除全部说说；读取调试用鉴权信息 |
 | 能力查询 | `capabilities` / `help` / `compat` | 扩展动作与参数清单；内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
 | 状态查询 | `status` / `version` | 健康状态或版本 |
-| 维护 | `restart` / `clean_cache` | 退出 QQ 进程或清理临时文件 |
+| 维护 | `restart` / `clean_cache` / `offline` | 退出 QQ 进程、清理临时文件、补一次干净下线（`AppRuntime.logout(restartProcess, true)`）。`offline` 会让服务端收到 offline，但登录票据也一起放掉、账号被摘出已登录列表，之后只能手动登录，所以默认没有哪条路会调它，只在确认凭据已经没救时手动用 |
 
 `voice_to_text` 的结果不在回调里：`translatePtt2Text` 用 `IOperateCallback`，只有状态码，内核把转写文字写回语音元素自己（`PttElement.text`），所以动作在交任务之后盯着元素看最多 3 秒再返回。第一次调用某条语音会慢（冷启动听写，实测约 15 秒），之后读同一条只要一两百毫秒。听写没跑起来的语音返回空 `text`，同时带上 `translate_status` / `duration` / `can_convert`，便于区分「内核还没转」和「这段本来就转不了」。
 

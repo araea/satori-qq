@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.12.1";
+    public static final String APP_VERSION = "0.13.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -361,6 +361,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("last_kick", AntiDetect.lastKick())
                         .put("kick_log", new org.json.JSONArray(AntiDetect.kickLog()))
                         .put("auto_login_kept", AntiDetect.autoLoginKept())
+                        // 拦下踢线之后补做的干净下线。它涨说明模块替 QQ 把
+                        // sendOnlineStatus(offline) 发了出去——服务端因此知道这台设备走了，
+                        // 不是「旧会话还挂着、同一个号又登进来」。与 blocked_kicks 配对着看。
+                        .put("clean_offline", new JSONObject()
+                                .put("count", AntiDetect.cleanOfflineCount())
+                                .put("last", AntiDetect.lastCleanOffline()))
                         // 踢线窗口里被拦掉的登出。落盘在 qk_guard.log——故意不并进
                         // qk_kick.log，那份是看守「立刻重启」的判据，混进去会反复重启。
                         .put("logout_guard", new JSONObject()
@@ -1246,6 +1252,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "restart":
                 scheduleRestart(Math.max(500, params.optInt("delay", 0)));
                 return new JSONObject();
+            case "offline":
+                // 补一次干净下线（AppRuntime.logout(restartProcess, true)）。本机看守在重启 QQ
+                // 之前会先打这个口，免得 force-stop 变成「人不见了但不吭声」。会跳过一次善后期
+                // 里的登出守卫：restartProcess 不在要拦的那几种 reason 里。
+                return new JSONObject()
+                        .put("posted", AntiDetect.cleanOffline("internal.offline"))
+                        .put("count", AntiDetect.cleanOfflineCount());
             case "clean-cache":
             case "clean_cache":
                 return new JSONObject().put("deleted", Media.cleanTemp());
@@ -2592,7 +2605,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("qzone.publish").put("qzone.delete").put("qzone.list")
                         .put("qzone.clear").put("status").put("version")
                         .put("compat")
-                        .put("clean_cache").put("restart"))
+                        .put("clean_cache").put("restart").put("offline"))
                 .put("group_file_ops", new JSONArray()
                         .put("info").put("list").put("url").put("upload")
                         .put("create_folder").put("rename_folder").put("delete_folder")
@@ -2704,7 +2717,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("hidden_session").put("draft").put("fav_emoji_write")
                         .put("session_top")
                         .put("qzone.publish").put("qzone.delete").put("qzone.clear")
-                        .put("clean_cache").put("restart"));
+                        .put("clean_cache").put("restart").put("offline"));
     }
 
     /** Compact operational view for dashboards without stitching five Satori calls together. */

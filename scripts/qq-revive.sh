@@ -1,32 +1,30 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# QQ 僵尸会话看守。以 root 运行（service.d 或 `su -c`）。
+# QQ 会话看守。以 root 运行（service.d 或 `su -c`）。
 #
-# 为什么需要：模块的 block_server_kick 挡掉了 NTKickProcessor.b——服务端踢线时 QQ 唯一的
-# 处理入口。好处是不被踢下线，代价是服务端会话已经作废、本地仍报在线：消息一条收不到，
-# 也不会自己重连，直到有人重启 QQ。2026-09-13 22:10 就这么静默了 24 分钟。
+# 为什么需要：服务端踢线后，模块拦下 QQ 的处理入口，本机停在「内核仍报在线、上游已断开」的
+# 僵尸态——消息一条收不到，也不会自己重连。看守负责把这台机器带回在线。
 #
-# 判据（每轮 60 秒）：
+# 2026-09-16 改版。旧版的三条判据都会「立刻 force-stop 并拉起」，实测把它自己变成了伤害源：
+# 09-16 11:19→13:09 两小时内 force-stop 了 QQ 约 34 次，每 3~4 分钟一次。那段时间 QQ 正在
+# 登录窗口里（force-stop 后再登上去要几分钟），于是每一轮都把它掐断重来，永远登不完。
+# 更要紧的是服务端视角：force-stop 不会走 AppRuntime.logout()，而那条里才有
+# sendOnlineStatus(offline)（QQAppInterface 那条还会走 IKernelService.offLine(UnregisterInfo)）。
+# 每次强杀都等于「人不见了但不吭声」，紧接着又用同一个号重新登录——这正是「同账号第二个
+# 登录实例」的形状。所以现在：
+#
+#   1. 踢线后不再立刻 force-stop。先等 AFTER_KICK_WAIT 秒，再按重启预算决定是否重启。
+#      （「重启前先请模块补一次干净下线」这个做法实测有害，默认关，见 OFFLINE_FIRST 那段。）
+#   2. 重启有硬预算：两次重启之间至少 MIN_RESTART_GAP 秒，任何 1 小时内最多
+#      MAX_RESTARTS_PER_HOUR 次。超预算只记一行 skip，不动 QQ。
+#   3. 宽限期改看自己写的状态文件：刚重启过 GRACE 秒内一律不判。
+#      （旧版看 main_age，风暴里它取到的不是刚拉起来的那个进程，宽限期形同虚设。）
+#
+# 判据（每轮 INTERVAL 秒）：
 #   kicklog  模块落盘的踢线记录行数（qk_kick.log）。行数增长 = 这次踢线刚被拦下。
-#   upstream MSF 进程到服务端的存活 TCP 连接数，回环不算。健康时常驻 1 条以上。
-#   online    /healthz 自报的内核在线状态。
-#   kicks     /healthz 的被拦踢线计数（进程内，重启归零）。
-#   age       QQ 主进程已经跑了多久；刚起来的前 GRACE 秒不做僵尸判定。
-#
-# 动作：
-#   kicklog 增长              -> 立刻重启 QQ（服务端会话已作废，等下去不会好）
-#   online=false 连续 N 轮    -> 重启 QQ（已退出登录，靠自动登录登回来）
-#   online 且 upstream=0      -> 连续 STALE_LIMIT 轮且进程已过宽限期，重启
-#   端口一直不通              -> 连续 OFFLINE_LIMIT 轮后拉起 QQ（进程没了/没起来）
-#   设备自己没网              -> 只记一行，不动 QQ（重启也连不上）
-#
-# 为什么踢线判据要看落盘文件：模块的 blocked_kicks 是进程内的，QQ 一重启就归零；
-# 而「踢线被拦下 = 服务端会话已作废」这件事在重启之后依然成立，必须还能看见。
-# 另外 QQ 在踢线路径上会 setAutoLogin(false)（写进 mmkv，落盘），模块会把它顶回去；
-# 顶不回去的话，这里重启多少次都只会停在登录页。
-#
-# 宽限期的来由：2026-09-15 实测，force-stop 后拉起 QQ 到 MSF 重新连上要 5 分钟左右
-# （流量走 TUN 时更慢）。原来的 STALE_LIMIT=3 会在这段时间里判定成僵尸、把 QQ 再杀一次，
-# 于是每 3 分钟重启一轮，永远等不到连接。真僵尸不会自己好，多等几分钟没有代价。
+#   online   /healthz 自报的内核在线状态。
+#   upstream MSF 进程到服务端的存活 TCP 连接数，回环不算。健康时稳定在 1 条以上。
+#   端口一直不通 -> 连续 OFFLINE_LIMIT 轮后拉起 QQ（进程没了/没起来）。
+#   设备自己没网 -> 只记一行，不动 QQ（重启也连不上）。
 #
 # 停止：kill $(cat $QQ_REVIVE_PIDFILE)；或注释掉 service.d 里的启动行。
 set -u
@@ -47,6 +45,15 @@ GRACE=${QQ_REVIVE_GRACE:-300}
 PING_HOST=${QQ_REVIVE_PING_HOST:-223.5.5.5}
 RECOVER_WAIT=${QQ_REVIVE_RECOVER_WAIT:-90}
 MAX_LOG_BYTES=${QQ_REVIVE_MAX_LOG_BYTES:-2000000}
+# 重启预算。默认值偏保守：这台机器上「晚几分钟恢复」远比「被服务端再踢一次」便宜。
+MIN_RESTART_GAP=${QQ_REVIVE_MIN_RESTART_GAP:-600}
+MAX_RESTARTS_PER_HOUR=${QQ_REVIVE_MAX_RESTARTS_PER_HOUR:-3}
+# 踢线之后先等一会儿再动手：给模块把「干净下线」发出去的时间，也避开踢线后立刻重登。
+AFTER_KICK_WAIT=${QQ_REVIVE_AFTER_KICK_WAIT:-120}
+# 重启前先请模块补一次干净下线（走 AppRuntime.logout 那条，服务端才收得到 offline）。
+# **默认关**：2026-09-16 实测那条路会把登录票据一起放掉，账号从已登录列表里被摘掉、重启后
+# 停在登录页连自动登录都回不来，比被踢一次更麻烦。确认凭据没救了才打开。
+OFFLINE_FIRST=${QQ_REVIVE_OFFLINE_FIRST:-0}
 KICK_LOG=${QQ_REVIVE_KICK_LOG:-/data/data/${PKG}/files/qk_kick.log}
 # 绝对路径，别再让 PATH 决定杀不杀得掉 QQ。
 AM=${QQ_REVIVE_AM:-/system/bin/am}
@@ -64,6 +71,8 @@ else
     LOG=$QQ_REVIVE_LOG
 fi
 PIDFILE=${QQ_REVIVE_PIDFILE:-${LOG%.log}.pid}
+# 重启历史。宽限期与重启预算都从它读，进程重启后依然成立。
+STATEFILE=${QQ_REVIVE_STATEFILE:-$RUNDIR/qq-revive.state}
 
 log() {
     printf '%s %s\n' "$(date +%FT%T)" "$*" >> "$LOG" 2>/dev/null
@@ -78,6 +87,24 @@ log() {
 healthz() { curl -s --max-time 6 --noproxy '*' "http://127.0.0.1:$PORT/healthz" 2>/dev/null; }
 
 field() { printf '%s' "$1" | grep -o "\"$2\":[^,}]*" | head -1 | cut -d: -f2- | tr -d '"'; }
+
+now() { date +%s; }
+
+# 重启历史：一行一个 epoch，只留最近一小时。空文件回空串。
+restart_history() {
+    [ -r "$STATEFILE" ] || return 0
+    awk -v t="$(now)" '$1 > t - 3600 { print $1 }' "$STATEFILE" 2>/dev/null
+}
+
+record_restart() {
+    local keep
+    keep=$(restart_history)
+    { printf '%s\n' "$keep"; now; } | grep -v '^$' | sort -n > "$STATEFILE.tmp" 2>/dev/null
+    mv "$STATEFILE.tmp" "$STATEFILE" 2>/dev/null
+    chmod 0600 "$STATEFILE" 2>/dev/null
+}
+
+last_restart() { restart_history | tail -n 1; }
 
 # MSF 进程持有的、对端不是回环的 ESTABLISHED 连接数。
 upstream_links() {
@@ -115,12 +142,10 @@ kick_log_tail() {
     tail -n 1 "$KICK_LOG" 2>/dev/null | cut -c1-160
 }
 
-# QQ 主进程已经跑了多少秒；进程不在时回 -1。用 /proc/<pid>/stat 的 starttime（第 22 字段，
-# 单位是时钟滴答）配 /proc/uptime，免得依赖 ps 的 etime 格式。
+# QQ 主进程已经跑了多少秒；进程不在时回 -1。只当参考，宽限期不用它。
 main_age() {
     local pid hz up st
     pid=$(pgrep -f "^$PKG$" 2>/dev/null | head -1)
-    [ -n "$pid" ] || pid=$(pgrep -f "$PKG" 2>/dev/null | grep -v ':MSF' | head -1)
     [ -n "$pid" ] || { printf '%s' -1; return; }
     hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
     st=$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)
@@ -129,9 +154,41 @@ main_age() {
     awk -v u="$up" -v s="$st" -v h="$hz" 'BEGIN{printf "%d", u - s/h}'
 }
 
+# 请模块补一次干净下线：那条路会走 AppRuntime.logout()，服务端才收得到 offline。
+# 失败只是少一次礼貌，不影响后面的重启。
+ask_clean_offline() {
+    [ "$OFFLINE_FIRST" = "1" ] || return 0
+    curl -s --max-time 8 --noproxy '*' -X POST \
+        "http://127.0.0.1:$PORT/v1/internal/offline" >/dev/null 2>&1
+}
+
+# 重启预算：两次之间至少 MIN_RESTART_GAP 秒，1 小时内最多 MAX_RESTARTS_PER_HOUR 次。
+can_restart() {
+    local last n
+    last=$(last_restart)
+    if [ -n "$last" ]; then
+        if [ $(( $(now) - last )) -lt "$MIN_RESTART_GAP" ]; then
+            printf 'cooldown %ss' "$(( MIN_RESTART_GAP - ($(now) - last) ))"
+            return 1
+        fi
+    fi
+    n=$(restart_history | grep -c . )
+    if [ "$n" -ge "$MAX_RESTARTS_PER_HOUR" ]; then
+        printf 'budget %s/%s in 1h' "$n" "$MAX_RESTARTS_PER_HOUR"
+        return 1
+    fi
+    return 0
+}
+
 restart_qq() {
-    log "restart: $1"
-    local before after rc
+    local why=$1 blocked before after rc
+    if ! blocked=$(can_restart); then
+        log "skip: 想重启（$why）但 $blocked，不动 QQ"
+        return 0
+    fi
+    log "restart: $why"
+    ask_clean_offline
+    record_restart
     before=$(pgrep -f "$PKG" 2>/dev/null | tr '\n' ' ')
     "$AM" force-stop "$PKG" >/dev/null 2>&1
     rc=$?
@@ -144,11 +201,13 @@ restart_qq() {
         sleep 2
     fi
     "$MONKEY" -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    # monkey 是异步的，拉起后进程要过几秒才出现；这里只做记录，不据此判定失败。
+    sleep 8
     after=$(pgrep -f "$PKG" 2>/dev/null | tr '\n' ' ')
     if [ -z "$after" ]; then
-        log "restart: 拉起之后没看到 $PKG 进程（monkey=$MONKEY），下一轮按端口不通处理"
+        log "restart: 拉起 8 秒后还没看到 $PKG 进程（monkey=$MONKEY），交给下一轮判据"
     else
-        log "restart: 进程 $before -> $after，等 ${RECOVER_WAIT}s"
+        log "restart: 进程 $before -> $after"
     fi
     sleep "$RECOVER_WAIT"
 }
@@ -156,10 +215,10 @@ restart_qq() {
 # 只看一轮判据、不动 QQ，用来确认探针本身工作正常。
 if [ "${1:-}" = "--check" ]; then
     hz=$(healthz)
-    links=$(upstream_links)
-    echo "upstream_links: $links"
+    echo "upstream_links: $(upstream_links)"
     echo "main_age: $(main_age)s (grace ${GRACE}s)"
     echo "kick_log: $(kick_log_lines) 行 ($KICK_LOG)"
+    echo "restarts_1h: $(restart_history | grep -c .) (上次 $(last_restart || echo -), gap ${MIN_RESTART_GAP}s, 上限 ${MAX_RESTARTS_PER_HOUR}/h)"
     if [ -n "$hz" ]; then
         echo "healthz: online=$(field "$hz" online) blocked_kicks=$(field "$hz" blocked_kicks) kick_hook=$(field "$hz" kick_hook) self_id=$(field "$hz" self_id)"
     else
@@ -171,13 +230,14 @@ fi
 
 echo $$ > "$PIDFILE" 2>/dev/null
 chmod 0600 "$PIDFILE" 2>/dev/null
-log "watchdog start pid=$$ pkg=$PKG interval=${INTERVAL}s stale_limit=$STALE_LIMIT"
+log "watchdog start pid=$$ pkg=$PKG interval=${INTERVAL}s stale_limit=$STALE_LIMIT grace=${GRACE}s restart<=${MAX_RESTARTS_PER_HOUR}/h gap=${MIN_RESTART_GAP}s"
 
 stale=0
 offline=0
 logouts=0
-last_kicks=""
 last_kicklog=""
+last_kicks=""
+kick_at=0
 
 while true; do
     hz=$(healthz)
@@ -208,43 +268,65 @@ while true; do
     kicks=$(field "$hz" blocked_kicks)
     [ -n "$kicks" ] || kicks=0
 
-    # 落盘的踢线记录：行数增长说明这一轮里刚有踢线被拦下。它的好处是跨进程重启还看得见，
+    # 落盘的踢线记录：行数增长说明这一轮里刚有踢线被拦下。跨进程重启还看得见，
     # 而 /healthz 里的 blocked_kicks 会随 QQ 重启归零。
     kicklog=$(kick_log_lines)
     if [ -n "$last_kicklog" ] && [ "$kicklog" -gt "$last_kicklog" ]; then
-        log "kick: 踢线记录 ${last_kicklog}->${kicklog} 行 ($(kick_log_tail)) 立刻重启"
+        log "kick: 踢线记录 ${last_kicklog}->${kicklog} 行 ($(kick_log_tail))"
         last_kicklog=$kicklog
-        last_kicks=$kicks
         stale=0
         logouts=0
-        restart_qq "服务端踢线被拦下"
+        kick_at=$(now)
+        sleep "$INTERVAL"
         continue
     fi
     last_kicklog=$kicklog
 
     if [ -n "$last_kicks" ] && [ "$kicks" -gt "$last_kicks" ]; then
-        log "kick: blocked_kicks ${last_kicks}->${kicks} ($(field "$hz" last_kick)) 立刻重启"
+        log "kick: blocked_kicks ${last_kicks}->${kicks} ($(field "$hz" last_kick))"
         last_kicks=$kicks
         stale=0
         logouts=0
-        restart_qq "服务端踢线被拦下"
+        kick_at=$(now)
+        sleep "$INTERVAL"
         continue
     fi
     last_kicks=$kicks
 
-    # 已经退出登录：模块还活着、端口还在，但内核不在线，靠 STALE 判据看不出来（那条要求
-    # online=true）。这时只能重启 QQ 让它按 mmkv 里的自动登录设置登回来。
-    if [ "$online" != "true" ]; then
-        age=$(main_age)
-        if [ "$age" -ge 0 ] && [ "$age" -lt "$GRACE" ]; then
-            if [ "$logouts" -eq 0 ]; then log "grace: QQ 主进程 ${age}s < ${GRACE}s，本轮不判离线"; fi
-            logouts=0
+    # 刚重启过：宽限期从自己写的状态文件读，不看 main_age。
+    last=$(last_restart)
+    if [ -n "$last" ] && [ $(( $(now) - last )) -lt "$GRACE" ]; then
+        [ "$logouts" -eq 0 ] && [ "$stale" -eq 0 ] \
+            && log "grace: 距上次重启 $(( $(now) - last ))s < ${GRACE}s，本轮不判"
+        logouts=0
+        stale=0
+        sleep "$INTERVAL"
+        continue
+    fi
+
+    # 刚被踢过：等 AFTER_KICK_WAIT 秒，让模块把干净下线发出去，避开踢线后立刻重登。
+    if [ "$kick_at" -gt 0 ]; then
+        waited=$(( $(now) - kick_at ))
+        if [ "$waited" -lt "$AFTER_KICK_WAIT" ]; then
             sleep "$INTERVAL"
             continue
         fi
+        kick_at=0
+        log "kick: 踢线后已等 ${waited}s，按重启预算处理"
+        if device_online; then
+            restart_qq "踢线后会话已作废（up 由模块记录）"
+        else
+            log "skip: 踢线后设备没网，先不动 QQ"
+        fi
+        continue
+    fi
+
+    # 已经退出登录：模块还活着、端口还在，但内核不在线，靠 STALE 判据看不出来（那条要求
+    # online=true）。这时只能重启 QQ 让它按 mmkv 里的自动登录设置登回来。
+    if [ "$online" != "true" ]; then
         logouts=$((logouts + 1))
         stale=0
-        log "logout: /healthz online=false ${logouts}/${LOGOUT_LIMIT} (pid_age=${age}s)"
+        log "logout: /healthz online=false ${logouts}/${LOGOUT_LIMIT} (pid_age=$(main_age)s)"
         if [ "$logouts" -ge "$LOGOUT_LIMIT" ]; then
             logouts=0
             if device_online; then
@@ -260,16 +342,8 @@ while true; do
     logouts=0
 
     if [ "$links" -eq 0 ]; then
-        age=$(main_age)
-        if [ "$age" -ge 0 ] && [ "$age" -lt "$GRACE" ]; then
-            # 刚拉起来的 QQ 还没连上，这不算僵尸；只在刚开始宽限时记一行。
-            if [ "$stale" -eq 0 ]; then log "grace: QQ 主进程 ${age}s < ${GRACE}s，本轮不判僵尸"; fi
-            stale=0
-            sleep "$INTERVAL"
-            continue
-        fi
         stale=$((stale + 1))
-        log "stale: online 但 MSF 无上游连接 ${stale}/${STALE_LIMIT} (pid_age=${age}s)"
+        log "stale: online 但 MSF 无上游连接 ${stale}/${STALE_LIMIT} (pid_age=$(main_age)s)"
         if [ "$stale" -ge "$STALE_LIMIT" ]; then
             stale=0
             if device_online; then

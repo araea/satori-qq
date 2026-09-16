@@ -184,11 +184,36 @@ public final class QQClient {
     public PacketSvc packets() { return packetSvc; }
     public LegacySvc legacy() { return legacySvc; }
     public ExtraSvc extra() { return extraSvc; }
-    /** Current QQ AppRuntime, or null while logged out / before account startup. */
+    /**
+     * Current QQ AppRuntime, or null while logged out / before account startup.
+     *
+     * <p>先问 {@code peekAppRuntime()}，问不到才退回 {@code mAppRuntime} 字段。实测（2026-09-16）
+     * 这个字段在重登/切号期间会指着上一个对象：拿它调 {@code logout()} 会静默空转，因为
+     * {@code logout()} 先看自己那份 {@code isLogin}，指错了就什么都不做。
+     */
     public Object appRuntime() {
         try {
             Object app = ref.callS(MOBILEQQ, "getMobileQQ");
-            return app == null ? null : ref.get(app, "mAppRuntime");
+            if (app == null) return null;
+            try {
+                Object peeked = ref.call(app, "peekAppRuntime");
+                if (peeked != null) return peeked;
+            } catch (Throwable ignore) {}
+            return ref.get(app, "mAppRuntime");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** {@code AppRuntime.isLogin()}；取不到运行时或调不通时回 null，调用方按「别据此下结论」处理。 */
+    public Boolean appRuntimeIsLogin() {
+        Object rt = appRuntime();
+        if (rt == null) return null;
+        try {
+            java.lang.reflect.Method m = rt.getClass().getMethod("isLogin");
+            m.setAccessible(true);
+            Object v = m.invoke(rt);
+            return v instanceof Boolean ? (Boolean) v : null;
         } catch (Throwable t) {
             return null;
         }
@@ -383,7 +408,15 @@ public final class QQClient {
         if (s == null || !listenerRegistered || listenerSession != s) return false;
         if (getMsgService(s, false) == null) return false;
         if (loginActivityOnTop()) return false;
-        return !currentUin().isEmpty();
+        if (currentUin().isEmpty()) return false;
+        // AppRuntime 已经登出时，内核 session 对象短期还是活的、getCurrentUin() 也还回得出号，
+        // 但收发已经不动了（2026-09-16 实测：`logout()` 之后群消息立刻停止入库，而这条判据
+        // 当时还回 true）。不把这一条算进来的话，/healthz 会一直报 online=true、上游连接也没断，
+        // 看守三条判据一条都不会触发，只能等人发现。
+        // 取不到运行时或调不通 isLogin 时不下结论（fail-open）：宁可晚重启一次，也不要因为
+        // 一次反射失败把 QQ 反复重启。
+        Boolean loggedIn = appRuntimeIsLogin();
+        return loggedIn == null || loggedIn;
     }
 
     /** Own-task inspection needs no cross-app task permission and catches stale sessions on LoginActivity. */

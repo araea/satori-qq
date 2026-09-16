@@ -99,7 +99,7 @@ plugins:
 
 模块自报在线、消息却一条收不到，多半是被服务端踢线。踢线的处理链在客户端互不经过。模块逐条拦在入口，也保住盘上的登录态。判定口径与计数见 [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md)。
 
-[`scripts/qq-revive.sh`](scripts/qq-revive.sh) 看守 QQ：按踢线记录行数增长、`online=false` 与「MSF 进程没有上游连接」判断，必要时重启 QQ。装法见 [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh) 开头。
+[`scripts/qq-revive.sh`](scripts/qq-revive.sh) 看守 QQ：按踢线记录行数增长、`online=false` 与「MSF 进程没有上游连接」判断，必要时重启 QQ。重启有预算——两次间隔至少 10 分钟、每小时最多 3 次，超了只记日志。装法见 [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh) 开头。
 
 ### 系统拦截关联启动时
 

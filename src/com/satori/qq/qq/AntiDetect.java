@@ -40,6 +40,7 @@ public final class AntiDetect {
     private final boolean blockO3Report;
     private final boolean blockTuringRisk;
     private final boolean blockServerKick;
+    private final boolean cleanOfflineOnKick;
     private final String fakeImei;
     private final String fakeAndroidId;
     private final String fakeSerial;
@@ -145,6 +146,24 @@ public final class AntiDetect {
     private static final AtomicLong LAST_HEAL_MS = new AtomicLong();
     private static final int GUARD_LOG_MAX = 12;
     private static final java.util.ArrayDeque<String> GUARD_LOG = new java.util.ArrayDeque<>();
+    /**
+     * 补做「干净下线」的次数。
+     *
+     * <p>这一手的设想：踢线处理里真正通知服务端的动作是 {@code AppRuntime.logout(true)} 里的
+     * {@code sendOnlineStatus(Status.offline, ...)}，而 {@code reason != kicked} 时它还会走
+     * {@code userLogoutWhenSendState()} → {@code IKernelService.offLine(UnregisterInfo)} 把设备注销掉。
+     * 模块把 {@code onKicked*} 整条 no-op 之后这两件事都不会发生；看守再 force-stop 一次就更是
+     * 「人不见了但不吭声」，服务端那条会话一直挂着。
+     *
+     * <p>真机验证之后这条路**默认关**（理由写在 {@link #cleanOffline} 上）：它把登录票据一起放掉，
+     * 结果比被踢一次更差。代码留着，计数留着，给「凭据已经没救」的场合用。
+     */
+    private static final AtomicLong CLEAN_OFFLINE = new AtomicLong();
+    private static volatile String lastCleanOffline = "";
+    /** 同一次踢线会走到多个入口，补下线只做一次，10 秒内的重复调用丢掉。 */
+    private static final AtomicLong LAST_CLEAN_OFFLINE_MS = new AtomicLong();
+
+    private static final String MOBILEQQ = "mqq.app.MobileQQ";
 
     public static int blockedKicks() { return BLOCKED_KICKS.get(); }
     public static long lastKickMs() { return lastKickMs; }
@@ -156,6 +175,112 @@ public final class AntiDetect {
     public static int logoutGuardHooks() { return logoutGuardHookCount; }
     public static long loginStateKept() { return LOGIN_STATE_KEPT.get(); }
     public static int loginStateHooks() { return loginStateHookCount; }
+    public static long cleanOfflineCount() { return CLEAN_OFFLINE.get(); }
+    public static String lastCleanOffline() { return lastCleanOffline; }
+
+    /**
+     * 补一次干净下线：调 QQ 自己的 {@code AppRuntime.logout(LogoutReason.restartProcess, true)}。
+     *
+     * <p>它会让服务端收到 {@code sendOnlineStatus(Status.offline, ...)} 与内核那条
+     * {@code offLine(UnregisterInfo)}，也就是「这台设备下线了」。
+     *
+     * <p><b>2026-09-16 真机实测的结论是：这条路平时不能走。</b>那次 {@code login=true->false}
+     * 之后，账号被从 {@code files/user/u_<uin>_t} 摘成 {@code _f}、MSF 上游连接也断了，QQ 重启后
+     * 停在 {@code LoginActivity}，把 {@code _f} 改回 {@code _t} 也不再自动登录——登录票据是随这次
+     * logout 一起放掉的。结果是「被拦下的踢线」变成了「必须手动重新登录」，比原来更差。
+     * 所以 {@code clean_offline_on_kick} 默认关，本机看守也不再在重启前调它；留着这个动作是给
+     * 确认凭据已经没救的场合用的。
+     *
+     * <p>实现上仍然走主 Looper：内核服务是主线程亲和的，而且 {@code QQAppInterface} 那条实现里
+     * 有 {@code countDownLatch.await(200ms)}。
+     *
+     * @param why 记进 {@code qk_guard.log} 的原因，例如 {@code internal.offline}。
+     * @return true 表示已经投递出去（不代表下线成功）。
+     */
+    public static boolean cleanOffline(String why) {
+        AntiDetect inst = mainInstance;
+        return inst != null && inst.postCleanOffline(why, 10000L);
+    }
+
+    /** 同一次踢线会连中几个入口，{@code minGapMs} 之内的重复调用直接丢掉。 */
+    private boolean postCleanOffline(final String why, final long minGapMs) {
+        try {
+            long now = System.currentTimeMillis();
+            long prev = LAST_CLEAN_OFFLINE_MS.get();
+            if (now - prev < minGapMs) return false;
+            if (!LAST_CLEAN_OFFLINE_MS.compareAndSet(prev, now)) return false;
+            final Object runtime = appRuntime();
+            if (runtime == null) return false;
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+                @Override public void run() {
+                    try {
+                        Object reason = logoutReasonConstant("restartProcess");
+                        if (reason == null) {
+                            L.e("AntiDetect.cleanOffline: LogoutReason.restartProcess missing", null);
+                            return;
+                        }
+                        boolean before = isLogin(runtime);
+                        ref.call(runtime, "logout", reason, Boolean.TRUE);
+                        boolean after = isLogin(runtime);
+                        CLEAN_OFFLINE.incrementAndGet();
+                        lastCleanOffline = why + " pid=" + android.os.Process.myPid()
+                                + " login=" + before + "->" + after;
+                        noteGuardLine("clean-offline",
+                                why + " runtime=" + runtime.getClass().getName()
+                                        + " account=" + invokeStr(runtime, "getAccount")
+                                        + " login=" + before + "->" + after);
+                        L.e("AntiDetect: clean offline sent (" + why + "), login "
+                                + before + "->" + after, null);
+                    } catch (Throwable t) {
+                        L.e("AntiDetect.cleanOffline", t);
+                    }
+                }
+            });
+            return true;
+        } catch (Throwable t) {
+            L.e("AntiDetect.cleanOffline.post", t);
+            return false;
+        }
+    }
+
+    /** 当前 QQ runtime；未登录/账号还没起来时为 null。 */
+    private Object appRuntime() {
+        try {
+            Object app = ref.callS(MOBILEQQ, "getMobileQQ");
+            if (app == null) return null;
+            // QQ 自己取运行时用的是 peekAppRuntime()。mAppRuntime 这个字段在切号/重登期间可能
+            // 还指着上一个对象，而 logout() 是先看自己那份 isLogin 才动手的，指错了就是一次静默空转。
+            try {
+                Object peeked = ref.call(app, "peekAppRuntime");
+                if (peeked != null) return peeked;
+            } catch (Throwable ignore) {}
+            return ref.get(app, "mAppRuntime");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** {@code AppRuntime.isLogin()}，调不通回 false。 */
+    private static boolean isLogin(Object runtime) {
+        try {
+            Object v = runtime.getClass().getMethod("isLogin").invoke(runtime);
+            return Boolean.TRUE.equals(v);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** {@code Constants$LogoutReason} 里按名字取枚举常量，取不到回 null。 */
+    private Object logoutReasonConstant(String name) {
+        try {
+            Class<?> cls = ref.clsOrNull("mqq.app.Constants$LogoutReason");
+            if (cls == null || !cls.isEnum()) return null;
+            for (Object c : cls.getEnumConstants()) {
+                if (name.equals(String.valueOf(c))) return c;
+            }
+        } catch (Throwable ignore) {}
+        return null;
+    }
 
     /** 踢线后窗口内被拦掉的登出，新的在前。 */
     public static String[] guardLog() {
@@ -388,12 +513,13 @@ public final class AntiDetect {
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
                       boolean observeFekitAttach, boolean blockO3Report) {
         this(cl, blockTasks, blockReports, observeFekitAttach, blockO3Report,
-                true, true, "", "", "");
+                true, true, true, "", "", "");
     }
 
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
                       boolean observeFekitAttach, boolean blockO3Report,
                       boolean blockTuringRisk, boolean blockServerKick,
+                      boolean cleanOfflineOnKick,
                       String fakeImei, String fakeAndroidId, String fakeSerial) {
         this.ref = new Ref(cl);
         this.blockTasks = blockTasks;
@@ -402,6 +528,7 @@ public final class AntiDetect {
         this.blockO3Report = blockO3Report;
         this.blockTuringRisk = blockTuringRisk;
         this.blockServerKick = blockServerKick;
+        this.cleanOfflineOnKick = cleanOfflineOnKick;
         this.fakeImei = cleanFake(fakeImei);
         this.fakeAndroidId = cleanFake(fakeAndroidId);
         this.fakeSerial = cleanFake(fakeSerial);
@@ -1511,10 +1638,14 @@ public final class AntiDetect {
                 if (pt.length < 2 || !pt[0].getName().endsWith("ToServiceMsg")
                         || !pt[1].getName().endsWith("FromServiceMsg")) continue;
                 m.setAccessible(true);
+                final String entry = m.getName();
                 XposedBridge.hookMethod(m, new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
                         if (p == null || p.args == null || p.args.length < 2) return;
-                        recordBlockedKick("msf-kick-entry", describeMsfKick(p.args));
+                        recordBlockedKick("msf-kick-entry", describeMsfKick(p.args, entry));
+                        // 界面动作拦掉，但服务端该收到的那句「我下线了」要补上：不然这条会话
+                        // 在服务端一直挂着，看守再 force-stop 一次就是彻底不吭声地消失。
+                        if (cleanOfflineOnKick) cleanOffline("blocked-kick:" + entry);
                         p.setResult(null);
                     }
                 });
@@ -1915,15 +2046,30 @@ public final class AntiDetect {
      * {@code KickedInfo} 的字段，见 {@link #describeKick}），所以这条路判不到"哪一端"。
      */
     private String describeMsfKick(Object[] args) {
+        return describeMsfKick(args, "");
+    }
+
+    /**
+     * 把一次踢线的现场记成一行。
+     *
+     * <p>除了服务端那个包，还记下「是哪条路进来的」，因为三条路的处置完全不同：
+     * {@code entry=} 是被拦下的处理器入口名（{@code onKicked} 是服务端普通强踢、
+     * {@code onKickedAndClearToken} 是带清票据的那种），中间那几个 boolean 是 QQ 传进来的
+     * {@code isTokenExpired} / {@code isSameDevice}，{@code svcCmd=} 是 MSF 命令名，
+     * {@code ssoErr=} 是这个响应上带的 SSO 错误码。上一次踢线（2026-09-16 16:33）里这些
+     * 一项都没记到，事后只能靠猜，所以补上。
+     */
+    private String describeMsfKick(Object[] args, String entry) {
         StringBuilder sb = new StringBuilder();
         Object from = null;
         for (Object a : args) {
             if (a != null && a.getClass().getName().endsWith("FromServiceMsg")) { from = a; break; }
         }
+        if (entry != null && !entry.isEmpty()) sb.append("entry=").append(entry);
         Object decoded = decodeForceOffline(from);
         if (decoded != null) {
             Object kind = ref.get(decoded, "bKickType");
-            sb.append("kickType=").append(kind);
+            sb.append(" kickType=").append(kind);
             String name = kickedTypeName(kind);
             if (!name.isEmpty()) sb.append("(").append(name).append("?)");
             sb.append(" sigKick=").append(ref.get(decoded, "bSigKick"));
@@ -1942,10 +2088,44 @@ public final class AntiDetect {
             sb.append(" uin=").append(uin);
             lastKickUin = uin;
         }
-        String cmd = msfCommandName(from);
-        if (!cmd.isEmpty()) sb.append(" cmd=").append(cmd);
+        // 处理器入口的原样参数：onKickedInternal(..., isTokenExpired, isSameDevice) 这两个
+        // 布尔直接把「普通强踢」和「要清票据的强踢」分开，是判成因最省事的两个字段。
+        StringBuilder flags = new StringBuilder();
+        for (Object a : args) {
+            if (!(a instanceof Boolean)) continue;
+            if (flags.length() > 0) flags.append(',');
+            flags.append(a);
+        }
+        if (flags.length() > 0) sb.append(" args=").append(flags);
+        String svcCmd = invokeStr(from, "getServiceCmd");
+        if (!svcCmd.isEmpty()) sb.append(" svcCmd=").append(svcCmd);
+        String msfCmd = msfCommandName(from);
+        sb.append(" cmd=").append(msfCmd.isEmpty() ? "-" : msfCmd);
+        Object ssoErr = attribute(from, "attr_sso_error_code");
+        if (ssoErr != null) sb.append(" ssoErr=").append(ssoErr);
         if (sb.length() == 0) sb.append("no-payload");
-        return clip(sb.toString(), 260);
+        return clip(sb.toString(), 320);
+    }
+
+    /** 无参 getter 的字符串结果，调不通回空串。 */
+    private static String invokeStr(Object o, String method) {
+        if (o == null) return "";
+        try {
+            Object v = o.getClass().getMethod(method).invoke(o);
+            return v == null ? "" : String.valueOf(v);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** {@code FromServiceMsg.getAttribute(String, Object)}，取不到回 null。 */
+    private static Object attribute(Object o, String key) {
+        if (o == null) return null;
+        try {
+            return o.getClass().getMethod("getAttribute", String.class, Object.class).invoke(o, key, null);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /**

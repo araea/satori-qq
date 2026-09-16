@@ -91,7 +91,9 @@ MSF 那条要拦处理器入口，不拦 `popupNotification`。`popupNotificatio
 
 `/healthz` 的 `kick_hook` 是踢线入口的 hook 数之和（0.8.9.46 起正常为 **12**：nt-kick 2 + ticket-refresh 1 + uid-fail 1 + msf 入口 4 + msf 出口 3 + 灰名单软事件 1），`last_kick_source` 记最近一次是哪个入口拦下的，`last_kick` 记参数，`kick_log` 是最近 12 次的原文。另有一个独立的登出守卫，hook 数在 `logout_guard.hooks`（0.8.9.46 起正常为 **5**），以及保住盘上登录态的守卫，在 `login_state.hooks`（正常为 **2**）。
 
-`last_kick` 带的字段：`kickType=`（`RequestMSFForceOffline.bKickType`，名字按 `KickedType` 的声明顺序取）与 `sigKick=`（1 表示带 `vecSigKickData` 的安全强踢，reason 取 `secKicked`；0 是普通强踢），另有 `seqno=` / `sigLen=` / `sameDevice=`。内核那条路（`nt-kick`）参数是 `KickedInfo`，字段比 MSF 包多，单独记 `appId=` / `instanceId=` / `securityKickedType=`。只记 reason 与服务端文案的话，现场分不出「在别处登录被顶」和「风控打击」。
+`last_kick` 带的字段：`entry=` 是被拦下的处理器入口名（`onKickedAndClearToken` 是带清票据的那一支，`onKicked` 是另一支），`args=` 是 QQ 传进来的那几个布尔（`onKickedInternal` 的 `isTokenExpired` 与 `isSameDevice`），`svcCmd=` 是这个响应的服务命令、`ssoErr=` 是它带的 SSO 错误码。加上服务端那个包里的 `kickType=`（`RequestMSFForceOffline.bKickType`，名字按 `KickedType` 的声明顺序取）与 `sigKick=`（1 表示带 `vecSigKickData` 的安全强踢，reason 取 `secKicked`；0 是普通强踢），另有 `seqno=` / `sigLen=` / `sameDevice=`。内核那条路（`nt-kick`）参数是 `KickedInfo`，字段比 MSF 包多，单独记 `appId=` / `instanceId=` / `securityKickedType=`。只记 reason 与服务端文案的话，现场分不出「在别处登录被顶」和「风控打击」。
+
+0.13.0 起 `cmd=` 取不到时会写成 `cmd=-`。0.12.0 及之前这一项取不到就整段省略，日志里看到的是更早版本留下的 `cmd=unknown` 占位，不是「真的拿到了 unknown」。
 
 踢线原文用 `Packet.decodePacket(buf, "RequestMSFForceOffline", new RequestMSFForceOffline())` 解：那就是 `MainService` 自己解这个包用的入口。别的回调带的是另一种包，硬解会得到垃圾字段，所以解完要校验（标题或正文至少一个非空，或 uin 非 0），过不了就只记 `cmd=` 与 `uin=`。QQ 自己那两份 `QQXlog_*.qqxlog` 解不开，要证据读模块自己落盘的 `qk_kick.log` / `qk_guard.log` / `qk_sso.log`。
 
@@ -180,6 +182,77 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 被拦下的登出记在 `/healthz` 的 `logout_guard`（`hooks` / `blocked` / `log`），落盘到 app 私有目录的 `qk_guard.log`，故意不写进 `qk_kick.log`：那份是看守「踢线 = 会话已作废，立刻重启」的判据，混进去会让看守反复重启 QQ。
 
+### 踢线之后 · 「补一次干净下线」这条路试过了，默认不走
+
+这一版试过一件事，真机验证之后结论是**有害，已默认关掉**。记在这里，免得以后有人再试一遍。
+
+想法是这样的：`AppRuntime.logout(LogoutReason, boolean)` 里有服务端真正需要的那两句——
+
+```text
+logout(reason, true)
+    reason != kicked → userLogoutWhenSendState() → IKernelService.offLine(new UnregisterInfo(deviceInfo))
+    sendOnlineStatus(Status.offline, Status.online, ...)
+    userLogoutReleaseData() → sendBindUinOffline()
+    isLogin = false
+```
+
+`onKicked*` 整条被 no-op 之后上面这几件一件都不会发生；看守再 force-stop 一次，连进程都是被强杀的。服务端那边这条会话就一直挂着，紧接着同一个号又登进来，看着就像 `RequestMSFForceOffline` 描述的那种「同账号第二个登录实例」。于是模块在拦下踢线后用 `restartProcess` 这个 reason 补发一次（它不属于要拦的那几种，所以走得到内核那条 `offLine`，也不跳登录页）。
+
+真机实测（2026-09-16，0.13.0，用 `POST /v1/internal/offline` 单独触发）：
+
+```text
+18:22:45  posted=true；qk_guard.log 记 clean-offline，
+          login=true->false（runtime=com.tencent.mobileqq.app.QQAppInterface account=3373167460）
+18:22:52  /healthz online=false，群消息停止入库（近 30s 0 条）
+18:24:53  看守按 online=false 连续 3 轮重启 QQ
+18:25:22  online=true，消息恢复（近 30s 2 → 16 → 17 条）
+```
+
+第一次看着挺好，又走一轮，第二次就没回来：
+
+```text
+18:36:43  看守再次重启之后
+18:40      仍 online=false，群消息 0 条
+18:42      files/user/u_3373167460_t 变成 u_3373167460_f（账号被摘出已登录列表）
+           把 _f 改回 _t 再重启，20 秒看一次看满 3 分钟：online 仍是 false
+           topResumedActivity = com.tencent.mobileqq/.activity.LoginActivity
+```
+
+也就是说：`logout(restartProcess, true)` 会把登录票据一起放掉、账号从已登录列表里摘掉，**此后连自动登录都回不来，只能手动登一次**。它把「被拦下的踢线」变成了「必须重新登录」，正是这个模块一直在防的事。所以：
+
+- `clean_offline_on_kick` 默认 **false**；本机看守的 `QQ_REVIVE_OFFLINE_FIRST` 默认 **0**，重启前不再调它
+- 代码与 `POST /v1/internal/offline` 动作都留着（`/healthz` 的 `clean_offline` 计数也留着），给「确认凭据已经没救」的场合用
+- 顺带记一条待查：`MainService$MyErrorHandler.onKickedInternal` 里那条 `expired` 分支（reason `LogoutReason.expired` → `logout(expired, true)` → `KICK_TO_LOGIN`）**没有被拦**。按这次的结论，它落地同样是「账号被登出、票据被放掉、停在登录页」，而文档一直写着「expired 时 QQ 自己会重登」——这个假设在本机没成立过。要动它得单独验证，别顺手改。
+
+### 踢线之后 · `/healthz` 的 online 认 AppRuntime 的登录态
+
+这一条是上面那次试验的副产品，留下来了。`AppRuntime` 已经登出时，内核那个 session 对象短期还是活的、`getCurrentUin()` 也还回得出号，MSF 上游连接也没断（实测 `upstream_links` 仍是 1）。旧版 `QQClient.isOnline()` 只看后面这几样，于是账号已经下线了它还一直报 `online=true`、消息却一条不进——看守三条判据一条都不会触发，只能等人发现。
+
+0.13.0 起 `isOnline()` 多问一句 `AppRuntime.isLogin()`，取不到运行时或调不通时不下结论（fail-open：宁可晚重启一次，也不要因为一次反射失败把 QQ 反复重启）。另外 `appRuntime()` 改成先问 `peekAppRuntime()`、问不到才退回 `mAppRuntime` 字段——实测那个字段在重登/切号期间会指着上一个对象，拿它调 `logout()` 会静默空转（日志里记成 `login=true->true`，什么都没发生）。
+
+### 踢线之后 · 重启由看守做，而且有预算
+
+这一层 0.13.0 起改过，理由在实测里：
+
+- 09-16 11:19→13:09，看守 force-stop 了 QQ 约 34 次，每 3~4 分钟一次。那段时间 QQ 正在登录窗口里（force-stop 之后登上去要几分钟），于是每轮都把它掐断重来，永远登不完。计数来自 `/data/adb/satori-qq/qq-revive.log` 的 `restart:` 行。
+- 旧版的宽限期看 `main_age`（`/proc/<pid>/stat` 的 starttime）。算法本身没错——改完这天实测它与 `ps -o etime` 的 ELAPSED 对得上——但风暴里它每轮都报 518s / 578s / 638s 这种值，也就是它取到的进程不是刚拉起来的那个（同一时刻机内确实有两个名字对得上的进程），于是 `GRACE=300` 保护不到登录窗口。所以新版宽限期不看它，改看看守自己写的 `qq-revive.state`，`main_age` 只留在日志里做参考。
+
+新版的三条：
+
+| 判据 | 动作 |
+| --- | --- |
+| `qk_kick.log` 增行 | 记一行，等 `AFTER_KICK_WAIT`（默认 120s）再按预算决定是否重启 |
+| `online=false` 连续 `LOGOUT_LIMIT` 轮（默认 3） | 按预算重启，靠自动登录登回来 |
+| `online` 且 MSF 无上游连接连续 `STALE_LIMIT` 轮（默认 5） | 按预算重启 |
+
+预算：两次重启间隔至少 `MIN_RESTART_GAP`（默认 600s），任何 1 小时内最多 `MAX_RESTARTS_PER_HOUR`（默认 3）次；超预算只记一行 `skip: ... budget N/N in 1h`，不动 QQ。重启前先 `POST /v1/internal/offline`，让服务端收到下线再重启（`OFFLINE_FIRST=1`，失败不影响重启）。
+
+恢复时间因此有了上限，也有了代价：刚重启过的那次故障要等满 `MIN_RESTART_GAP` 才动手，最坏情况是 `LOGOUT_LIMIT × INTERVAL + GRACE` 约 8 分钟，其中不含被冷却推迟的部分（2026-09-16 实测有一次被 `cooldown 137s` 推迟到第 12 分钟）。判据本身每轮都要重新数满 `LOGOUT_LIMIT`。要更快就把 `QQ_REVIVE_MIN_RESTART_GAP` 调小，代价是重启更密。
+
+这套预算的实测（A/B 干跑，`am` / `monkey` / `/healthz` 全换成桩，同一事件序列跑 90 秒）：旧版 force-stop 8 次，新版 3 次并开始记 `budget 3/3`。
+
+排障纪律照旧：不要反复 force-stop。每强停再拉起一次，QQ 都要重新握手、重新上报设备信息、重新做一次登录。装完新版本重启一次是必要的，其余反复重启没有收益。
+
 这一层能保证的是盘上那两处状态没被改坏（账号留在已登录列表、自动登录开关没被关成手动），计数在 `login_state.kept` / `auto_login_kept` / `qk_guard.log`。不能保证「被踢之后本机自己登回来」，本机重新上线主要是用户自己手动登录的。所以判「这套机制有没有生效」只看那几个计数，不要拿「online 又变 true 了」当判据，那个时间点可能是人做的动作。要证的「踢线后能自动重登」这条链，目前未验证。
 
 一个已知副作用：善后期内（被拦下踢线后的 15 分钟）用户按退出登录，QQ 的账号标记可能已经被顶成 `_t`，于是下次启动会自己登回来，用户得再退一次（那时已在窗口之外）。窗口很短，且比「被踢之后退不出来、登不回去」轻，不做额外处理。
@@ -207,7 +280,7 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 | 看守日志与 pid | `/data/adb/satori-qq/`（0600） | 文件名与内容能反推模块。0.8.9.39 之前在 `/data/local/tmp`（0771，libfekit 二进制里带着这个路径字符串） |
 | `satori-last-send.txt`、`satori-history.txt` | 只在 `verbose_logs=true` 时写 | 逐次 I/O 与残留；诊断信息在 logcat 的 `Q.Kernel` 里仍然有 |
 | `qk_kick.log` 踢线记录 | 同 `files/`（0600，超过 64KB 只留尾部 32KB） | 踢线原文（入口、reason、`kickType`、`sigKick`、`seqno`、`sigLen`、`sameDevice`、标题、正文、`up=<秒>`）。要看守在进程重启后仍能判断「刚被踢过」，所以落盘而不是只放内存。`up=` 是这次登录活了多久，用来分「周期性（票据或会话寿命）」与「事件驱动（行为打分）」 |
-| `qk_guard.log` 善后动作 | 同上目录（0600，同口径截断） | 被拦下的登出、被顶回去的摘账号、自愈修回来的东西。不与 `qk_kick.log` 合并，那份是看守的重启判据 |
+| `qk_guard.log` 善后动作 | 同上目录（0600，同口径截断） | 被拦下的登出、被顶回去的摘账号、补发的干净下线（`clean-offline`）、自愈修回来的东西。不与 `qk_kick.log` 合并，那份是看守的重启判据 |
 | `qk_sso.log` 模块自己 SSO 请求的失败 | 同上目录（0600，同口径截断） | 分开「环境检测」与「接口把会话打废」两种踢线成因，要与 `qk_kick.log` 对时间 |
 
 这些 `qk_*` 名字对检测库不可见：`getdents64` / `readdir` 的条目过滤按 `qk_` 前缀去掉。`satori-last-send.txt` / `satori-history.txt` 走通用黑名单（名字里有 `satori`），`verbose_logs` 关着时本来也不会生成。
@@ -248,7 +321,7 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 外部的 `scripts/qq-satori-exposure-audit.sh` 取主进程 pid 的 `/proc/<pid>/maps`，不受这份文件影响。它读的是进程外视图，验证不了进程内过滤，所以 `maps_anon_*_excess=1` 这类计数一直存在，不随过滤变化。
 
-排障时不要反复 force-stop：每强停再拉起一次，QQ 都要重新握手、重新上报设备信息、重新做一次登录。而「服务端认为同一账号出现了第二个登录实例」正是 `KKICKBYMULTIINST` 那类强下线的语义。装完新版本重启一次是必要的，除此之外的反复重启没有收益。看守只在两条判据上重启 QQ：`qk_kick.log` 增行，或连续多轮离线。
+排障时不要反复 force-stop：每强停再拉起一次，QQ 都要重新握手、重新上报设备信息、重新做一次登录。而「服务端认为同一账号出现了第二个登录实例」正是 `KKICKBYMULTIINST` 那类强下线的语义。装完新版本重启一次是必要的，除此之外的反复重启没有收益。看守现在有重启预算（见上面那节），一分钟内的连续故障最多换一次重启。
 
 ## 挡不住的部分
 

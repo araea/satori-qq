@@ -38,6 +38,13 @@ public final class Cfg {
     public volatile boolean blockTuringRisk = true;
     /** Suppress the local handler for server kick packets; a revoked server session still needs login. */
     public volatile boolean blockServerKick = true;
+    /**
+     * 拦下踢线之后，由模块补一次「干净下线」让服务端收到 offline。**默认关**，而且是有理由关的：
+     * 2026-09-16 真机实测，{@code logout(restartProcess, true)} 会把登录票据一起放掉，账号从
+     * 已登录列表里被摘掉，QQ 重启后停在登录页、连自动登录都回不来——比被踢一次更麻烦。
+     * 保留这个开关是给「服务端会话已经作废、本地凭据也没救了」的场合用的，默认那条路不走它。
+     */
+    public volatile boolean cleanOfflineOnKick = false;
     /** Empty values keep the real device identifiers. Set all required values together. */
     public volatile String fakeImei = "";
     public volatile String fakeAndroidId = "";
@@ -103,6 +110,8 @@ public final class Cfg {
                 c.blockO3Report = o.optBoolean("block_o3_report", c.blockO3Report);
                 c.blockTuringRisk = o.optBoolean("block_turing_risk", c.blockTuringRisk);
                 c.blockServerKick = o.optBoolean("block_server_kick", c.blockServerKick);
+                c.cleanOfflineOnKick =
+                        o.optBoolean("clean_offline_on_kick", c.cleanOfflineOnKick);
                 c.fakeImei = o.optString("fake_imei", c.fakeImei).trim();
                 c.fakeAndroidId = o.optString("fake_android_id", c.fakeAndroidId).trim();
                 c.fakeSerial = o.optString("fake_serial", c.fakeSerial).trim();

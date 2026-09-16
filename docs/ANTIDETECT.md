@@ -2,7 +2,7 @@
 
 记录 QQ 在本机自己做了哪些检测、模块挡在哪里、哪些挡不住。结论按真机 QQ 9.3.55 与 9.3.60.40970（versionCode 16070）的二进制核实。
 
-## 检测从哪来
+## 检测来源
 
 - `libfekit.so`：QSec 的宿主。读 `/proc/self/maps`、`smaps`、`mountinfo`、`cmdline`，并逐个读 `/proc/<pid>/cmdline` 找别的进程。字符串里带 root 管理器黑名单，以及 `cat /proc/mounts | grep magisk`
 - `libturingxq.so` 与 `libturingmfa.so`：Turing 风控。读 `/sys/fs/selinux/enforce`，枚举 `/data/local/bin`、`/data/local/xbin`、`/sbin/`、`/system/xbin/`、`/system/sd/xbin/`，看 `/system/bin/ddexe`、`debuggerd`、`debuggerd64` 与 `/system/etc/install-recovery.sh` 是否存在
@@ -23,7 +23,7 @@ Java 侧在 `com.tencent.mobileqq.qsec.qsecurity` 下。`QSec` 的 `detectMethod
 
 `0x9cdf_1` 是这 5 条里唯一与 libMSFKernel 共用的，命令表里挨着 `wtlogin.log_report`，影响面比另外四条大。要整体关掉这套丢包逻辑，把配置里的 `block_o3_report` 置 false。
 
-## 模块怎么挡
+## 模块的处理方式
 
 Java 层在 `qq/AntiDetect`，装在每个 QQ 进程：
 
@@ -46,7 +46,7 @@ Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
 - 用 seccomp 对模块自身文本段里的裸 svc 用 TRAP 拦住，覆盖 openat、openat2、faccessat、faccessat2、newfstatat、statx、readlinkat、getdents64
 - 装完后自己再读一遍 maps、tcp、environ，把 `leak_*` 与 `loop_ok` 落盘自证
 
-memfd 名字为什么这么取：ART 自己的两份 JIT 缓存是 `/memfd:jit-cache` 与 `/memfd:jit-zygote-cache`，`dalvik-jit-code-cache` 只作为它们的 `[anon_shmem:...]` 名字出现，带 `/memfd:` 前缀的从来没有。用 `dalvik-jit-code-cache` 当 memfd 名，再用 `/memfd:dalvik-jit-code-cache` 把模块那三行映射从检测库视野里去掉，ART 自己的行不受影响。早先用 `jit-cache` 会与 ART 撞成同进程两个同名不同 inode，那正是「加载器藏在 memfd」的判据。
+memfd 名字的由来：ART 自己的两份 JIT 缓存是 `/memfd:jit-cache` 与 `/memfd:jit-zygote-cache`，`dalvik-jit-code-cache` 只作为它们的 `[anon_shmem:...]` 名字出现，带 `/memfd:` 前缀的从来没有。用 `dalvik-jit-code-cache` 当 memfd 名，再用 `/memfd:dalvik-jit-code-cache` 把模块那三行映射从检测库视野里去掉，ART 自己的行不受影响。早先用 `jit-cache` 会与 ART 撞成同进程两个同名不同 inode，那正是「加载器藏在 memfd」的判据。
 
 0.8.9.39 起 token 扫描按「符号集合」而不是单个符号接管。libfekit 同时 import `strstr`、`strcasestr`、`memmem`，此前只接管 `strstr`，且只在 needle 恰好等于黑名单里的某个词时才返回 NULL：`strstr(maps_line, "com.topjohnwu.magisk-1.2")` 这类更长的 needle 会照常命中。现在三个入口共用一条规则：needle 里只要出现 `BLOCK` 表中任一条（子串、大小写不敏感），就返回未找到，判定集与 `path_denied` 一致。实测主进程补丁数 63 → 65，MSF 40 → 42。
 
@@ -62,7 +62,7 @@ memfd 名字为什么这么取：ART 自己的两份 JIT 缓存是 `/memfd:jit-c
 
 线程名外部可见，`/proc/<pid>/task/*/comm` 直接读得到。0.8.9.39 自检到两处带模块名的线程（`satori-self-send`、`satori-channel-unmute`），0.8.9.40 改成 `pool-8-thread-N` 与 `pool-9-thread-1`；QQ 自己也有若干 `pool-N-thread-M`，这种名字不显眼。新起线程不要用模块名，要能过 `scripts/qq-satori-exposure-audit.sh` 的 `suspicious_thread_names`（它匹配 satori / xposed / vector / zygisk / mapshide）。
 
-logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前缀的标签，消息里会提到 patch 计数与 seccomp。QQ 自己进程写下的日志，自己的进程与 root 读得到，拦不掉，而排障要用它；详细数字另外落盘到只 root 可读的 `qk_env_maps_*.json`。同理，常驻通知的渠道名与标题带「Satori」是给人看的，属必要暴露。
+logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前缀的标签，消息里会提到 patch 计数与 seccomp。QQ 自己进程写下的日志，自己的进程与 root 读得到，拦不掉，而排障要用它。详细数字另外落盘到只 root 可读的 `qk_env_maps_*.json`。常驻通知的渠道名与标题带「Satori」是给人看的，属必要暴露。
 
 清单分两份：`AndroidManifest.xml` 带 Xposed 元数据用于注册，`AndroidManifest.stealth.xml` 不带，启用后覆盖安装 stealth 版本。按安装包元数据里有没有 `xposed*` 键判定模块的工具，看到的是 stealth 版本。Duck Detector 的 LSPosed 卡片就是按这条查的：同一台机器上它扫出了便签模块与「雹」的 `xposedmodule` 元数据，而已覆盖安装 stealth 变体的本模块不在那张清单里。
 
@@ -87,7 +87,7 @@ MSF 那条要拦处理器入口，不拦 `popupNotification`。`popupNotificatio
 
 `onGrayError` 单独处理：它兼管 `wt_GetStViaSMSVerifyLogin` 与 `wt_loginAuth` 的响应，整条拦掉会把「被踢之后靠短信验证登回来」封死；而它又可能反复发生，当成硬踢线会让看守每来一次就 force-stop QQ 一次。所以只做两件事：放行（除上述登录命令外），并把善后窗口打开、记一行 `soft-kick` 到 `qk_guard.log`（不算 `blocked_kicks`、不写 `qk_kick.log`）。
 
-不是所有 `LogoutReason` 都该拦。拦的是 `kicked`、`secKicked`、`forceLogout`、`suspend`；放行 `user`（用户自己退出）、`switchAccount`（切号）、`expired`（票据自然过期，QQ 自己会重登）、`tips`、`gray`、`restartProcess`；拦这些才是真出问题。判定在 `AntiDetect.kickReasonBlocked`，有单测。
+不是所有 `LogoutReason` 都该拦。拦的是 `kicked`、`secKicked`、`forceLogout`、`suspend`。放行 `user`（用户自己退出）、`switchAccount`（切号）、`expired`（票据自然过期，QQ 自己会重登）、`tips`、`gray`、`restartProcess`。拦这些会造成真正的问题。判定在 `AntiDetect.kickReasonBlocked`，有单测。
 
 `/healthz` 的 `kick_hook` 是踢线入口的 hook 数之和（0.8.9.46 起正常为 **12**：nt-kick 2 + ticket-refresh 1 + uid-fail 1 + msf 入口 4 + msf 出口 3 + 灰名单软事件 1），`last_kick_source` 记最近一次是哪个入口拦下的，`last_kick` 记参数，`kick_log` 是最近 12 次的原文。另有一个独立的登出守卫，hook 数在 `logout_guard.hooks`（0.8.9.46 起正常为 **5**），以及保住盘上登录态的守卫，在 `login_state.hooks`（正常为 **2**）。
 
@@ -95,7 +95,7 @@ MSF 那条要拦处理器入口，不拦 `popupNotification`。`popupNotificatio
 
 踢线原文用 `Packet.decodePacket(buf, "RequestMSFForceOffline", new RequestMSFForceOffline())` 解：那就是 `MainService` 自己解这个包用的入口。别的回调带的是另一种包，硬解会得到垃圾字段，所以解完要校验（标题或正文至少一个非空，或 uin 非 0），过不了就只记 `cmd=` 与 `uin=`。QQ 自己那两份 `QQXlog_*.qqxlog` 解不开，要证据读模块自己落盘的 `qk_kick.log` / `qk_guard.log` / `qk_sso.log`。
 
-### `kickType` 能读到什么程度
+### `kickType` 能读到的程度
 
 2026-09-15 在 16070 上核。`classes.dex` 里 `com.tencent.qqnt.kernel.nativeinterface.KickedType` 的声明顺序是：
 
@@ -112,7 +112,7 @@ KKICKBYMULTIINST(0), KKICKBYMOBILE(1), KKICKBYPASSWORDCHANGE(2), KKCIKBYLOWVERSI
 
 ## 设备侧现状
 
-2026-09-15 实测，判断「环境到底脏不脏」用这几条。
+2026-09-15 实测。判断环境是否异常用这几条。
 
 | 项 | 本机 | 说明 |
 | --- | --- | --- |
@@ -130,9 +130,9 @@ KKICKBYMULTIINST(0), KKICKBYMOBILE(1), KKICKBYPASSWORDCHANGE(2), KKCIKBYLOWVERSI
 | libturingxq / libturingmfa 读的 `/sys` | `/sys/fs/selinux/enforce`、`cpu%d/cpu_capacity` | 本机 enforcing，正常 |
 | libMSFKernel 的关键字 | 只有 `loadavg` / `meminfo` / `stat` 与它自己的 `.MSF*` 数据文件 | 没有 root / hook 关键字名单；inotify 盯的是它自己那些文件，不是检测面 |
 
-结论：客户端这边看不到能解释「被设备异常整下线」的脏东西。所以再堆过检测的收益有限，先把「下一次踢线到底是什么性质」的证据抓全，别反过来先改策略。
+结论：客户端这边看不到能解释「被设备异常整下线」的脏东西。再堆过检测的收益有限，先把「下一次踢线是什么性质」的证据抓全，不先改策略。
 
-### 踢线之后：本机毁的是盘上的登录态
+### 踢线之后 · 本机毁的是盘上的登录态
 
 `MainService$MyErrorHandler.onKickedInternal(ToServiceMsg, FromServiceMsg, isTokenExpired, isSameDevice)` 分两支：
 
@@ -165,9 +165,9 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 善后期是 15 分钟且跨重启成立。判据除内存里的 `lastKickMs`，还看 `qk_kick.log` 的修改时间（带 5 秒缓存）。看守恰好在踢线后 force-stop QQ，重启之后内存计数归零，只靠内存的话善后期在新进程里等于不存在。
 
-### 踢线之后：不许本机自己登出
+### 踢线之后 · 不许本机自己登出
 
-拦下踢线入口并不覆盖所有登出路径，所以另有一层登出守卫。`AppRuntime.logout(boolean)` 底下会把 reason 写死成 `user`，`QQAppInterface.logout(boolean)` 是它的 override 且带 kickPC 的注释。这两个入口既服务「用户点退出登录」（主线程），也服务「踢线路径顺手登出」（`UidServiceImpl` 在工作线程上调的就是它），reason 分不出来，按调用线程分：主线程那次当用户点的，放行并记下「用户主动退出」；工作线程那次窗口内 no-op。
+拦下踢线入口并不覆盖所有登出路径，所以另有一层登出守卫。`AppRuntime.logout(boolean)` 底下会把 reason 写死成 `user`，`QQAppInterface.logout(boolean)` 是它的 override 且带 kickPC 的注释。这两个入口既服务「用户点退出登录」（主线程），也服务「踢线路径的登出」（`UidServiceImpl` 在工作线程上调的就是它）。reason 分不出来，按调用线程分：主线程那次当用户点的，放行并记下「用户主动退出」；工作线程那次窗口内 no-op。
 
 | 入口 | 拦法 |
 | --- | --- |
@@ -184,7 +184,7 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 一个已知副作用：善后期内（被拦下踢线后的 15 分钟）用户按退出登录，QQ 的账号标记可能已经被顶成 `_t`，于是下次启动会自己登回来，用户得再退一次（那时已在窗口之外）。窗口很短，且比「被踢之后退不出来、登不回去」轻，不做额外处理。
 
-### 踢线成因怎么分：环境检测还是接口把会话打废
+### 踢线成因 · 环境检测还是接口把会话打废
 
 - **环境检测**：设备风险被打分，服务端主动下发强制下线
 - **接口把会话打废**：某个请求回来的错误码让客户端认定登录票据失效，于是走「刷新票据失败 → 踢回登录页」。QQ 只在少数几个码上这么做：`login.ntlogin.ao.f(int, String)` 的 140022014 / 140022015 / 140022016，以及 `MainService$MyErrorHandler.onUserTokenExpired` 的 `ssoErrorCode` 为 -10135 或 10136
@@ -199,9 +199,9 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 `sso.session_errors` 是模块自己发的 SSO 请求（`PacketSvc` 的 OIDB 与裸 trpc）撞上那组码的次数，判定在 `PacketSvc.sessionFamilyCode`，有单测钉住这张表（多认一个码会把业务失败误报成会话失效，少认一个码就分不出来了）。原文落盘 `qk_sso.log`（app 私有目录 0600，超 64KB 只留尾部 32KB），时间戳可以直接和 `qk_kick.log` 对。超时只计数不落盘，网络慢时那是噪声。这条只观测，不改任何行为。真机实测（2026-09-15，0.8.9.46）全程为 0，模块自己的调用没撞上会话类错误码。
 
-### 模块自己在盘上留下的东西
+### 模块在盘上留下的文件
 
-| 东西 | 现在在哪 | 为什么 |
+| 文件 | 位置 | 原因 |
 | --- | --- | --- |
 | `qk_env_*.json` 自检 | `/data/data/com.tencent.mobileqq/files`（0600） | 字段名直接写着模块做了什么。0.8.9.39 之前写在外部 `Android/data`，那里有绕过存储沙箱的枚举手法；升级后首次写盘会删掉旧位置的同名文件 |
 | 看守日志与 pid | `/data/adb/satori-qq/`（0600） | 文件名与内容能反推模块。0.8.9.39 之前在 `/data/local/tmp`（0771，libfekit 二进制里带着这个路径字符串） |
@@ -216,7 +216,7 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 ## 与公开检测器逐项对照
 
-拿 [Duck Detector](https://github.com/eltavine/Duck-Detector-Refactoring) 的源码逐项过了一遍，只挑在目标进程内部成立的检查（也就是 QQ 自己可以照抄的那部分）。
+对照 [Duck Detector](https://github.com/eltavine/Duck-Detector-Refactoring) 的源码逐项核过，只挑在目标进程内部成立的检查（也就是 QQ 自己可以照抄的那部分）。
 
 挡得住的，都是「靠读文本、认名字」这一类：
 
@@ -248,7 +248,7 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 
 外部的 `scripts/qq-satori-exposure-audit.sh` 取主进程 pid 的 `/proc/<pid>/maps`，不受这份文件影响。它读的是进程外视图，验证不了进程内过滤，所以 `maps_anon_*_excess=1` 这类计数一直存在，不随过滤变化。
 
-排障时别把 force-stop 当免费手段：每强停再拉起一次，QQ 都要重新握手、重新上报设备信息、重新做一次登录，而「服务端认为同一账号出现了第二个登录实例」正是 `KKICKBYMULTIINST` 那类强下线的语义。装完新版本重启一次是必要的，除此之外的反复重启没有收益。看守只在两条判据上重启 QQ：`qk_kick.log` 增行，或连续多轮离线。
+排障时不要反复 force-stop：每强停再拉起一次，QQ 都要重新握手、重新上报设备信息、重新做一次登录。而「服务端认为同一账号出现了第二个登录实例」正是 `KKICKBYMULTIINST` 那类强下线的语义。装完新版本重启一次是必要的，除此之外的反复重启没有收益。看守只在两条判据上重启 QQ：`qk_kick.log` 增行，或连续多轮离线。
 
 ## 挡不住的部分
 
@@ -258,7 +258,7 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 - SELinux。Turing 读 `/sys/fs/selinux/enforce`。native 过滤只覆盖 `/proc`，不覆盖 `/sys`。本机是 enforcing，正常。查看：`getprop ro.boot.selinux; cat /sys/fs/selinux/enforce`
 - 内核与挂载命名空间。Magisk、KernelSU、APatch 的挂载点由内核层暴露。模块只在检测库进程内过滤 maps 与 mountinfo，检测方换一条模块没接管的通道，或直接读内核，就绕开了
 - ArtMethod 完整性。`libfekit.so` 带 `parse_libart.cpp` 与整套 `art::CheckJNI` 符号，可以对比运行时方法入口与磁盘上的 `libart.so`。Xposed 与 LSPlant 的 ArtMethod 改写不在本模块覆盖范围。核实：`strings -a libfekit.so | grep -E 'CheckJNI|parse_libart'`
-- 服务端风控。客户端拦得再干净，腾讯仍按历史行为、设备指纹变化与网络环境打分。2026-09-15 那次排查把客户端能看的都看了一遍，没有异常项，所以那两次踢线（`kickType=0` + `sameDevice=0` + 普通强踢）更可能是服务端侧的判断
+- 服务端风控。这一层在客户端拦不住，腾讯仍按历史行为、设备指纹变化与网络环境打分。2026-09-15 那次排查把客户端能看的都看了一遍，没有异常项，所以那两次踢线（`kickType=0` + `sameDevice=0` + 普通强踢）更可能是服务端侧的判断
 - 进程内内存关键字扫描。检测方读自己进程的堆或栈（`memchr` 扫一段内存），模块引用的 Xposed 类名就在里面；这条路不经过文件，GOT 与 `/proc` 过滤都用不上
 - 多后端交叉校验。同一个事实用 libc、裸 syscall、汇编三种方式各读一次再比对，模块只改得了其中 libc 那条。libfekit 现在只用 libc，一旦它照着这个思路改，`/proc` 文本过滤的收益会明显下降
 

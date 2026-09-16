@@ -4,12 +4,12 @@
 
 ## 连接约定
 
-- HTTP：`POST /v1/{resource}.{method}`，请求体为 JSON，`upload.create` 使用 multipart。请求头 `Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时都按未指定处理，照常应答；只有明确指向另一账号（平台不是 `red`，账号不是本机 QQ 号）的选择器回 404
+- HTTP：`POST /v1/{resource}.{method}`，请求体为 JSON，`upload.create` 使用 multipart。请求头 `Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时都按未指定处理，照常应答。只有明确指向另一账号的选择器回 404，即平台不是 `red`，或账号不是本机 QQ 号
 - 事件：`GET /v1/events` 升级为 WebSocket。客户端须在 10 秒内发送 `IDENTIFY`，服务端随后发 `READY` 与 `EVENT`。省略 `sn` 创建新会话，显式指定 `sn=0` 可回放缓冲区内 `sn > 0` 的事件
 - `READY` 里的登录账号就是客户端之后每个请求要带回来的 `Satori-User-ID`。QQ 账号尚未可知时不发 `READY`，等账号可知（每秒轮询）后补发，不把占位账号发给客户端
 - 元信息：`POST /v1/meta`；资源代理：`GET /v1/proxy/{url}`
-- 官方客户端的登录域内路由：`POST /v1/internal/{platform}/{selfId}/_api/{name}` 与 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`。前者是 `@satorijs/adapter-satori` 的 `bot.internal.*` 走法，参数按 `JsonForm` 编码（纯 JSON 时是数组，带文件时是 `multipart/form-data` 且 JSON 在 `$` 字段），带 `Satori-Pagination: true` 时回 `{data, …}`；后者是 `upload.create` 返回的 `internal:{platform}/{selfId}/_tmp/{id}` 被客户端解析后回落到的地址。这两条只服务本机登录自身的资源与动作，`_tmp` 与 `/v1/assets/{id}` 一样不带令牌，其他登录回 404。`POST /v1/internal/{name}` 仍可用，是模块自己的简写
-- 分页：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next}`。不带 `next` 与 `limit` 时返回完整结果；带 `limit` 或 `next` 时按偏移分页，`next` 为下一次要传回的偏移量。`message.list` 是双向分页，另见下表
+- 官方客户端的登录域内路由：`POST /v1/internal/{platform}/{selfId}/_api/{name}` 与 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`。前者是 `@satorijs/adapter-satori` 的 `bot.internal.*` 走法，参数按 `JsonForm` 编码（纯 JSON 时是数组，带文件时是 `multipart/form-data` 且 JSON 在 `$` 字段），带 `Satori-Pagination: true` 时回 `{data, …}`。后者是 `upload.create` 返回的 `internal:{platform}/{selfId}/_tmp/{id}` 被客户端解析后回落到的地址。这两条只服务本机登录自身的资源与动作，`_tmp` 与 `/v1/assets/{id}` 一样不带令牌，其他登录回 404。`POST /v1/internal/{name}` 仍可用，是模块自己的简写
+- 分页：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next}`。不带 `next` 与 `limit` 时返回完整结果。带 `limit` 或 `next` 时按偏移分页，`next` 为下一次要传回的偏移量。`message.list` 是双向分页，另见下表
 - 平台为 `red`，适配器为 `satori-qq`
 - 群频道的 `channel.id` 与 `guild.id` 均为群号，`channel.type=0`；私聊频道为 `private:{uin}`，`channel.type=1`
 - 消息 ID 使用 QQ NT `msgId` 字符串，历史游标使用 `message_seq`
@@ -49,7 +49,7 @@ QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调�
 
 QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传其他 `user_id` 时返回 400，`reaction.clear` 也只清除自己的那部分。
 
-`internal/get_forward` 的 `id` 有两种：转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。`native:` 需要知道会话，父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取。
+`internal/get_forward` 的 `id` 有两种：转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失。`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。`native:` 需要知道会话，父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取。
 
 `message.create` 的 `forward_mode` 可设为 `auto`、`native` 或 `fake`，`auto` 优先使用 QQ 原生合并转发。`channel.update.data.avatar` 接受本地路径、`file:`、`http(s):`、`data:` 与 `internal:`。全员禁言的自动解除计时不跨 QQ 进程重启保留。
 
@@ -145,7 +145,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 
 扩展动作返回的内核原始数据由反射导出，QQ 增删字段时跟着变而不是静默丢字段。读操作的返回形如 `{guild_id?, ok, result, <数据>}`，其中 `result` 是内核回调的原文；写操作的返回带 `result` 与写入后的值。
 
-个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧：`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑，`special_care` 缺省开启。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 不带 `mask` 时读取当前设置，除 `mask` 外也接受 `shield` 布尔简写。`buddy_category` 的写操作会先拉取一次分组成员表再返回，否则调用方会看到写入成功而列表里没有新分组。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态，`profile_relation_flag` 带回拉黑与特别关心标志。这些动作受 QQ 自身权限与账号状态限制。
+个人资料、群设置与好友类动作只接受一个目标（`user_id` 或 `guild_id`）与少量开关，默认值取「不改变现状」的一侧。`friend_top` 缺省置顶，`friend_msg_notify` 缺省开启提醒，`friend_block` 缺省拉黑，`special_care` 缺省开启。`friend_remark` 带 `remark` 时写入、`op=get` 时读取，空字符串表示清除备注。`group_msg_mask` 不带 `mask` 时读取当前设置，除 `mask` 外也接受 `shield` 布尔简写。`buddy_category` 的写操作会先拉取一次分组成员表再返回，否则调用方会看到写入成功而列表里没有新分组。这些动作都能回读：`friend_relation` 带回备注，`profile_self` 带回个性签名与当前在线状态，`profile_relation_flag` 带回拉黑与特别关心标志。这些动作受 QQ 自身权限与账号状态限制。
 
 ## 内核可用性
 
@@ -181,11 +181,13 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | `internal`，`_type=satori-qq/poke` | 戳一戳 |
 | `login-updated` | QQ 内核上线或离线 |
 
-QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，并在 `satori_qq.manual_self` 中携带实际身份；机器人 API 的发送回声会去重。登录期间的群列表同步不生成群变更事件。
+QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，并在 `satori_qq.manual_self` 中携带实际身份。机器人 API 的发送回声会去重。登录期间的群列表同步不生成群变更事件。
 
-每个事件的顶层都带 `sn`、`type`、`timestamp`、`login`，以及 `self_id` 与 `platform`（`Event` 类型里与 `login` 并列的扁平字段；只有 `login` 时客户端也能工作，但按协议类型实现的一方读的是扁平字段）。`login.get` 与 `READY` 里的 login 带 `sn`、`adapter`、`platform`、`self_id`、`hidden`、`status`、`user` 与 `features`。
+每个事件的顶层都带 `sn`、`type`、`timestamp`、`login`，以及 `self_id` 与 `platform`（`Event` 类型里与 `login` 并列的扁平字段。只有 `login` 时客户端也能工作，但按协议类型实现的一方读的是扁平字段）。
 
-表态事件用 `reaction-added` / `reaction-removed`，与 `@satorijs/core` 声明的 `Events` 一致；`@satorijs/protocol` 的 `EventName` 写的是 `reaction-deleted`，Discord、Kook 两个官方适配器用的是后者，QQ 适配器用的是前者。模块跟随核心事件表，不两头发。
+`login.get` 与 `READY` 里的 login 带 `sn`、`adapter`、`platform`、`self_id`、`hidden`、`status`、`user` 与 `features`。
+
+表态事件用 `reaction-added` / `reaction-removed`，与 `@satorijs/core` 声明的 `Events` 一致。`@satorijs/protocol` 的 `EventName` 写的是 `reaction-deleted`，Discord、Kook 两个官方适配器用的是后者，QQ 适配器用的是前者。模块跟随核心事件表，不两头发。
 
 ## 消息元素与媒体
 
@@ -196,7 +198,7 @@ QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，
 
 媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，以及本端的 `/v1/assets/{id}`。入站图片优先返回无需 Bearer 令牌的本地资源地址，头像使用 QQ 头像 CDN。
 
-`<audio src>` 先转成 QQ 自己的 SILK 再发（mp3、wav、amr 都走这条路），转码整条带重试，最多三次：`MediaCodec` 的解码器在 QQ 进程里会被系统中途回收，`queueInputBuffer` 抛一个空消息的 `CodecException`，换一个解码器重来就好。不重试时同一条语音连发几条会随机丢，`node tests/media-live-probe.js voicerepeat` 是量这件事的探针。重试按时间收口（上一次失败的耗时乘二超过 20 秒就不试），因为一条 59 秒的语音转一次，QQ 在前台时约 8 秒、在后台时约 34 秒，多试两次客户端那条 HTTP 就超时了。`<video>` 需要本地能取到视频帧做缩略图；`<file>` 既发聊天气泡，也进群文件列表。
+`<audio src>` 先转成 QQ 自己的 SILK 再发（mp3、wav、amr 都走这条路），转码整条带重试，最多三次。`MediaCodec` 的解码器在 QQ 进程里会被系统中途回收，`queueInputBuffer` 抛一个空消息的 `CodecException`，换一个解码器重来即可。不重试时同一条语音连发几条会随机丢，`node tests/media-live-probe.js voicerepeat` 是量这件事的探针。重试按时间收口：上一次失败的耗时乘二超过 20 秒就不试。实测一条 59 秒的语音转一次，QQ 在前台时约 8 秒、在后台时约 34 秒，多试两次客户端那条 HTTP 就超时了。`<video>` 需要本地能取到视频帧做缩略图。`<file>` 既发聊天气泡，也进群文件列表。
 
 `message.create` 是同步等 QQ 内核回调的：语音回调约 1 秒，文件要等上传，慢的时候会占满 20 秒的等待窗口（超时后按「无回调」放行，消息通常已经发出）。客户端超时不要低于 30 秒。
 

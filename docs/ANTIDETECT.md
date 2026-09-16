@@ -360,6 +360,33 @@ dumpsys notification → 模块的常驻通知在（channel satori-qq-status，�
 
 **所以被标记之后的正确姿势是「别再添信号」**：让它一直在线、不主动强停、不反复重登；看守那边正好也只做「先解冻（不产生新登录）」，重启有预算且连续两次没换回在线就 `giveup` 停手。这一层的边界写清楚：模块能保住**盘上**的登录态（账号标记、自动登录开关），保不住**服务端**那侧的会话判定。
 
+#### `ssoErr=-10003` 到底是什么（2026-09-16 反编译核实）
+
+`-10003` = **`com.tencent.qphone.base.BaseConstants.SSO_CODE_INVALID_D2`**，意思是「**D2 凭据被判无效**」，属服务端错误码命名空间（同表挨着 `-10001` D2 过期、`-10004` D2KEY 不存在、`-10005` D2 缺失；还有 `-10104`/`-10105` 令客户端杀进程这种只可能由服务端下发的指令）。链路是：
+
+```text
+服务端回 SSO 码 -10003
+  → MSF 的 msf.core.t.handleSsoFailCode 把它归入票据类：getAccountCenter().p(uin) 摘账号、
+     businessFailCode 改写成 2001(CODE_NO_LOGIN)、原始码塞进属性 attr_sso_error_code、向各进程广播
+  → App 侧 msf.sdk.g.e（classes5.dex）只按 businessFailCode 分支：2001 → onUserTokenExpired；
+     2012/2013/2008/2009/2011/2014/2903/3003 各有专调
+  → 我们的 token-expired 行读的就是那个属性（不是 businessFailCode —— 它在 2001 上没有信息量）
+```
+
+三条由此定下来的口径：
+
+- **客户端对 `-10003` 没有自救路径**：MSF 不重试、不换票（唯一带「重载 D2」的分支挂在 `-10005` 上）。所以「拦住 `expired` 等票据自己回来」是死路，本地拦截改不了服务端对 D2 的裁决
+- **`SafeCenterSvr.CMD_FACE2FACE_FLAG_REQ` 是体温计不是病因**：全 APK 只有一个发送点（App 启动时配置步骤 `ConfigHandler.R2()`，条件是换账号或距上次成功 >1 天），与踢线路径没有任何调用关系。同秒出现 3 条是**三个回包**（`ProtoReqManagerImpl.sendProtoReq` 一次预建 `tryCount=9` 个重试、预调度 0/160/320s 三个，`2901` 回包还会立刻补发一个）——所以 `token_expired.count` 会被重发扇出放大，别当成「三次独立事件」
+- **别把 `-10003` 与 `MsfSdkUtils.MODE_ERR_MANU`（也是 -10003）混为一谈**，也**不要拿 `-10005` 的行为类推**到它（只有 `-10005` 会先试 reload D2）
+
+#### 几个会把人带偏的读法（都踩过）
+
+- **日志行号不可信，只用类名/方法名定位**：`msf.sdk.g.e` 的调用点在本地 dex 副本里映到第 48 行而日志报 31；`MyErrorHandler.onUserTokenExpired` 在本地副本里 `debug_info_off=0`（没有行号）而日志报 139
+- **`login_state.kept` 是进程内的，QQ 重启就归零**：别把 `kept=0` 当成「守卫没生效」（21:08 那次实际写了 4 行 `kept-login-state`，但那是上一个进程）
+- **`online_since` 不能当恢复时刻用**：实测看守 21:10:22 记 `recovered`，而 `/healthz` 的 `online_since` 是 21:26:09
+- **僵尸态（`online=true` 但 `upstream_links=0`）实测存在且能持续 20 分钟**（20:30:22→20:50:50），期间一条消息都到不了。任何让 `AppRuntime.isLogin()` 保持 true 的拦截都会扩大这个盲区，这也是「不拦 `expired`」的一条硬理由
+- **看守要给的判定时间**：一次重启后不能立刻定罪。实测 21:06:39 重启、21:06:51 就判失败停手（12 秒），而账号 21:10:22 自己回来了 —— 所以 `RECOVER_CHECK`（默认 300s）是必要的
+
 ### 踢线成因 · 环境检测还是接口把会话打废
 
 - **环境检测**：设备风险被打分，服务端主动下发强制下线

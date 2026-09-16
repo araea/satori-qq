@@ -10,10 +10,9 @@ PKG=com.satori.qq
 ORG_REPO="Xposed-Modules-Repo/$PKG"
 GH=/data/data/com.termux/files/usr/bin/gh
 APK="$ROOT/build/SatoriQQ.apk"
-APK_STEALTH="$ROOT/build/SatoriQQ.stealth.apk"
-TAG="88-0.11.2"
+TAG="89-0.12.0"
 
-for artifact in "$APK" "$APK_STEALTH"; do
+for artifact in "$APK"; do
   if [ ! -f "$artifact" ]; then
     echo "missing $artifact - run ./build.sh first"
     exit 1
@@ -36,7 +35,7 @@ git add SUMMARY README.md SOURCE_URL ic_launcher.png
 if git diff --cached --quiet; then
   echo "Metadata already up to date"
 else
-  git commit -m "Update metadata for 0.11.2"
+  git commit -m "Update metadata for 0.12.0"
   git push origin HEAD
 fi
 
@@ -45,9 +44,9 @@ if [ "${1:-}" = "--metadata-only" ]; then
   exit 0
 fi
 
-"$GH" release create "$TAG" "$APK" "$APK_STEALTH" \
+"$GH" release create "$TAG" "$APK" \
   --repo "$ORG_REPO" \
-  --title "知弦 0.11.2" \
-  --notes-file "$MP/CHANGELOG-0.11.2.md"
+  --title "知弦 0.12.0" \
+  --notes-file "$MP/CHANGELOG-0.12.0.md"
 
 echo "Published to https://github.com/$ORG_REPO"

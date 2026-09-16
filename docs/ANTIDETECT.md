@@ -64,7 +64,7 @@ memfd 名字的由来：ART 自己的两份 JIT 缓存是 `/memfd:jit-cache` 与
 
 logcat 是接受的暴露：Java 侧 `L.e` 与 native 的 `Q.Maps` 用 `Q.` 前缀的标签，消息里会提到 patch 计数与 seccomp。QQ 自己进程写下的日志，自己的进程与 root 读得到，拦不掉，而排障要用它。详细数字另外落盘到只 root 可读的 `qk_env_maps_*.json`。常驻通知的渠道名与标题带「Satori」是给人看的，属必要暴露。
 
-清单分两份：`AndroidManifest.xml` 带 Xposed 元数据用于注册，`AndroidManifest.stealth.xml` 不带，启用后覆盖安装 stealth 版本。按安装包元数据里有没有 `xposed*` 键判定模块的工具，看到的是 stealth 版本。Duck Detector 的 LSPosed 卡片就是按这条查的：同一台机器上它扫出了便签模块与「雹」的 `xposedmodule` 元数据，而已覆盖安装 stealth 变体的本模块不在那张清单里。
+清单带 `xposed*` 元数据用于注册。按安装包元数据判定模块的工具能看到它：Duck Detector 的 LSPosed 卡片按 `xposed*` 键扫已安装应用，本模块因此列在那张清单里，与便签模块和「雹」并列。QQ 进程内不受影响：`AntiDetect` 的 PackageManager 钩子在本进程内摘掉 `com.satori.qq`，并剥掉所有查询结果里的 `xposed*` 元数据。
 
 真机实测（16070，0.8.9.39）：主进程 libfekit 的 GOT 逐槽核对全部指向 libmapshide 的包装（`dlsym`、`open`、`fopen`、`getenv`、`readdir`、`freopen`、`strcasestr`、`memmem` 等），主进程 65 个 slot、MSF 42 个，maps、tcp、environ 泄漏 0，`loop_ok=1`。
 

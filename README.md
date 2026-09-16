@@ -34,8 +34,6 @@
 3. 重启 QQ
 4. 打开「知弦」，在状态页确认 QQ、本机服务与客户端已连上
 
-需要隐藏模块清单标记时，先用普通 APK 完成启用与作用域设置，再覆盖安装同版本的 `SatoriQQ.stealth.apk`。stealth 版没有桌面界面，保留已保存的配置。要改设置或作用域时，覆盖装回同版本普通包。两个版本的包名、签名与数据一致。
-
 ## 连接
 
 ```yaml
@@ -105,7 +103,7 @@ plugins:
 
 ### 系统拦截关联启动时
 
-部分 ColorOS 设备会拦截知弦的配置提供程序。该程序由 QQ 在后台拉起。在**系统设置 → 应用 → 关联启动**里允许知弦，再重启 QQ。设置读不到时页面会明确提示，QQ 继续使用文件或默认配置。stealth 版同样需要放行，建议在普通版完成设置后再切换。
+部分 ColorOS 设备会拦截知弦的配置提供程序。该程序由 QQ 在后台拉起。在**系统设置 → 应用 → 关联启动**里允许知弦，再重启 QQ。设置读不到时页面会明确提示，QQ 继续使用文件或默认配置。
 
 ## 构建与测试
 
@@ -118,7 +116,7 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 ./test.sh
 ```
 
-产物为 `build/SatoriQQ.apk` 与 `build/SatoriQQ.stealth.apk`。`test.sh` 先跑 JVM 单测，再编译运行 `tests/mapshide-filter-test.c`，覆盖配置校验、只读健康探测、诊断脱敏与普通/stealth 清单契约。真机巡检脚本需要 QQ 已上线：
+产物为 `build/SatoriQQ.apk`。`test.sh` 先跑 JVM 单测，再编译运行 `tests/mapshide-filter-test.c`，覆盖配置校验、只读健康探测、诊断脱敏与清单契约。真机巡检脚本需要 QQ 已上线：
 
 ```sh
 node tests/ws-health.js             # 健康与自检
@@ -144,6 +142,6 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}' | head -c 400
 
 ## 致谢与许可
 
-过检测实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)。模块清单的 stealth 变体是为避开 [Duck Detector](https://github.com/eltavine/Duck-Detector-Refactoring) 的安装包元数据检查而加。
+过检测实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)。
 
 本项目可按 [Apache-2.0](LICENSE-APACHE) 或 [MIT](LICENSE-MIT) 许可证使用。

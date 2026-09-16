@@ -21,11 +21,11 @@
 
 ## 知弦管理通道
 
-普通 APK 声明 `ui.MainActivity`，stealth APK 不声明 Activity，两者都声明 `control.ControlProvider`。Provider 只允许模块自身 UID 与当前安装的 `com.tencent.mobileqq` UID 调用，其余调用方（含 shell）抛 `SecurityException`。它只支持读取配置与发布运行快照，不接受文件路径、命令或 HTTP 写设置。
+应用声明 `ui.MainActivity` 与 `control.ControlProvider`。Provider 只允许模块自身 UID 与当前安装的 `com.tencent.mobileqq` UID 调用，其余调用方（含 shell）抛 `SecurityException`。它只支持读取配置与发布运行快照，不接受文件路径、命令或 HTTP 写设置。
 
 `Main` 尽早安装 QQ hooks。`SatoriHub.start()` 在独立工作线程等 Application 基础 Context attach，至多 10 秒，Provider 短暂不可用时额外重试至多 1.2 秒。随后从 Provider 读经完整校验的端口、令牌与四个运行偏好，读到的值应用后才绑定 HTTP 端口，其余高级配置不被覆盖。Provider 不可用时保留原文件或默认行为。`/healthz.config_revision` 是此进程读到的配置修订号，应用用它区分已保存与已生效。
 
-运行快照与实际端口和配置一起写进 `noBackupFilesDir/zhixian-control.json`，用 AtomicFile 原子更新。这里不用 SharedPreferences，它可能被模块框架按变体重定向。普通版与 stealth 版因此共用同一份私有配置。状态页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口，避免打断正在工作的客户端会话。
+运行快照与实际端口和配置一起写进 `noBackupFilesDir/zhixian-control.json`，用 AtomicFile 原子更新。这里不用 SharedPreferences，它可能被模块框架重定向。状态页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口，避免打断正在工作的客户端会话。
 
 ## HTTP 路由
 
@@ -81,13 +81,17 @@
 
 Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与环境上报。Native 层只修补检测库的 GOT，并过滤文件、属性、命令、符号、目录、进程映射与风险上报。QSec 的 `getSign` 保持原样，`getFeKitAttach` 只记计数。检测面、逐项对应与挡不住的部分见 [`ANTIDETECT.md`](ANTIDETECT.md)。
 
-模块提供两份清单：`AndroidManifest.xml` 含 Xposed 元数据，用于首次注册与设置作用域；`AndroidManifest.stealth.xml` 不含 `xposed*` 元数据，用于启用后的覆盖安装。`build.sh` 同时生成两份 APK，并检查两份清单的包名、版本与元数据数量。
+`AndroidManifest.xml` 含 Xposed 元数据，用于注册与作用域；`build.sh` 生成一份 APK，并检查元数据数量。
 
 ## 常驻与诊断
 
 在线时模块用 QQ 已声明的 `QQDataSyncService` 启动 `dataSync` 前台服务。强停或划掉 QQ 会结束服务，不自动拉起。写操作期间自动持有 CPU 与 Wi-Fi 锁，有客户端连接时可长期持有 Wi-Fi 锁。
 
 状态通知的点击目标是宿主包的 launcher activity，也就是 QQ 自己。`PendingIntent` 用 `getLaunchIntentForPackage` 解析一次后缓存，返回的 Intent 带 `FLAG_ACTIVITY_NEW_TASK`，QQ 在后台时回到原任务而不是新建。
+
+ColorOS 通知里的应用图标是**发通知那个应用**的 launcher 图标，不是通知自己带的小图标。ColorOS 的 `OplusNotificationFixHelper.fixSmallIcon` 对第三方通知做三件事：把 `Notification` 的小图标挪到 `oplus_small_icon` 附加项、写入 `oplus_smallicon_use_app_icon=true`、把 `getApplicationInfoAsUser(pkg).icon` 当成新的小图标；只有系统应用、平台签名、营销通知（`opPkg` 为 `android`）与 OPLUS 自家包名跳过。SystemUI 侧 `OplusNotificationSmallIconUtil.useAppIconForSmallIcon` 只读那个布尔项，默认 false。
+
+模块在 QQ 进程里发通知，`pkg` 与 `opPkg` 都是 `com.tencent.mobileqq`，所以那条常驻通知的图标是 QQ 的，模块自己的图标留在 `oplus_small_icon`（状态栏与通知头都用替换后的那个）。**在 QQ 进程内改不掉**：`android.appInfo` 附加项的字段在通知构造时写入，但 system_server 的 `NotificationManagerService.fixNotification` 会用 `getApplicationInfoAsUser` 重新覆写一遍，之后才调 ColorOS 的替换逻辑；`opPkg` 与包名都是 uid 校验过的，伪造 `android` 会被 `resolveNotificationUid` 拒绝。要让通知显示模块自己的图标，只能由模块应用自己的进程（`com.satori.qq`）发这条通知。
 
 `GET /healthz` 返回登录、监听、保活、唤醒锁、环境上报与 Native 隐藏自检状态。Native 自检结果写进 QQ 的应用私有目录 `/data/data/com.tencent.mobileqq/files/`（0.8.9.39 之前写在外部 `Android/data`，会留下可被枚举的残留），主进程可同时读取主进程与 MSF 进程的状态。
 
@@ -128,6 +132,6 @@ ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试
 
 `versionName` 走语义化版本 `主.次.补丁`，从 0.9.0 开始。主版本对应 Satori 方法表或 `/v1/internal` 动作的破坏性变更。次版本对应新增方法、动作、事件，以及对 QQ 的行为适配或反检测策略这类影响兼容性的改动。补丁版本对应修 bug、改文案、改默认值。需要区分同一天发的多次构建时，第 4 段临时当构建号用（`0.9.1.2`），下一次发版并回三段。
 
-`versionCode` 独立递增。Android 判升级、市场判更新、Xposed 管理器判「有新版本」用的都是它，`versionName` 只负责给人看。版本号要同步改三处：`AndroidManifest.xml`、`AndroidManifest.stealth.xml`、`SatoriHub.APP_VERSION`，`tests/ManifestStealthTest` 会校验三者一致。发布走 `marketplace/publish.sh`，tag 为 `{versionCode}-{versionName}`。
+`versionCode` 独立递增。Android 判升级、市场判更新、Xposed 管理器判「有新版本」用的都是它，`versionName` 只负责给人看。版本号要同步改两处：`AndroidManifest.xml` 与 `SatoriHub.APP_VERSION`，`tests/ManifestTest` 会校验两者一致。发布走 `marketplace/publish.sh`，tag 为 `{versionCode}-{versionName}`。
 
 0.9.0 之前的三段固定成 `0.8.9`、只递增第 4 段（`0.8.9.1` 到 `0.8.9.46`），文档里那些 `0.8.9.x 起` 的说法指的是旧编号。两套编号的对应关系见 [`marketplace/`](../marketplace/) 下的变更记录。

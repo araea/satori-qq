@@ -65,6 +65,13 @@ RECOVER_CHECK=${QQ_REVIVE_RECOVER_CHECK:-300}
 #    200 是前台服务/PERCEPTIBLE 档，被冻时才抬到 1001，别拿 200 当判据。
 THAW_WAIT=${QQ_REVIVE_THAW_WAIT:-25}
 THAW_LIMIT=${QQ_REVIVE_THAW_LIMIT:-3}
+# 冻结不一定是「一直不回」：ColorOS 的冻结是振荡的，:MSF 每约 5 分钟被 startmsf 唤醒一次，
+# 唤醒窗口里 /healthz 正常返回。60 秒轮询的看守因此总能撞上健康窗口，判不出「冻着」。
+# 所以除了「连续 OFFLINE_LIMIT 轮不通」，再加一条：短窗口内读到过失败就按冻结处理。
+THAW_FAILS=${QQ_REVIVE_THAW_FAILS:-2}
+# 解冻计数什么时候清零：不能一读到健康就清 —— 冻住是振荡的，那样会在「解冻没救回来」的
+# 情况下每几轮抢一次前台。要求连续这么多轮都健康，才认为冻结真的解除了。
+THAW_CLEAR_OKS=${QQ_REVIVE_THAW_CLEAR_OKS:-5}
 # 踢线之后先等一会儿再动手：给模块把「干净下线」发出去的时间，也避开踢线后立刻重登。
 AFTER_KICK_WAIT=${QQ_REVIVE_AFTER_KICK_WAIT:-120}
 # 重启前先请模块补一次干净下线（走 AppRuntime.logout 那条，服务端才收得到 offline）。
@@ -271,6 +278,8 @@ restart_qq() {
 restarts_no_online=$(flag_get failures)
 giveup=$(flag_get giveup)
 thaws=0
+hz_fails=0
+hz_oks=0
 counted_restart=$(flag_get counted)
 [ "$counted_restart" = "0" ] && counted_restart=""
 
@@ -283,6 +292,8 @@ if [ "${1:-}" = "--check" ]; then
     echo "restarts_1h: $(restart_history | grep -c .) (上次 $(last_restart || echo -), gap ${MIN_RESTART_GAP}s, 上限 ${MAX_RESTARTS_PER_HOUR}/h)"
     echo "giveup: ${giveup} (连续 ${restarts_no_online} 次重启没换回在线，上限 ${FAIL_LIMIT})"
     echo "thaws: ${thaws} (解冻计数，上限 ${THAW_LIMIT}，超过才走重启预算)"
+    echo "hz_fails: ${hz_fails} (本窗口内 /healthz 失败次数；连续 ${THAW_FAILS} 次就按冻结处理)"
+    echo "hz_oks: ${hz_oks} (当前连续健康轮数；到 ${THAW_CLEAR_OKS} 才算冻结解除并清零解冻计数)"
     echo "recover_check: ${RECOVER_CHECK}s（重启后给这么久才判失败；已计过的那次 ${counted_restart:-无}）"
     if [ -n "$hz" ]; then
         echo "healthz: online=$(field "$hz" online) blocked_kicks=$(field "$hz" blocked_kicks) kick_hook=$(field "$hz" kick_hook) self_id=$(field "$hz" self_id)"
@@ -315,8 +326,10 @@ while true; do
         offline=$((offline + 1))
         stale=0
         logouts=0
-        log "offline: /healthz 无响应 ${offline}/${OFFLINE_LIMIT}"
-        if [ "$offline" -ge "$OFFLINE_LIMIT" ]; then
+        hz_fails=$((hz_fails + 1))
+        hz_oks=0
+        log "offline: /healthz 无响应 ${offline}/${OFFLINE_LIMIT} (窗口内累计 ${hz_fails}/${THAW_FAILS})"
+        if [ "$offline" -ge "$OFFLINE_LIMIT" ] || [ "$hz_fails" -ge "$THAW_FAILS" ]; then
             if pgrep -f "com.tencent.mobileqq" >/dev/null 2>&1; then
                 # 进程在、端口不听或听了不回：先当成被冻住，打到前台试试。
                 # 这样既不消耗重启预算，也不会多一次重新登录。
@@ -342,8 +355,10 @@ while true; do
         continue
     fi
     offline=0
-    if [ "$thaws" -ne 0 ]; then
-        log "thaw: 端口恢复，重置解冻计数（之前连续 ${thaws} 次）"
+    hz_fails=0
+    hz_oks=$((hz_oks + 1))
+    if [ "$thaws" -ne 0 ] && [ "$hz_oks" -ge "$THAW_CLEAR_OKS" ]; then
+        log "thaw: 连续 ${hz_oks} 轮健康，重置解冻计数（之前连续 ${thaws} 次）"
         thaws=0
     fi
 

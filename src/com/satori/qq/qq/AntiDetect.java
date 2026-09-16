@@ -2062,6 +2062,9 @@ public final class AntiDetect {
                         if (p == null || p.args == null || p.args.length < 2) return;
                         Object from = p.args[1];
                         Object code = attribute(from, "attr_sso_error_code");
+                        // 归因标记：让同一个线程内后续的 updateSimpleAccount*(uin,false) 知道
+                        // 自己是这条支调的。0.13.3 漏了这一句，实测 by= 一直是 -（靠 frames= 兜住）。
+                        markCaller("token-expired");
                         int c = code instanceof Number ? ((Number) code).intValue() : 0;
                         boolean kicked = (c == -10135 || c == 10136);
                         StringBuilder sb = new StringBuilder("ssoErr=").append(c)

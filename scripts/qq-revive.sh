@@ -53,6 +53,11 @@ MAX_RESTARTS_PER_HOUR=${QQ_REVIVE_MAX_RESTARTS_PER_HOUR:-3}
 # 连续几次重启都没换来在线就停手。默认 2：一次踢线重启就能在线回来，第二次还不行，
 # 就不是「自动登录能救」的情形了。
 FAIL_LIMIT=${QQ_REVIVE_FAIL_LIMIT:-2}
+# 解冻：进程还在但 /healthz 无响应时，多半是被 app freezer 冻住（/proc/<pid>/wchan 是
+# do_freezer_trap、oom_score_adj=200）。打到前台就能解冻，**不需要 force-stop** ——
+# 强停会多一次重新登录，也挡不住下一次冻结。
+THAW_WAIT=${QQ_REVIVE_THAW_WAIT:-25}
+THAW_LIMIT=${QQ_REVIVE_THAW_LIMIT:-3}
 # 踢线之后先等一会儿再动手：给模块把「干净下线」发出去的时间，也避开踢线后立刻重登。
 AFTER_KICK_WAIT=${QQ_REVIVE_AFTER_KICK_WAIT:-120}
 # 重启前先请模块补一次干净下线（走 AppRuntime.logout 那条，服务端才收得到 offline）。
@@ -210,6 +215,13 @@ can_restart() {
     return 0
 }
 
+# 把被冻住的 QQ 打到前台。不消耗重启预算，也不会多一次登录。
+thaw_qq() {
+    log "thaw: $PKG 进程还在但 /healthz 无响应，打到前台解冻（第 ${thaws}/${THAW_LIMIT} 次，不重启）"
+    "$MONKEY" -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    sleep "$THAW_WAIT"
+}
+
 restart_qq() {
     local why=$1 blocked before after rc
     if [ "$giveup" -ne 0 ]; then
@@ -260,6 +272,7 @@ restart_qq() {
 # 看守被 service.d 重启一次也不会把「已经放弃自动重启」这条忘掉。
 restarts_no_online=$(flag_get failures)
 giveup=$(flag_get giveup)
+thaws=0
 
 # 只看一轮判据、不动 QQ，用来确认探针本身工作正常。
 if [ "${1:-}" = "--check" ]; then
@@ -269,6 +282,7 @@ if [ "${1:-}" = "--check" ]; then
     echo "kick_log: $(kick_log_lines) 行 ($KICK_LOG)"
     echo "restarts_1h: $(restart_history | grep -c .) (上次 $(last_restart || echo -), gap ${MIN_RESTART_GAP}s, 上限 ${MAX_RESTARTS_PER_HOUR}/h)"
     echo "giveup: ${giveup} (连续 ${restarts_no_online} 次重启没换回在线，上限 ${FAIL_LIMIT})"
+    echo "thaws: ${thaws} (解冻计数，上限 ${THAW_LIMIT}，超过才走重启预算)"
     if [ -n "$hz" ]; then
         echo "healthz: online=$(field "$hz" online) blocked_kicks=$(field "$hz" blocked_kicks) kick_hook=$(field "$hz" kick_hook) self_id=$(field "$hz" self_id)"
     else
@@ -280,7 +294,7 @@ fi
 
 echo $$ > "$PIDFILE" 2>/dev/null
 chmod 0600 "$PIDFILE" 2>/dev/null
-log "watchdog start pid=$$ pkg=$PKG interval=${INTERVAL}s stale_limit=$STALE_LIMIT grace=${GRACE}s restart<=${MAX_RESTARTS_PER_HOUR}/h gap=${MIN_RESTART_GAP}s fail_limit=${FAIL_LIMIT}"
+log "watchdog start pid=$$ pkg=$PKG interval=${INTERVAL}s stale_limit=$STALE_LIMIT grace=${GRACE}s restart<=${MAX_RESTARTS_PER_HOUR}/h gap=${MIN_RESTART_GAP}s fail_limit=${FAIL_LIMIT} thaw_limit=${THAW_LIMIT}"
 
 stale=0
 offline=0
@@ -303,8 +317,20 @@ while true; do
         log "offline: /healthz 无响应 ${offline}/${OFFLINE_LIMIT}"
         if [ "$offline" -ge "$OFFLINE_LIMIT" ]; then
             if pgrep -f "com.tencent.mobileqq" >/dev/null 2>&1; then
-                restart_qq "模块端口不通 ${offline} 轮，QQ 进程还在"
+                # 进程在、端口不听或听了不回：先当成被冻住，打到前台试试。
+                # 这样既不消耗重启预算，也不会多一次重新登录。
+                if [ "$thaws" -lt "$THAW_LIMIT" ]; then
+                    thaws=$((thaws + 1))
+                    thaw_qq
+                elif device_online; then
+                    log "thaw: 连续 ${thaws} 次解冻都没恢复，改走重启预算"
+                    thaws=0
+                    restart_qq "解冻 ${THAW_LIMIT} 次无效，QQ 进程还在"
+                else
+                    log "skip: 解冻 ${thaws} 次无效但设备没网，先不动 QQ"
+                fi
             elif device_online; then
+                thaws=0
                 restart_qq "模块端口不通 ${offline} 轮，QQ 进程不在"
             else
                 log "skip: 端口不通 ${offline} 轮，但设备没网，先不动 QQ"
@@ -315,6 +341,10 @@ while true; do
         continue
     fi
     offline=0
+    if [ "$thaws" -ne 0 ]; then
+        log "thaw: 端口恢复，重置解冻计数（之前连续 ${thaws} 次）"
+        thaws=0
+    fi
 
     online=$(field "$hz" online)
     kicks=$(field "$hz" blocked_kicks)
@@ -332,6 +362,9 @@ while true; do
     if [ -n "$last_kicklog" ] && [ "$kicklog" -gt "$last_kicklog" ]; then
         log "kick: 踢线记录 ${last_kicklog}->${kicklog} 行 ($(kick_log_tail))"
         last_kicklog=$kicklog
+        # 把进程内的那个计数也一起对齐：同一次踢线两处都会涨（qk_kick.log 增行 + blocked_kicks +1），
+        # 不对齐的话下一轮会把它当第二次踢线再报一次、并把 AFTER_KICK_WAIT 重新计时。
+        last_kicks=$kicks
         stale=0
         logouts=0
         reset_stop_state

@@ -89,7 +89,7 @@ def generate():
 def path_data(d):
     """Translate SVG path data into Canvas calls covering the commands the artwork uses."""
     lines = []
-    methods = {'M': ('moveTo', 2), 'L': ('lineTo', 2), 'Q': ('quadTo', 4)}
+    methods = {'M': ('moveTo', 2), 'L': ('lineTo', 2), 'Q': ('quadTo', 4), 'C': ('cubicTo', 6)}
     x = y = 0.0
     for command, values in command_stream(d):
         if command == 'Z':
@@ -113,7 +113,7 @@ def path_data(d):
 def command_stream(d):
     """Walk the path data, yielding (command, arguments). Implicit repeats after M are L."""
     tokens = re.findall(r'[A-Za-z]|-?\d+(?:\.\d+)?', d)
-    counts = {'M': 2, 'L': 2, 'H': 1, 'V': 1, 'Q': 4}
+    counts = {'M': 2, 'L': 2, 'H': 1, 'V': 1, 'Q': 4, 'C': 6}
     index = 0
     command = None
     while index < len(tokens):

@@ -1,17 +1,35 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="18 18 72 72" role="img" aria-labelledby="title desc">
   <title id="title">知弦</title>
-  <desc id="desc">浅鸢尾紫底上一条紫墨色的弦：两端落在同一水平线上，中间随振动起伏。</desc>
+  <desc id="desc">瓷白与鸢尾紫的底色上，一条紫色丝带回转成 S；弧面由浅入深，转折处留有细光。</desc>
   <defs>
     <clipPath id="mask"><rect x="18" y="18" width="72" height="72" rx="22"/></clipPath>
-    <linearGradient id="field" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#EFE8FF"/>
-      <stop offset="1" stop-color="#DCCFF3"/>
+    <linearGradient id="field" x1="24" y1="20" x2="81" y2="91" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FAF8FF"/>
+      <stop offset="0.5" stop-color="#EEE8FA"/>
+      <stop offset="1" stop-color="#D8C9EE"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="39" y1="31" x2="68" y2="79" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9673C9"/>
+      <stop offset="0.42" stop-color="#66439B"/>
+      <stop offset="0.7" stop-color="#47276F"/>
+      <stop offset="1" stop-color="#7352A4"/>
+    </linearGradient>
+    <linearGradient id="turn" x1="44" y1="44" x2="58" y2="62" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#B398DD"/>
+      <stop offset="0.48" stop-color="#8965BE"/>
+      <stop offset="1" stop-color="#5D388E"/>
     </linearGradient>
   </defs>
   <g clip-path="url(#mask)">
-    <g id="background"><path fill="url(#field)" d="M0 0H108V108H0Z"/></g>
+    <g id="background">
+      <path fill="url(#field)" d="M0 0H108V108H0Z"/>
+    </g>
     <g id="foreground">
-      <path fill="none" stroke="#342B48" stroke-width="11.5" stroke-linecap="round" stroke-linejoin="round" d="M28 56Q41 28 54 56Q67 84 80 56"/>
+      <path fill="#422364" fill-opacity="0.07" d="M73 37C64 30 50 30 40 36C30 42 31 54 40 60C46 64 56 66 61 68C67 71 61 75 54 75C47 75 40 72 35 68Q33.5 66.8 32.5 68.5L29 74Q28.5 75 29.5 76C39 83 50 87 63 82C77 78 81 65 70 58C64 54 54 53 47 50C40 47 42 41 48 39C55 37 61 40 66 44Q68 45 69 43L73 37Z"/>
+      <path fill="url(#ribbon)" d="M73 35C64 28 50 28 40 34C30 40 31 52 40 58C46 62 56 64 61 66C67 69 61 73 54 73C47 73 40 70 35 66Q33.5 64.8 32.5 66.5L29 72Q28.5 73 29.5 74C39 81 50 85 63 80C77 76 81 63 70 56C64 52 54 51 47 48C40 45 42 39 48 37C55 35 61 38 66 42Q68 43 69 41L73 35Z"/>
+      <path fill="url(#turn)" d="M40 34C32 40 36 47 47 51L62 56C72 60 75 66 70 73C76 66 77 60 70 56C64 52 54 51 47 48C40 45 42 39 48 37C55 35 61 38 66 42Q68 43 69 41L73 35C64 28 50 28 40 34Z"/>
+      <path fill="#FFFFFF" fill-opacity="0.3" d="M40 34C49 28 63 29 73 35L72.6 35.7C63 30 50 29 40 34Z"/>
+      <path fill="#FFFFFF" fill-opacity="0.2" d="M36 44C38 48 43 50 48 51.7L62 56.4C68 58.6 72 62 72.3 66C72.5 61.5 68.6 57.7 62.3 55.4L48.3 50.8C43 49.1 39 47 36 44Z"/>
     </g>
   </g>
 </svg>

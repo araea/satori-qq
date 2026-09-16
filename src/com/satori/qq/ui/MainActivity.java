@@ -152,7 +152,9 @@ public final class MainActivity extends Activity {
         Button open = ui.button("打开 QQ", true); open.setOnClickListener(v -> openQQ()); content.addView(open, params(20));
         refreshButton = ui.button("刷新状态", false); refreshButton.setOnClickListener(v -> refresh()); content.addView(refreshButton, params(8));
         updated = ui.text("", 12, ui.muted, false); updated.setGravity(Gravity.CENTER); content.addView(updated, params(12));
-        content.addView(ui.text("管理页关闭后，服务仍随 QQ 运行。", 12, ui.muted, false), params(20));
+        TextView serviceHint = ui.text("管理页关闭后，服务仍随 QQ 运行。", 12, ui.muted, false);
+        serviceHint.setGravity(Gravity.CENTER);
+        content.addView(serviceHint, params(20));
         return content;
     }
 

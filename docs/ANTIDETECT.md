@@ -98,7 +98,21 @@ MSF 那条要拦处理器入口，不拦 `popupNotification`。`popupNotificatio
 | `token_expired` | `MyErrorHandler.onUserTokenExpired` 被调用了几次、最近一次带的 `ssoErr=` 与 `branch=`。`ssoErr` 属于 {-10135, 10136} 走 `kicked` 支（账号标记写 `_t`，出口被拦），其余走 `expired` 支（写 `_f`，出口放行 → 跳登录页）。分不清这两支就分不清「被踢之后是谁把人送回登录页的」 |
 | `allowed_logout` | 被放行的登出（reason 不在要拦的那几种里）。只有 `expired` 那一支会把账号摘掉再跳登录页，以前这条完全静默 |
 
-这两项各落一行到 `qk_guard.log`（动作名 `token-expired` / `allowed-logout`），**不写 `qk_kick.log`**——那份是看守「立刻重启 QQ」的判据，观测项混进去会变成重启风暴。`login_state` 的 `kept-login-state` 行 0.13.2 起多带一个 `by=<调用点>`（第一帧外部调用者），因为 `updateSimpleAccount*(uin,false)` 有两个已知调用点（`onUserTokenExpired` 与 `UidServiceImpl.logoutWhenReqUidFail`），只看参数分不出来。
+这两项各落一行到 `qk_guard.log`（动作名 `token-expired` / `allowed-logout`），**不写 `qk_kick.log`**——那份是看守「立刻重启 QQ」的判据，观测项混进去会变成重启风暴。`login_state` 的 `kept-login-state` 行 0.13.2 起带上 `by=` 与 `frames=`，用来回答是哪个调用点摘的账号（`updateSimpleAccount*(uin,false)` 不止一个调用点）。
+
+**`by=` 的来历要说清（0.13.2 写错过，0.13.3 修）**：第一版只做栈扫描，过滤表里漏了框架自己那两类帧——单段类名（Vector dex 里的混淆类，例如 `g.a`）与 `org.matrix.vector.*`。Xposed 旧式钩子里回调上方先经过框架的分派帧，它比 QQ 的调用点更靠近回调，于是每一次命中都返回同一个与调用点无关的混淆帧：看起来像答案，其实是常量。0.13.3 起改为**入口打标记**：`onUserTokenExpired` 的钩子在 before 里写 `token-expired`、`logoutWhenReqUidFail` 的钩子写 `uid-fail`（两条路径都是同线程内联调 `updateSimpleAccount*`），after 清除；`by=` 读这个标记，取不到写 `by=-`；`frames=` 是栈兜底（跳过单段类名与 `org.matrix.vector.*`，最多记三帧），留给还没点名的第三方调用点。
+
+读法（0.13.3 起）：
+
+| 台账里看到 | 结论 |
+| --- | --- |
+| `token-expired` 行 | 一定是 `onUserTokenExpired` 走过（`uid-fail` 那条路绝不会产生这行） |
+| `by=token-expired` + `kept-login-state` | `onUserTokenExpired` 的 `expired` 支在摘账号（`kicked` 支传 `true`，守卫第一句就 return，不会有这行） |
+| `by=uid-fail` 或 `blocked-logout uid.logoutWhenReqUidFail` | `UidServiceImpl.logoutWhenReqUidFail` 那条路 |
+| `by=-` 但 `frames=` 有真类名 | 第三个没点名的调用点，按 `frames=` 追 |
+| `(kick marker <N>s ago)` | 这一行发生在某次踢线的善后期里（内存里那份被重启清掉时走这个口径） |
+
+`/healthz` 的 `token_expired.hooks` / `allowed_logout.hooks` 用来区分「没发生过」与「钩子没挂上」：`count=0` 有两种意思，`hooks` 才有唯一解释。
 
 `last_kick` 带的字段：`entry=` 是被拦下的处理器入口名（`onKickedAndClearToken` 是带清票据的那一支，`onKicked` 是另一支），`args=` 是 QQ 传进来的那几个布尔（`onKickedInternal` 的 `isTokenExpired` 与 `isSameDevice`），`svcCmd=` 是这个响应的服务命令、`ssoErr=` 是它带的 SSO 错误码。加上服务端那个包里的 `kickType=`（`RequestMSFForceOffline.bKickType`，名字按 `KickedType` 的声明顺序取）与 `sigKick=`（1 表示带 `vecSigKickData` 的安全强踢，reason 取 `secKicked`；0 是普通强踢），另有 `seqno=` / `sigLen=` / `sameDevice=`。内核那条路（`nt-kick`）参数是 `KickedInfo`，字段比 MSF 包多，单独记 `appId=` / `instanceId=` / `securityKickedType=`。只记 reason 与服务端文案的话，现场分不出「在别处登录被顶」和「风控打击」。
 

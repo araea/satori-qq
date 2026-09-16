@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.13.2";
+    public static final String APP_VERSION = "0.13.3";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -372,10 +372,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         // 其余走 expired 支（写 _f、出口放行 → 跳登录页）。分不清这两支就分不清
                         // 「被踢之后是谁把人送回登录页的」。
                         .put("token_expired", new JSONObject()
+                                .put("hooks", AntiDetect.tokenExpiredHooks())
                                 .put("count", AntiDetect.tokenExpiredEvents())
                                 .put("last", AntiDetect.lastTokenExpired()))
                         // 被放行的登出（reason 不在要拦的那几种里）；expired 那一支会跳登录页。
                         .put("allowed_logout", new JSONObject()
+                                .put("hooks", AntiDetect.allowedLogoutHooks())
                                 .put("count", AntiDetect.allowedLogoutCount())
                                 .put("last", AntiDetect.lastAllowedLogout()))
                         // 踢线窗口里被拦掉的登出。落盘在 qk_guard.log——故意不并进

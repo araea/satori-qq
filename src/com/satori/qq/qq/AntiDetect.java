@@ -178,11 +178,39 @@ public final class AntiDetect {
     /** 观测项：被放行的登出（reason 不在要拦的那几种里）。只有 {@code expired} 会把人带回登录页。 */
     private static final AtomicLong ALLOWED_LOGOUTS = new AtomicLong();
     private static volatile String lastAllowedLogout = "";
+    /**
+     * 观测钩子挂上了几个。`count=0` 有两种意思（没发生过 / 钩子没挂上），
+     * 分开记一个数才能在不出错的情况下判断「这套观测到底生效了没有」。
+     */
+    private static volatile int tokenExpiredHookCount;
+    private static volatile int allowedLogoutHookCount;
 
     public static long tokenExpiredEvents() { return TOKEN_EXPIRED_EVENTS.get(); }
     public static String lastTokenExpired() { return lastTokenExpired; }
     public static long allowedLogoutCount() { return ALLOWED_LOGOUTS.get(); }
     public static String lastAllowedLogout() { return lastAllowedLogout; }
+    public static int tokenExpiredHooks() { return tokenExpiredHookCount; }
+    public static int allowedLogoutHooks() { return allowedLogoutHookCount; }
+
+    /**
+     * 「现在这个线程正走在哪个入口钩里」。
+     *
+     * <p>用来给 {@code updateSimpleAccount*(uin,false)} 的命中归因。栈扫描不靠得住：
+     * Xposed 的旧式钩子里，回调上方先经过框架自己的分派帧（Vector dex 里是单段混淆类，
+     * 例如 {@code g.a}），它比 QQ 的调用点更靠近回调，于是扫描永远取到同一个无关帧。
+     * 两条候选路径（{@code onUserTokenExpired} 与 {@code UidServiceImpl.logoutWhenReqUidFail}）
+     * 都是同线程内联调用 {@code updateSimpleAccount*}，所以按线程打标记足够。
+     */
+    private static final ThreadLocal<String> CALLER_MARK = new ThreadLocal<>();
+
+    /** {@link #CALLER_MARK} 的日志值，空则 {@code -}。 */
+    public static String callerMark() {
+        String v = CALLER_MARK.get();
+        return v == null || v.isEmpty() ? "-" : v;
+    }
+
+    private static void markCaller(String what) { CALLER_MARK.set(what); }
+    private static void clearCaller() { CALLER_MARK.remove(); }
 
     public static int blockedKicks() { return BLOCKED_KICKS.get(); }
     public static long lastKickMs() { return lastKickMs; }
@@ -1656,6 +1684,7 @@ public final class AntiDetect {
             Class<?> cls = ref.clsOrNull("mqq.app.MainService$MyErrorHandler");
             if (cls == null) return;
             int hooked = 0;
+            int exits = 0; // 出口钩（popupNotification/Ex）单独数，给 allowed_logout.hooks
             // (1) 处理器入口。名字是固定的，参数形状都是 (ToServiceMsg, FromServiceMsg, ...)。
             //     onKicked / onKickedAndClearToken / onKickedInternal 是强制下线那三个；
             //     onCloneError 会把已登录列表里每个号都标成下线，一起拦。
@@ -1725,7 +1754,11 @@ public final class AntiDetect {
                             // 放行的那些里，expired 是唯一会把人带回登录页的（QQ 那一支会
                             // 摘账号 → logout(expired, true) → KICK_TO_LOGIN）。以前这里完全
                             // 静默，「被踢之后是谁把人送回登录页的」在台账里看不见。
-                            if ("expired".equals(reason) || "gray".equals(reason)) {
+                            //
+                            // 只在 8 参那个重载上计数：6 参那一个（19 条指令）无条件转发给它，
+                            // 两个都记的话一次 gray 事件会写两行、计数翻倍。
+                            if (p.args.length == 8
+                                    && ("expired".equals(reason) || "gray".equals(reason))) {
                                 noteAllowedLogout(reason, p.args);
                             }
                             return;
@@ -1742,13 +1775,15 @@ public final class AntiDetect {
                     }
                 });
                 hooked++;
+                exits++;
                 HARDENING_HOOKS.incrementAndGet();
             }
+            allowedLogoutHookCount = exits;
             if (hooked > 0) {
                 serverKickHookCount += hooked;
                 L.i("AntiDetect: blocked MSF kick handler (" + hooked + ")");
             } else {
-                L.w("AntiDetect: MSF kick handler not found");
+                L.e("AntiDetect: MSF kick handler not found", null);
             }
         } catch (Throwable t) {
             L.e("AntiDetect.msfKick", t);
@@ -1834,9 +1869,14 @@ public final class AntiDetect {
                     m.setAccessible(true);
                     XposedBridge.hookMethod(m, new XC_MethodHook() {
                         @Override protected void beforeHookedMethod(MethodHookParam p) {
+                            markCaller("uid-fail");
                             if (!inLogoutGuardWindow(System.currentTimeMillis())) return;
                             noteLogoutGuard("uid.logoutWhenReqUidFail");
                             p.setResult(null);
+                        }
+
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            clearCaller();
                         }
                     });
                     n++;
@@ -1949,7 +1989,7 @@ public final class AntiDetect {
                         LOGIN_STATE_KEPT.incrementAndGet();
                         noteGuardLine("kept-login-state",
                                 label + "(" + Ref.asStr(p.args[0]) + ", false->true)"
-                                        + " by=" + callerTag());
+                                        + " by=" + callerTag() + " frames=" + callerFrames());
                     }
                 });
                 n++;
@@ -2045,38 +2085,69 @@ public final class AntiDetect {
                         // 这条只是观测，混进去会让看守多重启。
                         noteGuardLine("token-expired", lastTokenExpired);
                     }
+
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        clearCaller();
+                    }
                 });
                 n++;
                 HARDENING_HOOKS.incrementAndGet();
             }
-            if (n > 0) L.i("AntiDetect: observe onUserTokenExpired (" + n + ")");
-            else L.w("AntiDetect: onUserTokenExpired not found");
+            tokenExpiredHookCount = n;
+            if (n > 0) L.e("AntiDetect: observe onUserTokenExpired (" + n + ")", null);
+            else L.e("AntiDetect: onUserTokenExpired not found", null);
         } catch (Throwable t) {
             L.e("AntiDetect.userTokenExpired", t);
         }
     }
 
     /**
-     * 调用点标记：跳过模块自己与 Xposed 的帧，取第一帧外部调用者，形如
+     * 调用点标记：先看入口钩留下的线程标记，没有才去栈上找，形如
      * {@code com.tencent.mobileqq.x.y.Method:123}。
      *
-     * <p>用来回答「账号到底是谁摘掉的」——{@code updateSimpleAccount*(uin,false)} 有两个已知
+     * <p>用来回答「账号到底是谁摘掉的」——{@code updateSimpleAccount*(uin,false)} 有不止一个
      * 调用点（{@code onUserTokenExpired} 与 {@code UidServiceImpl.logoutWhenReqUidFail}），
      * 只看参数分不出来。
+     *
+     * <p><b>0.13.2 的写法是错的，0.13.3 修</b>：那时只做栈扫描，过滤表里没有框架自己那两个
+     * 情况——单段类名（Vector dex 里的混淆类，如 {@code g.a}）与 {@code org.matrix.vector.*}。
+     * 而框架分派帧（{@code XposedBridge$LegacyApiSupport.handleBefore} 之下那一层）比 QQ 的
+     * 调用点更靠近回调，于是每一次命中都返回同一个与调用点无关的混淆帧——比不记更坏，
+     * 因为它长得像答案。现在以入口标记为准（两条候选路径都是同线程内联调用），栈扫描只作为
+     * 「还有第三方调用点」的兜底，且把前三个候选帧一起记出来。
      */
     private static String callerTag() {
+        String marked = CALLER_MARK.get();
+        return marked == null || marked.isEmpty() ? "-" : marked;
+    }
+
+    /** 栈兜底：跳过模块自己、Xposed、框架混淆类与 JDK/Android 帧，取前三个候选。 */
+    private static String callerFrames() {
         try {
-            StackTraceElement[] st = new Throwable().getStackTrace();
-            for (StackTraceElement e : st) {
+            StringBuilder sb = new StringBuilder();
+            for (StackTraceElement e : new Throwable().getStackTrace()) {
                 String cn = e.getClassName();
                 if (cn.startsWith("com.satori.qq") || cn.startsWith("de.robv.android.xposed")
-                        || cn.startsWith("java.") || cn.startsWith("android.")
-                        || cn.startsWith("com.android.internal")
+                        || cn.startsWith("org.matrix.vector") || cn.startsWith("java.")
+                        || cn.startsWith("android.") || cn.startsWith("com.android.internal")
+                        || cn.indexOf('.') < 0 || isFrameworkProxy(cn)
                         || cn.equals("com.tencent.mobileqq.msf.sdk.MsfSdkUtils")) continue;
-                return cn + "." + e.getMethodName() + ":" + e.getLineNumber();
+                if (sb.length() > 0) {
+                    if (sb.length() > 200) break;
+                    sb.append('>');
+                }
+                sb.append(cn).append('.').append(e.getMethodName()).append(':').append(e.getLineNumber());
+                if (sb.indexOf(">") != sb.lastIndexOf(">")) break;
             }
-        } catch (Throwable ignore) {}
-        return "-";
+            return sb.length() == 0 ? "-" : sb.toString();
+        } catch (Throwable ignore) {
+            return "-";
+        }
+    }
+
+    /** 框架/工具类发出的匿名代理帧（形如 {@code a.b$1$1}），不是真实调用点。 */
+    private static boolean isFrameworkProxy(String cn) {
+        return cn.indexOf('.') < 0 || cn.length() <= 2;
     }
 
     /**
@@ -2086,11 +2157,22 @@ public final class AntiDetect {
      * 动作名区分。同样不写 {@code qk_kick.log}——那一份是看守「立刻重启 QQ」的判据。
      */
     private static void noteGuardLine(String kind, String what) {
+        long nowMs = System.currentTimeMillis();
+        // 踢线锚点：内存里那份被 force-stop 清掉了就用 qk_kick.log 的 mtime。
+        // 只写内存的话，重启之后的每一行都是 "(last kick  -)"，看不出这一行是不是
+        // 发生在某次踢线的善后期里 —— 而重启之后正是最需要看出这件事的时候。
+        long anchor = lastKickMs;
+        String source = lastKickSource;
+        if (anchor == 0) {
+            long mark = kickMarkerMs(nowMs);
+            if (mark != 0) { anchor = mark; source = "marker"; }
+        }
+        String age = anchor == 0 ? "-" : ((nowMs - anchor) / 1000) + "s ago";
         String line = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-                .format(new java.util.Date(System.currentTimeMillis()))
+                .format(new java.util.Date(nowMs))
                 + " " + kind + " " + what
-                + " (last kick " + lastKickSource + " " + (lastKickMs == 0 ? "-"
-                        : ((System.currentTimeMillis() - lastKickMs) / 1000) + "s ago") + ")"
+                + " (kick " + (source == null || source.isEmpty() ? "-" : source)
+                + " " + age + ")"
                 + " pid=" + android.os.Process.myPid();
         synchronized (GUARD_LOG) {
             GUARD_LOG.addFirst(line);

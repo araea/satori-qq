@@ -123,3 +123,11 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'   # 或走客�
 10. Turing 的 POSIX ERE 黑名单（进程名、线程名、路径）有没有新增模式
 
 ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试后回退原文件配置，并通过 `config_status` 暴露不含敏感信息的原因；管理页给出系统设置里的路径（应用 → 关联启动）。引导线程在 QQ 主线程初始化任务之后启动，不阻塞 Application 创建。
+
+## 版本与发布
+
+`versionName` 走语义化版本 `主.次.补丁`，从 0.9.0 开始：主版本对应 Satori 方法表或 `/v1/internal` 动作的破坏性变更，次版本对应新增方法、动作、事件，以及对 QQ 的行为适配或反检测策略这类影响兼容性的改动，补丁版本对应修 bug、改文案、改默认值。需要区分同一天发的多次构建时，第 4 段临时当构建号用（`0.9.1.2`），下一次发版并回三段。
+
+`versionCode` 独立递增，Android 判升级、市场判更新、Xposed 管理器判「有新版本」用的都是它，`versionName` 只负责给人看。版本号要同步改三处：`AndroidManifest.xml`、`AndroidManifest.stealth.xml`、`SatoriHub.APP_VERSION`，`tests/ManifestStealthTest` 会校验三者一致。发布走 `marketplace/publish.sh`，tag 为 `{versionCode}-{versionName}`。
+
+0.9.0 之前的三段固定成 `0.8.9`、只递增第 4 段（`0.8.9.1` 到 `0.8.9.46`），文档里那些 `0.8.9.x 起` 的说法指的是旧编号。两套编号的对应关系见 [`marketplace/`](../marketplace/) 下的变更记录。

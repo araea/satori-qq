@@ -99,7 +99,7 @@ plugins:
 
 分不清断在哪一层时用 [`scripts/netwatch.sh`](scripts/netwatch.sh)，每 60 秒记录物理链路、本地代理、经 TUN 出站、模块状态与电源状态。
 
-模块自报在线、消息却一条收不到，多半是被服务端踢线。踢线的处理链在客户端互不经过，模块逐条拦在入口，也顺手保住盘上的登录态，见 [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md)。`/healthz` 的三个计数用来看这套还在不在：`kick_hook` 正常 12，`logout_guard.hooks` 正常 5，`login_state.hooks` 正常 2；`kick_log` 与 `logout_guard.log` 给最近几次的原文，落盘到 `qk_kick.log` / `qk_guard.log`。
+模块自报在线、消息却一条收不到，多半是被服务端踢线。踢线的处理链在客户端互不经过，模块逐条拦在入口，也顺手保住盘上的登录态；判定口径与计数见 [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md)。
 
 [`scripts/qq-revive.sh`](scripts/qq-revive.sh) 看守 QQ：按踢线记录行数增长、`online=false` 与「MSF 进程没有上游连接」判断，必要时重启 QQ。装法见 [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh) 开头。
 
@@ -134,25 +134,12 @@ node tests/media-live-probe.js voice # 语音条、文件与群文件能不能�
 curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}' | head -c 400
 ```
 
-管理界面另有一份独立的真机测试包：`bash tests/ui/build.sh` 构建，安装后执行 `am instrument -w com.satori.qq.test/.DesignSmoke`，覆盖保存、生效桥接、未保存草稿重建、令牌保护、三页深浅色对比度与 320dp / 200% 字号。测试备份并恢复原设置，不发送消息，不重启 QQ。
-
-## 版本号
-
-`versionName` 走语义化版本 `主.次.补丁`，从 **0.9.0** 开始：
-
-- **主**：Satori 方法表或 `/v1/internal` 动作有破坏性变更（删方法、改参数含义、改事件字段）。
-- **次**：新增方法、动作或事件，或对 QQ 的行为适配、反检测策略这类会影响兼容性的改动。
-- **补丁**：修 bug、改文案、改默认值，调用方不用动。
-- 需要区分同一天发的多次构建时，第 4 段临时当构建号用（`0.9.1.2`），并在下一次发版时并回三段。
-
-`versionCode` 独立递增：Android 判升级、市场判更新、Xposed 管理器判「有新版本」用的都是它，`versionName` 只负责给人看。发布 tag 是 `{versionCode}-{versionName}`。
-
-0.9.0 之前的三段固定成 `0.8.9`、只递增第 4 段（`0.8.9.1` 到 `0.8.9.46`），文档里那些 `0.8.9.x 起` 的说法指的是旧编号。版本号要同步改三处：`AndroidManifest.xml`、`AndroidManifest.stealth.xml`、`SatoriHub.APP_VERSION`，`tests/ManifestStealthTest` 会校验三者一致。
+管理界面另有独立的真机测试包：`bash tests/ui/build.sh` 构建，安装后执行 `am instrument -w com.satori.qq.test/.DesignSmoke`。它只对知弦自己的界面动手，不发送消息，也不重启 QQ。
 
 ## 文档
 
 - [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)：协议方法、事件与消息元素
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：内部结构与 QQ 升级检查项
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：内部结构、QQ 升级检查项与版本号规则
 - [`docs/ANTIDETECT.md`](docs/ANTIDETECT.md)：QQ 检测面与模块的处理边界
 
 ## 致谢与许可

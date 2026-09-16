@@ -330,6 +330,36 @@ dumpsys notification → 模块的常驻通知在（channel satori-qq-status，�
 
 治本只能动 ColorOS 的后台策略（本机没有可读的 settings key，只能对着 Hans 的 `freeze uid: ... scene: |miniMultiWindow|StrictMode-3|LcdOn` 那行日志试）。
 
+### 会话被判死那条路（`expired`）：不拦，以及被标记之后的边界
+
+2026-09-16 晚拿到两类真机样本，把这条路的性质定下来了（`qk_guard.log` 的 `token-expired` / `allowed-logout` 行）：
+
+```text
+20:24:46（踢线后 0 秒）token-expired ssoErr=-10003 branch=expired
+         svcCmd=SafeCenterSvr.CMD_FACE2FACE_FLAG_REQ   ×3
+20:52:40（踢线后 1673s）token-expired ssoErr=-10003 branch=expired
+         svcCmd=OidbSvcTrpcTcp.0x9067_202
+         msg=身份验证失败，请你重新登录。(w21)
+21:08:39（踢线后 2632s）同一秒四条命令全部回同一个错：
+         trpc.msg.register_proxy.RegisterProxy.SsoInfoSync
+         OidbSvcTrpcTcp.0xfe1_2
+         trpc.rdelivery.config_pull_server.ConfigPullServer.SsoPullV3
+         TianShu.GetAds
+         msg=身份验证失败，请你重新登录。(w21)
+```
+
+读法：**不是某一个请求失败，是整个会话被判死**——QQ 从手上任意一个回包得知（连广告请求都被同一个理由拒）。所以 `expired` 是**合法信号**，拦它等于让 QQ 抱着死票据说自己在线上（僵尸），没有任何好处。**不拦。**
+
+三个已知缺口的处置：
+
+| 缺口 | 处置 |
+| --- | --- |
+| 晚到的 `expired`（20:52 那次 1673s）出了 15 分钟善后期窗口，账号标记被摘成 `_f`，下一次登录不再是一键 | 0.13.4 起把「会话被判死」也当善后锚点（`sessionDeadMs`），窗口长度不变；21:08 那次（2632s）实测 `kept=4`、标记保住，对照成立 |
+| `by=` 在 token-expired 支取不到（只给 uid-fail 打了标记） | 补 `markCaller("token-expired")`；21:08 起日志里是 `by=token-expired` |
+| 反复重登会把服务端推向「要求短信验证」 | 客户端没有解药：21:10 那次一键登录成功后立刻被判死，服务端要求短信验证，而本地账号标记全程是 `_t`（一次都没丢）——**这一步是服务端的要求，不是本机凭据坏了** |
+
+**所以被标记之后的正确姿势是「别再添信号」**：让它一直在线、不主动强停、不反复重登；看守那边正好也只做「先解冻（不产生新登录）」，重启有预算且连续两次没换回在线就 `giveup` 停手。这一层的边界写清楚：模块能保住**盘上**的登录态（账号标记、自动登录开关），保不住**服务端**那侧的会话判定。
+
 ### 踢线成因 · 环境检测还是接口把会话打废
 
 - **环境检测**：设备风险被打分，服务端主动下发强制下线

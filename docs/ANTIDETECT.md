@@ -91,6 +91,15 @@ MSF 那条要拦处理器入口，不拦 `popupNotification`。`popupNotificatio
 
 `/healthz` 的 `kick_hook` 是踢线入口的 hook 数之和（0.8.9.46 起正常为 **12**：nt-kick 2 + ticket-refresh 1 + uid-fail 1 + msf 入口 4 + msf 出口 3 + 灰名单软事件 1），`last_kick_source` 记最近一次是哪个入口拦下的，`last_kick` 记参数，`kick_log` 是最近 12 次的原文。另有一个独立的登出守卫，hook 数在 `logout_guard.hooks`（0.8.9.46 起正常为 **5**），以及保住盘上登录态的守卫，在 `login_state.hooks`（正常为 **2**）。
 
+0.13.2 起还有两个**只观测、不拦**的计数，用来判「账号是谁摘掉的、走的哪条路」：
+
+| 字段 | 是什么 |
+| --- | --- |
+| `token_expired` | `MyErrorHandler.onUserTokenExpired` 被调用了几次、最近一次带的 `ssoErr=` 与 `branch=`。`ssoErr` 属于 {-10135, 10136} 走 `kicked` 支（账号标记写 `_t`，出口被拦），其余走 `expired` 支（写 `_f`，出口放行 → 跳登录页）。分不清这两支就分不清「被踢之后是谁把人送回登录页的」 |
+| `allowed_logout` | 被放行的登出（reason 不在要拦的那几种里）。只有 `expired` 那一支会把账号摘掉再跳登录页，以前这条完全静默 |
+
+这两项各落一行到 `qk_guard.log`（动作名 `token-expired` / `allowed-logout`），**不写 `qk_kick.log`**——那份是看守「立刻重启 QQ」的判据，观测项混进去会变成重启风暴。`login_state` 的 `kept-login-state` 行 0.13.2 起多带一个 `by=<调用点>`（第一帧外部调用者），因为 `updateSimpleAccount*(uin,false)` 有两个已知调用点（`onUserTokenExpired` 与 `UidServiceImpl.logoutWhenReqUidFail`），只看参数分不出来。
+
 `last_kick` 带的字段：`entry=` 是被拦下的处理器入口名（`onKickedAndClearToken` 是带清票据的那一支，`onKicked` 是另一支），`args=` 是 QQ 传进来的那几个布尔（`onKickedInternal` 的 `isTokenExpired` 与 `isSameDevice`），`svcCmd=` 是这个响应的服务命令、`ssoErr=` 是它带的 SSO 错误码。加上服务端那个包里的 `kickType=`（`RequestMSFForceOffline.bKickType`，名字按 `KickedType` 的声明顺序取）与 `sigKick=`（1 表示带 `vecSigKickData` 的安全强踢，reason 取 `secKicked`；0 是普通强踢），另有 `seqno=` / `sigLen=` / `sameDevice=`。内核那条路（`nt-kick`）参数是 `KickedInfo`，字段比 MSF 包多，单独记 `appId=` / `instanceId=` / `securityKickedType=`。只记 reason 与服务端文案的话，现场分不出「在别处登录被顶」和「风控打击」。
 
 0.13.0 起 `cmd=` 取不到时会写成 `cmd=-`。0.12.0 及之前这一项取不到就整段省略，日志里看到的是更早版本留下的 `cmd=unknown` 占位，不是「真的拿到了 unknown」。
@@ -224,7 +233,7 @@ logout(reason, true)
 
 - `clean_offline_on_kick` 默认 **false**；本机看守的 `QQ_REVIVE_OFFLINE_FIRST` 默认 **0**，重启前不再调它
 - 代码与 `POST /v1/internal/offline` 动作都留着（`/healthz` 的 `clean_offline` 计数也留着），给「确认凭据已经没救」的场合用
-- 顺带记一条待查：`MainService$MyErrorHandler.onKickedInternal` 里那条 `expired` 分支（reason `LogoutReason.expired` → `logout(expired, true)` → `KICK_TO_LOGIN`）**没有被拦**。按这次的结论，它落地同样是「账号被登出、票据被放掉、停在登录页」，而文档一直写着「expired 时 QQ 自己会重登」——这个假设在本机没成立过。要动它得单独验证，别顺手改。
+- 顺带记一条待查：`MainService$MyErrorHandler.onKickedInternal` 里那条 `expired` 分支（reason `LogoutReason.expired` → `logout(expired, true)` → `KICK_TO_LOGIN`）**没有被拦**。按这次的结论，它落地同样是「账号被登出、票据被放掉、停在登录页」，而文档一直写着「expired 时 QQ 自己会重登」——这个假设在本机没成立过。要动它得单独验证，别顺手改。0.13.2 给这条路加了只观测的钩子（`token_expired` / `allowed_logout`，见上面那节），下一次事件就能判定它带的是哪个 SSO 错误码、属于哪一支。
 
 ### 踢线之后 · `/healthz` 的 online 认 AppRuntime 的登录态
 
@@ -262,6 +271,12 @@ logout(reason, true)
 这一层能保证的是盘上那两处状态没被改坏（账号留在已登录列表、自动登录开关没被关成手动），计数在 `login_state.kept` / `auto_login_kept` / `qk_guard.log`。不能保证「被踢之后本机自己登回来」，本机重新上线主要是用户自己手动登录的。所以判「这套机制有没有生效」只看那几个计数，不要拿「online 又变 true 了」当判据，那个时间点可能是人做的动作。要证的「踢线后能自动重登」这条链，目前未验证。
 
 一个已知副作用：善后期内（被拦下踢线后的 15 分钟）用户按退出登录，QQ 的账号标记可能已经被顶成 `_t`，于是下次启动会自己登回来，用户得再退一次（那时已在窗口之外）。窗口很短，且比「被踢之后退不出来、登不回去」轻，不做额外处理。
+
+### 下一个可做的实验（唯一一个还没试过的客户端侧变量）
+
+踢线频率是本机唯一还没动过的量。客户端的可控变量只剩一个：丢弃名单里那条 `OidbSvcTrpcTcp.0x9cdf_`。它与 `libMSFKernel` 共用（另外四条 `0x9c00/0x9c01/0x9c02/0x9c0c` 只出现在 `libfekit`），命令表里挨着 `wtlogin.log_report`。丢它的理由是把 QSec_Channel 上报器压住，而它同时挂在 MSF 内核那条线上——如果服务端把「这条上报缺失」当成设备校验没做完，丢它本身就可能换来一次强下线。这一条**方向不明，只能量，不能推理**。
+
+做法（可回滚）：把 `AntiDetect.FEKIT_CHANNEL_REPORT_CMDS` 里的 `"OidbSvcTrpcTcp.0x9cdf_"` 去掉，只留另外四条，跑 3~7 天，比 `qk_kick.log` 的日均行数；同时看 `qk_env_maps_*.json` 的 `reports_dropped` 里 0x9cdf 那一项是否真的归零（确认改动生效）。对照期取改动前的同期天数。这个 A/B 只有一台设备，只能看出「差得很多」与「看不出差别」，看不出小效应；结论按「日均踢线次数是否减半以上」判。
 
 ### 踢线成因 · 环境检测还是接口把会话打废
 

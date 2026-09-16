@@ -164,6 +164,25 @@ public final class AntiDetect {
     private static final AtomicLong LAST_CLEAN_OFFLINE_MS = new AtomicLong();
 
     private static final String MOBILEQQ = "mqq.app.MobileQQ";
+    /**
+     * 观测项：{@code MyErrorHandler.onUserTokenExpired} 被调用了几次、每次带的 SSO 错误码。
+     *
+     * <p>这条只观测、不改行为。它是「踢线之后人为什么还是被送回登录页」的判定入口：
+     * {@code ssoErrorCode} 属于 {-10135, 10136} 时走 kicked 支（把账号标记写成 {@code _t}，
+     * reason 取 {@code kicked}，出口被我们拦下）；其余走 expired 支（写成 {@code _f}，
+     * reason 取 {@code expired}，出口我们放行）。以前这两支在台账里都没有痕迹，
+     * 「账号到底是谁摘掉的」只能靠猜。
+     */
+    private static final AtomicLong TOKEN_EXPIRED_EVENTS = new AtomicLong();
+    private static volatile String lastTokenExpired = "";
+    /** 观测项：被放行的登出（reason 不在要拦的那几种里）。只有 {@code expired} 会把人带回登录页。 */
+    private static final AtomicLong ALLOWED_LOGOUTS = new AtomicLong();
+    private static volatile String lastAllowedLogout = "";
+
+    public static long tokenExpiredEvents() { return TOKEN_EXPIRED_EVENTS.get(); }
+    public static String lastTokenExpired() { return lastTokenExpired; }
+    public static long allowedLogoutCount() { return ALLOWED_LOGOUTS.get(); }
+    public static String lastAllowedLogout() { return lastAllowedLogout; }
 
     public static int blockedKicks() { return BLOCKED_KICKS.get(); }
     public static long lastKickMs() { return lastKickMs; }
@@ -1456,6 +1475,7 @@ public final class AntiDetect {
             hookAutoLoginGuard();
             hookLogoutGuard();
             hookLoginStateGuard();
+            hookUserTokenExpired();
         }
 
         hookVoidMethods("com.tencent.mobileqq.msf.core.MsfCore", new String[]{
@@ -1701,7 +1721,15 @@ public final class AntiDetect {
                     @Override protected void beforeHookedMethod(MethodHookParam p) {
                         if (p == null || p.args == null || p.args.length < 5 || p.args[4] == null) return;
                         String reason = String.valueOf(p.args[4]);
-                        if (!kickReasonBlocked(reason)) return;
+                        if (!kickReasonBlocked(reason)) {
+                            // 放行的那些里，expired 是唯一会把人带回登录页的（QQ 那一支会
+                            // 摘账号 → logout(expired, true) → KICK_TO_LOGIN）。以前这里完全
+                            // 静默，「被踢之后是谁把人送回登录页的」在台账里看不见。
+                            if ("expired".equals(reason) || "gray".equals(reason)) {
+                                noteAllowedLogout(reason, p.args);
+                            }
+                            return;
+                        }
                         StringBuilder sb = new StringBuilder("reason=").append(reason);
                         sb.append(" action=").append(Ref.asStr(p.args[0]));
                         sb.append(" uin=").append(Ref.asStr(p.args[1]));
@@ -1920,7 +1948,8 @@ public final class AntiDetect {
                         p.args[1] = Boolean.TRUE;
                         LOGIN_STATE_KEPT.incrementAndGet();
                         noteGuardLine("kept-login-state",
-                                label + "(" + Ref.asStr(p.args[0]) + ", false->true)");
+                                label + "(" + Ref.asStr(p.args[0]) + ", false->true)"
+                                        + " by=" + callerTag());
                     }
                 });
                 n++;
@@ -1942,6 +1971,112 @@ public final class AntiDetect {
     private static void noteLogoutGuard(String what) {
         LOGOUT_GUARD_BLOCKS.incrementAndGet();
         noteGuardLine("blocked-logout", what);
+    }
+
+    /**
+     * 记一次被放行的登出。
+     *
+     * <p>放行本身是设计（{@code user}/{@code switchAccount}/{@code expired}/{@code tips}/{@code gray}/
+     * {@code restartProcess} 都不该拦），这里只留一行痕迹，因为 {@code expired} 那一支会把账号
+     * 摘掉再跳登录页——「被踢之后人为什么还是被送回登录页」的答案就在这行里。同样只写
+     * {@code qk_guard.log}。
+     */
+    private static void noteAllowedLogout(String reason, Object[] args) {
+        ALLOWED_LOGOUTS.incrementAndGet();
+        StringBuilder sb = new StringBuilder("reason=").append(reason);
+        if (args != null) {
+            if (args.length > 0) sb.append(" action=").append(Ref.asStr(args[0]));
+            if (args.length > 1) sb.append(" uin=").append(Ref.asStr(args[1]));
+            if (args.length > 3) {
+                String msg = Ref.asStr(args[3]);
+                if (!msg.isEmpty()) sb.append(" msg=").append(clip(msg, 60));
+            }
+        }
+        lastAllowedLogout = clip(sb.toString(), 200);
+        noteGuardLine("allowed-logout", lastAllowedLogout);
+    }
+
+    /**
+     * 观测 {@code MyErrorHandler.onUserTokenExpired}：只记调用，不改行为。
+     *
+     * <p>它决定「踢线之后为什么还要重新登录」。这一支的 ssoErrorCode 属于 {-10135, 10136} 时
+     * reason 取 {@code kicked}（账号标记写成 {@code _t}，出口被我们拦）；其余取 {@code expired}
+     * （标记写成 {@code _f}，出口我们放行 → {@code logout(expired, true)} 跳登录页）。
+     * 两种可能同时解释 {@code qk_guard.log} 里那些 {@code updateSimpleAccountNotCreate(uin,false)}，
+     * 所以下一次事件必须能分清是哪一支、带什么错误码。
+     */
+    private void hookUserTokenExpired() {
+        try {
+            Class<?> cls = ref.clsOrNull("mqq.app.MainService$MyErrorHandler");
+            if (cls == null) return;
+            int n = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!"onUserTokenExpired".equals(m.getName())) continue;
+                if (m.getReturnType() != void.class) continue;
+                Class<?>[] pt = m.getParameterTypes();
+                if (pt.length < 2 || !pt[0].getName().endsWith("ToServiceMsg")
+                        || !pt[1].getName().endsWith("FromServiceMsg")) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) {
+                        if (p == null || p.args == null || p.args.length < 2) return;
+                        Object from = p.args[1];
+                        Object code = attribute(from, "attr_sso_error_code");
+                        int c = code instanceof Number ? ((Number) code).intValue() : 0;
+                        boolean kicked = (c == -10135 || c == 10136);
+                        StringBuilder sb = new StringBuilder("ssoErr=").append(c)
+                                .append(" branch=").append(kicked ? "kicked" : "expired")
+                                .append(" action=").append(kicked
+                                        ? "mqq.intent.action.ACCOUNT_KICKED"
+                                        : "mqq.intent.action.ACCOUNT_EXPIRED")
+                                .append(" svcCmd=").append(invokeStr(from, "getServiceCmd"));
+                        String uin = uinOf(from);
+                        if (!uin.isEmpty()) sb.append(" uin=").append(uin);
+                        String fail = invokeStr(from, "getBusinessFailMsg");
+                        if (!fail.isEmpty()) sb.append(" msg=").append(clip(fail, 60));
+                        String flags = "";
+                        for (Object a : p.args) {
+                            if (a instanceof Boolean) flags += (flags.isEmpty() ? "" : ",") + a;
+                        }
+                        if (!flags.isEmpty()) sb.append(" args=").append(flags);
+                        TOKEN_EXPIRED_EVENTS.incrementAndGet();
+                        lastTokenExpired = clip(sb.toString(), 240);
+                        // 只写 qk_guard.log：qk_kick.log 是看守「立刻重启 QQ」的判据，
+                        // 这条只是观测，混进去会让看守多重启。
+                        noteGuardLine("token-expired", lastTokenExpired);
+                    }
+                });
+                n++;
+                HARDENING_HOOKS.incrementAndGet();
+            }
+            if (n > 0) L.i("AntiDetect: observe onUserTokenExpired (" + n + ")");
+            else L.w("AntiDetect: onUserTokenExpired not found");
+        } catch (Throwable t) {
+            L.e("AntiDetect.userTokenExpired", t);
+        }
+    }
+
+    /**
+     * 调用点标记：跳过模块自己与 Xposed 的帧，取第一帧外部调用者，形如
+     * {@code com.tencent.mobileqq.x.y.Method:123}。
+     *
+     * <p>用来回答「账号到底是谁摘掉的」——{@code updateSimpleAccount*(uin,false)} 有两个已知
+     * 调用点（{@code onUserTokenExpired} 与 {@code UidServiceImpl.logoutWhenReqUidFail}），
+     * 只看参数分不出来。
+     */
+    private static String callerTag() {
+        try {
+            StackTraceElement[] st = new Throwable().getStackTrace();
+            for (StackTraceElement e : st) {
+                String cn = e.getClassName();
+                if (cn.startsWith("com.satori.qq") || cn.startsWith("de.robv.android.xposed")
+                        || cn.startsWith("java.") || cn.startsWith("android.")
+                        || cn.startsWith("com.android.internal")
+                        || cn.equals("com.tencent.mobileqq.msf.sdk.MsfSdkUtils")) continue;
+                return cn + "." + e.getMethodName() + ":" + e.getLineNumber();
+            }
+        } catch (Throwable ignore) {}
+        return "-";
     }
 
     /**

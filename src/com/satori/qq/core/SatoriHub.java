@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.13.1";
+    public static final String APP_VERSION = "0.13.2";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -367,6 +367,17 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("clean_offline", new JSONObject()
                                 .put("count", AntiDetect.cleanOfflineCount())
                                 .put("last", AntiDetect.lastCleanOffline()))
+                        // 只观测：onUserTokenExpired 被调了几次、带什么 ssoErrorCode。
+                        // ssoErr 属于 {-10135,10136} 走 kicked 支（账号标记写 _t、出口被拦），
+                        // 其余走 expired 支（写 _f、出口放行 → 跳登录页）。分不清这两支就分不清
+                        // 「被踢之后是谁把人送回登录页的」。
+                        .put("token_expired", new JSONObject()
+                                .put("count", AntiDetect.tokenExpiredEvents())
+                                .put("last", AntiDetect.lastTokenExpired()))
+                        // 被放行的登出（reason 不在要拦的那几种里）；expired 那一支会跳登录页。
+                        .put("allowed_logout", new JSONObject()
+                                .put("count", AntiDetect.allowedLogoutCount())
+                                .put("last", AntiDetect.lastAllowedLogout()))
                         // 踢线窗口里被拦掉的登出。落盘在 qk_guard.log——故意不并进
                         // qk_kick.log，那份是看守「立刻重启」的判据，混进去会反复重启。
                         .put("logout_guard", new JSONObject()

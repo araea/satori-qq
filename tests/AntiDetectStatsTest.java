@@ -129,6 +129,8 @@ public final class AntiDetectStatsTest {
 
         // 踢线之后 5 分钟内不许本机登出（UID 那条线走的是 logout(true)，reason 分不出来，
         // 只能按窗口拦）；窗口一过必须放行，否则会一辈子拦着正常登出。
+        // 判据除了内存里这一份，还会读 qk_kick.log 的 mtime（跨重启）。那一条在 JVM 里读不到
+        // 手机路径，只能靠真机验：下面这几条断言验的是内存那一份的边界。
         AntiDetect.noteBlockedKick("guard-window", "probe");
         long now = System.currentTimeMillis();
         check(AntiDetect.inLogoutGuardWindow(now), "logout guard open right after kick");

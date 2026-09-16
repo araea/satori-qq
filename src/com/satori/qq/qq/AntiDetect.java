@@ -296,10 +296,20 @@ public final class AntiDetect {
         }
     }
 
-    /** 踢线之后的一段时间里，本机不许自己登出。public 是为了能在 JVM 单测里验边界。 */
+    /**
+     * 踢线之后的一段时间里，本机不许自己登出。public 是为了能在 JVM 单测里验边界。
+     *
+     * <p>判据要跨重启成立：看守拦下踢线之后会 force-stop 重启 QQ，{@code lastKickMs} 在新进程里
+     * 是 0，只看内存的话这 5 个登出钩子在新进程里一律直接 return，真正的登出没人拦——
+     * 台账的形状正是「账号标记被 top 回去了、人还是被登出」，{@code qk_guard.log} 里每一行都写着
+     * {@code (last kick  -)} 就是这个意思。所以这里补上落盘的那一份（{@code qk_kick.log} 的
+     * mtime），窗口长度不变，仍是 {@link #LOGOUT_GUARD_MS}。
+     */
     public static boolean inLogoutGuardWindow(long nowMs) {
         long last = lastKickMs;
-        return last != 0 && nowMs - last >= 0 && nowMs - last <= LOGOUT_GUARD_MS;
+        if (last != 0 && nowMs - last >= 0 && nowMs - last <= LOGOUT_GUARD_MS) return true;
+        long mark = kickMarkerMs(nowMs);
+        return mark != 0 && nowMs - mark >= 0 && nowMs - mark <= LOGOUT_GUARD_MS;
     }
 
     /**

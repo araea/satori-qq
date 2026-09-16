@@ -178,6 +178,8 @@ mmkv 的条目是「varint 键长 + 键 + varint 值长 + 值」，键不是 NUL
 | `AppRuntime.logout(LogoutReason, boolean)` | 窗口内且 reason 是 `kicked` / `secKicked` / `forceLogout` / `suspend`；reason 是 `user` / `switchAccount` 时只记「用户主动退出」 |
 | `AppRuntime.ntTriggerLogout(LogoutReason)` | 同上 |
 
+**窗口判据要跨重启成立**（0.13.1 修）：`inLogoutGuardWindow` 原先只读内存里的 `lastKickMs`，而这一层存在的理由恰恰是「拦住踢线之后 QQ 顺手把自己登出」——看守每次都会在踢线后 force-stop 重启 QQ，新进程里 `lastKickMs` 是 0，于是 5 个钩子在新进程里一律直接 return，真正的登出没人拦。台账的形状就是「账号标记被顶回去了、人还是被登出」，`qk_guard.log` 里每一行都带 `(last kick  -)`。现在除了内存那一份还读 `qk_kick.log` 的 mtime（和善后期同一套来源），窗口长度仍是 `LOGOUT_GUARD_MS`（5 分钟）。
+
 只有 `user` 与 `switchAccount` 算「用户主动退出」（`AntiDetect.userInitiatedLogout`）。`expired` / `gray` / `tips` / `restartProcess` 是 QQ 自己的生命周期，把它们当成用户意图会让善后期在一件跟用户无关的事上失效。
 
 被拦下的登出记在 `/healthz` 的 `logout_guard`（`hooks` / `blocked` / `log`），落盘到 app 私有目录的 `qk_guard.log`，故意不写进 `qk_kick.log`：那份是看守「踢线 = 会话已作废，立刻重启」的判据，混进去会让看守反复重启 QQ。
@@ -248,6 +250,8 @@ logout(reason, true)
 预算：两次重启间隔至少 `MIN_RESTART_GAP`（默认 600s），任何 1 小时内最多 `MAX_RESTARTS_PER_HOUR`（默认 3）次；超预算只记一行 `skip: ... budget N/N in 1h`，不动 QQ。（`QQ_REVIVE_OFFLINE_FIRST` 能在重启前请模块补一次干净下线，默认 0，理由见上一节。）
 
 再有一条停手规则：连续 `FAIL_LIMIT`（默认 2）次重启都没换来 `online=true`，就看守记一行 `giveup` 并停止自动重启。那种情形不是「会话作废、自动登录能救」，多半是服务端要求重新验证、只能人工登录；继续重启只会变成一串没人需要的登录尝试。账号自己回到在线、或 `qk_kick.log` 再涨一行（服务端又开始跟这个客户端打交道）时，这条状态自动清掉。`--check` 里能直接看到 `giveup:` 与连续失败次数。
+
+这条状态**落盘**在 `qq-revive.flags`（`giveup=` / `failures=` 两行，0600）。不落盘就没有意义：看守本身由 `service.d/98-qq-revive.sh` 在开机时拉起，重启一次内存里的计数就归零，「连续两次就停手」会退化成「每 10 分钟再试一次，永远试下去」。
 
 恢复时间因此有了上限，也有了代价：刚重启过的那次故障要等满 `MIN_RESTART_GAP` 才动手，最坏情况是 `LOGOUT_LIMIT × INTERVAL + GRACE` 约 8 分钟，其中不含被冷却推迟的部分（2026-09-16 实测有一次被 `cooldown 137s` 推迟到第 12 分钟）。判据本身每轮都要重新数满 `LOGOUT_LIMIT`。要更快就把 `QQ_REVIVE_MIN_RESTART_GAP` 调小，代价是重启更密。
 

@@ -78,6 +78,9 @@ fi
 PIDFILE=${QQ_REVIVE_PIDFILE:-${LOG%.log}.pid}
 # 重启历史。宽限期与重启预算都从它读，进程重启后依然成立。
 STATEFILE=${QQ_REVIVE_STATEFILE:-$RUNDIR/qq-revive.state}
+# 停手状态。giveup 必须落盘：看守开机由 service.d 拉起，重启一次内存里的计数就归零，
+# 「连续两次没换回在线就停手」会变成「每 10 分钟再试一次，永远试下去」。
+FLAGFILE=${QQ_REVIVE_FLAGFILE:-$RUNDIR/qq-revive.flags}
 
 log() {
     printf '%s %s\n' "$(date +%FT%T)" "$*" >> "$LOG" 2>/dev/null
@@ -110,6 +113,28 @@ record_restart() {
 }
 
 last_restart() { restart_history | tail -n 1; }
+
+# 停手状态读写。文件是一行一个 key=value，缺省回 0。
+flag_get() {
+    [ -r "$FLAGFILE" ] || { printf '0'; return; }
+    awk -F= -v k="$1" '$1 == k { v = $2 } END { print (v == "" ? "0" : v) }' "$FLAGFILE" 2>/dev/null
+}
+
+flag_set() {
+    local tmp="$FLAGFILE.tmp"
+    { grep -v "^$1=" "$FLAGFILE" 2>/dev/null; printf '%s=%s\n' "$1" "$2"; } > "$tmp" 2>/dev/null \
+        && mv "$tmp" "$FLAGFILE" 2>/dev/null
+    chmod 0600 "$FLAGFILE" 2>/dev/null
+}
+
+# 把停手状态清掉并落盘：账号回到在线、或又拦下一次踢线时调用。
+reset_stop_state() {
+    [ "$giveup" -eq 0 ] && [ "$restarts_no_online" -eq 0 ] && return 0
+    giveup=0
+    restarts_no_online=0
+    flag_set giveup 0
+    flag_set failures 0
+}
 
 # MSF 进程持有的、对端不是回环的 ESTABLISHED 连接数。
 upstream_links() {
@@ -222,16 +247,19 @@ restart_qq() {
     # 「会话作废、自动登录能救」的情形，多半是服务端要求重新验证、只能人工登录，
     # 继续重启只会变成一串没人需要的登录尝试。
     restarts_no_online=$((restarts_no_online + 1))
+    flag_set failures "$restarts_no_online"
     if [ "$restarts_no_online" -ge "$FAIL_LIMIT" ]; then
         giveup=1
+        flag_set giveup 1
         log "giveup: 连续 ${restarts_no_online} 次重启都没换来在线，停止自动重启（账号重新上线或再来一次踢线后自动恢复）"
     fi
     sleep "$RECOVER_WAIT"
 }
 
-# 停手状态。主循环里还会用，--check 也要读，所以在这里就赋上初值。
-restarts_no_online=0
-giveup=0
+# 停手状态。主循环里还会用，--check 也要读，所以在这里就赋上初值；值从落盘的旗标读回来，
+# 看守被 service.d 重启一次也不会把「已经放弃自动重启」这条忘掉。
+restarts_no_online=$(flag_get failures)
+giveup=$(flag_get giveup)
 
 # 只看一轮判据、不动 QQ，用来确认探针本身工作正常。
 if [ "${1:-}" = "--check" ]; then
@@ -260,7 +288,8 @@ logouts=0
 last_kicklog=""
 last_kicks=""
 kick_at=0
-giveup=0
+# giveup / restarts_no_online 不在这里清零：它们的值来自落盘的旗标（上面读过），
+# 清零就等于让「连续失败就停手」在这次启动里失效。
 
 while true; do
     hz=$(healthz)
@@ -294,8 +323,7 @@ while true; do
     # 账号回到在线：把「连续几次重启都没换回在线」这笔账清掉，重新允许重启。
     if [ "$online" = "true" ] && [ "$restarts_no_online" -ne 0 ]; then
         log "recovered: 账号已回到在线，重置重启计数（之前连续 ${restarts_no_online} 次没换回在线）"
-        restarts_no_online=0
-        giveup=0
+        reset_stop_state
     fi
 
     # 落盘的踢线记录：行数增长说明这一轮里刚有踢线被拦下。跨进程重启还看得见，
@@ -306,8 +334,7 @@ while true; do
         last_kicklog=$kicklog
         stale=0
         logouts=0
-        giveup=0
-        restarts_no_online=0
+        reset_stop_state
         kick_at=$(now)
         sleep "$INTERVAL"
         continue
@@ -319,8 +346,7 @@ while true; do
         last_kicks=$kicks
         stale=0
         logouts=0
-        giveup=0
-        restarts_no_online=0
+        reset_stop_state
         kick_at=$(now)
         sleep "$INTERVAL"
         continue

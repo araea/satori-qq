@@ -229,6 +229,10 @@ restart_qq() {
     sleep "$RECOVER_WAIT"
 }
 
+# 停手状态。主循环里还会用，--check 也要读，所以在这里就赋上初值。
+restarts_no_online=0
+giveup=0
+
 # 只看一轮判据、不动 QQ，用来确认探针本身工作正常。
 if [ "${1:-}" = "--check" ]; then
     hz=$(healthz)
@@ -256,7 +260,6 @@ logouts=0
 last_kicklog=""
 last_kicks=""
 kick_at=0
-restarts_no_online=0
 giveup=0
 
 while true; do

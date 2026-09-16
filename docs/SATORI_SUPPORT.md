@@ -194,7 +194,44 @@ QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，
 | 方向 | 元素 |
 | --- | --- |
 | 发送 | `text` `at` `sharp` `quote` `emoji` `a` `br` `p` `img` `audio` `video` `file`、修饰元素与 `<message>`；兼容 `face` `json` `mface` `poke` |
-| 接收 | `text` `at` `quote` `emoji` `img` `audio` `video` `file`；合并转发为 `<message forward id="resid"/>` |
+| 接收 | `text` `at` `quote` `emoji` `face` `img` `audio` `video` `file` `json` `mface`；合并转发为 `<message forward id="resid"/>` |
+
+### 入站元素类型
+
+QQ 内核的 `elementType` 与本端收到的元素一一对应（2026-09-16 在 9.3.60.40970 上逐个核过）：
+
+| elementType | 内核元素 | 本端 |
+| --- | --- | --- |
+| 1 | `TextElement`（含 @） | `text` / `at` |
+| 2 / 3 / 4 / 5 | 图片 / 文件 / 语音 / 视频 | `img` / `file` / `audio` / `video` |
+| 6 / 11 | 表情 / 商城表情 | `emoji` / `mface` |
+| 7 | 引用 | `quote` |
+| 8 | 灰条（撤回、打卡、成员变动、戳一戳…） | 通知事件 |
+| 10 | `ArkElement`（小程序卡、分享卡、音乐卡，合并转发的原生卡也在这一类） | `json`；`com.tencent.multimsg` 转 `<message forward>` |
+| 13 / 16 | 长消息 / 合并转发 | `<message forward>` |
+| 14 | `MarkdownElement` | **未适配，整条丢弃** |
+| 17 | `InlineKeyboardElement` | **未适配，整条丢弃** |
+
+14 与 17 是 QQ 官方机器人与 AI 助手发的那种「markdown 卡片 + 按钮」，一条消息里成对
+出现。现在只在 logcat 落一行 `unparsed elementType=`，消息本身不进事件流。要确认某个
+类型里装的是什么，把 `Convert.parseElements` 的 default 分支换成打印
+`String.valueOf(e)`——`MsgElement.toString()` 会把非空的子元素一起打出来。
+
+### 卡片载荷
+
+ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message` 里则是
+`[CQ:json,data=…]`。客户端读它有两件事要注意：
+
+- 载荷里的斜杠是转义的（`"qqdocurl":"https:\/\/b23.tv\/xxx"`），在字符串上找不到
+  `https://`，要按 JSON 解析。
+- 「点开这张卡会去哪」写在固定字段里，按可信度取：`meta.detail_1.qqdocurl`（小程序
+  真正打开的那个页面）→ `meta.*.jumpUrl`（分享卡的落地地址）→ `meta.*.url`
+  （多是小程序自己的路由 `m.q.qq.com/a/s/<hash>`）。`icon` / `preview` / `tagIcon`
+  是图，不是落地地址。
+
+本端不改写这段载荷，也不替客户端挑地址：Satori 没有卡片元素，裁剪一次就再也回不去，
+而字段优先级是客户端按自己的用途定的（同机的 ayjx 在 `command::card_target_url` 里按
+上面那个顺序取）。
 
 媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，以及本端的 `/v1/assets/{id}`。入站图片优先返回无需 Bearer 令牌的本地资源地址，头像使用 QQ 头像 CDN。
 

@@ -39,6 +39,7 @@ public final class AntiDetect {
     private final boolean observeFekitAttach;
     private final boolean blockO3Report;
     private final boolean blockTuringRisk;
+    private final boolean blockFaceReport;
     private final boolean blockServerKick;
     private final boolean cleanOfflineOnKick;
     private final String fakeImei;
@@ -64,6 +65,19 @@ public final class AntiDetect {
     private static final AtomicLong ENV_REPORT_DROPPED = new AtomicLong();
     private static final ConcurrentHashMap<String, AtomicLong> ENV_REPORT_BY_CMD =
             new ConcurrentHashMap<>();
+    /**
+     * 人脸核身那条链路的环境上报。单独记一份是因为它既不在
+     * {@link #ENV_REPORT_BY_CMD} 的命令表里（走的是 dt 模块的 O3 派发口，不是 ChannelProxy），
+     * 又需要单独开关 A/B。字段与 {@code env_report} 同形，便于两处对照。
+     */
+    private static final AtomicLong FACE_REPORT_DROPPED = new AtomicLong();
+    private static final ConcurrentHashMap<String, AtomicLong> FACE_REPORT_BY_EVENT =
+            new ConcurrentHashMap<>();
+    private static volatile String lastFaceReport = "";
+    /** 人脸链路挂上的三个钩子数：上报口、TuringFace、turingcam 进程表过滤。 */
+    private static volatile int faceReportHookCount;
+    private static volatile int turingFaceHookCount;
+    private static volatile int turingProcessHookCount;
     private static final AtomicLong ENV_LAST_PERSIST_MS = new AtomicLong();
     private static final long ENV_PERSIST_INTERVAL_MS = 5000L;
     private static volatile int hookChannelSend;
@@ -580,13 +594,14 @@ public final class AntiDetect {
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
                       boolean observeFekitAttach, boolean blockO3Report) {
         this(cl, blockTasks, blockReports, observeFekitAttach, blockO3Report,
-                true, true, true, "", "", "");
+                true, true, true, true, "", "", "");
     }
 
     public AntiDetect(ClassLoader cl, boolean blockTasks, boolean blockReports,
                       boolean observeFekitAttach, boolean blockO3Report,
                       boolean blockTuringRisk, boolean blockServerKick,
                       boolean cleanOfflineOnKick,
+                      boolean blockFaceReport,
                       String fakeImei, String fakeAndroidId, String fakeSerial) {
         this.ref = new Ref(cl);
         this.blockTasks = blockTasks;
@@ -594,6 +609,7 @@ public final class AntiDetect {
         this.observeFekitAttach = observeFekitAttach;
         this.blockO3Report = blockO3Report;
         this.blockTuringRisk = blockTuringRisk;
+        this.blockFaceReport = blockFaceReport;
         this.blockServerKick = blockServerKick;
         this.cleanOfflineOnKick = cleanOfflineOnKick;
         this.fakeImei = cleanFake(fakeImei);
@@ -616,6 +632,8 @@ public final class AntiDetect {
         hookDeviceIdentity();
         hookRuntimeMonitor();
         hookTuringSdk();
+        hookTuringFace();
+        hookFaceReport();
         hookQQDetectionPatch();
         hookQimeiObserver();
         hookSocketProbe();
@@ -677,6 +695,43 @@ public final class AntiDetect {
         if (key.length() > 96) key = key.substring(0, 96);
         ENV_REPORT_BY_CMD.computeIfAbsent(key, k -> new AtomicLong()).incrementAndGet();
         persistEnvReport(false);
+    }
+
+    public static void recordFaceReportDrop(String event) {
+        FACE_REPORT_DROPPED.incrementAndGet();
+        String key = event == null || event.isEmpty() ? "empty" : event;
+        if (key.length() > 96) key = key.substring(0, 96);
+        FACE_REPORT_BY_EVENT.computeIfAbsent(key, k -> new AtomicLong()).incrementAndGet();
+        lastFaceReport = key;
+    }
+
+    /**
+     * 人脸链路的现场。{@code dropped>0} 说明慧眼 SDK 采集的那份设备数据确实被丢掉了；
+     * {@code hooks.*=0} 说明这一版没挂上对应的钩子（QQ 改了类名/方法名），要按 0 处理而不是
+     * 「没发生过」。计数不落盘：这条路只在主进程里走（慧眼 SDK 的日志 pid 与
+     * {@code IdentificationIpcServer} 都在主进程），{@code /healthz} 看到的也是主进程那一份。
+     */
+    public static JSONObject faceStats(boolean enabled) {
+        JSONObject out = new JSONObject();
+        try {
+            out.put("enabled", enabled);
+            out.put("process", envProcessKey());
+            out.put("dropped", FACE_REPORT_DROPPED.get());
+            out.put("last", lastFaceReport);
+            JSONObject events = new JSONObject();
+            for (String key : FACE_REPORT_BY_EVENT.keySet()) {
+                AtomicLong count = FACE_REPORT_BY_EVENT.get(key);
+                if (count != null) events.put(key, count.get());
+            }
+            out.put("events", events);
+            out.put("hooks", new JSONObject()
+                    .put("face_report", faceReportHookCount)
+                    .put("turing_face", turingFaceHookCount)
+                    .put("turing_process", turingProcessHookCount));
+            out.put("intercepts_ready", !enabled
+                    || (faceReportHookCount > 0 && turingFaceHookCount > 0));
+        } catch (Throwable ignore) {}
+        return out;
     }
 
     public static JSONObject envReportStats(boolean enabled) {
@@ -1483,12 +1538,209 @@ public final class AntiDetect {
                 "com.tencent.tfd.sdk.wxa.Pomegranate",
                 "com.tencent.turingfd.sdk.xq.Blueberry",
                 "com.tencent.tfd.sdk.wxa.Blueberry",
-                "com.tencent.turingcam.oqKCa"
         };
         for (String cls : entryClasses) {
             hookSafeDefaults(cls, new String[]{"a"}, true, "Turing entry");
             hookSafeDefaults(cls, new String[]{"b"}, false, "Turing debug");
         }
+        hookTuringProcessScan();
+    }
+
+    /**
+     * turingcam 的进程表扫描（{@code com.tencent.turingcam.oqKCa}）。
+     *
+     * <p>0.13.6 之前这里走 {@link #hookSafeDefaults}（{@code allowObjects=true}），结果是
+     * 把 {@code a(int)} 一律置成 <b>null</b>：调用方 {@code b(int)} 拿每一步都是 null 的名字，
+     * 枚举出来就是「这台机器上没有任何进程」。**空进程表正是虚拟机/沙箱的长相**，把这样一份
+     * 数据交给服务端，比让它读到真进程名更可疑；而本机真进程名里本来也不会出现 root 管理器
+     * 的字样（机器上没装）。所以改成「照常读，只滤敏感条目」。
+     *
+     * <p>另外 {@code a(int)} 的返回类型是 String，返回 null 会被调用方的
+     * {@code new String(...)} / {@code TextUtils.isEmpty} 判成「这个 pid 没名字」，语义上
+     * 和「读不到」一样，所以空串与 null 都按空串回答。
+     */
+    private void hookTuringProcessScan() {
+        int hooked = 0;
+        try {
+            Class<?> cls = ref.clsOrNull("com.tencent.turingcam.oqKCa");
+            if (cls != null) {
+                for (Method m : cls.getDeclaredMethods()) {
+                    if (!"a".equals(m.getName())) continue;
+                    if (m.getReturnType() != String.class) continue;
+                    if (m.getParameterTypes().length != 1) continue;
+                    m.setAccessible(true);
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            if (p.getResult() instanceof String) {
+                                p.setResult(sanitizeProcessName((String) p.getResult()));
+                            } else {
+                                p.setResult("");
+                            }
+                        }
+                    });
+                    hooked++;
+                    HARDENING_HOOKS.incrementAndGet();
+                }
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.turingProc", t);
+        }
+        turingProcessHookCount = hooked;
+        if (hooked > 0) L.i("AntiDetect: turing process scan filtered " + hooked);
+    }
+
+    /** 进程名里出现这些片段就当作「别让它读到」，其余原样放行（原生探测的判据表）。 */
+    private static final String[] PROCESS_NAME_DENY = {
+            "magisk", "kernelsu", "ksud", "apatch", "supersu", "superuser", "shamiko",
+            "xposed", "lsposed", "lspd", "zygisk", "edxposed", "frida", "linjector",
+            "substrate", "satori", "mapshide", "debug_ramdisk", "/data/adb"
+    };
+
+    public static boolean processNameDenied(String name) {
+        if (name == null || name.isEmpty()) return false;
+        String lower = name.toLowerCase(Locale.ROOT);
+        for (String token : PROCESS_NAME_DENY) {
+            if (lower.contains(token)) return true;
+        }
+        return false;
+    }
+
+    /** 进程名过滤：命中的回空串，其余（含 null）回调用方看得懂的值。 */
+    public static String sanitizeProcessName(String name) {
+        if (name == null) return "";
+        return processNameDenied(name) ? "" : name;
+    }
+
+    /**
+     * 人脸核身那条链路（慧眼 SDK + TuringFace / turingcam）。
+     *
+     * <p>链路（2026-09-18 逐个核过）：{@code IdentificationHuiyanSDKInitHelper} 起
+     * {@code HuiYanAuth}（慧眼 {@code com.tencent.could.huiyansdk}，SDK 1.0.9.32），
+     * 慧眼内部用 {@code com.tencent.turingcam.TuringFaceDefender}（TuringFace 2.3.0，
+     * 上报地址 {@code https://sdk.faceid.qq.com/api/turing_new}，SDK 类 244 个在
+     * classes19.dex）做设备风险采集。它加载的 native 是 {@code libturingmfa}，native 层按
+     * {@code "turing"} 命中已经补过 GOT，Java 层此前没人管。
+     *
+     * <p>这里只做两件不改变判定语义的事：
+     * <ul>
+     *   <li>{@code getDeviceInfo} 永远给一个非 null 的 JSONObject——调用方
+     *       {@code TuringSdkImp.b()} 拿到 null 会当成「采集失败」写进上报；</li>
+     *   <li>{@code TuringSdkImp.a()}（SDK 自己的错误串）返回空串，避免
+     *       「turing init error code: N」这类本机初始化故障被当成环境证据报上去。</li>
+     * </ul>
+     */
+    private void hookTuringFace() {
+        int hooked = 0;
+        try {
+            Class<?> defender = ref.clsOrNull("com.tencent.turingcam.TuringFaceDefender");
+            if (defender != null) {
+                for (Method m : defender.getDeclaredMethods()) {
+                    if (!"getDeviceInfo".equals(m.getName())) continue;
+                    m.setAccessible(true);
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            p.setResult(ensureDeviceInfo(p.getResult()));
+                        }
+                    });
+                    hooked++;
+                    HARDENING_HOOKS.incrementAndGet();
+                }
+            }
+            Class<?> imp = ref.clsOrNull("com.tencent.could.huiyansdk.turingmodule.TuringSdkImp");
+            if (imp != null) {
+                for (Method m : imp.getDeclaredMethods()) {
+                    Class<?>[] p = m.getParameterTypes();
+                    if (p.length != 0) continue;
+                    if ("b".equals(m.getName())
+                            && JSONObject.class.isAssignableFrom(m.getReturnType())) {
+                        m.setAccessible(true);
+                        XposedBridge.hookMethod(m, new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam p2) {
+                                p2.setResult(ensureDeviceInfo(p2.getResult()));
+                            }
+                        });
+                        hooked++;
+                        HARDENING_HOOKS.incrementAndGet();
+                    } else if ("a".equals(m.getName()) && m.getReturnType() == String.class) {
+                        m.setAccessible(true);
+                        XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(""));
+                        hooked++;
+                        HARDENING_HOOKS.incrementAndGet();
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.turingFace", t);
+        }
+        turingFaceHookCount = hooked;
+        if (hooked > 0) L.i("AntiDetect: turing face neutralised " + hooked);
+    }
+
+    /** 设备信息采集结果：非 null 的 JSONObject，其余按空表处理。 */
+    static Object ensureDeviceInfo(Object value) {
+        if (value instanceof JSONObject) return value;
+        return new JSONObject();
+    }
+
+    /**
+     * 慧眼人脸核身的环境上报（{@code face_detect} / {@code camera_detect}）。
+     *
+     * <p>{@code IdentificationHuiyanSDKInitHelper} 把 {@code HuiYanAuth} 的
+     * {@code mainAuthEvent(String)} 原样交给 {@code IdentificationIpcServer} 的
+     * {@code action_report}，后者调 {@code IQSecChannel.feEnvReport(runtime, tmpKey, report)}
+     * → {@code QSecChannelImpl.feEnvReport} → {@code MainProcess2Fe.k(runtime, "face_detect",
+     * {key, content})} → {@code O3BusinessHandler.P2("notify", ...)} → MSF
+     * {@code cmd_sec_dispatch_event} → 服务端。
+     *
+     * <p>这条路 <b>不经过 ChannelProxy.sendMessage</b>，所以按命令名做的丢弃
+     * （{@link #isEnvReportCmd}）一条都拦不到它；而它用的 {@code cmd_sec_dispatch_event}
+     * 同时承载 {@code FaceQueryAppConf}、{@code FaceGetRecognitionResult} 这些必须放行的
+     * 请求，不能整条命令丢。所以只按事件名丢 {@code face_detect} 与 {@code camera_detect}。
+     */
+    public static boolean isFaceReportEvent(String event) {
+        if (event == null || event.isEmpty()) return false;
+        return "face_detect".equals(event) || "camera_detect".equals(event);
+    }
+
+    private void hookFaceReport() {
+        if (!blockFaceReport) return;
+        int hooked = 0;
+        // dt 模块的 QSecChannel 出口。QQ 这里传的回调是 null，no-op 不会挂住调用方。
+        hooked += hookVoidMethods("com.tencent.mobileqq.dt.api.impl.QSecChannelImpl",
+                new String[]{"feEnvReport", "feCameraActionReport"}, "face report api");
+        // dt 模块的派发口。事件名在第 2 个参数上，比命令名更靠前、也更稳。
+        hooked += hookFaceDispatch();
+        faceReportHookCount = hooked;
+        if (hooked > 0) L.i("AntiDetect: face report intercept " + hooked);
+        else L.w("AntiDetect: face report entry not found");
+    }
+
+    private int hookFaceDispatch() {
+        int hooked = 0;
+        try {
+            Class<?> cls = ref.clsOrNull("com.tencent.mobileqq.dt.app.MainProcess2Fe");
+            if (cls == null) return 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!"k".equals(m.getName())) continue;
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length < 2 || p[1] != String.class) continue;
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null || param.args.length < 2) return;
+                        if (!(param.args[1] instanceof String)) return;
+                        String event = (String) param.args[1];
+                        if (!isFaceReportEvent(event)) return;
+                        recordFaceReportDrop(event);
+                        param.setResult(null);
+                    }
+                });
+                hooked++;
+            }
+        } catch (Throwable t) {
+            L.e("AntiDetect.faceDispatch", t);
+        }
+        return hooked;
     }
 
     private void hookQQDetectionPatch() {
@@ -1595,10 +1847,10 @@ public final class AntiDetect {
         }
     }
 
-    private void hookVoidMethods(String className, String[] names, String label) {
+    private int hookVoidMethods(String className, String[] names, String label) {
         try {
             Class<?> cls = ref.clsOrNull(className);
-            if (cls == null) return;
+            if (cls == null) return 0;
             int hooked = 0;
             for (Method m : cls.getDeclaredMethods()) {
                 if (!containsName(names, m.getName()) || m.getReturnType() != void.class) continue;
@@ -1608,8 +1860,10 @@ public final class AntiDetect {
                 HARDENING_HOOKS.incrementAndGet();
             }
             if (hooked > 0) L.i("AntiDetect: blocked " + label + " (" + hooked + ")");
+            return hooked;
         } catch (Throwable t) {
             L.e("AntiDetect." + label, t);
+            return 0;
         }
     }
 

@@ -103,6 +103,45 @@ public final class AntiDetectStatsTest {
                 "7000-8000 r-xp 0 00:00 0 /apex/com.android.art/lib64/libart.so"),
                 "keep java maps line");
 
+        // 人脸核身那条链路（慧眼 + TuringFace）。事件名过滤只认这两个，别的 dt 事件
+        // （sendRequestPB / orc_and_embeding 等）必须原样放行，否则人脸本身的请求也会被丢。
+        check(AntiDetect.isFaceReportEvent("face_detect"), "face detect event");
+        check(AntiDetect.isFaceReportEvent("camera_detect"), "camera detect event");
+        check(!AntiDetect.isFaceReportEvent("sendRequestPB"), "keep sendRequestPB");
+        check(!AntiDetect.isFaceReportEvent("orc_and_embeding"), "keep orc");
+        check(!AntiDetect.isFaceReportEvent(""), "empty face event");
+        check(!AntiDetect.isFaceReportEvent(null), "null face event");
+
+        // turingcam 的进程表扫描：只滤敏感条目，普通进程名必须原样返回（整张表清空
+        // 是虚拟机的长相，比读到真进程名更可疑）。
+        check(!AntiDetect.processNameDenied("com.tencent.mobileqq"), "keep qq process name");
+        check(!AntiDetect.processNameDenied("com.tencent.mobileqq:MSF"), "keep msf process name");
+        check(!AntiDetect.processNameDenied(""), "empty process name");
+        check(!AntiDetect.processNameDenied(null), "null process name");
+        check(AntiDetect.processNameDenied("com.topjohnwu.magisk"), "magisk process");
+        check(AntiDetect.processNameDenied("/data/adb/ksu/bin/ksud"), "ksud process");
+        check(AntiDetect.processNameDenied("eu.chainfire.supersu"), "supersu process");
+        check(!AntiDetect.processNameDenied("com.tencent.turingcam"), "keep turingcam java process");
+        check("com.tencent.mobileqq".equals(
+                AntiDetect.sanitizeProcessName("com.tencent.mobileqq")), "pass real name");
+        check("".equals(AntiDetect.sanitizeProcessName("frida-server")), "blank denied name");
+        check("".equals(AntiDetect.sanitizeProcessName(null)), "blank null name");
+
+        long faceBefore = AntiDetect.faceStats(true).getLong("dropped");
+        AntiDetect.recordFaceReportDrop("face_detect");
+        AntiDetect.recordFaceReportDrop("camera_detect");
+        JSONObject face = AntiDetect.faceStats(true);
+        check(face.getBoolean("enabled"), "face enabled");
+        eq(faceBefore + 2, face.getLong("dropped"), "face dropped");
+        check(face.getJSONObject("events").getLong("face_detect") >= 1, "face event counted");
+        check(face.getJSONObject("events").getLong("camera_detect") >= 1, "camera event counted");
+        check("camera_detect".equals(face.getString("last")), "face last event");
+        check(face.getJSONObject("hooks").has("face_report")
+                && face.getJSONObject("hooks").has("turing_face")
+                && face.getJSONObject("hooks").has("turing_process"), "face hook counters");
+        check(face.has("intercepts_ready"), "face intercept readiness");
+        check("main".equals(face.getString("process")), "face process key");
+
         // 被拦下的服务端踢线：计数与内容会进 /healthz，外部看守靠它重启 QQ。
         int kicks = AntiDetect.blockedKicks();
         AntiDetect.noteBlockedKick("type=KKICKBYMULTIINST security=0 sameDevice=false");

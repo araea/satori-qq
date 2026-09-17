@@ -31,6 +31,7 @@ Java 层在 `qq/AntiDetect`，装在每个 QQ 进程：
 - `SocketStatus.checkSocket` 命中框架名字时返回 0，其余名字原样放行
 - ChannelProxy、ChannelManager、MsfCore 的收发口按命令白名单丢环境上报，并向服务端回空成功
 - Root、Xposed、调试器、模拟器、包管理、堆栈、Pandora、Turing、MSF 遥测与强制下线处理逐项覆盖
+- 人脸核身那条链路单独覆盖：TuringFace/turingcam 的设备信息与错误串、turingcam 的进程表扫描、慧眼的 `face_detect` / `camera_detect` 上报（见下节）
 - 设备标识只在配置了假值时改写，多路径保持同一值
 
 Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
@@ -146,6 +147,70 @@ KKICKBYMULTIINST(0), KKICKBYMOBILE(1), KKICKBYPASSWORDCHANGE(2), KKCIKBYLOWVERSI
 
 - 「服务端那个字节就是枚举序号」是推定。没有任何 Java 类读这个字段（映射在 native），而 native 里连这几个枚举名的字符串都没有（`libMSFKernel.so`、`libkernel.so` 等逐个 `strings` 过，0 命中），所以核不到映射代码。日志里名字后面一直带 `?`
 - `0` 有歧义：`KickedInfo` 的默认构造就是 `KickedType.values()[0]`，服务端没填时同样取到 0
+
+## 人脸核身（慧眼 + TuringFace）
+
+2026-09-18 现场：做身份认证时人脸核身页报
+`你的设备环境异常，无法使用人脸识别能力。请更换成安全设备重试。`
+
+### 这条路是怎么走的（都核过）
+
+- **页面**：`com.tencent.mobileqq.activity.IdentificationGuideFragment`（`pg_bas_face_verify`，
+  按钮 `em_bas_next_btn`）→ `IdentificationResultFragment`（`pg_bas_real_name_limit`）。
+  天枢页面轨迹落在 `databases/beacon_db_com.tencent.mobileqq:openSdk` 里，
+  `udf_kv` 的 `cur_pg` 带着 `fail_reason`。
+- **那句话不是客户端的字符串**：41 个 dex、`resources.arsc`（UTF-8 与 UTF-16 都试过）里都搜不到
+  `设备环境异常` / `安全设备`。它出现在 `beacon_db_...:MSF` 的 `errorMsg` 字段里，
+  即**服务端 SSO 响应带回的错误串**，客户端只是照显。
+- **SDK**：`IdentificationHuiyanSDKInitHelper` → `HuiYanAuth`（慧眼
+  `com.tencent.could.huiyansdk` 1.0.9.32，模型与 so 落在
+  `files/qqidentification/huiyan/`，日志在
+  `Android/data/com.tencent.mobileqq/files/cloud-huiyan/log/`）。慧眼内部用
+  `com.tencent.turingcam.TuringFaceDefender`（TuringFace 2.3.0，244 个混淆类在
+  classes19.dex，上报地址 `https://sdk.faceid.qq.com/api/turing_new`）采设备风险，
+  native 落在 `libturingmfa.so`（native 层按 `turing` 命中，本来就在补 GOT）。
+  慧眼自己那两个下载下来的 `libYTLiveness.so` / `libYTCommonLiveness.so`
+  `strings` 过一遍只有活体检测，没有任何环境判定，不用管。
+- **上报通道**：`HuiYanPublicEventCallBack.mainAuthEvent(String)` →
+  `IdentificationIpcServer` 的 `action_report` → `IQSecChannel.feEnvReport(runtime, tmpKey, report)`
+  → `QSecChannelImpl.feEnvReport` → `MainProcess2Fe.k(runtime, "face_detect", {key, content})`
+  → `O3BusinessHandler.P2("notify", ...)` → `MsfServiceSdk.getSecDispatchEventMsg`
+  （`cmd_sec_dispatch_event` + `MsfCommand.msf_sec_dispatch_event`）→ MSF。
+  摄像头那条是同一个形状，事件名 `camera_detect`。
+- **命令名过滤拦不到它**：这条路不走 `ChannelProxy.sendMessage`，`isEnvReportCmd` 一条都不匹配；
+  而 `cmd_sec_dispatch_event` 同时承载 `FaceQueryAppConf`、`FaceGetRecognitionResult`
+  这些必须放行的请求，不能整条命令丢。
+
+### 模块现在挡在哪
+
+| 入口 | 处置 |
+| --- | --- |
+| `QSecChannelImpl.feEnvReport` / `feCameraActionReport` | no-op（QQ 传的回调是 null，不会挂住调用方） |
+| `MainProcess2Fe.k(..., "face_detect"\|"camera_detect", ...)` | 丢弃并记 `face.dropped` / `face.events` |
+| `TuringFaceDefender.getDeviceInfo`、`TuringSdkImp.b()` | 结果保证非 null（null 会被慧眼当成「采集失败」写进上报） |
+| `TuringSdkImp.a()`（SDK 错误串） | 回空串，避免 `turing init error code: N` 被当成环境证据 |
+| `com.tencent.turingcam.oqKCa.a(int)`（进程表扫描） | **留真名，只滤敏感条目**（见下） |
+
+`oqKCa` 那条是 0.14.0 修的：此前走 `hookSafeDefaults`，把 `a(int)` 一律置成 `null`，
+等于**整张进程表清空**。而空进程表正是虚拟机/沙箱的长相——把「这台机器上没有任何进程」
+交给服务端，比让它读到真进程名更可疑，而真进程名里本来也不会出现 root 管理器的字样
+（本机没装）。现在改成 `afterHookedMethod` 过滤：`PROCESS_NAME_DENY` 命中的回空串，
+其余原样放行。
+
+### 还没解决的部分（别当成已修）
+
+- **判定在服务端**，客户端做的只是「别把脏数据送上去」。服务端如果已经存了这台设备的历史
+  风险结论，本地怎么改都不会变。2026-09-18 01:35 那次现场里，慧眼 SDK 其实**跑完了整套活体流程**，
+  最后停在 `errorcode:1007 活体检测没通过，请重试`（`cloud-huiyan` 日志），
+  也就是服务端当时是肯处理这个设备的——所以 `设备环境异常` 更可能是前面那次
+  `FaceQueryAppConf` / `face_usable` 的响应，而不是慧眼上报的结果。
+- 因此 `block_face_report` 是**单独开关**，默认 true。关掉它等于把慧眼采集的那批数据放行；
+  服务端如果依赖这批数据做判定，关掉反而更脏。要不要关只能 A/B：`/healthz` 的
+  `face.dropped` 能看出这批数据是不是真被丢了，`face.hooks.*` 为 0 说明钩子没挂上
+  （QQ 改了类名/方法名），要按 0 处理而不是「没发生过」。
+- 未覆盖：`com.tencent.turingcam` 的混淆类里那些直接读 `Build.*`、`/proc` 的采集
+  （`AV6dE`、`FxCVY`、`LwgsO`、`QjsR0` 等）没有逐个接管；它们的数据最终经 native
+  `libturingmfa` 拼装，native 那一层靠 GOT 过滤。
 
 ## 设备侧现状
 
@@ -469,6 +534,8 @@ dumpsys notification → 模块的常驻通知在（channel satori-qq-status，�
 
 外部的 `scripts/qq-satori-exposure-audit.sh` 取主进程 pid 的 `/proc/<pid>/maps`，不受这份文件影响。它读的是进程外视图，验证不了进程内过滤，所以 `maps_anon_*_excess=1` 这类计数一直存在，不随过滤变化。
 
+人脸那条链路的状态在 `/healthz` 的 `face` 段（0.14.0 起）：`dropped` 是慧眼上报被丢掉的次数，`events` 按事件名分列（`face_detect` / `camera_detect`），`hooks` 是三个钩子的挂载数（`face_report` / `turing_face` / `turing_process`）。计数不落盘，只在主进程里累计——慧眼 SDK 的日志 pid 与 `IdentificationIpcServer` 都在主进程。`enabled=true` 而 `hooks.*=0` 表示这一版没挂上钩子，按 0 处理。
+
 排障时不要反复 force-stop：每强停再拉起一次，QQ 都要重新握手、重新上报设备信息、重新做一次登录。而「服务端认为同一账号出现了第二个登录实例」正是 `KKICKBYMULTIINST` 那类强下线的语义。装完新版本重启一次是必要的，除此之外的反复重启没有收益。看守现在有重启预算（见上面那节），一分钟内的连续故障最多换一次重启。
 
 ## 挡不住的部分
@@ -480,6 +547,7 @@ dumpsys notification → 模块的常驻通知在（channel satori-qq-status，�
 - 内核与挂载命名空间。Magisk、KernelSU、APatch 的挂载点由内核层暴露。模块只在检测库进程内过滤 maps 与 mountinfo，检测方换一条模块没接管的通道，或直接读内核，就绕开了
 - ArtMethod 完整性。`libfekit.so` 带 `parse_libart.cpp` 与整套 `art::CheckJNI` 符号，可以对比运行时方法入口与磁盘上的 `libart.so`。Xposed 与 LSPlant 的 ArtMethod 改写不在本模块覆盖范围。核实：`strings -a libfekit.so | grep -E 'CheckJNI|parse_libart'`
 - 服务端风控。这一层在客户端拦不住，腾讯仍按历史行为、设备指纹变化与网络环境打分。2026-09-15 那次排查把客户端能看的都看了一遍，没有异常项，所以那两次踢线（`kickType=0` + `sameDevice=0` + 普通强踢）更可能是服务端侧的判断
+- 人脸核身的「设备环境异常」判定。2026-09-18 核过：那句话是服务端 SSO 响应里的错误串（客户端没有这条字符串），模块只能做到不把慧眼采集的脏数据送上去，改不了服务端已经存下的结论（见上面那节）
 - 进程内内存关键字扫描。检测方读自己进程的堆或栈（`memchr` 扫一段内存），模块引用的 Xposed 类名就在里面；这条路不经过文件，GOT 与 `/proc` 过滤都用不上
 - 多后端交叉校验。同一个事实用 libc、裸 syscall、汇编三种方式各读一次再比对，模块只改得了其中 libc 那条。libfekit 现在只用 libc，一旦它照着这个思路改，`/proc` 文本过滤的收益会明显下降
 

@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.13.6";
+    public static final String APP_VERSION = "0.14.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -399,6 +399,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                                 .put("failures", PacketSvc.ssoFailures())
                                 .put("session_errors", PacketSvc.ssoSessionErrors())
                                 .put("log", new org.json.JSONArray(PacketSvc.ssoLog())))
+                        // 人脸核身那条链路（慧眼 + TuringFace）。判定在服务端，这里只是让
+                        // 「慧眼采集的设备数据到底有没有被丢掉」「钩子有没有挂上」看得见。
+                        // enabled=true 而 hooks.*=0 表示这一版没挂上钩子，按 0 处理。
+                        .put("face", AntiDetect.faceStats(
+                                cfg.antiDetect && cfg.blockFaceReport))
                         .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");
@@ -6711,7 +6716,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("fekit_attach", AntiDetect.fekitAttachStats(
                         cfg.antiDetect && cfg.observeFekitAttach))
                 .put("env_report", AntiDetect.envReportStats(
-                        cfg.antiDetect && cfg.blockO3Report));
+                        cfg.antiDetect && cfg.blockO3Report))
+                .put("face", AntiDetect.faceStats(
+                        cfg.antiDetect && cfg.blockFaceReport));
     }
 
     private JSONObject versionInfo() throws Exception {

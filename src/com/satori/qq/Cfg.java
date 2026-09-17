@@ -36,6 +36,19 @@ public final class Cfg {
     public volatile boolean blockO3Report = true;      // drop trpc.o3.report / mobile_security (QQNTHookBypass)
     /** QQ risk-control entry points covered by QQEnhancedBypass. Type-checked before hooking. */
     public volatile boolean blockTuringRisk = true;
+    /**
+     * 人脸核身（慧眼 SDK + TuringFace）那条链路的设备信息上报。
+     *
+     * <p>与 {@link #blockO3Report} 分开，是因为它走的是另一条路：QQ 的 dt 模块用
+     * {@code MainProcess2Fe.k(..., "face_detect"/"camera_detect", ...)} 把慧眼 SDK 采集的
+     * 设备数据交给 {@code O3BusinessHandler.P2} → MSF {@code cmd_sec_dispatch_event} 发出去。
+     * 命令名过滤（{@link #blockO3Report}）拦不到它，所以单开一个开关。
+     *
+     * <p><b>关闭它等于把这批数据放行。</b>服务端判「设备环境异常」时如果依赖的是这批数据，
+     * 关掉反而更脏；如果判据来自服务端已经存下的历史，关不关都一样。要不要关只能靠 A/B
+     * 试出来——这是开关存在的唯一理由。
+     */
+    public volatile boolean blockFaceReport = true;
     /** Suppress the local handler for server kick packets; a revoked server session still needs login. */
     public volatile boolean blockServerKick = true;
     /**
@@ -109,6 +122,7 @@ public final class Cfg {
                 c.observeFekitAttach = o.optBoolean("observe_fekit_attach", c.observeFekitAttach);
                 c.blockO3Report = o.optBoolean("block_o3_report", c.blockO3Report);
                 c.blockTuringRisk = o.optBoolean("block_turing_risk", c.blockTuringRisk);
+                c.blockFaceReport = o.optBoolean("block_face_report", c.blockFaceReport);
                 c.blockServerKick = o.optBoolean("block_server_kick", c.blockServerKick);
                 c.cleanOfflineOnKick =
                         o.optBoolean("clean_offline_on_kick", c.cleanOfflineOnKick);

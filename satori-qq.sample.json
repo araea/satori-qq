@@ -18,6 +18,7 @@
   "observe_fekit_attach": true,
   "block_o3_report": true,
   "block_turing_risk": true,
+  "block_face_report": true,
   "block_server_kick": true,
   "fake_imei": "",
   "fake_android_id": "",

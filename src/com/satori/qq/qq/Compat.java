@@ -190,9 +190,68 @@ public final class Compat {
             {"IGetGroupMemberOwnedRobotsCallback", "2+"},
     };
 
+    /**
+     * 非内核面：模块挂在 QQ 里的钩子依赖的类与方法。
+     *
+     * <p>上面四张表只管 `com.tencent.qqnt.kernel*`；升级 QQ 时真正静默坏掉的往往是这一批——
+     * 踢线入口、检测面（QSec / ChannelProxy / dt 的 O3 派发）与人脸核身链路
+     * （慧眼 + TuringFace）。它们坏掉的表现是「计数从 N 掉到 N-1」或者某个入口再也不
+     * 拦到东西，翻 `/healthz` 的 hardening / kick_hook / face.hooks 才能看出来。
+     *
+     * <p>条目是 {类全名, 方法名, 参数个数, 标签}：
+     * <ul>
+     *   <li>方法名为空串：只查类在不在；</li>
+     *   <li>参数个数为 -1：只查名字（重载多、形状不固定，例如 `sendMessage`）；</li>
+     *   <li>其余按「名字 + 参数个数」查，和 {@link #hasMethod} 的判据一致。</li>
+     * </ul>
+     * 参数个数按模块实际去找的那个形状写。对不上就是 QQ 换了签名、钩子挂空。
+     */
+    private static final String[][] SUBSYSTEMS = {
+            // 踢线 / 登出
+            {"mqq.app.MainService$MyErrorHandler", "onKicked", "-1", "kick entry"},
+            {"mqq.app.MainService$MyErrorHandler", "onUserTokenExpired", "-1", "token expired"},
+            {"mqq.app.MainService$MyErrorHandler", "onGrayError", "-1", "soft kick"},
+            {"mqq.app.MainService$MyErrorHandler", "popupNotification", "-1", "kick popup"},
+            {"mqq.app.AppRuntime", "logout", "-1", "logout guard"},
+            {"com.tencent.mobileqq.kick.NTKickProcessor", "a", "-1", "nt-kick"},
+            {"com.tencent.mobileqq.kick.NTKickProcessor", "b", "-1", "nt-kick inner"},
+            {"com.tencent.mobileqq.login.ntlogin.ao", "f", "2", "ticket-refresh"},
+            {"com.tencent.mobileqq.login.api.impl.UidServiceImpl", "kickToLoginPage", "0", "uid-fail"},
+            // 检测面
+            {"com.tencent.mobileqq.qsec.qsecurity.QSec", "detectMethod", "-1", "QSec detect"},
+            {"com.tencent.mobileqq.qsec.qsecurity.QSec", "getXpsInfo", "-1", "QSec xps"},
+            {"com.tencent.mobileqq.qsec.qsecurity.QSec", "execTasks", "2", "QSec tasks"},
+            {"com.tencent.mobileqq.qsec.qsecurity.QSec", "reportLog", "4", "QSec report"},
+            {"com.tencent.mobileqq.qsec.qsecurity.utils.SocketStatus", "checkSocket", "1", "socket probe"},
+            {"com.tencent.mobileqq.channel.ChannelManager", "sendMessage", "3", "channel out"},
+            // 出站口在 ChannelProxyExt 上；ChannelProxy 只有抽象 sendMessageInner
+            // （ChannelManager.sendMessage → mChannelProxy.sendMessageInner）。9.3.60 与 9.3.65 都是这个形状。
+            {"com.tencent.mobileqq.channel.ChannelProxyExt", "sendMessage", "4", "channel out ext"},
+            {"com.tencent.mobileqq.channel.ChannelProxy", "sendMessageInner", "3", "channel out inner"},
+            {"com.tencent.mobileqq.dt.api.impl.QSecChannelImpl", "feEnvReport", "4", "face env report"},
+            {"com.tencent.mobileqq.dt.api.impl.QSecChannelImpl", "feCameraActionReport", "8", "face camera report"},
+            {"com.tencent.mobileqq.dt.api.impl.QSecChannelImpl", "sendRequest", "4", "dt sendRequest"},
+            {"com.tencent.mobileqq.dt.app.MainProcess2Fe", "k", "4", "dt dispatch"},
+            {"com.tencent.mobileqq.dt.web.O3BusinessHandler", "P2", "3", "o3 event"},
+            {"com.tencent.mobileqq.dt.web.O3BusinessHandler", "Q2", "4", "o3 event inner"},
+            {"com.tencent.mobileqq.msf.sdk.MsfServiceSdk", "getSecDispatchEventMsg", "1", "sec dispatch"},
+            {"com.tencent.mobileqq.msf.core.MsfCore", "sendSsoMsg", "1", "msf out"},
+            {"com.tencent.mobileqq.msf.core.MsfCore", "addRespToQuque", "-1", "msf in"},
+            {"com.tencent.qmethod.pandoraex.core.MonitorReporter", "report", "-1", "pandora report"},
+            // 人脸核身（慧眼 + TuringFace）
+            {"com.tencent.turingcam.TuringFaceDefender", "getDeviceInfo", "1", "turing face device"},
+            {"com.tencent.turingcam.TuringFaceDefender", "init", "1", "turing face init"},
+            {"com.tencent.turingcam.TuringFaceDefender", "signData", "1", "turing face sign"},
+            {"com.tencent.turingcam.oqKCa", "a", "1", "turing process scan"},
+            {"com.tencent.could.huiyansdk.turingmodule.TuringSdkImp", "a", "0", "huiyan turing error"},
+            {"com.tencent.could.huiyansdk.turingmodule.TuringSdkImp", "b", "0", "huiyan turing device"},
+            {"com.tencent.mobileqq.identification.IdentificationIpcServer", "onCall", "3", "face ipc"},
+            {"com.tencent.mobileqq.identification.IdentificationHuiyanSDKInitHelper", "g", "2", "face app conf"},
+            {"com.tencent.mobileqq.identification.IdentificationHuiyanSDKInitHelper", "h", "2", "face sdk start"},
+    };
+
     /** 静态自检：类在不在、字段在不在、回调形状对不对。不发任何内核请求。 */
-    public static JSONObject audit(Ref ref, String qqVersion) throws Exception {
-        JSONObject out = new JSONObject();
+    public static JSONObject audit(Ref ref, String qqVersion) throws Exception {        JSONObject out = new JSONObject();
         JSONArray missing = new JSONArray();
         int ok = 0;
 
@@ -261,19 +320,57 @@ public final class Compat {
         }
         JSONObject callbacks = new JSONObject().put("ok", ok).put("total", CALLBACKS.length);
 
-        int total = TYPES.length + SERVICES.length + STRUCT_FIELDS.length + CALLBACKS.length;
+        ok = 0;
+        for (String[] entry : SUBSYSTEMS) {
+            Class<?> cls = ref.clsOrNull(entry[0]);
+            boolean complete = cls != null;
+            if (complete && entry[1] != null && !entry[1].isEmpty()) {
+                int argc = -1;
+                try { argc = Integer.parseInt(entry[2]); } catch (Throwable ignore) {}
+                complete = argc < 0 ? hasMethodNamed(cls, entry[1]) : hasMethod(cls, entry[1], argc);
+                if (!complete) {
+                    missing.put(new JSONObject().put("kind", "subsystem")
+                            .put("name", entry[0] + "." + entry[1])
+                            .put("detail", entry[3]).put("argc", entry[2]));
+                }
+            } else if (!complete) {
+                missing.put(new JSONObject().put("kind", "subsystem")
+                        .put("name", entry[0]).put("detail", entry[3]));
+            }
+            if (complete) ok++;
+        }
+        JSONObject subsystems = new JSONObject().put("ok", ok).put("total", SUBSYSTEMS.length);
+
+        int total = TYPES.length + SERVICES.length + STRUCT_FIELDS.length + CALLBACKS.length
+                + SUBSYSTEMS.length;
         out.put("qq_version", qqVersion == null ? "" : qqVersion);
         out.put("checked_epoch_ms", System.currentTimeMillis());
         out.put("ok", missing.length() == 0);
         out.put("passed", types.optInt("ok") + services.optInt("ok") + structs.optInt("ok")
-                + callbacks.optInt("ok"));
+                + callbacks.optInt("ok") + subsystems.optInt("ok"));
         out.put("total", total);
         out.put("types", types);
         out.put("services", services);
         out.put("structs", structs);
         out.put("callbacks", callbacks);
+        out.put("subsystems", subsystems);
         out.put("missing", missing);
         return out;
+    }
+
+    /** 只按名字查方法（-1 参数个数那条用）。 */
+    static boolean hasMethodNamed(Class<?> cls, String name) {
+        for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
+            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals(name)) return true;
+            }
+            for (Class<?> itf : c.getInterfaces()) {
+                for (java.lang.reflect.Method m : itf.getDeclaredMethods()) {
+                    if (m.getName().equals(name)) return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** 方法存在性：按名字与参数个数匹配，不比对具体类型（QQ 用 long/ArrayList 等基本形状）。 */

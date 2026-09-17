@@ -611,3 +611,29 @@ su -c "sh scripts/qq-satori-exposure-audit.sh diff 旧快照 新快照"
 ```
 
 `test.sh` 跑 JVM 单测后，用 clang 编译 `tests/mapshide-filter-test.c` 并执行，校验黑名单、`/proc` 路径分类、属性改写与风险载荷匹配。该测试用 aarch64 的 `svc` 指令，只能在设备上跑。
+
+## 9.3.65（versionCode 16240）适配核对
+
+2026-09-18 04:21 QQ 自动更新到 **9.3.65 / 16240**（上一版 9.3.60.40970 / 16070）。逐个核过，
+**结论是不用改代码**，证据如下。
+
+- **Java 相关包逐类相同**：把两版 dex 里 `com/tencent/mobileqq/{qsec,dt,channel,kick,identification,msf,qqsec}`、
+  `com/tencent/{turingcam,turingfd,tfd,could,qmethod,soter}` 与 `mqq/app/MainService` 的类描述符抽出来比，
+  都是 **3404 条，无增无减**。所以没有新检测入口，也没有改名。
+- **native 只有 libfekit 变了**，其余检测库 md5 全同（libturingxq / libturingmfa / libQSec /
+  libmsfbootV2 / libMSFKernel / libYTCommon）。新 libfekit：
+  - 导入符号 **232 条逐条一致**（mapshide 补的 GOT 槽一个没少）→ `is_detector_path` 与包装符号不用动；
+  - 命令表 **431 条一致**（QSec_Channel 那 5 条 `0x9c00/0x9c01/0x9c02/0x9c0c/0x9cdf_1` 还在）；
+  - 字符串集合无新增检测关键字（新增 59 条全是代码字节噪声）。
+- **真机装完照常绑**：`hardening=73`、`kick_hook=12`、`logout_guard=5`、`login_state=2`、
+  `token_expired=1`、`allowed_logout=3`、`face.hooks={face_report:3,turing_face:3,turing_process:1}`；
+  native 自检 `patched=63 / fekit=37 / turingxq=21 / msfbootV2=5 / loop_ok=1`（与 16070 一致）。
+- **新增**：`Compat` 多一张「非内核面」表（36 项），把踢线入口、检测面（QSec / ChannelProxy /
+  dt 的 O3 派发 / MSF 收发）与人脸链路（慧眼 + TuringFace）的类与方法也纳入静态自检。上面四张表
+  只管 `com.tencent.qqnt.kernel*`，而升级时真正静默坏掉的往往是这一批——现在 `/healthz` 的
+  `compat.missing` 会直接点名（条目格式 `{类, 方法, 参数个数, 标签}`，参数个数 `-1` 表示只查名字）。
+- 这张表第一次跑就抓到一条**表本身的错**：`ChannelProxy.sendMessage`。出站口其实在
+  `ChannelProxyExt`（4 参）与 `ChannelManager`（3 参）上，`ChannelProxy` 只有抽象的
+  `sendMessageInner`（3 参）——9.3.60 与 9.3.65 都是这个形状，模块的动态发现
+  （`ChannelManager.mChannelProxy`）本来就绕开了这一层。条目已按实测形状改掉。
+  `POST /v1/internal/compat {"force":true}` 能拿到完整报告（`missing` 会点名到方法）。

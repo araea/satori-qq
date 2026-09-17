@@ -199,15 +199,40 @@ KKICKBYMULTIINST(0), KKICKBYMOBILE(1), KKICKBYPASSWORDCHANGE(2), KKCIKBYLOWVERSI
 
 ### 还没解决的部分（别当成已修）
 
+**2026-09-18 追到根因了：这条提示是硬件认证（Key Attestation）拿不到，服务端给的 413。**
+
+- 服务端返回的码是 **`ret=413`**，客户端没有对 413 的任何分支（`grep 413` 在
+  identification/activity 里只有无关命中），所以它一路进 bundle → `errMsg` → 结果页。
+- 读法（可重复）：把 `databases/beacon_db_com.tencent.mobileqq:MSF*` 拷出来，搜
+  `tagIdentificationErrorCode`，里面就是 `errorCode` 与 `errorMsg` 两个字段。2026-09-18 02:37
+  那次是 `errorCode=413`、`param_appid=537389189`（人脸服务 appId）。
+- 人脸的风险引擎 TuringFace（`com.tencent.turingcam`，244 个混淆类）里带一整套**硬件认证**：
+  `wiSNn` 用 `android.security.keystore.KeyGenParameterSpec` 建带 challenge 的密钥、
+  `k7FCJ` 通过 Binder 连 **Soter** 服务取认证、`nq6Fd`/`d3EI1` 解析证书里的 attestation extension。
+  `d3EI1` 把**整条证书链**（每一张都 base64）都放进上报的 JSON，也就是链是要送到服务端校验的。
+- 本机拿不到这条链。2026-09-18 用机内 Java 测试台（`~/ddwork/envharden/kt.dex`）当场复现：
+  带 `ATTESTATION_CHALLENGE` 的 EC 密钥生成抛
+  `ProviderException: Failed to generate key pair` → `KeyStoreException: -74`
+  → `Error::Km(ATTESTATION_KEYS_NOT_PROVISIONED)`。原因是解锁 bootloader 后厂商撤销了认证密钥供给，
+  而补供给要走 Google 的 RKP（本机不可达）。
+- 所以「安全设备」= 能出有效硬件认证的设备。这条**客户端改不了**：签名在 TEE 里做、链要
+  服务端对着 Google 硬件根校。改属性、改 GOT、hook Java 都到不了这一层。就算哪天 RKP 把密钥领回来，
+  认证里照样写着 `bootloader_state=unlocked` / `verified_boot_state=unverified`（`cmd remote_provisioning
+  csr default` 的 CSR 明文），服务端还是不会认。回到「TEE 卡是终局」那条结论。
+- 能真解决的两条路只有：换一台没解过 bootloader 的设备做这次认证，或者把这台机器刷回锁定的官方系统
+  （等于放弃 root）。**不要在这个方向上继续加 hook。**
+- 另一条独立的现象：两次现场里慧眼自己的活体也没过（`errorcode:1007 活体检测没通过，请重试`，
+  见 `Android/data/com.tencent.mobileqq/files/cloud-huiyan/log/*.ailog`）。这和 413 是两件事，
+  413 是 QQ 自己那条人脸请求的结论。
+
 - **判定在服务端**，客户端做的只是「别把脏数据送上去」。服务端如果已经存了这台设备的历史
-  风险结论，本地怎么改都不会变。2026-09-18 01:35 那次现场里，慧眼 SDK 其实**跑完了整套活体流程**，
-  最后停在 `errorcode:1007 活体检测没通过，请重试`（`cloud-huiyan` 日志），
-  也就是服务端当时是肯处理这个设备的——所以 `设备环境异常` 更可能是前面那次
-  `FaceQueryAppConf` / `face_usable` 的响应，而不是慧眼上报的结果。
+  风险结论，本地怎么改都不会变。
 - 因此 `block_face_report` 是**单独开关**，默认 true。关掉它等于把慧眼采集的那批数据放行；
   服务端如果依赖这批数据做判定，关掉反而更脏。要不要关只能 A/B：`/healthz` 的
   `face.dropped` 能看出这批数据是不是真被丢了，`face.hooks.*` 为 0 说明钩子没挂上
   （QQ 改了类名/方法名），要按 0 处理而不是「没发生过」。
+  **2026-09-18 02:37 的现场里 `face.dropped=0`**：这条通道根本没被用到，0.14.0 加的钩子
+  不是这次失败的原因（留着是因为那批数据确实不该出站）。
 - 未覆盖：`com.tencent.turingcam` 的混淆类里那些直接读 `Build.*`、`/proc` 的采集
   （`AV6dE`、`FxCVY`、`LwgsO`、`QjsR0` 等）没有逐个接管；它们的数据最终经 native
   `libturingmfa` 拼装，native 那一层靠 GOT 过滤。
@@ -547,7 +572,7 @@ dumpsys notification → 模块的常驻通知在（channel satori-qq-status，�
 - 内核与挂载命名空间。Magisk、KernelSU、APatch 的挂载点由内核层暴露。模块只在检测库进程内过滤 maps 与 mountinfo，检测方换一条模块没接管的通道，或直接读内核，就绕开了
 - ArtMethod 完整性。`libfekit.so` 带 `parse_libart.cpp` 与整套 `art::CheckJNI` 符号，可以对比运行时方法入口与磁盘上的 `libart.so`。Xposed 与 LSPlant 的 ArtMethod 改写不在本模块覆盖范围。核实：`strings -a libfekit.so | grep -E 'CheckJNI|parse_libart'`
 - 服务端风控。这一层在客户端拦不住，腾讯仍按历史行为、设备指纹变化与网络环境打分。2026-09-15 那次排查把客户端能看的都看了一遍，没有异常项，所以那两次踢线（`kickType=0` + `sameDevice=0` + 普通强踢）更可能是服务端侧的判断
-- 人脸核身的「设备环境异常」判定。2026-09-18 核过：那句话是服务端 SSO 响应里的错误串（客户端没有这条字符串），模块只能做到不把慧眼采集的脏数据送上去，改不了服务端已经存下的结论（见上面那节）
+- 人脸核身的「设备环境异常」判定。2026-09-18 追到根因：服务端 `ret=413`，理由是**本机出不了有效的硬件认证**（TuringFace 要 Key Attestation，本机 `generateKey` 报 `-74 ATTESTATION_KEYS_NOT_PROVISIONED`，链要服务端对着 Google 硬件根校）。改属性/GOT/Java hook 都到不了这一层，换设备或刷回锁定系统才行（见上面那节）
 - 进程内内存关键字扫描。检测方读自己进程的堆或栈（`memchr` 扫一段内存），模块引用的 Xposed 类名就在里面；这条路不经过文件，GOT 与 `/proc` 过滤都用不上
 - 多后端交叉校验。同一个事实用 libc、裸 syscall、汇编三种方式各读一次再比对，模块只改得了其中 libc 那条。libfekit 现在只用 libc，一旦它照着这个思路改，`/proc` 文本过滤的收益会明显下降
 

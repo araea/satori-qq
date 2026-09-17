@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.13.5";
+    public static final String APP_VERSION = "0.13.6";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -3222,7 +3222,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         try {
             messageFreshness.check(condition); // after OutboundGuard's queue and minimum interval
             java.util.List<java.util.List<Elements.El>> batches = splitMessages(Elements.parse(content));
-            for (java.util.List<Elements.El> batch : batches) {
+            // 顺媒体（语音/视频/群文件）与别的段落放同一条消息里时 QQ 渲染不出来，
+            // 在这里兼容成几条发出去——见 Batching。
+            java.util.ArrayList<java.util.List<Elements.El>> sends = new java.util.ArrayList<>();
+            for (java.util.List<Elements.El> batch : batches)
+                sends.addAll(com.satori.qq.satori.Batching.splitChunkMedia(batch));
+            for (java.util.List<Elements.El> batch : sends) {
                 messageFreshness.check(condition);
                 String sentContent = Elements.stringify(batch);
                 resolveInternalResources(batch);

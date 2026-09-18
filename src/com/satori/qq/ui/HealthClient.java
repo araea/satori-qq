@@ -42,7 +42,7 @@ public final class HealthClient {
         out.append("本机端口：").append(port).append('\n');
         if (health == null) return out.append("状态：未能连接本机服务\n不包含令牌、QQ 账号或消息内容。\n").toString();
         out.append("检查时间：").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(new java.util.Date(checkedAt))).append('\n');
-        for (String key : new String[]{"version", "qq_version", "online", "listening", "connections", "config_revision", "config_status"}) {
+        for (String key : new String[]{"version", "qq_version", "online", "listening", "connections", "config_revision", "config_status", "blocked_kicks", "last_kick_epoch_ms"}) {
             out.append(key).append(": ").append(health.opt(key)).append('\n');
         }
         JSONObject compat = health.optJSONObject("compat");

@@ -6,10 +6,10 @@ public final class ManagedConfigTest {
     public static void main(String[] args) throws Exception {
         Cfg cfg = new Cfg();
         JSONObject input = ManagedConfig.snapshot(cfg);
-        input.put("port", 4321).put("token", "secret-not-logged").put("wifi_sustain", false).put("media_retry_attempts", 4);
+        input.put("port", 4321).put("token", "secret-not-logged").put("wifi_sustain", false).put("anti_detect", false);
         ManagedConfig.apply(cfg, input);
         check(cfg.port == 4321 && cfg.token.equals("secret-not-logged"), "managed connection applied");
-        check(cfg.mediaRetryAttempts == 2 && !cfg.wifiSustain, "advanced file settings preserved");
+        check(cfg.antiDetect && !cfg.wifiSustain, "advanced file settings preserved");
         for (Object port : new Object[]{0, 1023, 65536, 3001.5, "3001"}) {
             JSONObject invalid = new JSONObject(input.toString()).put("port", port);
             reject(invalid); check(cfg.port == 4321, "invalid config does not mutate original");
@@ -23,7 +23,7 @@ public final class ManagedConfigTest {
         } catch (IllegalArgumentException expected) {}
         check(cfg.port == 4321 && cfg.token.equals("secret-not-logged"), "validation is atomic");
         JSONObject clean = ManagedConfig.validate(new JSONObject(input.toString()).put("port", 65535).put("token", ""));
-        check(!clean.has("media_retry_attempts"), "unknown settings stripped");
+        check(!clean.has("anti_detect"), "unknown settings stripped");
         check(clean.getString("token").isEmpty(), "empty legacy token remains valid");
         System.out.println("ManagedConfigTest passed");
     }

@@ -46,7 +46,9 @@ public final class PacketSvc {
     /**
      * 模块自己发的 SSO 请求回来的失败记录。
      *
-     * <p>QQ 客户端在若干错误码上会认定登录票据失效，然后走「刷新票据失败 → 踢回登录页」那条链：
+     * <p>为什么单独记这个：被服务端踢下线有两种性质完全不同的成因。一种是设备环境被检测出来，
+     * 另一种是**接口层把会话打废**——QQ 客户端在若干错误码上会认定登录票据失效，然后走
+     * 「刷新票据失败 → 踢回登录页」那条链：
      *
      * <ul>
      *   <li>{@code login.ntlogin.ao.f(int, String)}：错误码 140022014 / 140022015 / 140022016
@@ -55,9 +57,10 @@ public final class PacketSvc {
      *       -10135 或 10136。</li>
      * </ul>
      *
-     * 模块自己造的 SSO 请求（OIDB 与裸 trpc）如果撞上这一组码，说明是接口调用把会话打废的；
-     * 如果一条都没有，方向就回到服务端主动下发的强制下线。失败逐条落盘
-     * （{@code qk_sso.log}，app 私有目录 0600）。记录只是观测，不改任何行为。
+     * 模块自己造的 SSO 请求（OIDB 与裸 trpc）如果撞上这一组码，那「是接口调用把会话打废的、
+     * 不是反检测不够」这个判断就成立；如果踢线发生时这里一条都没有，方向就回到服务端主动下发的
+     * 强制下线。所以这里把失败逐条落盘（{@code qk_sso.log}，app 私有目录 0600），时间戳可以直接
+     * 和 {@code qk_kick.log} 对。记录只是观测，不改任何行为。
      */
     private static final AtomicLong SSO_FAILURES = new AtomicLong();
     private static final AtomicLong SSO_SESSION_ERRORS = new AtomicLong();
@@ -262,7 +265,7 @@ public final class PacketSvc {
         appendPrivate("/data/data/com.tencent.mobileqq/files", "qk_sso.log", line);
     }
 
-    /** 追加一行到 app 私有目录，超 64KB 只留尾部 32KB。 */
+    /** 追加一行到 app 私有目录，超 64KB 只留尾部 32KB。与 AntiDetect 里那份同口径。 */
     private static void appendPrivate(String dir, String name, String line) {
         try {
             java.io.File d = new java.io.File(dir);

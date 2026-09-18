@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # JVM 单元测试。只跑不碰 QQ 内核的纯逻辑部分（元素编解码、协议信令、存储、
-# 内部动作的确定性计算）；真机行为仍靠 tests/ws-health.js 与
+# 反检测统计、内部动作的确定性计算）；真机行为仍靠 tests/ws-health.js 与
 # scripts/ 下的现场脚本。
 #
 # NOTE: libs/json.jar 与 libs/r8.jar 一样被 gitignore。首次克隆后下载一次：
@@ -63,3 +63,15 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 echo "== DONE: $total passed =="
+
+echo "== 3. native filter =="
+# mapshide-filter-test.c includes native/mapshide.c and exercises its static parsers on-device
+# (raw_svc is aarch64 svc, so this runs under Termux, not on a build host).
+CLANG=/data/data/com.termux/files/usr/bin/clang
+if [ -x "$CLANG" ]; then
+  "$CLANG" -O0 -o "$OUT/mapshide-filter-test" "$R/tests/mapshide-filter-test.c" -llog
+  "$OUT/mapshide-filter-test"
+  echo "   ok   mapshide filter"
+else
+  echo "   skip native filter test (clang not found)"
+fi

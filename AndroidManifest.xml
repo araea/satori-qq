@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.satori.qq"
-    android:versionCode="103"
-    android:versionName="0.19.0">
+    android:versionCode="104"
+    android:versionName="0.20.0">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <queries><package android:name="com.tencent.mobileqq" /></queries>
@@ -14,7 +14,8 @@
         android:theme="@style/AppTheme"
         android:allowBackup="false"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:hasCode="true">
+        android:hasCode="true"
+        android:extractNativeLibs="true">
         <provider android:name=".control.ControlProvider" android:authorities="com.satori.qq.control" android:exported="true" />
         <activity android:name=".ui.MainActivity" android:exported="true">
             <intent-filter>

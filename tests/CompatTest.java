@@ -39,6 +39,10 @@ public final class CompatTest {
         check(Compat.hasMethod(Derived.class, "open", 1), "重载按个数区分");
         check(!Compat.hasMethod(Derived.class, "open", 2), "没有 2 参重载");
         check(Compat.hasMethod(Derived.class, "baseOnly", 2), "父类方法也算");
+        // -1 参数个数那条走 hasMethodNamed：只要名字在就算命中（重载多、形状不固定的入口）。
+        check(Compat.hasMethodNamed(Derived.class, "open"), "只按名字命中重载");
+        check(Compat.hasMethodNamed(Derived.class, "baseOnly"), "只按名字命中父类方法");
+        check(!Compat.hasMethodNamed(Derived.class, "renameMe"), "名字不存在则不命中");
 
         check(Compat.hasField(Derived.class, "groupCode"), "父类字段也算");
         check(!Compat.hasField(Derived.class, "missingField"), "不存在的字段");

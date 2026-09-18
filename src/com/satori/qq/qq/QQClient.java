@@ -247,11 +247,6 @@ public final class QQClient {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getRichMediaService"); } catch (Throwable t) { return null; }
     }
-    /** The robot service is only reachable on builds that registered it; null is normal. */
-    public Object getRobotService() {
-        Object s = session; if (s == null) return null;
-        try { return ref.call(s, "getRobotService"); } catch (Throwable t) { return null; }
-    }
     public Object getRecentContactService() {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getRecentContactService"); } catch (Throwable t) { return null; }
@@ -434,10 +429,6 @@ public final class QQClient {
             }
         } catch (Throwable ignore) {}
         return false;
-    }
-    public void learnSelf(String uin, String nick) {
-        if (uin != null && !uin.isEmpty()) selfUin = uin;
-        if (nick != null && !nick.isEmpty()) selfNick = nick;
     }
     private String tryStr(Object o, String m) { try { return Ref.asStr(ref.call(o, m)); } catch (Throwable t) { return null; } }
 
@@ -1701,8 +1692,6 @@ public final class QQClient {
         return "";
     }
 
-    /** peerUid for a group is the group code string; for c2c it's the target's uid. */
-    public String groupPeer(long groupCode) { return String.valueOf(groupCode); }
 
     // ---------- group queries ----------
     private final java.util.Map<Long, Object> groupInfoCache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -2046,10 +2035,6 @@ public final class QQClient {
             ref.call(gs, "modifyMemberRole", groupCode, uid, role, cb);
         });
     }
-    public OpResult quitGroup(long groupCode) {
-        return awaitGroup(OPERATE_CB, "quitGroup",
-                (gs, cb) -> ref.call(gs, "quitGroup", groupCode, cb));
-    }
     public OpResult setGroupName(long groupCode, String name) {
         final String wanted = name == null ? "" : name;
         final boolean normalMember = isNormalGroupMember(groupCode);
@@ -2170,10 +2155,6 @@ public final class QQClient {
         });
     }
 
-    public OpResult setGroupRemark(long groupCode, String remark) {
-        return awaitGroup(OPERATE_CB, "modifyGroupRemark",
-                (gs, cb) -> ref.call(gs, "modifyGroupRemark", groupCode, remark == null ? "" : remark, cb));
-    }
 
     public boolean callHonorAioService(long groupCode, boolean open) {
         try {
@@ -2195,9 +2176,6 @@ public final class QQClient {
         return gi == null ? 0 : Ref.asInt(ref.get(gi, "groupFlagExt3"));
     }
 
-    public boolean honorAioOpen(long groupCode) {
-        return (groupFlagExt3(groupCode) & HONOR_AIO_FLAG) == 0;
-    }
 
     /**
      * Force-read group title-display flags via IKernelGroupService.getMemberExtInfo.
@@ -2265,29 +2243,6 @@ public final class QQClient {
         return out;
     }
 
-    /**
-     * NT write for member-title display: SetGroupMemberNewExtInfo.
-     * Class fields vary by QQ build; set whatever title-flag names exist.
-     */
-    public OpResult setMemberExtShowFlag(long groupCode, boolean show) {
-        String reqName = "com.tencent.qqnt.kernel.nativeinterface.SetGroupMemberExtInfoReq";
-        if (ref.clsOrNull(reqName) == null) {
-            OpResult missing = new OpResult();
-            missing.msg = "SetGroupMemberExtInfoReq missing";
-            return missing;
-        }
-        return awaitGroup(OPERATE_CB, "SetGroupMemberNewExtInfo", (gs, cb) -> {
-            Object req = ref.neu(reqName);
-            try { ref.put(req, "groupCode", groupCode); } catch (Throwable ignore) {}
-            int flag = show ? 1 : 0;
-            for (String name : new String[]{
-                    "userShowFlag", "user_show_flag", "showFlag", "show_flag",
-                    "cGroupRankUserFlag", "rankUserFlag"}) {
-                try { ref.put(req, name, flag); } catch (Throwable ignore) {}
-            }
-            ref.call(gs, "SetGroupMemberNewExtInfo", req, cb);
-        });
-    }
 
     /** Local DB write so AIO reads cGroupRankUserFlag without waiting for a push. */
     public java.util.List<String> dumpClassFields(String className) {
@@ -2699,241 +2654,4 @@ public final class QQClient {
         }
     }
 
-    public Object getTicketService() {
-        Object s = session;
-        if (s == null) return null;
-        try { return ref.call(s, "getTicketService"); } catch (Throwable t) { return null; }
-    }
-
-    public Object getTipOffService() {
-        Object s = session;
-        if (s == null) return null;
-        try { return ref.call(s, "getTipOffService"); } catch (Throwable t) { return null; }
-    }
-
-    public Object getTicketManager() {
-        Object runtime = appRuntime();
-        if (runtime == null) return null;
-        try { return ref.call(runtime, "getManager", 2); } catch (Throwable t) { return null; }
-    }
-
-    /** NT ticket service → clientKey for ptlogin jump (Android: async callback). */
-    public String fetchClientKey() throws Exception {
-        Object ticket = getTicketService();
-        if (ticket == null) throw new IllegalStateException("ticket service not ready");
-        final CountDownLatch latch = new CountDownLatch(1);
-        final int[] code = new int[]{-1};
-        final String[] key = new String[]{""};
-        final String[] msg = new String[]{""};
-        Object cb = Proxy.newProxyInstance(ref.cl,
-                new Class[]{ref.cls("com.tencent.qqnt.kernel.nativeinterface.IClientKeyCallback")},
-                (proxy, m, a) -> {
-                    if ("onResult".equals(m.getName()) && a != null && a.length >= 2) {
-                        code[0] = Ref.asInt(a[0]);
-                        if (a.length >= 2) msg[0] = Ref.asStr(a[1]);
-                        if (a.length >= 5) key[0] = Ref.asStr(a[4]);
-                        if (key[0].isEmpty() && a.length >= 3) key[0] = Ref.asStr(a[2]);
-                        if (key[0].isEmpty() && a.length >= 2) key[0] = Ref.asStr(a[1]);
-                        latch.countDown();
-                    }
-                    return null;
-                });
-        ref.call(ticket, "forceFetchClientKey", "", cb);
-        if (!latch.await(20, TimeUnit.SECONDS))
-            throw new IllegalStateException("forceFetchClientKey timeout");
-        if (code[0] != 0 || key[0].isEmpty())
-            throw new IllegalStateException("forceFetchClientKey failed: code=" + code[0] + " " + msg[0]);
-        return key[0];
-    }
-
-    @SuppressWarnings("unchecked")
-    public String fetchPskeyViaManager(String domain) throws Exception {
-        Object runtime = appRuntime();
-        if (runtime == null) throw new IllegalStateException("runtime not ready");
-        Object mgr = ref.call(runtime, "getRuntimeService",
-                ref.cls("com.tencent.mobileqq.pskey.api.IPskeyManager"), "");
-        if (mgr == null) throw new IllegalStateException("IPskeyManager not ready");
-        final CountDownLatch latch = new CountDownLatch(1);
-        final String[] out = new String[]{""};
-        final String[] err = new String[]{""};
-        Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls("s92.a")}, (proxy, m, a) -> {
-            if ("onSuccess".equals(m.getName()) && a != null && a.length >= 1) {
-                Object map = a[0];
-                if (map instanceof java.util.Map) {
-                    Object v = ((java.util.Map<?, ?>) map).get(domain);
-                    if (v != null) out[0] = Ref.asStr(v);
-                    else for (Object val : ((java.util.Map<?, ?>) map).values())
-                        if (val != null) { out[0] = Ref.asStr(val); break; }
-                }
-                latch.countDown();
-            } else if ("onFail".equals(m.getName())) {
-                if (a != null && a.length >= 1) err[0] = Ref.asStr(a[0]);
-                latch.countDown();
-            }
-            return null;
-        });
-        ref.call(mgr, "getPskey", new String[]{domain}, cb);
-        if (!latch.await(30, TimeUnit.SECONDS))
-            throw new IllegalStateException("pskey manager timeout");
-        if (!out[0].isEmpty()) return out[0];
-        throw new IllegalStateException("pskey manager failed: " + err[0]);
-    }
-
-    private void absorbWtTicket(Object ticket, String domain, String[] skey, String[] pskey) {
-        if (ticket == null) return;
-        try {
-            Object sig = ref.get(ticket, "_sig");
-            if (sig instanceof byte[]) {
-                byte[] bytes = (byte[]) sig;
-                if (bytes.length > 0 && (skey[0] == null || skey[0].isEmpty()))
-                    skey[0] = new String(bytes, StandardCharsets.UTF_8);
-            }
-        } catch (Throwable ignore) {}
-        try {
-            String ps = Ref.asStr(ref.call(ticket, "getPskey", domain));
-            if (!ps.isEmpty()) pskey[0] = ps;
-        } catch (Throwable ignore) {}
-    }
-
-    /** WtLogin async ticket fetch (skey + pskey), safe on Android. */
-    public void fetchWtLoginTicket(String account, String domain, String[] skey, String[] pskey)
-            throws Exception {
-        Object ticketMgr = getTicketManager();
-        if (ticketMgr == null) throw new IllegalStateException("ticket manager not ready");
-        final CountDownLatch latch = new CountDownLatch(1);
-        final String[] sk = new String[]{skey[0] == null ? "" : skey[0]};
-        final String[] ps = new String[]{pskey[0] == null ? "" : pskey[0]};
-        Object cb = Proxy.newProxyInstance(ref.cl,
-                new Class[]{ref.cls("oicq.wlogin_sdk.request.WtTicketPromise")},
-                (proxy, m, a) -> {
-                    if ("Done".equals(m.getName()) && a != null && a.length >= 1) {
-                        absorbWtTicket(a[0], domain, sk, ps);
-                        latch.countDown();
-                    } else if ("Failed".equals(m.getName()) || "Timeout".equals(m.getName())) {
-                        latch.countDown();
-                    }
-                    return null;
-                });
-        Object ticket = ref.call(ticketMgr, "getPskey", account, 16L, new String[]{domain}, cb);
-        absorbWtTicket(ticket, domain, sk, ps);
-        if (sk[0].isEmpty() || ps[0].isEmpty()) {
-            if (!latch.await(30, TimeUnit.SECONDS))
-                throw new IllegalStateException("wtlogin ticket timeout");
-        }
-        if (!sk[0].isEmpty()) skey[0] = sk[0];
-        if (!ps[0].isEmpty()) pskey[0] = ps[0];
-    }
-
-    /** TipOff NT callback — avoid on Android (process crash). Kept for reference. */
-    @SuppressWarnings("unchecked")
-    public String fetchPskey(String domain) throws Exception {
-        Object tipOff = getTipOffService();
-        if (tipOff == null) throw new IllegalStateException("tipoff service not ready");
-        java.util.ArrayList<String> domains = new java.util.ArrayList<>();
-        domains.add(domain);
-        final CountDownLatch latch = new CountDownLatch(1);
-        final int[] code = new int[]{-1};
-        final String[] msg = new String[]{""};
-        final java.util.Map<String, String>[] mapHolder = new java.util.Map[1];
-        Object cb = Proxy.newProxyInstance(ref.cl,
-                new Class[]{ref.cls("com.tencent.qqnt.kernel.nativeinterface.IGetPskeyCallback")},
-                (proxy, m, a) -> {
-                    if ("onFetchPskey".equals(m.getName()) && a != null && a.length >= 1) {
-                        code[0] = Ref.asInt(a[0]);
-                        if (a.length >= 2) msg[0] = Ref.asStr(a[1]);
-                        if (a.length >= 3 && a[2] instanceof java.util.Map)
-                            mapHolder[0] = (java.util.Map<String, String>) a[2];
-                        latch.countDown();
-                    }
-                    return null;
-                });
-        ref.call(tipOff, "getPskey", domains, true, cb);
-        if (!latch.await(20, TimeUnit.SECONDS))
-            throw new IllegalStateException("getPskey timeout");
-        if (mapHolder[0] != null) {
-            String v = mapHolder[0].get(domain);
-            if (v != null && !v.isEmpty()) return v;
-            for (String val : mapHolder[0].values())
-                if (val != null && !val.isEmpty()) return val;
-        }
-        if (code[0] != 0)
-            throw new IllegalStateException("getPskey failed: code=" + code[0] + " " + msg[0]);
-        throw new IllegalStateException("getPskey empty for " + domain);
-    }
-
-    /** skey + p_skey(qzone.qq.com) via local TicketManager + ptlogin jump + TipOff pskey fallback. */
-    public QzoneSvc.Auth fetchQzoneAuth() throws Exception {
-        String uin = selfUin();
-        if (uin == null || uin.isEmpty()) throw new IllegalStateException("self uin not ready");
-        String account = uin;
-        Object runtime = appRuntime();
-        if (runtime != null) {
-            try {
-                String acc = Ref.asStr(ref.call(runtime, "getAccount"));
-                if (!acc.isEmpty()) account = acc;
-            } catch (Throwable ignore) {}
-        }
-        QzoneSvc.Auth a = new QzoneSvc.Auth();
-        a.uin = uin;
-        Object ticketMgr = getTicketManager();
-        if (ticketMgr != null) {
-            try { a.skey = Ref.asStr(ref.call(ticketMgr, "getRealSkey", account)); } catch (Throwable ignore) {}
-            if (a.skey == null || a.skey.isEmpty())
-                try { a.skey = Ref.asStr(ref.call(ticketMgr, "getSkey", account)); } catch (Throwable t) { L.e("getSkey", t); }
-            try { a.pskey = Ref.asStr(ref.call(ticketMgr, "getPskey", account, "qzone.qq.com")); } catch (Throwable t) { L.e("getPskey", t); }
-        }
-        if (a.skey == null) a.skey = "";
-        if (a.pskey == null) a.pskey = "";
-        if (!a.skey.isEmpty() && !a.pskey.isEmpty()) return a;
-        String clientKey = "";
-        if (ticketMgr != null) {
-            try { clientKey = Ref.asStr(ref.call(ticketMgr, "getStweb", account)); } catch (Throwable ignore) {}
-        }
-        if (a.pskey.isEmpty()) {
-            try { a.pskey = fetchPskeyViaManager("qzone.qq.com"); } catch (Throwable t) { L.e("fetchPskeyViaManager", t); }
-        }
-        if (a.skey.isEmpty() || a.pskey.isEmpty()) {
-            try {
-                String[] sk = new String[]{a.skey};
-                String[] ps = new String[]{a.pskey};
-                fetchWtLoginTicket(account, "qzone.qq.com", sk, ps);
-                if (!sk[0].isEmpty()) a.skey = sk[0];
-                if (!ps[0].isEmpty()) a.pskey = ps[0];
-            } catch (Throwable t) {
-                L.e("fetchWtLoginTicket", t);
-            }
-        }
-        if (ticketMgr != null) {
-            if (a.skey.isEmpty())
-                try { a.skey = Ref.asStr(ref.call(ticketMgr, "getRealSkey", account)); } catch (Throwable ignore) {}
-            if (a.skey.isEmpty())
-                try { a.skey = Ref.asStr(ref.call(ticketMgr, "getSkey", account)); } catch (Throwable ignore) {}
-            if (clientKey.isEmpty())
-                try { clientKey = Ref.asStr(ref.call(ticketMgr, "getStweb", account)); } catch (Throwable ignore) {}
-            if (a.pskey.isEmpty())
-                try { a.pskey = Ref.asStr(ref.call(ticketMgr, "getPskey", account, "qzone.qq.com")); } catch (Throwable ignore) {}
-        }
-        if (!a.skey.isEmpty() && !a.pskey.isEmpty()) return a;
-        if (!a.pskey.isEmpty()) return a;
-        if (clientKey.isEmpty()) throw new IllegalStateException("qzone auth: missing p_skey/stweb");
-        if (a.skey.isEmpty()) {
-            java.util.Map<String, String> skeyJar = QzoneSvc.cookiesFromJump(
-                    "https://ssl.ptlogin2.qq.com/jump?ptlang=1033&clientuin=" + uin
-                            + "&clientkey=" + clientKey
-                            + "&u1=https%3A%2F%2Fh5.qzone.qq.com%2Fqqnt%2Fqzoneinpcqq%2Ffriend%3Frefresh%3D0%26clientuin%3D0%26darkMode%3D0"
-                            + "&keyindex=19");
-            String skey = skeyJar.get("skey");
-            if (skey != null) a.skey = skey;
-        }
-        if (a.pskey.isEmpty()) {
-            java.util.Map<String, String> psJar = QzoneSvc.cookiesFromJump(
-                    "https://ssl.ptlogin2.qq.com/jump?ptlang=1033&clientuin=" + uin
-                            + "&clientkey=" + clientKey
-                            + "&u1=https%3A%2F%2Fuser.qzone.qq.com%2F" + uin + "%2Finfocenter&keyindex=19");
-            String ps = psJar.get("p_skey");
-            if (ps == null) ps = psJar.get("skey");
-            if (ps != null) a.pskey = ps;
-        }
-        return a;
-    }
 }

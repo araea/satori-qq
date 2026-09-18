@@ -14,7 +14,7 @@
 | `core` | 方法分发、事件、消息与文件标识管理 |
 | `satori` | Satori 元素与数据结构转换 |
 | `qq` | NT 会话、消息、媒体、保活与过检测 |
-| `packet` | OIDB、长消息与群文件封包 |
+| `packet` | OIDB 与合并转发封包 |
 | `native` | 检测库 GOT、`/proc` 与直接系统调用过滤 |
 
 主进程与 `:MSF` 进程都加载 `AntiDetect` 与 `MapsHide`。HTTP 服务、消息监听与保活组件只在主进程运行。
@@ -34,7 +34,7 @@
 | 路径 | 鉴权 | 用途 |
 | --- | --- | --- |
 | `POST /v1/{resource}.{method}` | 需要（配了 token 时） | Satori 标准方法 |
-| `POST /v1/internal/{name}` | 需要 | 模块自身的 QQ 扩展简写，`name` 可用 `.` / `_` / `-` 分隔，也接受 camelCase |
+| `POST /v1/internal/{name}` | 需要 | 模块自身的 QQ 扩展简写，`name` 可用 `.` / `_` / `-` 分隔，也接受 camelCase。0.17.0 起只剩出站动作、合并转发解析与模块自身的运维口，其余一律 404 |
 | `POST /v1/internal/{platform}/{selfId}/_api/{name}` | 需要 | `@satorijs/adapter-satori` 的 `bot.internal.*` 走法，参数按 `JsonForm` 编码，`Satori-Pagination: true` 时回 `{data, …}` |
 | `GET /v1/internal/{platform}/{selfId}/_tmp/{id}` | 免 | `upload.create` 返回的 `internal:` 资源回落地址 |
 | `GET /v1/assets/{id}` | 免 | 无令牌可达的本地图片资源（Koishi 渲染 `<img>` 用） |
@@ -122,7 +122,7 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'   # 或走客�
 5. QSec、Turing 与环境上报的命令白名单，以及 QSec 检测入口的类名与方法签名
 6. 主进程与 MSF 进程的 `/healthz` hook 计数及 `loop_ok`，以及 `internal/status` 的 `env_report.maps.libs` 里每个检测库各补了多少槽（某个库改名或消失会直接体现为对应项变 0）
 7. `libfekit.so`、`libturingxq.so`、`libmsfbootV2.so` 导出的 libc 符号与路径字符串，见 [`ANTIDETECT.md`](ANTIDETECT.md)
-8. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（跑 `tests/internal-kernel-probe.js` 之后看 `internal/compat` 的 `observed`）
+8. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（看 `internal/compat` 的 `observed`）
 9. 检测库 import 的字符串搜索符号有没有变（`llvm-nm -D lib*.so | grep ' U '` 看有没有新增 `strcasecmp` / `strnstr` 一类），变了就把 `native/mapshide.c` 的 `BLOCK` 判定接到同一个入口上
 10. Turing 的 POSIX ERE 黑名单（进程名、线程名、路径）有没有新增模式
 

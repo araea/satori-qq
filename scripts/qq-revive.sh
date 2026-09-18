@@ -13,7 +13,8 @@
 # 登录实例」的形状。所以现在：
 #
 #   1. 踢线后不再立刻 force-stop。先等 AFTER_KICK_WAIT 秒，再按重启预算决定是否重启。
-#      （「重启前先请模块补一次干净下线」这个做法实测有害，默认关，见 OFFLINE_FIRST 那段。）
+#      （「重启前先请模块补一次干净下线」这个做法实测有害，0.17.0 起模块那边也把
+#      `/v1/internal/offline` 撤掉了，这里不再调它。）
 #   2. 重启有硬预算：两次重启之间至少 MIN_RESTART_GAP 秒，任何 1 小时内最多
 #      MAX_RESTARTS_PER_HOUR 次。超预算只记一行 skip，不动 QQ。
 #   2b. 连续 FAIL_LIMIT 次重启都没换来在线就停手（giveup），等账号自己回到在线或再来一次
@@ -81,10 +82,6 @@ THAW_FAILS=${QQ_REVIVE_THAW_FAILS:-2}
 THAW_CLEAR_OKS=${QQ_REVIVE_THAW_CLEAR_OKS:-5}
 # 踢线之后先等一会儿再动手：给模块把「干净下线」发出去的时间，也避开踢线后立刻重登。
 AFTER_KICK_WAIT=${QQ_REVIVE_AFTER_KICK_WAIT:-120}
-# 重启前先请模块补一次干净下线（走 AppRuntime.logout 那条，服务端才收得到 offline）。
-# **默认关**：2026-09-16 实测那条路会把登录票据一起放掉，账号从已登录列表里被摘掉、重启后
-# 停在登录页连自动登录都回不来，比被踢一次更麻烦。确认凭据没救了才打开。
-OFFLINE_FIRST=${QQ_REVIVE_OFFLINE_FIRST:-0}
 KICK_LOG=${QQ_REVIVE_KICK_LOG:-/data/data/${PKG}/files/qk_kick.log}
 # 绝对路径，别再让 PATH 决定杀不杀得掉 QQ。
 AM=${QQ_REVIVE_AM:-/system/bin/am}
@@ -210,14 +207,6 @@ main_age() {
     awk -v u="$up" -v s="$st" -v h="$hz" 'BEGIN{printf "%d", u - s/h}'
 }
 
-# 请模块补一次干净下线：那条路会走 AppRuntime.logout()，服务端才收得到 offline。
-# 失败只是少一次礼貌，不影响后面的重启。
-ask_clean_offline() {
-    [ "$OFFLINE_FIRST" = "1" ] || return 0
-    curl -s --max-time 8 --noproxy '*' -X POST \
-        "http://127.0.0.1:$PORT/v1/internal/offline" >/dev/null 2>&1
-}
-
 # 重启预算：两次之间至少 MIN_RESTART_GAP 秒，1 小时内最多 MAX_RESTARTS_PER_HOUR 次。
 can_restart() {
     local last n
@@ -268,7 +257,6 @@ restart_qq() {
         return 0
     fi
     log "restart: $why"
-    ask_clean_offline
     record_restart
     before=$(pgrep -f "^$PKG" 2>/dev/null | tr '\n' ' ')
     "$AM" force-stop "$PKG" >/dev/null 2>&1

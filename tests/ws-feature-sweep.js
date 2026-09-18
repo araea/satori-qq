@@ -150,84 +150,19 @@ async function main() {
     return u.name;
   });
 
-  // ---- 内部只读动作 ----
-  await check('internal/group_overview', async () => {
-    const o = await client.callOk('internal/group_overview', { guild_id: GROUP });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/group_extra', async () => {
-    const o = await client.callOk('internal/group_extra', { guild_id: GROUP });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/member_info', async () => {
-    const o = await client.callOk('internal/member_info', { guild_id: GROUP, user_id: selfId });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/group_member_search', async () => {
-    const o = await client.callOk('internal/group_member_search', { guild_id: GROUP, key: String(selfId).slice(0, 4) });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/recent_contacts', async () => {
-    const o = await client.callOk('internal/recent_contacts');
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/contact_search', async () => {
-    const o = await client.callOk('internal/contact_search', { key: String(selfId).slice(0, 4) });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/friend_relation', async () => {
-    const o = await client.callOk('internal/friend_relation', { user_id: selfId });
-    if (!o) throw new Error('空响应');
-    return JSON.stringify(o).slice(0, 120);
-  });
-
-  await check('internal/group_remark', async () => {
-    const o = await client.callOk('internal/group_remark', { guild_id: GROUP, op: 'get' });
-    if (!o) throw new Error('空响应');
-    return JSON.stringify(o).slice(0, 120);
-  });
-
-  await check('internal/profile_self', async () => {
-    const o = await client.callOk('internal/profile_self');
-    if (!o) throw new Error('空响应');
-    return JSON.stringify(o).slice(0, 160);
-  });
-
-  await check('internal/group_honor', async () => {
-    const o = await client.callOk('internal/group_honor', { guild_id: GROUP });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/group_shut_up_list', async () => {
-    const o = await client.callOk('internal/group_shut_up_list', { guild_id: GROUP });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/group_active', async () => {
-    const o = await client.callOk('internal/group_active', { guild_id: GROUP });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/group_anniversary', async () => {
-    const o = await client.callOk('internal/group_anniversary', { guild_id: GROUP });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
+  // ---- 0.17.0 收掉的内核接口：这些名字现在必须 404 ----
+  for (const gone of ['group_overview', 'group_extra', 'member_info', 'group_member_search',
+                      'recent_contacts', 'contact_search', 'friend_relation', 'group_remark',
+                      'profile_self', 'group_honor', 'group_shut_up_list', 'group_active',
+                      'group_anniversary', 'group_detail', 'group_statistic', 'user_detail',
+                      'voice_to_text', 'message_context', 'message_search', 'group_file',
+                      'get_resource', 'mark_read', 'session_top', 'group_msg_mask',
+                      'qzone.publish', 'offline']) {
+    await check('removed.internal/' + gone, async () => {
+      const msg = await client.callExpect('internal/' + gone, { guild_id: GROUP }, 404);
+      return msg;
+    });
+  }
 
   await check('friend.list', async () => {
     const res = await client.callOk('friend.list');
@@ -293,19 +228,6 @@ async function main() {
     return 'messages=' + arr.length;
   });
 
-  await check('internal/message_context', async () => {
-    if (!messageId) throw new Error('上一步没发出消息');
-    const o = await client.callOk('internal/message_context', { channel_id: GROUP, message_id: messageId });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
-  await check('internal/message_search', async () => {
-    const o = await client.callOk('internal/message_search', { key: stamp });
-    if (!o) throw new Error('空响应');
-    return Object.keys(o).slice(0, 6).join(',');
-  });
-
   await check('reaction.create', async () => {
     if (!messageId) throw new Error('上一步没发出消息');
     await client.callOk('reaction.create', { channel_id: GROUP, message_id: messageId, emoji_id: '4' });
@@ -358,14 +280,6 @@ async function main() {
     return ev.post_type + '/' + (ev.sub_type || '');
   });
 
-  await check('internal/group_msg_mask_read', async () => {
-    const o = await client.callOk('internal/group_extra', { guild_id: GROUP });
-    if (o && o.msg_mask === undefined && o.mask === undefined) {
-      return 'no mask field: ' + Object.keys(o).slice(0, 8).join(',');
-    }
-    return 'mask=' + (o.msg_mask ?? o.mask);
-  });
-
   await check('internal/title_display_read', async () => {
     const o = await client.callOk('internal/title_display', { guild_id: GROUP, user_id: selfId });
     if (!o) throw new Error('空响应');
@@ -374,12 +288,6 @@ async function main() {
 
   await check('internal/honor_display_read', async () => {
     const o = await client.callOk('internal/honor_display', { guild_id: GROUP, user_id: selfId });
-    if (!o) throw new Error('空响应');
-    return JSON.stringify(o).slice(0, 120);
-  });
-
-  await check('internal/get_resource', async () => {
-    const o = await client.callOk('internal/get_resource', { file: 'internal:red/' + selfId + '/_tmp/none' });
     if (!o) throw new Error('空响应');
     return JSON.stringify(o).slice(0, 120);
   });

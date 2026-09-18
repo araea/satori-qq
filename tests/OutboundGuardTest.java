@@ -8,11 +8,14 @@ public final class OutboundGuardTest {
         check(!OutboundGuard.isMutation("upload.create"), "local upload stays available offline");
         check(OutboundGuard.isMutation("guild.member.mute"), "moderation is guarded");
         check(OutboundGuard.isMutation("internal.invite"), "group invite is guarded");
-        check(OutboundGuard.isMutation("internal.group_leave"), "group leave is guarded");
-        check(OutboundGuard.isMutation("internal.group_file"), "group file writes are guarded");
+        check(OutboundGuard.isMutation("internal.essence"), "essence writes are guarded");
         check(OutboundGuard.isMutation("internal.dice"), "special face sends are guarded");
         check(OutboundGuard.isMutation("internal.honor_display"), "honor switch is guarded");
-        check(OutboundGuard.isMutation("internal.qzone.publish"), "qzone writes are guarded");
+        // 0.17.0 撤掉了这一批内核接口，它们不再是被限流的写动作，也不再存在。
+        check(!OutboundGuard.isMutation("internal.group_leave"), "group leave is gone");
+        check(!OutboundGuard.isMutation("internal.group_file"), "group file writes are gone");
+        check(!OutboundGuard.isMutation("internal.qzone.publish"), "qzone writes are gone");
+        check(!OutboundGuard.isMutation("internal.user_detail"), "batch profile queries are gone");
         check(!OutboundGuard.isMutation("message.update"), "unsupported message.update is not guarded");
         check(!OutboundGuard.isMutation("reaction.clear"), "unsupported reaction.clear is not guarded");
         check(!OutboundGuard.isMutation("channel.create"), "unsupported channel.create is not guarded");

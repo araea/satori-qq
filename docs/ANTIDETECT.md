@@ -325,7 +325,7 @@ logout(reason, true)
 
 `onKicked*` 整条被 no-op 之后上面这几件一件都不会发生；看守再 force-stop 一次，连进程都是被强杀的。服务端那边这条会话就一直挂着，紧接着同一个号又登进来，看着就像 `RequestMSFForceOffline` 描述的那种「同账号第二个登录实例」。于是模块在拦下踢线后用 `restartProcess` 这个 reason 补发一次（它不属于要拦的那几种，所以走得到内核那条 `offLine`，也不跳登录页）。
 
-真机实测（2026-09-16，0.13.0，用 `POST /v1/internal/offline` 单独触发）：
+真机实测（2026-09-16，0.13.0，用当时的 `POST /v1/internal/offline` 单独触发）：
 
 ```text
 18:22:45  posted=true；qk_guard.log 记 clean-offline，
@@ -348,7 +348,7 @@ logout(reason, true)
 也就是说：`logout(restartProcess, true)` 会把登录票据一起放掉、账号从已登录列表里摘掉，**此后连自动登录都回不来，只能手动登一次**。它把「被拦下的踢线」变成了「必须重新登录」，正是这个模块一直在防的事。所以：
 
 - `clean_offline_on_kick` 默认 **false**；本机看守的 `QQ_REVIVE_OFFLINE_FIRST` 默认 **0**，重启前不再调它
-- 代码与 `POST /v1/internal/offline` 动作都留着（`/healthz` 的 `clean_offline` 计数也留着），给「确认凭据已经没救」的场合用
+- `AntiDetect.cleanOffline` 的兜底调用与 `/healthz` 的 `clean_offline` 计数留着；`POST /v1/internal/offline` 这个动作在 0.17.0 随那批内核接口一起撤掉了——它本来就是「确认凭据已经没救」时才用的，而模块里没有哪条路会自己走到这一步
 - 顺带记一条待查：`MainService$MyErrorHandler.onKickedInternal` 里那条 `expired` 分支（reason `LogoutReason.expired` → `logout(expired, true)` → `KICK_TO_LOGIN`）**没有被拦**。按这次的结论，它落地同样是「账号被登出、票据被放掉、停在登录页」，而文档一直写着「expired 时 QQ 自己会重登」——这个假设在本机没成立过。要动它得单独验证，别顺手改。0.13.2 给这条路加了只观测的钩子（`token_expired` / `allowed_logout`，见上面那节），下一次事件就能判定它带的是哪个 SSO 错误码、属于哪一支。
 
 ### 踢线之后 · `/healthz` 的 online 认 AppRuntime 的登录态

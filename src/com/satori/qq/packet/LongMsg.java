@@ -527,10 +527,6 @@ public final class LongMsg {
         return c;
     }
 
-    /** @deprecated use {@link #buildCard}; kept for existing tests. */
-    public static String buildCardJson(String resId, List<Node> nodes) throws org.json.JSONException {
-        return buildCard(resId, nodes, false).json;
-    }
 
     public static String buildXmlContent(String resId, List<Node> nodes, boolean group) {
         return buildXmlContent(resId, UUID.randomUUID().toString(), nodes, group);

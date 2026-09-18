@@ -101,10 +101,8 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 
 ```sh
 node tests/ws-health.js             # 健康与自检
-node tests/ws-kernel-extras.js      # 扩展读取动作
-node tests/ws-kernel-writes.js      # 扩展写入动作，自带清理
-node tests/internal-kernel-probe.js # 官方 internal 路由与扩展动作
-node tests/media-live-probe.js voice # 语音条、文件与群文件能不能真发出去，见脚本头注释
+node tests/ws-ayjx-smoke.js         # 客户端视角的冒烟：协议方法、事件与扩展动作
+node tests/media-live-probe.js voice # 语音条与文件能不能真发出去，见脚本头注释
 ```
 
 升级 QQ 之后先跑一次接口面自检，它会指出断在哪个类、哪个字段或哪个回调：

@@ -2,40 +2,34 @@ package com.satori.qq;
 
 import com.satori.qq.core.MsgStore;
 import com.satori.qq.core.SatoriHub;
+import com.satori.qq.qq.EnvProbe;
 import com.satori.qq.qq.EnvShield;
 import com.satori.qq.qq.QQClient;
-import com.satori.qq.qq.Ref;
 import com.satori.qq.xp.Xp;
 
-import java.io.FileInputStream;
-
-import io.github.libxposed.api.XposedModule;
-import io.github.libxposed.api.XposedModuleInterface;
-
 /**
- * Module entry (libxposed API 102). Anti-detect runs in every QQ process (main + MSF);
- * the Satori bridge only in the main process.
+ * 桥接入口（0.22.0 起由 {@link Boot} 从 Zygisk 注入路径调进来，不再由 libxposed 框架回调）。
+ *
+ * <p>每个 QQ 进程都会走到这里：主进程起 Satori 桥接，其余进程（:MSF 等）什么都不做——
+ * 钩子只在需要它们的进程里装。
  */
-public final class Main extends XposedModule {
+public final class Main {
+
     private static final String QQ_PKG = "com.tencent.mobileqq";
     private static volatile boolean started = false;
 
-    private String processName;
+    private Main() {}
 
-    @Override
-    public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
-        Xp.attach(this);
-        processName = param.getProcessName();
-    }
-
-    @Override
-    public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
-        if (!QQ_PKG.equals(param.getPackageName())) return;
+    /**
+     * QQ 的 Application 建好之后调用一次。
+     *
+     * @param host    QQ 的 classloader（查它的混淆类要用）
+     * @param process 进程名，主进程就是包名本身
+     */
+    public static void onHostReady(ClassLoader host, String process) {
         if (started) return;
         started = true;
 
-        String process = processName != null && !processName.isEmpty()
-                ? processName : currentProcessName();
         boolean mainProcess = QQ_PKG.equals(process);
         try {
             Cfg cfg = Cfg.load();
@@ -44,34 +38,22 @@ public final class Main extends XposedModule {
                 L.i("bridge skipped in process " + process);
                 return;
             }
+            if (!Xp.attached()) {
+                L.e("hook runtime not attached in " + process, null);
+                return;
+            }
 
-            EnvShield.install(param.getClassLoader());
-            com.satori.qq.qq.EnvProbe.hold(param.getClassLoader());
+            EnvShield.install(host);
+            EnvProbe.hold(host);
             L.i("bridge loading in process " + process);
             MsgStore store = new MsgStore();
-            QQClient qq = new QQClient(param.getClassLoader(), true);
+            QQClient qq = new QQClient(host, true);
             SatoriHub hub = new SatoriHub(cfg, qq, store);
             hub.start();
             qq.installHooks();
             L.i("bridge initialization scheduled");
         } catch (Throwable t) {
             L.e("bridge failed to start", t);
-        }
-    }
-
-    /** Fallback for {@code ModuleLoadedParam.getProcessName()}, which is empty in odd loaders. */
-    private static String currentProcessName() {
-        try {
-            FileInputStream in = new FileInputStream("/proc/self/cmdline");
-            byte[] buf = new byte[256];
-            int n;
-            try { n = in.read(buf); } finally { in.close(); }
-            if (n <= 0) return "";
-            int end = 0;
-            while (end < n && buf[end] != 0) end++;
-            return new String(buf, 0, end, "UTF-8");
-        } catch (Throwable t) {
-            return "";
         }
     }
 }

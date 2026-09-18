@@ -1,47 +1,45 @@
 package com.satori.qq.xp;
 
-import android.util.Log;
-
-import io.github.libxposed.api.XposedInterface;
-
 /**
- * Legacy-shaped hook callback over the libxposed API 102 interceptor chain.
- *
- * <p>The framework's modern API is an interceptor chain, but the module's ~70 hook sites are
- * written in the old before/after style. This class reproduces that style faithfully:
+ * 旧 Xposed 形状的 hook 回调，语义与 0.21.x（libxposed 兼容层）一致：
  *
  * <ul>
- *   <li>{@code beforeHookedMethod} runs first; {@code setResult}/{@code setThrowable} there skips
- *   the original call (legacy {@code returnEarly}).</li>
- *   <li>{@code afterHookedMethod} always runs, including when the original threw; the throwable is
- *   visible through {@code getThrowable()} and is rethrown afterwards.</li>
- *   <li>Writes to {@code param.args} are passed on to the original.</li>
+ *   <li>{@code beforeHookedMethod} 先跑；在它里面 {@code setResult}/{@code setThrowable}
+ *   会跳过原方法调用。</li>
+ *   <li>{@code afterHookedMethod} 总会跑，包括原方法抛异常时（异常从
+ *   {@code getThrowable()} 拿），跑完再抛出去。</li>
+ *   <li>改 {@code param.args} 会传给原方法。</li>
  * </ul>
  *
- * Exceptions from the callbacks themselves are logged and swallowed, the way the legacy bridge
- * did — a broken hook must not take the hooked method down with it.
+ * 回调自己抛的异常只记日志、吞掉——一个坏钩子不该把被钩方法带崩。
  */
-public class XC_MethodHook implements XposedInterface.Hooker {
+public class XC_MethodHook {
 
-    /** Handle for {@link XposedBridge#hookMethod}; {@link #unhook()} is idempotent. */
+    /** {@link XposedBridge#hookMethod} 的句柄；{@link #unhook()} 可重复调。 */
     public static final class Unhook {
-        private final XposedInterface.HookHandle handle;
+        private final HookEntry entry;
+        private final XC_MethodHook callback;
 
-        Unhook(XposedInterface.HookHandle handle) { this.handle = handle; }
+        Unhook(HookEntry entry, XC_MethodHook callback) {
+            this.entry = entry;
+            this.callback = callback;
+        }
 
         public void unhook() {
-            if (handle != null) handle.unhook();
+            entry.remove(callback);
+            if (entry.isEmpty()) XposedBridge.uninstall(entry);
         }
     }
 
-    /** Same surface as the legacy {@code XC_MethodHook.MethodHookParam}. */
+    /** 与旧 {@code XC_MethodHook.MethodHookParam} 同面。 */
     public static class MethodHookParam {
         public Object thisObject;
         public Object[] args;
 
-        private Object result;
-        private Throwable throwable;
-        private boolean returnEarly;
+        // 包内可见：同包的 HookEntry 靠它驱动 before/proceed/after 流程
+        Object result;
+        Throwable throwable;
+        boolean returnEarly;
 
         MethodHookParam() {}
 
@@ -70,43 +68,4 @@ public class XC_MethodHook implements XposedInterface.Hooker {
     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {}
 
     protected void afterHookedMethod(MethodHookParam param) throws Throwable {}
-
-    @Override
-    public Object intercept(XposedInterface.Chain chain) throws Throwable {
-        MethodHookParam param = new MethodHookParam();
-        try {
-            param.thisObject = chain.getThisObject();
-            param.args = chain.getArgs().toArray(new Object[0]);
-        } catch (Throwable t) {
-            // The hook cannot see the call; behave as if it were not installed.
-            Log.e(TAG, "cannot read the hooked call", t);
-            return chain.proceed();
-        }
-
-        try {
-            beforeHookedMethod(param);
-        } catch (Throwable t) {
-            Log.e(TAG, "before hook failed", t);
-        }
-
-        if (!param.returnEarly) {
-            try {
-                param.result = chain.proceed(param.args);
-                param.throwable = null;
-            } catch (Throwable t) {
-                param.throwable = t;
-            }
-        }
-
-        try {
-            afterHookedMethod(param);
-        } catch (Throwable t) {
-            Log.e(TAG, "after hook failed", t);
-        }
-
-        if (param.throwable != null) throw param.throwable;
-        return param.result;
-    }
-
-    private static final String TAG = "Q.Kernel";
 }

@@ -7,11 +7,11 @@ import org.w3c.dom.NodeList;
 /**
  * Contract of the shipped manifest and module registration.
  *
- * <p>0.16.0 起模块走现代 libxposed API：注册信息在 APK 的 {@code META-INF/xposed/} 里
- * （入口 {@code java_init.list}、属性 {@code module.prop}、作用域 {@code scope.list}），
- * 清单不再有 {@code xposed*} 元数据——留着会让框架按旧式模块处理。管理 Activity 与设置
- * Provider 仍在同一个 APK 上。版本必须与 SatoriHub.APP_VERSION 一致，那是模块报给 /healthz
- * 与 READY 的值；两者不同时「装上的到底是哪一版」就没有可信来源。
+ * <p>0.22.0 起不再是 Xposed 模块：模块由 Magisk/KernelSU 模块（{@code build.sh} 里打包的
+ * {@code module/}）经 Zygisk Next 注入，APK 里不能有 {@code META-INF/xposed/} 注册文件——
+ * 留着会让 Vector 把它按 Xposed 模块注入 QQ，而「进程里有 LSPosed 模块」正是人脸验证失败的
+ * 原因。管理 Activity 与设置 Provider 仍在同一个 APK 上。版本必须与 SatoriHub.APP_VERSION
+ * 一致，那是模块报给 /healthz 与 READY 的值；两者不同时「装上的到底是哪一版」就没有可信来源。
  */
 public final class ManifestTest {
     public static void main(String[] args) throws Exception {
@@ -36,14 +36,17 @@ public final class ManifestTest {
         check(versionCode > 0, "versionCode positive");
 
         eq(0, countXposedMeta(manifest), "no legacy xposed meta-data");
-        File xposedDir = new File(root, "resources/META-INF/xposed");
-        check(read(new File(xposedDir, "java_init.list")).contains("com.satori.qq.Main"),
-                "java_init.list names the entry class");
-        check(read(new File(xposedDir, "scope.list")).contains("com.tencent.mobileqq"),
-                "scope.list names the QQ package");
-        String moduleProp = read(new File(xposedDir, "module.prop"));
-        check(moduleProp.contains("minApiVersion=102"), "module.prop declares minApiVersion");
-        check(moduleProp.contains("targetApiVersion=102"), "module.prop declares targetApiVersion");
+        // 0.22.0 起不是 Xposed 模块了：APK 里不能再留注册文件，否则 Vector/LSPosed 会把它当模块
+        // 注入进 QQ —— 那正是人脸验证失败的原因（实测连零钩子的模块也失败）。
+        check(!new File(root, "resources/META-INF/xposed").exists(),
+                "no META-INF/xposed registration left");
+        // 注入改由 Magisk 模块承担：Zygisk Next 只认模块目录里的 zn_modules.txt。
+        String buildScript = read(new File(root, "build.sh"));
+        check(buildScript.contains("name=com.tencent.mobileqq zygisk/arm64-v8a.so"),
+                "module zn_modules.txt targets the QQ package");
+        check(buildScript.contains("zygisk/arm64-v8a.so"),
+                "module ships the zygisk entry at the expected path");
+        check(buildScript.contains("id=satori_qq"), "module id");
 
         NodeList apps = manifest.getElementsByTagName("application");
         eq(1, apps.getLength(), "application node");

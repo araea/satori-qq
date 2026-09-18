@@ -1,10 +1,9 @@
 package com.satori.qq.xp;
 
-import io.github.libxposed.api.XposedInterface;
-
 /**
- * Hook that answers in place of the original method, with no before/after phases.
- * {@link #returnConstant} is the shape every call site in this module uses.
+ * 原位置换：不走 before/after，直接给出返回值。{@link #returnConstant} 是本模块用到的唯一形状。
+ *
+ * <p>置换体自己抛异常时按旧 Xposed 的做法记日志并放行原方法。
  */
 public class XC_MethodReplacement extends XC_MethodHook {
 
@@ -13,19 +12,15 @@ public class XC_MethodReplacement extends XC_MethodHook {
     }
 
     @Override
-    public final Object intercept(XposedInterface.Chain chain) throws Throwable {
-        MethodHookParam param = new MethodHookParam();
-        param.thisObject = chain.getThisObject();
-        param.args = chain.getArgs().toArray(new Object[0]);
+    protected final void beforeHookedMethod(MethodHookParam param) {
         try {
-            return replaceHookedMethod(param);
+            param.setResult(replaceHookedMethod(param));
         } catch (Throwable t) {
-            // Legacy: a failing replacement was logged and the original call went through.
-            android.util.Log.e("Q.Kernel", "replacement hook failed", t);
-            return chain.proceed(param.args);
+            HookEntry.logFailure("replacement hook failed", t);
         }
     }
 
+    /** 让被钩方法直接返回 {@code value}。 */
     public static XC_MethodReplacement returnConstant(final Object value) {
         return new XC_MethodReplacement() {
             @Override protected Object replaceHookedMethod(MethodHookParam param) {

@@ -12,9 +12,13 @@
 
 ## 安装
 
-1. 安装市场发布的 `SatoriQQ.apk`
-2. 在框架中启用模块。作用域由模块固定为 QQ，不需要手工添加
-3. 重启 QQ
+0.22.0 起不是 Xposed 模块：注入由自带的 Zygisk 模块完成（引擎也是自带的，进程里不需要任何
+框架在场——框架在场会让 QQ 的人脸验证失败）。
+
+1. 安装发布包里的 `SatoriQQ.apk`（管理界面与设置接口）
+2. 把 `SatoriQQ-module.zip` 作为 Magisk / KernelSU 模块刷入，或解包后放到
+   `/data/adb/modules/satori_qq/`（`module.prop`、`zn_modules.txt`、`zygisk/arm64-v8a.so`）
+3. 重启手机（Zygisk 模块只在启动时注册）
 4. 打开「知弦」，在状态页确认 QQ、本机服务与客户端已连上
 
 ## 连接

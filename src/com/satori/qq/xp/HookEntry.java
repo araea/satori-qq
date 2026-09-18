@@ -19,10 +19,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>一个成员可以挂多个 {@link XC_MethodHook}：LSPlant 不允许把同一个方法钩两次，所以重复 hook
  * 同一个成员时复用同一个 entry，只往里加回调。
  *
+ * <p>**必须 public**：LSPlant 生成的桩类在匿名 dex 里（没有包名），只能访问 public 成员，
+ * 包级私有会让每次调用都抛 IllegalAccessError —— 而那个异常发生在被钩方法里，
+ * 表现是宿主进程直接崩（第一次装机就是这么把 QQ 卡在启动界面的）。
+ *
  * <p>执行顺序照搬旧 Xposed 的语义：全部 before → （没有 returnEarly 才）调原方法 → 全部 after →
  * 有 throwable 就抛出去。before/after 自身抛的异常只记日志，不带崩被钩方法。
  */
-final class HookEntry {
+public final class HookEntry {
 
     private static final String TAG = "Q.Kernel";
 

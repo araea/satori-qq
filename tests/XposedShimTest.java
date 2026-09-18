@@ -75,6 +75,7 @@ public final class XposedShimTest {
         severalCallbacksRunInOrder();
         fatalCallbackDoesNotBreakTheCall();
         helperResolutionStillWorks();
+        hookEntryIsPubliclyReachable();
         System.out.println("XposedShimTest passed");
     }
 
@@ -200,6 +201,24 @@ public final class XposedShimTest {
                 Integer.valueOf(1), Integer.valueOf(2)), "boxed args match primitives");
         Object built = XposedHelpers.newInstance(Built.class, 5);
         eq(5, XposedHelpers.getObjectField(built, "value"), "field via helper");
+    }
+
+    /**
+     * LSPlant 生成的桩类（{@code LSPHooker_}）在匿名 dex 里、**没有包名**，只能访问 public 成员。
+     * 钩子对象和回调方法只要有一个不是 public，每次调用都会抛 IllegalAccessError —— 那个异常
+     * 出现在被钩方法体内，宿主进程直接崩（0.22.0 第一次装机就是这么把 QQ 卡在启动界面的，
+     * 而当时的验证台只装了钩子、没真调用一次，所以没覆盖到）。这条断言就是那次事故的钉子。
+     */
+    private static void hookEntryIsPubliclyReachable() {
+        check(java.lang.reflect.Modifier.isPublic(HookEntry.class.getModifiers()),
+                "HookEntry must be public (the generated stub has no package)");
+        int dispatch;
+        try {
+            dispatch = HookEntry.class.getMethod("dispatch", Object[].class).getModifiers();
+        } catch (NoSuchMethodException e) {
+            throw new AssertionError("HookEntry.dispatch(Object[]) is gone: " + e);
+        }
+        check(java.lang.reflect.Modifier.isPublic(dispatch), "HookEntry.dispatch must be public");
     }
 
     // ------------------------------------------------------------ harness

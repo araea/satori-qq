@@ -8,7 +8,6 @@ import com.satori.qq.packet.LongMsg;
 import com.satori.qq.packet.PacketSvc;
 import com.satori.qq.packet.Pb;
 import com.satori.qq.qq.Convert;
-import com.satori.qq.qq.AntiDetect;
 import com.satori.qq.qq.Compat;
 import com.satori.qq.qq.ExtraSvc;
 import com.satori.qq.qq.Media;
@@ -30,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.18.0";
+    public static final String APP_VERSION = "0.19.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -348,58 +347,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("notice", noticeDiag())
                         .put("keepalive", keepaliveDiag())
                         .put("wakelock", wakeLockDiag())
-                        // A blocked server kick leaves a session that still reports online but
-                        // receives nothing, so the count is what a watchdog keys its restart on.
-                        .put("blocked_kicks", AntiDetect.blockedKicks())
-                        .put("kick_hook", AntiDetect.serverKickHooks())
-                        .put("last_kick_epoch_ms", AntiDetect.lastKickMs())
-                        .put("last_kick_source", AntiDetect.lastKickSource())
-                        .put("last_kick", AntiDetect.lastKick())
-                        .put("kick_log", new org.json.JSONArray(AntiDetect.kickLog()))
-                        .put("auto_login_kept", AntiDetect.autoLoginKept())
-                        // 拦下踢线之后补做的干净下线。它涨说明模块替 QQ 把
-                        // sendOnlineStatus(offline) 发了出去——服务端因此知道这台设备走了，
-                        // 不是「旧会话还挂着、同一个号又登进来」。与 blocked_kicks 配对着看。
-                        .put("clean_offline", new JSONObject()
-                                .put("count", AntiDetect.cleanOfflineCount())
-                                .put("last", AntiDetect.lastCleanOffline()))
-                        // 只观测：onUserTokenExpired 被调了几次、带什么 ssoErrorCode。
-                        // ssoErr 属于 {-10135,10136} 走 kicked 支（账号标记写 _t、出口被拦），
-                        // 其余走 expired 支（写 _f、出口放行 → 跳登录页）。分不清这两支就分不清
-                        // 「被踢之后是谁把人送回登录页的」。
-                        .put("token_expired", new JSONObject()
-                                .put("hooks", AntiDetect.tokenExpiredHooks())
-                                .put("count", AntiDetect.tokenExpiredEvents())
-                                .put("last", AntiDetect.lastTokenExpired()))
-                        // 被放行的登出（reason 不在要拦的那几种里）；expired 那一支会跳登录页。
-                        .put("allowed_logout", new JSONObject()
-                                .put("hooks", AntiDetect.allowedLogoutHooks())
-                                .put("count", AntiDetect.allowedLogoutCount())
-                                .put("last", AntiDetect.lastAllowedLogout()))
-                        // 踢线窗口里被拦掉的登出。落盘在 qk_guard.log——故意不并进
-                        // qk_kick.log，那份是看守「立刻重启」的判据，混进去会反复重启。
-                        .put("logout_guard", new JSONObject()
-                                .put("hooks", AntiDetect.logoutGuardHooks())
-                                .put("blocked", AntiDetect.logoutGuardBlocks())
-                                .put("log", new org.json.JSONArray(AntiDetect.guardLog())))
-                        // 善后期里被顶回去的落盘写入（摘账号、关自动登录）。这一项涨了说明
-                        // 踢线确实发生过，而且模块把账号留在了已登录列表里。
-                        .put("login_state", new JSONObject()
-                                .put("hooks", AntiDetect.loginStateHooks())
-                                .put("kept", AntiDetect.loginStateKept())
-                                .put("log", new org.json.JSONArray(AntiDetect.stateLog())))
                         // 模块自己发的 SSO 请求失败了几条。`session_errors` 涨了说明有请求
-                        // 撞上 QQ 认「票据失效」的那组错误码——即「接口层把会话打废」，
-                        // 而不是环境检测。这是把踢线成因分开的判据，详见 PacketSvc。
+                        // 撞上 QQ 认「票据失效」的那组错误码——即接口层把会话打废。
                         .put("sso", new JSONObject()
                                 .put("failures", PacketSvc.ssoFailures())
                                 .put("session_errors", PacketSvc.ssoSessionErrors())
                                 .put("log", new org.json.JSONArray(PacketSvc.ssoLog())))
-                        // 人脸核身那条链路（慧眼 + TuringFace）。判定在服务端，这里只是让
-                        // 「慧眼采集的设备数据到底有没有被丢掉」「钩子有没有挂上」看得见。
-                        // enabled=true 而 hooks.*=0 表示这一版没挂上钩子，按 0 处理。
-                        .put("face", AntiDetect.faceStats(
-                                cfg.antiDetect && cfg.blockFaceReport))
                         .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");
@@ -4202,7 +4155,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         Thread t = new Thread(() -> {
             boolean previous = qq.isOnline();
             onlineSinceMs = previous ? System.currentTimeMillis() : 0;
-            AntiDetect.noteOnlineSince(onlineSinceMs);
             long interval = Math.max(1000L, cfg.heartbeatMs);
             long nextHeartbeat = System.currentTimeMillis() + interval;
             while (true) {
@@ -4212,9 +4164,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     long now = System.currentTimeMillis();
                     if (online != previous) {
                         onlineSinceMs = online ? now : 0;
-                        // 踢线台账里的 up=<秒> 就是从这里来的：一条踢线是「登录后多久」被推下来的，
-                        // 是判周期还是事件驱动的唯一线索。
-                        AntiDetect.noteOnlineSince(onlineSinceMs);
                         L.i("QQ kernel state -> " + (online ? "online" : "offline"));
                         emitLoginUpdated();
                         previous = online;
@@ -4223,10 +4172,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         nextHeartbeat = now + interval;
                     }
                     flushAwaitingReady();
-                    // 被踢之后把落盘的登录态修回来（账号标记与自动登录开关）。只在本进程
-                    // 报离线时动手：在线时改这两个没有意义，也省得跟 QQ 自己的写入打架。
-                    // 内部还有善后期判定与 30 秒节流。
-                    if (!online) AntiDetect.healLoginStateIfDue();
                     // Hold the wake lock from startup even when the status notification is off.
                     if (cfg.wakeLockControl || cfg.wifiSustain) ensureWakeLockController();
                     refreshNotice();
@@ -4291,13 +4236,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("online", online)
                 .put("good", online)
                 .put("online_since_epoch_ms", onlineSinceMs)
-                .put("outbound_guard", outboundGuard.stats())
-                .put("fekit_attach", AntiDetect.fekitAttachStats(
-                        cfg.antiDetect && cfg.observeFekitAttach))
-                .put("env_report", AntiDetect.envReportStats(
-                        cfg.antiDetect && cfg.blockO3Report))
-                .put("face", AntiDetect.faceStats(
-                        cfg.antiDetect && cfg.blockFaceReport));
+                .put("outbound_guard", outboundGuard.stats());
     }
 
     private JSONObject versionInfo() throws Exception {

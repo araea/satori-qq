@@ -145,10 +145,6 @@ function identify() {
     platform: (ready.logins && ready.logins[0] && ready.logins[0].platform) || loginJson.platform || '',
     login: !!(loginJson.user && loginJson.user.id),
   };
-  if (statusJson.fekit_attach && statusJson.fekit_attach.enabled) {
-    summary.fekit_attach = statusJson.fekit_attach;
-  }
-  if (statusJson.env_report) summary.env_report = statusJson.env_report;
   if (statusJson.outbound_guard) {
     summary.outbound_guard = statusJson.outbound_guard;
     summary.online_since_epoch_ms = statusJson.online_since_epoch_ms || 0;

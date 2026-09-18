@@ -2,10 +2,7 @@ package com.satori.qq;
 
 import com.satori.qq.core.MsgStore;
 import com.satori.qq.core.SatoriHub;
-import com.satori.qq.qq.AntiDetect;
-import com.satori.qq.qq.MapsHide;
 import com.satori.qq.qq.QQClient;
-import com.satori.qq.qq.Ref;
 import com.satori.qq.xp.Xp;
 
 import java.io.FileInputStream;
@@ -13,10 +10,7 @@ import java.io.FileInputStream;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
 
-/**
- * Module entry (libxposed API 102). Anti-detect runs in every QQ process (main + MSF);
- * the Satori bridge only in the main process.
- */
+/** Module entry (libxposed API 102). The Satori bridge runs in QQ's main process only. */
 public final class Main extends XposedModule {
     private static final String QQ_PKG = "com.tencent.mobileqq";
     private static volatile boolean started = false;
@@ -39,24 +33,12 @@ public final class Main extends XposedModule {
                 ? processName : currentProcessName();
         boolean mainProcess = QQ_PKG.equals(process);
         try {
-            Cfg cfg = Cfg.load();
-            L.configure(cfg.verboseLogs);
-            if (cfg.mapsHide) {
-                try { MapsHide.tryLoad(new Ref(param.getClassLoader())); }
-                catch (Throwable t) { L.e("MapsHide load failed", t); }
-            }
-            if (cfg.antiDetect) {
-                try {
-                    new AntiDetect(param.getClassLoader(), cfg.blockQsecTasks, cfg.blockQsecReports,
-                            cfg.observeFekitAttach, cfg.blockO3Report, cfg.blockTuringRisk,
-                            cfg.blockServerKick, cfg.cleanOfflineOnKick, cfg.blockFaceReport,
-                            cfg.fakeImei, cfg.fakeAndroidId, cfg.fakeSerial).install();
-                } catch (Throwable t) { L.e("AntiDetect install failed", t); }
-            }
             if (!mainProcess) {
-                L.i("anti-detect only in process " + process);
+                L.i("bridge skipped in process " + process);
                 return;
             }
+            Cfg cfg = Cfg.load();
+            L.configure(cfg.verboseLogs);
 
             L.i("bridge loading in process " + process);
             MsgStore store = new MsgStore();

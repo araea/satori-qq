@@ -6,18 +6,17 @@
 
 | 组件 | 职责 |
 | --- | --- |
-| `Main` | 在所有 QQ 进程安装过检测；只在主进程启动 Satori 服务 |
+| `Main` | 只在 QQ 主进程启动 Satori 服务 |
 | `Cfg` / `L` | 文件配置与日志，详细日志默认关闭 |
 | `ui` | 知弦管理页，在应用自身进程运行，前台只读探测状态 |
 | `control` | 私有设置、UID 校验的 Provider、启动时配置同步 |
 | `net` | HTTP 与事件 WebSocket，只监听 `127.0.0.1` |
 | `core` | 方法分发、事件、消息与文件标识管理 |
 | `satori` | Satori 元素与数据结构转换 |
-| `qq` | NT 会话、消息、媒体、保活与过检测 |
+| `qq` | NT 会话、消息、媒体与保活 |
 | `packet` | OIDB 与合并转发封包 |
-| `native` | 检测库 GOT、`/proc` 与直接系统调用过滤 |
 
-主进程与 `:MSF` 进程都加载 `AntiDetect` 与 `MapsHide`。HTTP 服务、消息监听与保活组件只在主进程运行。
+QQ 的其他进程（`:MSF` 等）不加载任何钩子。HTTP 服务、消息监听与保活组件都在主进程运行。
 
 ## 知弦管理通道
 
@@ -77,11 +76,7 @@
 
 私聊 `Contact` 使用 UID，群聊使用群号。可选字段必须通过 `Ref.getOrNull` 探测。QQ 9.3.60 已移除 `MsgRecord.senderRoleType` 与 `RevokeElement.senderUid`。群成员角色来自 `getAllMemberList` 缓存，不用 `MsgRecord.roleType` 或 `roleId`。
 
-## 过检测
-
-Java 层处理 Root、Xposed、调试器、包、堆栈、Pandora、Turing 与环境上报。Native 层只修补检测库的 GOT，并过滤文件、属性、命令、符号、目录、进程映射与风险上报。QSec 的 `getSign` 保持原样，`getFeKitAttach` 只记计数。检测面、逐项对应与挡不住的部分见 [`ANTIDETECT.md`](ANTIDETECT.md)。
-
-`AndroidManifest.xml` 含 Xposed 元数据，用于注册与作用域；`build.sh` 生成一份 APK，并检查元数据数量。
+`AndroidManifest.xml` 只声明模块自身的 Activity 与 Provider；注册与作用域走 APK 内的 `META-INF/xposed/`，`build.sh` 会检查这三个文件在包里。
 
 ## 常驻与诊断
 
@@ -93,7 +88,7 @@ ColorOS 通知里的应用图标是**发通知那个应用**的 launcher 图标�
 
 模块在 QQ 进程里发通知，`pkg` 与 `opPkg` 都是 `com.tencent.mobileqq`，所以那条常驻通知的图标是 QQ 的，模块自己的图标留在 `oplus_small_icon`（状态栏与通知头都用替换后的那个）。**在 QQ 进程内改不掉**：`android.appInfo` 附加项的字段在通知构造时写入，但 system_server 的 `NotificationManagerService.fixNotification` 会用 `getApplicationInfoAsUser` 重新覆写一遍，之后才调 ColorOS 的替换逻辑；`opPkg` 与包名都是 uid 校验过的，伪造 `android` 会被 `resolveNotificationUid` 拒绝。要让通知显示模块自己的图标，只能由模块应用自己的进程（`com.satori.qq`）发这条通知。
 
-`GET /healthz` 返回登录、监听、保活、唤醒锁、环境上报与 Native 隐藏自检状态。Native 自检结果写进 QQ 的应用私有目录 `/data/data/com.tencent.mobileqq/files/`（0.8.9.39 之前写在外部 `Android/data`，会留下可被枚举的残留），主进程可同时读取主进程与 MSF 进程的状态。
+`GET /healthz` 返回登录、监听、保活、唤醒锁状态，以及模块自身 SSO 请求的失败计数。
 
 ## QQ 升级检查
 
@@ -119,18 +114,13 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'   # 或走客�
 2. 消息元素常量与可选字段
 3. `IKernelMsgListener` 回调集合
 4. OIDB 命令号、子命令与响应字段
-5. QSec、Turing 与环境上报的命令白名单，以及 QSec 检测入口的类名与方法签名
-6. 主进程与 MSF 进程的 `/healthz` hook 计数及 `loop_ok`，以及 `internal/status` 的 `env_report.maps.libs` 里每个检测库各补了多少槽（某个库改名或消失会直接体现为对应项变 0）
-7. `libfekit.so`、`libturingxq.so`、`libmsfbootV2.so` 导出的 libc 符号与路径字符串，见 [`ANTIDETECT.md`](ANTIDETECT.md)
-8. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（看 `internal/compat` 的 `observed`）
-9. 检测库 import 的字符串搜索符号有没有变（`llvm-nm -D lib*.so | grep ' U '` 看有没有新增 `strcasecmp` / `strnstr` 一类），变了就把 `native/mapshide.c` 的 `BLOCK` 判定接到同一个入口上
-10. Turing 的 POSIX ERE 黑名单（进程名、线程名、路径）有没有新增模式
+5. `ExtraSvc` 用到的回调接口名与结构体字段名，以及哪些入口开始或停止回调（看 `internal/compat` 的 `observed`）
 
 ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试后回退原文件配置，并通过 `config_status` 暴露不含敏感信息的原因。管理页给出系统设置里的路径（应用 → 关联启动）。引导线程在 QQ 主线程初始化任务之后启动，不阻塞 Application 创建。
 
 ## 版本与发布
 
-`versionName` 走语义化版本 `主.次.补丁`，从 0.9.0 开始。主版本对应 Satori 方法表或 `/v1/internal` 动作的破坏性变更。次版本对应新增方法、动作、事件，以及对 QQ 的行为适配或反检测策略这类影响兼容性的改动。补丁版本对应修 bug、改文案、改默认值。需要区分同一天发的多次构建时，第 4 段临时当构建号用（`0.9.1.2`），下一次发版并回三段。
+`versionName` 走语义化版本 `主.次.补丁`，从 0.9.0 开始。主版本对应 Satori 方法表或 `/v1/internal` 动作的破坏性变更。次版本对应新增方法、动作、事件，以及对 QQ 的行为适配这类影响兼容性的改动。补丁版本对应修 bug、改文案、改默认值。需要区分同一天发的多次构建时，第 4 段临时当构建号用（`0.9.1.2`），下一次发版并回三段。
 
 `versionCode` 独立递增。Android 判升级、市场判更新、Xposed 管理器判「有新版本」用的都是它，`versionName` 只负责给人看。版本号要同步改两处：`AndroidManifest.xml` 与 `SatoriHub.APP_VERSION`，`tests/ManifestTest` 会校验两者一致。发布走 `marketplace/publish.sh`，tag 为 `{versionCode}-{versionName}`。
 

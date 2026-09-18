@@ -142,6 +142,45 @@ public final class AntiDetectStatsTest {
         check(face.has("intercepts_ready"), "face intercept readiness");
         check("main".equals(face.getString("process")), "face process key");
 
+        // SoMonitor / NativeMonitor（9.3.65）：事件名按前缀判，另外那套 IPC 名字一起认；
+        // 别的监控事件（native_monitor 之外的 beacon 事件）必须原样放行。
+        check(AntiDetect.isNativeMonitorEvent("native_monitor_so_load"), "so load event");
+        check(AntiDetect.isNativeMonitorEvent("native_monitor_native_hook"), "native hook event");
+        check(AntiDetect.isNativeMonitorEvent("native_monitor_all_so_load"), "all so load event");
+        check(AntiDetect.isNativeMonitorEvent("soMonitorCollectorReportRequest"), "so monitor ipc");
+        check(!AntiDetect.isNativeMonitorEvent("0X800_QQ"), "keep ordinary beacon event");
+        check(!AntiDetect.isNativeMonitorEvent("native_other"), "keep native_other");
+        check(!AntiDetect.isNativeMonitorEvent(""), "empty beacon event");
+        check(!AntiDetect.isNativeMonitorEvent(null), "null beacon event");
+        check(AntiDetect.nativeMonitorStats().has("hooks"), "native monitor hooks");
+        check(AntiDetect.nativeMonitorStats().has("beacon_dropped"), "native monitor drops");
+
+        // /proc 文本过滤现在有四种读法（BufferedReader / RandomAccessFile / Files.readAllLines
+        // / Files.readString），行判据必须是同一套。
+        check("TracerPid:\t0".equals(AntiDetect.sanitizeProcLine("TracerPid:\t1234")), "tracerpid line");
+        check("NoNewPrivs:\t0".equals(AntiDetect.sanitizeProcLine("NoNewPrivs:\t1")), "nonewprivs line");
+        check("".equals(AntiDetect.sanitizeProcLine(
+                "7000-8000 r-xp 0 00:00 0 /data/adb/lsposed/libx.so")), "hide denied maps line");
+        check(AntiDetect.sanitizeProcLine(
+                "7000-8000 r-xp 0 00:00 0 /apex/libart.so") == null, "keep clean maps line");
+        check(AntiDetect.sanitizeProcLine(null) == null, "null proc line");
+        check(AntiDetect.sanitizeProcText("no newline at all") == null, "single line text untouched");
+        check(AntiDetect.sanitizeProcText("hello\nworld\n") == null, "clean text untouched");
+        String maps = AntiDetect.sanitizeProcText(
+                "7000-8000 r-xp 0 00:00 0 /data/adb/magisk/x.so\n"
+                        + "8000-9000 r-xp 0 00:00 0 /apex/libart.so\n");
+        check(maps != null && maps.startsWith("\n") && maps.contains("/apex/libart.so"),
+                "filtered maps text keeps the clean line");
+
+        // 新补的三个框架名（susfs / lspatch / dobby）
+        check(AntiDetect.isDeniedPath("/data/adb/susfs/config"), "susfs path");
+        check(AntiDetect.isDeniedPath("/data/adb/lspatch/modules/a.apk"), "lspatch path");
+        check(AntiDetect.isDeniedPath("/data/local/tmp/libdobby.so"), "dobby path");
+        check(AntiDetect.envNameDenied("SUSFS_ENABLED"), "susfs env");
+        check(AntiDetect.processNameDenied("com.susfs.daemon"), "susfs process");
+        check(!AntiDetect.isDeniedPath("/data/data/com.tencent.mobileqq/files/msf_statistic"),
+                "keep qq files");
+
         // 被拦下的服务端踢线：计数与内容会进 /healthz，外部看守靠它重启 QQ。
         int kicks = AntiDetect.blockedKicks();
         AntiDetect.noteBlockedKick("type=KKICKBYMULTIINST security=0 sameDevice=false");

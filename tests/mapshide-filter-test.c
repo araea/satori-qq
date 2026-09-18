@@ -51,6 +51,18 @@ int main(void) {
     if ((rc = expect(is_detector_path("/data/app/x/libQSec.so"), 1, 58))) return rc;
     if ((rc = expect(is_detector_path("/data/app/x/libmsfbootV2.so"), 1, 64))) return rc;
     if ((rc = expect(is_detector_path("/data/app/x/libMSFKernel.so"), 0, 65))) return rc;
+    // 9.3.65 里同样读 /proc/self/maps 的监控库。都不带 turing/fekit 字样，靠新加的七条命中。
+    if ((rc = expect(is_detector_path("/data/app/x/libnative-memory-library-lib.so"), 1, 121))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/librmonitor_memory.so"), 1, 122))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/libmatrix-hookcommon.so"), 1, 123))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/libshadowhook.so"), 1, 124))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/libthreadsuspend.so"), 1, 125))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/liblogcathook.so"), 1, 126))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/libunusedcodecheck.so"), 1, 127))) return rc;
+    // 崩溃/符号化那几家刻意不补：它们读 /proc/self/mem 与 maps 是为了出崩溃报告，
+    // 挡住会让报告本身坏掉，不是一个划算的交换。
+    if ((rc = expect(is_detector_path("/data/app/x/libBugly_Native.so"), 0, 128))) return rc;
+    if ((rc = expect(is_detector_path("/data/app/x/libwechatbacktrace.so"), 0, 129))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/self/status"), 1, 10))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/mounts"), 1, 11))) return rc;
     if ((rc = expect(is_proc_exposure_path("/proc/self/cmdline"), 1, 12))) return rc;
@@ -92,6 +104,17 @@ int main(void) {
     if ((rc = expect(env_name_denied("MAGISK_VER"), 1, 30))) return rc;
     if ((rc = expect(env_name_denied("ZYGISK_ENABLED"), 1, 31))) return rc;
     if ((rc = expect(env_name_denied("PATH"), 0, 32))) return rc;
+    // 2026-09-18 补的三个框架名：susfs（KernelSU 隐藏）/ lspatch（免 root 打包）/ dobby（inline hook 库）
+    if ((rc = expect(path_denied("/data/adb/susfs/config"), 1, 130))) return rc;
+    if ((rc = expect(path_denied("/data/adb/lspatch/modules/x.apk"), 1, 131))) return rc;
+    if ((rc = expect(path_denied("/data/local/tmp/libdobby.so"), 1, 132))) return rc;
+    if ((rc = expect(env_name_denied("SUSFS_ENABLED"), 1, 133))) return rc;
+    if ((rc = expect(prop_denied("ro.susfs.version"), 1, 134))) return rc;
+    if ((rc = expect(dent_name_blocked("susfs"), 1, 135))) return rc;
+    if ((rc = expect(dent_name_blocked("lspatch"), 1, 136))) return rc;
+    // 别误伤 QQ 自己的东西
+    if ((rc = expect(path_denied("/data/data/com.tencent.mobileqq/files/x"), 0, 137))) return rc;
+    if ((rc = expect(prop_denied("ro.build.version.sdk"), 0, 138))) return rc;
     if ((rc = expect(env_entry_denied("MAGISK_VER=26.4", 15), 1, 33))) return rc;
     if ((rc = expect(env_entry_denied("PATH=/system/bin", 16), 0, 34))) return rc;
     if ((rc = expect(env_entry_denied("LD_PRELOAD=/data/adb/modules/foo.so", 35), 1, 35))) return rc;
@@ -187,10 +210,38 @@ int main(void) {
         if ((rc = expect(lib_index("/data/app/x/lib/libQSec.so"), 4, 96))) return rc;
         if ((rc = expect(lib_index("/data/app/x/lib/libckguard.so"), 5, 97))) return rc;
         if ((rc = expect(lib_index("/data/app/x/lib/libwtecdh.so"), 6, 98))) return rc;
-        if ((rc = expect(lib_index("/data/app/x/lib/libother.so"), 7, 99))) return rc;
-        if ((rc = expect(lib_index(0), 7, 100))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libother.so"), 14, 99))) return rc;
+        if ((rc = expect(lib_index(0), 14, 100))) return rc;
+        // 2026-09-18 扩进来的七个监控库：索引必须与 LIB_NAMES 对齐，否则 qk_env_maps_*.json
+        // 里那一项会算到别的库头上，升级时定位就错了。
+        if ((rc = expect(lib_index("/data/app/x/lib/libnative-memory-library-lib.so"), 7, 111))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/librmonitor_memory.so"), 8, 112))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/librmonitor_base.so"), 8, 113))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libmatrix-hookcommon.so"), 9, 114))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libshadowhook.so"), 10, 115))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libbugly_shadowhook.so"), 10, 116))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libthreadsuspend.so"), 11, 117))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/liblogcathook.so"), 12, 118))) return rc;
+        if ((rc = expect(lib_index("/data/app/x/lib/libunusedcodecheck.so"), 13, 119))) return rc;
         if ((rc = expect(strcmp(LIB_NAMES[0], "fekit") == 0, 1, 101))) return rc;
-        if ((rc = expect(strcmp(LIB_NAMES[7], "other") == 0, 1, 102))) return rc;
+        if ((rc = expect(strcmp(LIB_NAMES[7], "natmem") == 0, 1, 102))) return rc;
+        if ((rc = expect(strcmp(LIB_NAMES[14], "other") == 0, 1, 120))) return rc;
+        // LIB_NAMES 的项数必须等于 LIB_SLOTS，否则末尾的桶永远不会被写到。
+        {
+            int n = 0;
+            while (LIB_NAMES[n]) n++;
+            if ((rc = expect(n, LIB_SLOTS, 139))) return rc;
+        }
+        // 逐库计数必须每个桶都清零。写死成 8 的那一版会让 8..14 只增不减，
+        // qk_env_maps_*.json 里 patched 与逐库之和差一个数量级。
+        {
+            reset_lib_patched();
+            for (int i = 0; i < LIB_SLOTS; i++) g_lib_patched[i] = i + 1;
+            reset_lib_patched();
+            int sum = 0;
+            for (int i = 0; i < LIB_SLOTS; i++) sum += g_lib_patched[i];
+            if ((rc = expect(sum, 0, 140))) return rc;
+        }
     }
     {
         /* 模块自己的 .so 挂在 /memfd:dalvik-jit-code-cache 上。ART 的 memfd 只有

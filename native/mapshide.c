@@ -211,6 +211,13 @@ static const char* BLOCK[] = {
     "zygisk_vector", "libvector", "JingMatrix", "frida", "gadget",
     "linjector", "lsplant",
     /*
+     * 2026-09-18 补：三个新出现的框架名。都不是本机装的东西，补进 BLOCK 的成本是三条字符串，
+     * 而 libfekit 的 maps/路径扫描是按关键字命中的，少一条就等于放行一种形态。
+     * `susfs` 是 KernelSU 的隐藏方案、`lspatch` 是免 root 的 LSPatch 打包、`dobby` 是常见
+     * native inline hook 库（QQEnhancedBypass 那套 native 方案就用它，本机不用但别人的模块会）。
+     */
+    "susfs", "lspatch", "dobby",
+    /*
      * 模块自己的 .so 是从 memfd 载进来的，maps/smaps 里有三行
      * /memfd:dalvik-jit-code-cache（r-xp / r--p / rw-p，同一个 inode）。ART 自己只用
      * /memfd:jit-cache 与 /memfd:jit-zygote-cache 这两个名字，`dalvik-jit-code-cache`
@@ -475,7 +482,8 @@ static int dent_name_blocked(const char* name) {
     if (!name || !*name || name[0] == '.') return 0;
     if (module_artifact_name(name)) return 1;
     if (strcmp(name, "su") == 0 || strcmp(name, "ksud") == 0
-            || strcmp(name, "magisk") == 0 || strcmp(name, "apatch") == 0)
+            || strcmp(name, "magisk") == 0 || strcmp(name, "apatch") == 0
+            || strcmp(name, "susfs") == 0 || strcmp(name, "lspatch") == 0)
         return 1;
     return path_denied(name);
 }
@@ -521,7 +529,9 @@ static int prop_denied(const char* p) {
             || contains(p, n, "lsposed") || contains(p, n, "lspd")
             || contains(p, n, "riru") || contains(p, n, "kernelsu")
             || contains(p, n, "ksud") || contains(p, n, "apatch")
-            || contains(p, n, "shamiko");
+            || contains(p, n, "shamiko")
+            || contains(p, n, "susfs") || contains(p, n, "lspatch")
+            || contains(p, n, "dobby");
 }
 
 static int env_name_denied(const char* name) {
@@ -531,7 +541,9 @@ static int env_name_denied(const char* name) {
             || contains_ci(name, n, "lsposed") || contains_ci(name, n, "lspd")
             || contains_ci(name, n, "riru") || contains_ci(name, n, "kernelsu")
             || contains_ci(name, n, "ksud") || contains_ci(name, n, "apatch")
-            || contains_ci(name, n, "shamiko");
+            || contains_ci(name, n, "shamiko")
+            || contains_ci(name, n, "susfs") || contains_ci(name, n, "lspatch")
+            || contains_ci(name, n, "dobby");
 }
 
 static int env_entry_denied(const char* e, size_t n) {
@@ -565,22 +577,41 @@ static int is_detector_path(const char* p) {
     return contains_ci(p, n, "fekit") || contains_ci(p, n, "ckguard")
             || contains_ci(p, n, "wtecdh") || contains_ci(p, n, "turing")
             || contains_ci(p, n, "libqsec") || contains_ci(p, n, "dandelion")
-            || contains_ci(p, n, "msfboot");
+            || contains_ci(p, n, "msfboot")
+            /* 9.3.65 里另外一批读 /proc/self/maps 的库。它们的判定性质不如 fekit/turing 直接，
+             * 但都在进程内、都读同一份 maps、都可能把结果上报，所以一并补。 */
+            || contains_ci(p, n, "native-memory") || contains_ci(p, n, "rmonitor")
+            || contains_ci(p, n, "matrix-hook") || contains_ci(p, n, "shadowhook")
+            || contains_ci(p, n, "threadsuspend") || contains_ci(p, n, "logcathook")
+            || contains_ci(p, n, "unusedcodecheck");
 }
 
 /*
  * 每个检测库各补了多少个 GOT 槽。QQ 升级时如果换了库名或去掉了某个库，这里会直接少一项或者
  * 变 0——比只看总量 patched 更快定位。索引与 LIB_NAMES 一一对应，认不出的归 other。
+ *
+ * 2026-09-18 从 8 项扩到 15 项：把进程里另外一批**会读 /proc/self/maps**的 QQ 监控库纳入。
+ * 它们的检测性质各不相同，但读法都是 libc 的 fopen/open + strstr，GOT 补上就看不到模块与框架的
+ * 行。误伤面很小：这几个库读 maps 都是为了自己的符号化/线程定位，过滤掉的行本来也不属于它们。
  */
 static const char* LIB_NAMES[] = {
-    "fekit", "turingxq", "turingmfa", "msfbootV2", "qsec", "ckguard", "wtecdh", "other", 0
+    "fekit", "turingxq", "turingmfa", "msfbootV2", "qsec", "ckguard", "wtecdh",
+    "natmem", "rmonitor", "matrixhook", "shadowhook", "threadsuspend", "logcathook",
+    "unusedcodecheck", "other", 0
 };
-static int g_lib_patched[8];
+#define LIB_SLOTS 15
+static int g_lib_patched[LIB_SLOTS];
 /* 正在补哪个库。do_patch_dyn 里与 ctx->patched 一起加，两个数字口径一致。 */
 static int g_lib_id;
 
+/* 逐库计数在新一轮 install() 开始时清零。抽成函数是为了让 tests/mapshide-filter-test.c 能直接
+ * 验「所有桶都被清掉」——2026-09-18 那次就是这里写死成 8，新加的桶只增不减。 */
+static void reset_lib_patched(void) {
+    for (int i = 0; i < LIB_SLOTS; i++) g_lib_patched[i] = 0;
+}
+
 static int lib_index(const char* p) {
-    if (!p) return 7;
+    if (!p) return 14;
     size_t n = strlen(p);
     if (contains_ci(p, n, "fekit")) return 0;
     if (contains_ci(p, n, "turingxq")) return 1;
@@ -589,7 +620,14 @@ static int lib_index(const char* p) {
     if (contains_ci(p, n, "libqsec")) return 4;
     if (contains_ci(p, n, "ckguard")) return 5;
     if (contains_ci(p, n, "wtecdh")) return 6;
-    return 7;
+    if (contains_ci(p, n, "native-memory")) return 7;
+    if (contains_ci(p, n, "rmonitor")) return 8;
+    if (contains_ci(p, n, "matrix-hook")) return 9;
+    if (contains_ci(p, n, "shadowhook")) return 10;
+    if (contains_ci(p, n, "threadsuspend")) return 11;
+    if (contains_ci(p, n, "logcathook")) return 12;
+    if (contains_ci(p, n, "unusedcodecheck")) return 13;
+    return 14;
 }
 
 /* openat(dirfd, "maps") bypasses a path-only /proc filter. Resolve dirfd. */
@@ -1374,13 +1412,13 @@ static uintptr_t load_bias(uintptr_t map_base) {
     return map_base;
 }
 
-static uintptr_t g_logged_bases[8];
+static uintptr_t g_logged_bases[24];
 static int g_logged_n;
 static int g_last_patched = -1;
 
 static int already_logged(uintptr_t base) {
     for (int i = 0; i < g_logged_n; i++) if (g_logged_bases[i] == base) return 1;
-    if (g_logged_n < 8) g_logged_bases[g_logged_n++] = base;
+    if (g_logged_n < 24) g_logged_bases[g_logged_n++] = base;
     return 0;
 }
 
@@ -1785,20 +1823,27 @@ static void persist_maps_stats(int patched, int dlsym_n, int readdir_n,
             key) <= 0)
         return;
     int ok = hide_loop_ok(leak_maps, leak_tcp, leak_env, dlsym_n);
+    /* 逐库计数按 LIB_NAMES 生成，加库时不用再手改格式串。 */
+    char libs[512];
+    int lp = 0;
+    libs[0] = 0;
+    for (int i = 0; LIB_NAMES[i]; i++) {
+        int w = snprintf(libs + lp, sizeof(libs) - (unsigned)lp, "%s\"%s\":%d",
+                i ? "," : "", LIB_NAMES[i], g_lib_patched[i]);
+        if (w <= 0 || (size_t)(lp + w) >= sizeof(libs)) break;
+        lp += w;
+    }
     /* 文件名按 process_key() 分进程；pid 让读侧能再确认一次这份数据是不是自己写的。 */
-    char json[768];
+    char json[1024];
     int len = snprintf(json, sizeof(json),
             "{\"pid\":%d,\"patched\":%d,\"dlsym\":%d,\"readdir\":%d,\"seccomp\":%d,"
             "\"named_rx\":%d,\"tcp\":1,\"getenv\":%d,\"freopen\":%d,\"environ\":1,"
             "\"risk_blocks\":%d,\"system_blocks\":%d,"
             "\"leak_maps\":%d,\"leak_tcp\":%d,\"leak_env\":%d,\"loop_ok\":%d,"
-            "\"libs\":{\"fekit\":%d,\"turingxq\":%d,\"turingmfa\":%d,\"msfbootV2\":%d,"
-            "\"qsec\":%d,\"ckguard\":%d,\"wtecdh\":%d,\"other\":%d}}\n",
+            "\"libs\":{%s}}\n",
             (int)raw_svc(SYS_getpid, 0, 0, 0, 0, 0, 0),
             patched, dlsym_n, readdir_n, g_seccomp_on, g_named_rx, getenv_n, freopen_n,
-            g_risk_blocks, g_system_blocks, leak_maps, leak_tcp, leak_env, ok,
-            g_lib_patched[0], g_lib_patched[1], g_lib_patched[2], g_lib_patched[3],
-            g_lib_patched[4], g_lib_patched[5], g_lib_patched[6], g_lib_patched[7]);
+            g_risk_blocks, g_system_blocks, leak_maps, leak_tcp, leak_env, ok, libs);
     if (len <= 0) return;
     /*
      * 先写 .tmp 再 rename。直接 O_TRUNC 写同一个文件的话，读侧（/healthz 与
@@ -1851,7 +1896,10 @@ int Java_com_satori_qq_qq_MapsHide_install(void* env, void* clazz) {
     g_page = sysconf(39);
     if (g_page <= 0) g_page = 4096;
     ctx_t ctx;
-    for (int i = 0; i < 8; i++) g_lib_patched[i] = 0;
+    /* 必须用 LIB_SLOTS，不能写死数字：写死 8 时新加的 7 个桶永不清零，而 Java 侧每秒调一次
+     * install()，g_lib_patched 会一路累加，qk_env_maps_*.json 里 rmonitor/shadowhook 会显示成
+     * 几百个槽（2026-09-18 实测：patched=99 而逐库之和 781）。reset_lib_patched 有单测钉住。 */
+    reset_lib_patched();
     ctx.my_openat = (void*)my_openat;
     ctx.my_open = (void*)my_open;
     ctx.my_fopen = (void*)my_fopen;

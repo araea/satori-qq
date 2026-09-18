@@ -32,11 +32,26 @@ Java 层在 `qq/AntiDetect`，装在每个 QQ 进程：
 - ChannelProxy、ChannelManager、MsfCore 的收发口按命令白名单丢环境上报，并向服务端回空成功
 - Root、Xposed、调试器、模拟器、包管理、堆栈、Pandora、Turing、MSF 遥测与强制下线处理逐项覆盖
 - 人脸核身那条链路单独覆盖：TuringFace/turingcam 的设备信息与错误串、turingcam 的进程表扫描、慧眼的 `face_detect` / `camera_detect` 上报（见下节）
+- SO 加载 / native hook 监控（SoMonitor）拦安装点，并把 `native_monitor_*` 事件从 Beacon 出口丢掉（见「SO 加载监控」一节）
 - 设备标识只在配置了假值时改写，多路径保持同一值
+
+`/proc` 文本过滤覆盖四种读法：`BufferedReader.readLine`、`RandomAccessFile.readLine`、
+`Files.readAllLines`、`Files.readString`。四种共用同一套行判据（`AntiDetect.sanitizeProcLine`
+/ `sanitizeProcText`），与 native 的 `line_blocked` 是同一张词表。
 
 Native 层在 `native/mapshide.c`，只对检测库改 GOT，不动其它库：
 
-- 命中库：libfekit、libturingxq、libturingmfa、ckguard、wtecdh、libQSec、dandelion、libmsfbootV2
+- 命中库分两组。第一组是检测/风控本体：libfekit、libturingxq、libturingmfa、ckguard、wtecdh、libQSec、dandelion、libmsfbootV2。
+  第二组是 2026-09-18 补的「进程内会读 `/proc/self/maps`」的 QQ 监控库：`libnative-memory-library-lib`（NativeMemoryMonitor 本体）、
+  `librmonitor_base` / `librmonitor_memory`、`libmatrix-hookcommon` / `libmatrix-traffic`、`libshadowhook` / `libbugly_shadowhook`、
+  `libthreadsuspend`、`liblogcathook`、`libunusedcodecheck`。逐库计数在 `qk_env_maps_*.json` 的 `libs` 里，键名
+  `fekit / turingxq / turingmfa / msfbootV2 / qsec / ckguard / wtecdh / natmem / rmonitor / matrixhook / shadowhook /
+  threadsuspend / logcathook / unusedcodecheck / other`。
+  崩溃与符号化那几家（`libBugly_Native`、`libwechatbacktrace`、`libwechatcrash`）**刻意不补**：它们读 maps 与 `/proc/self/mem`
+  是为了出崩溃报告，挡住会让报告本身坏掉。
+- 逐库计数在新一轮 `install()` 开始时由 `reset_lib_patched()` 清零。**这个循环不能写死数字**：2026-09-18 加库那次写成
+  `for (i = 0; i < 8; i++)`，新加的桶只增不减，而 Java 侧每秒调一次 `install()`，`libs` 里 rmonitor/shadowhook 几分钟就涨到
+  416 / 288，与 `patched`（99）差一个数量级。`tests/mapshide-filter-test.c` 现在钉住「所有桶都被清掉」。
 - 接管这些库 import 的 `open`、`openat`、`fopen`、`stat`、`access`、`readlink`、`getdents64`、`readdir`、`syscall`、`__system_property_get` 等符号，换成自己的包装
 - 包中的 `/proc` 路径做行过滤：maps、smaps、smaps_rollup、mountinfo、mounts、status、environ、cmdline、tcp/tcp6，0.8.9.44 起加上 `fdinfo`（`name:\t<路径>` 行）与 `numa_maps`（`file=<路径>` 行）；路径命中黑名单直接返回 `ENOENT`
 - 目录列举的条目名也过同一张表（`dent_name_blocked`，`getdents64` 与 `readdir` 共用）。0.8.9.46 起多一条前缀规则：`qk_` 开头的条目一律不列出。模块自己在 `files/` 下的 `qk_env_*.json`、`qk_kick.log`、`qk_guard.log`、`qk_sso.log` 属这一类。检测库不需要读 `/proc` 也能在自己进程内 `getFilesDir().listFiles()` 看见它们，而 `qk_env_maps_main.json` 直接写着模块打了多少 GOT、拦了哪些库、`loop_ok` 是多少。这个前缀是模块独占的：41 个 dex 里一个 `qk_` 字符串都没有（`libfekit.so` 里 grep 到的 4 处是 AArch64 指令字节的假命中）
@@ -236,6 +251,46 @@ KKICKBYMULTIINST(0), KKICKBYMOBILE(1), KKICKBYPASSWORDCHANGE(2), KKCIKBYLOWVERSI
 - 未覆盖：`com.tencent.turingcam` 的混淆类里那些直接读 `Build.*`、`/proc` 的采集
   （`AV6dE`、`FxCVY`、`LwgsO`、`QjsR0` 等）没有逐个接管；它们的数据最终经 native
   `libturingmfa` 拼装，native 那一层靠 GOT 过滤。
+
+## SO 加载监控（SoMonitor / NativeMonitor）
+
+2026-09-18 读 9.3.65 的 dex 时发现的另一条上报通道，不在 QSec 那条线上。
+
+- **装配**：启动步骤 `com.tencent.mobileqq.startup.step.OpenThreadCreateHook`（classes.dex）在
+  `ThreadManager.getSubThreadHandler().postDelayed` 里判断
+  `config != null && System.currentTimeMillis() % 10000 < config.soHook`，成立才调
+  `NativeMonitorConfigHelper.setupSoLoadHook()`。配置来自 united config 组 `100458`
+  （`NativeMonitorConfig`，字段 `soHook` 默认 **-3**）。
+- **它挂什么**：`setupSoLoadHook()` → `NativeMemoryMonitor.getInstance().setupSoLoadHook(context, cb, true)`
+  → native `nativeSoLoadHook(pkg, nativeLibraryDir, Runtime.nativeLoad 的 ArtMethod, true)`；native 侧
+  在 `Runtime.nativeLoad` 上挂钩子，每次 SO 加载回调 `onSoLoad(path, backtrace)`。
+- **报什么**：回调链是 `NativeMonitorConfigHelper$3` → `isSoFileLegal(file)`（比对 mmkv 里登记的
+  name/length，返回 `0` legal / `1` name_illegal / `2` path_illegal / `3` length_illegal / `-2` error）
+  → `QQBeaconReport.report`，事件名 `native_monitor_so_load` / `native_monitor_native_hook` /
+  `native_monitor_all_so_load`，字段含 `so_name` / `so_path` / `so_md5` / `so_length` / `is_legal` /
+  `legal_detail` / `backtrace`。另有 `soMonitorCollectorReport*` 一套 IPC 名字。
+  默认上报率 `soLoadReportRate=10`、`soLoadIllegalReportRate=1`——**非法加载是每次都报**。
+- **为什么与本模块有关**：`isNeedCheck(stack)` 只在栈里出现 `java.lang.System.loadLibrary` 时放过，
+  而模块的 `.so` 是 `System.load("/proc/self/fd/<n>")`（memfd），栈里是 `System.load` →
+  会被检查。路径 `/proc/self/fd/<n>` 的 `getName()` 是 fd 号，与登记表里的名字对不上 →
+  `is_legal=1`，并且 `md5` 是**真的把那个 fd 读完算出来的**。
+- **本机现状（证据，2026-09-18）**：`files/mmkv/so_monitor_so_file_infocommon_mmkv_configurations`
+  里有 **203** 条登记（`{"a":"libark.so","c":"/data/data/com.tencent.mobileqq/txlib/…","d":…,"f":"<md5>"}`），
+  **没有模块的 `.so`**；所有 `beacon_db_*` 里 `native_monitor` 一条都没有。也就是说这条钩子现在
+  **没装上**——默认 `soHook=-3`，`% 10000 < -3` 恒假。这是**服务端可随时打开的开关**，不是稳定的安全状态。
+- **模块的做法**（两层，都在 Java）：
+  1. 拦安装点，`XC_MethodReplacement` 置空：`NativeMonitorConfigHelper.setupSoLoadHook`、
+     `NativeMemoryMonitor.setupSoLoadHook(Context, ExternalProvider, boolean)`、
+     `NativeMemoryMonitor.setNativeHookMonitor(INativeHookMonitor)`。不装钩子就没有数据。
+     **刻意不动** `setupFileHook` / `setupOpenDexFileHook` / `initJniHook` / `initThreadHook`：
+     那几项是 QQ 自己的文件、dex、线程监控，与检测无关，停了只会改变行为。
+  2. 兜底：`QQBeaconReport.report` 的每个静态重载（事件名在第 1 或第 2 个参数上）按前缀丢
+     `native_monitor*` 与 `soMonitorCollectorReport*`。别的 beacon 事件原样放行。
+- **观测**：`/healthz` 与 `internal/status` 的 `env_report.native_monitor`：`hooks` 是拦下的安装点数
+  （正常 **3**），`beacon_dropped` 是被丢掉的事件数，`last` 是最近一条事件名。`hooks=0` 说明这一版没挂上，
+  按 0 处理，不要读成「没发生过」。
+- **判据**：想确认它到底有没有被打开，看 `beacon_db_*` 里有没有 `native_monitor` 行，
+  以及 mmkv 里登记条数有没有涨；两个都没动就是没装。
 
 ## 设备侧现状
 
@@ -546,6 +601,9 @@ dumpsys notification → 模块的常驻通知在（channel satori-qq-status，�
 | 枚举 `/proc/self/fd`、`/proc/self/map_files` 逐个 `readlink` | `readlink` / `readlinkat` 的返回值命中 `BLOCK` 就回 `ENOENT`；`fdinfo`（`name:` 行）与 `numa_maps`（`file=` 行）这两条等价的文本路走同一张表 |
 | 读 `/proc/self/maps` 数 `/memfd:` 映射，或把 `dl_iterate_phdr` 与 maps 的条目对上 | 模块那三行带 `/memfd:dalvik-jit-code-cache` 的映射被 `BLOCK` 滤掉；`dl_iterate_phdr` 按加载基址跳过模块自己 |
 | 在自己进程内列举 app 私有目录（`getFilesDir().listFiles()`、`readdir(/data/data/<pkg>/files)`）找模块留下的文件 | `getdents64` / `readdir` 的条目名走同一张表：`qk_` 前缀与含 `satori` 的名字都不列出 |
+| 用 `RandomAccessFile` / `Files.readAllLines` / `Files.readString` 读 `/proc/self/maps`（turing 那三处的方法体被混淆，读法无法从源码判断） | 四种读法与 `BufferedReader` 共用 `sanitizeProcLine` / `sanitizeProcText`；native 侧同理只认文本行 |
+| 在进程内挂 `Runtime.nativeLoad` 的 ArtMethod hook，数每次 SO 加载并上报路径 / md5 / 合法性（SoMonitor） | 拦三个安装点（不装钩子就没有数据），并在 `QQBeaconReport.report` 上兜底丢 `native_monitor*` 事件 |
+| 用 QQ 自己的监控库读 maps（`libnative-memory-library-lib`、`librmonitor_*`、`libmatrix-hook*`、`libshadowhook`、`libthreadsuspend`、`liblogcathook`、`libunusedcodecheck`） | 这七个库一并纳入 GOT 补丁集；它们看到的 maps 与 fekit 看到的是同一份被过滤过的副本 |
 
 挡不住的见下面「挡不住的部分」。
 
@@ -625,7 +683,8 @@ su -c "sh scripts/qq-satori-exposure-audit.sh diff 旧快照 新快照"
   - 导入符号 **232 条逐条一致**（mapshide 补的 GOT 槽一个没少）→ `is_detector_path` 与包装符号不用动；
   - 命令表 **431 条一致**（QSec_Channel 那 5 条 `0x9c00/0x9c01/0x9c02/0x9c0c/0x9cdf_1` 还在）；
   - 字符串集合无新增检测关键字（新增 59 条全是代码字节噪声）。
-- **真机装完照常绑**：`hardening=73`、`kick_hook=12`、`logout_guard=5`、`login_state=2`、
+- **真机装完照常绑**（下面是 **0.15.0 的基线数字**，0.18.0 起以文末那节为准）：
+  `hardening=73`、`kick_hook=12`、`logout_guard=5`、`login_state=2`、
   `token_expired=1`、`allowed_logout=3`、`face.hooks={face_report:3,turing_face:3,turing_process:1}`；
   native 自检 `patched=63 / fekit=37 / turingxq=21 / msfbootV2=5 / loop_ok=1`（与 16070 一致）。
 - **新增**：`Compat` 多一张「非内核面」表（36 项），把踢线入口、检测面（QSec / ChannelProxy /
@@ -637,3 +696,84 @@ su -c "sh scripts/qq-satori-exposure-audit.sh diff 旧快照 新快照"
   `sendMessageInner`（3 参）——9.3.60 与 9.3.65 都是这个形状，模块的动态发现
   （`ChannelManager.mChannelProxy`）本来就绕开了这一层。条目已按实测形状改掉。
   `POST /v1/internal/compat {"force":true}` 能拿到完整报告（`missing` 会点名到方法）。
+
+## 0.18.0（2026-09-18 晚）：过检测面扩建
+
+用户要求按公开的开源 QQ 过检测实现逐项对照、把本模块的能力拉满。对照对象是
+[QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)（GPL-3.0，含 Java 与 native 两层）与
+[QQNTHookBypass](https://github.com/jhl337/QQNTHookBypass)，逐条核到本机 9.3.65 的 dex 与 so 上——
+**对照结论是本模块在两层都已是超集**（native 侧它用 ByteHook 全进程 PLT hook，本模块是逐检测库 GOT
+补丁 + seccomp + memfd，覆盖面更大），但它与本轮自查暴露了三处真缺口，这一版补齐。
+
+### 补的三处缺口
+
+1. **`com.tencent.gathererga.core.UserInfoImpl` 这个类不存在。** 0.14.0 那批从 QQEnhancedBypass
+   抄过来的 Java root 检测名单里有这一条，但全 APK 里的真实类是
+   `com.tencent.gathererga.core.internal.provider.impl.UserInfoImpl`，而且它的 `isRooted(e)` 返回
+   `com.tencent.gathererga.core.internal.provider.f`（不是 boolean），照抄的 `returnConstant(false)`
+   即使命中也只会抛 ClassCastException。那条钩子一直空转。它的判定读的是
+   `{"/system/app/Superuser.apk","/sbin/su",…,"/su/bin/su"}` 的 `new File(...).exists()`，
+   已被 `File.exists` 覆盖，所以直接删掉那条钩子并在代码里写明原因。
+   同一批里真正缺的是 **`com.tencent.camerasdk.avreport.DeviceInfo.isDeviceRooted()`**
+   （classes19，返回 boolean，QQEnhancedBypass 的 README 说 9.3.50 已移除，实测 9.3.65 还在）——已补。
+2. **SO 加载监控（SoMonitor）整条通道没有覆盖**——见上面「SO 加载监控」一节。这一条是本轮
+   自查（读 dex 找新检测入口）发现的，公开的对照项目里没有。
+3. **Java 侧 `/proc` 文本过滤只有一种读法。** 原来只接 `BufferedReader.readLine`。9.3.65 里读
+   `/proc/self/maps` 的 Java 代码有三处（`com.tencent.turingcam.Stvdh`、`com.tencent.tfd.sdk.wxa.volatile`、
+   `com.tencent.turingfd.sdk.xq.Caelum`），方法体被混淆，不能确定用的是哪一种读法。现在把
+   `RandomAccessFile.readLine`、`Files.readAllLines`、`Files.readString` 一起接上，四种读法共用
+   `sanitizeProcLine` / `sanitizeProcText`。`volatile` 里能直接看到 `java.io.BufferedReader.<init>`。
+
+### native：补丁的库从 8 个扩到 15 个
+
+扫 `qq16240/lib/*.so` 的字符串，**28 个库引用 `/proc/self/maps`**。其中承担检测/监控、且读法走 libc
+（`fopen`/`open`/`strstr`，GOT 补得上）的七个已纳入补丁集：`libnative-memory-library-lib`、
+`librmonitor_base`/`librmonitor_memory`、`libmatrix-hookcommon`/`libmatrix-traffic`、
+`libshadowhook`/`libbugly_shadowhook`、`libthreadsuspend`、`liblogcathook`、`libunusedcodecheck`。
+崩溃与符号化那几家（`libBugly_Native`、`libwechatbacktrace`、`libwechatcrash`）**不补**：
+它们读 maps 与 `/proc/self/mem` 是为了出崩溃报告，挡住会让报告本身坏掉。网络栈与 v8 那几家
+（`libXNet`、`librawquic_jni`、`libv8jni`）也不补，读 maps 的用途不明而改动风险高。
+
+### 真机验收（0.18.0，QQ 9.3.65，2026-09-18 22:00）
+
+- `/healthz`：`version=0.18.0`、`online=true`、`connections=1`（ayjx 在）、
+  `compat={ok:true,passed:249,total:249,missing:0}`（240 → 249，新增 9 条见下）、
+  `kick_hook=12`、`logout_guard.hooks=5`、`login_state.hooks=2`、
+  `face.hooks={face_report:3,turing_face:3,turing_process:1}`、`sso` 全 0。
+- `env_report.hooks.hardening` **73 → 88**：+3 是 SoMonitor 的三个安装点，+12 是
+  `QQBeaconReport.report` 挂上的 12 个静态重载。
+- `env_report.native_monitor`：`{hooks:3, beacon_dropped:0, last:""}`。3 表示三个安装点都替换成功。
+- native 自检（父进程）：`patched=112`、`loop_ok=1`、`leak_maps=0`，
+  `libs={fekit:37, turingxq:21, turingmfa:0, msfbootV2:5, qsec:0, ckguard:2, wtecdh:0,
+  natmem:14, rmonitor:13, matrixhook:0, shadowhook:20, threadsuspend:0, logcathook:0,
+  unusedcodecheck:0, other:0}`，**逐库之和 = 112 = patched**（这是本轮修掉的计数 bug 的验收口径）。
+  `:MSF` 进程照旧 `patched=42 / fekit=37`。
+- 稳定性：`logcat` 里 `Exception in hooker` 计数 **0**；`/data/system/dropbox` 无新增
+  `data_app_native_crash`（最上面几条是 09-16 的旧账）；主进程与 `:MSF` 都在跑；
+  往测试群 280183116 发一条并撤回，回执正常。
+- **修的计数 bug**：`install()` 里逐库清零的循环写死成 `for (i = 0; i < 8; i++)`，而数组已扩到 15，
+  于是 8..14 号桶只增不减（Java 侧每秒调一次 `install()`），第一次装完看到的
+  `rmonitor=416 / shadowhook=288` 就是这么来的。改成 `reset_lib_patched()`（用 `LIB_SLOTS`），
+  并在 `tests/mapshide-filter-test.c` 里钉住「所有桶都被清掉」与「`LIB_NAMES` 项数 == `LIB_SLOTS`」。
+
+### 这一版新加的静态自检条目（Compat 非内核面表 36 → 45 项）
+
+| 条目 | 为什么 |
+| --- | --- |
+| `NativeMonitorConfigHelper.setupSoLoadHook` (0) | SoMonitor 装配点 |
+| `NativeMemoryMonitor.setupSoLoadHook` (3) / `setNativeHookMonitor` (1) | native 侧同名入口与 native hook 回调注册 |
+| `QQBeaconReport.report` (-1) | 事件出口（20+ 个重载，只查名字） |
+| `DeviceInfo.isDeviceRooted` (0) | 摄像头 SDK 的 root 检测 |
+| `LightDeviceUtils.isRooted` (-1) / `ChargeV2Utils.isDeviceRooted` (-1) | 既有的两处 root 检测 |
+| `gathererga…UserInfoImpl.isRooted` (1) | 真实类名（写错的那个已从代码里删掉） |
+| `oicq.wlogin_sdk.tools.util.isFileExist` (1) | wlogin 的 root 判定（`w` 的字段 `Y` 由它算） |
+
+`Compat` 总数 240 → 249。条目格式与其它表一致：`{类, 方法, 参数个数, 标签}`，`-1` = 只查名字。
+
+### 边界（这一版没有改变的部分）
+
+- 硬件认证（Key Attestation）与 TEE：本机 `-74 ATTESTATION_KEYS_NOT_PROVISIONED`，见「人脸核身」一节，
+  客户端改不了。
+- ArtMethod 完整性校验、进程内堆/栈内存关键字扫描、多后端 syscall 交叉、SELinux 与内核命名空间：
+  仍在「挡不住的部分」里，本版没有动。
+- 服务端风控：客户端这边能数能藏的都做了；踢线成因仍以服务端判定为主。

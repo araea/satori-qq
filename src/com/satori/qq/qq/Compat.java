@@ -248,6 +248,17 @@ public final class Compat {
             {"com.tencent.mobileqq.identification.IdentificationIpcServer", "onCall", "3", "face ipc"},
             {"com.tencent.mobileqq.identification.IdentificationHuiyanSDKInitHelper", "g", "2", "face app conf"},
             {"com.tencent.mobileqq.identification.IdentificationHuiyanSDKInitHelper", "h", "2", "face sdk start"},
+            // SO 加载 / native hook 监控（9.3.65 新增，启动步骤 OpenThreadCreateHook 装配）
+            {"com.tencent.mobileqq.data.nativemonitor.NativeMonitorConfigHelper", "setupSoLoadHook", "0", "so-load monitor"},
+            {"com.tencent.mobileqq.nativememorymonitor.library.NativeMemoryMonitor", "setupSoLoadHook", "3", "native so-load hook"},
+            {"com.tencent.mobileqq.nativememorymonitor.library.NativeMemoryMonitor", "setNativeHookMonitor", "1", "native hook monitor"},
+            {"com.tencent.mobileqq.statistics.QQBeaconReport", "report", "-1", "beacon report"},
+            // Java 侧 root 检测实现（都是 File.exists 之外还有自己的分支，单独挂钩）
+            {"com.tencent.camerasdk.avreport.DeviceInfo", "isDeviceRooted", "0", "camera root check"},
+            {"org.light.device.LightDeviceUtils", "isRooted", "-1", "light root check"},
+            {"com.tenpay.charge.v2.util.ChargeV2Utils", "isDeviceRooted", "-1", "tenpay root check"},
+            {"com.tencent.gathererga.core.internal.provider.impl.UserInfoImpl", "isRooted", "1", "gatherer root check"},
+            {"oicq.wlogin_sdk.tools.util", "isFileExist", "1", "wlogin file probe"},
     };
 
     /** 静态自检：类在不在、字段在不在、回调形状对不对。不发任何内核请求。 */

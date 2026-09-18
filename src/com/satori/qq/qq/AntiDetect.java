@@ -78,6 +78,18 @@ public final class AntiDetect {
     private static volatile int faceReportHookCount;
     private static volatile int turingFaceHookCount;
     private static volatile int turingProcessHookCount;
+    /**
+     * SoMonitor / NativeMonitor 那条通道。QQ 9.3.65 的启动步骤
+     * {@code startup.step.OpenThreadCreateHook} 会调
+     * {@code NativeMonitorConfigHelper.setupSoLoadHook()}，native 侧挂上 {@code Runtime.nativeLoad}
+     * 的 ArtMethod hook，把每次 SO 加载的路径、md5、长度、合法性与 backtrace 经 Beacon 的
+     * {@code native_monitor_so_load} / {@code native_monitor_native_hook} 事件报上去。
+     * 模块的 .so 是 {@code System.load("/proc/self/fd/<n>")}（memfd），这条钩子一旦装上就会被判
+     * {@code is_legal=1}（name_illegal）上报。这里在安装点拦掉，并兜底过滤那几个事件名。
+     */
+    private static volatile int nativeMonitorHookCount;
+    private static final AtomicLong BEACON_MONITOR_DROPPED = new AtomicLong();
+    private static volatile String lastBeaconDrop = "";
     private static final AtomicLong ENV_LAST_PERSIST_MS = new AtomicLong();
     private static final long ENV_PERSIST_INTERVAL_MS = 5000L;
     private static volatile int hookChannelSend;
@@ -647,6 +659,9 @@ public final class AntiDetect {
             hookMsfInbound();
         }
         hookAdbSettings();
+        // 9.3.65 新增的 SO 加载 / native hook 监控。不装它、也不让它的结果出门。
+        hookNativeMonitor();
+        hookBeaconMonitorEvents();
         // Publish a process-local installation snapshot even when no report has been observed.
         // This lets the main-process status endpoint detect stale/missing MSF coverage after a
         // QQ upgrade, without adding another probe hook or touching the signing path.
@@ -747,6 +762,7 @@ public final class AntiDetect {
             }
             out.put("commands", commands);
             out.put("hooks", hookStats());
+            out.put("native_monitor", nativeMonitorStats());
             out.put("intercepts_ready", !enabled || interceptsReady(envProcessKey()));
             JSONObject msf = readEnvFile("msf");
             if (msf != null) out.put("msf", msf);
@@ -754,6 +770,17 @@ public final class AntiDetect {
             if (maps != null) out.put("maps", maps);
             JSONObject mapsMsf = readEnvFile("maps_msf");
             if (mapsMsf != null) out.put("maps_msf", mapsMsf);
+        } catch (Throwable ignore) {}
+        return out;
+    }
+
+    /** SoMonitor / NativeMonitor 通道的观测面：挂上几个安装点、拦下几条事件。 */
+    public static JSONObject nativeMonitorStats() {
+        JSONObject out = new JSONObject();
+        try {
+            out.put("hooks", nativeMonitorHookCount);
+            out.put("beacon_dropped", BEACON_MONITOR_DROPPED.get());
+            out.put("last", lastBeaconDrop);
         } catch (Throwable ignore) {}
         return out;
     }
@@ -1322,7 +1349,18 @@ public final class AntiDetect {
     private void hookVendorRootChecks() {
         hookBooleanFalse("org.light.device.LightDeviceUtils", "isRooted");
         hookBooleanFalse("com.tenpay.charge.v2.util.ChargeV2Utils", "isDeviceRooted");
-        hookBooleanFalse("com.tencent.gathererga.core.UserInfoImpl", "isRooted");
+        // 9.3.65 仍在（classes19）。QQEnhancedBypass 的 README 说 9.3.50 已移除，
+        // 实测两个版本的 dex 里都在，而且它的 SU_FILES 走 new File(...).exists()。
+        hookBooleanFalse("com.tencent.camerasdk.avreport.DeviceInfo", "isDeviceRooted");
+        /*
+         * gathererga 那条不要再写那个不存在的类名：0.14.0 之前这里挂的是
+         * com.tencent.gathererga.core.UserInfoImpl，全 APK 里没有这个类（真实类是
+         * com.tencent.gathererga.core.internal.provider.impl.UserInfoImpl），钩子一直空转。
+         * 而且它的 isRooted(e) 返回 com.tencent.gathererga.core.internal.provider.f，不是 boolean，
+         * 用 returnConstant(false) 会直接抛 ClassCastException。
+         * 那条检测本身读的是 {"/system/app/Superuser.apk", "/sbin/su", ..., "/su/bin/su"} 的
+         * new File(...).exists()，已经被 hookFileProbes 的 File.exists 覆盖，不必单独挂钩。
+         */
 
         try {
             Class<?> wlogin = ref.clsOrNull("oicq.wlogin_sdk.request.w");
@@ -1362,22 +1400,97 @@ public final class AntiDetect {
 
     /** Covers Java readers of proc status files; native readers are handled by MapsHide. */
     private void hookProcTextReads() {
+        XC_MethodHook lineFilter = new XC_MethodHook() {
+            @Override protected void afterHookedMethod(MethodHookParam p) {
+                if (!(p.getResult() instanceof String)) return;
+                String fixed = sanitizeProcLine((String) p.getResult());
+                if (fixed != null) p.setResult(fixed);
+            }
+        };
         try {
-            XposedBridge.hookAllMethods(BufferedReader.class, "readLine", new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam p) {
-                    Object value = p.getResult();
-                    if (!(value instanceof String)) return;
-                    String line = (String) value;
-                    if (line.startsWith("TracerPid:")) p.setResult("TracerPid:\t0");
-                    else if (line.startsWith("NoNewPrivs:")) p.setResult("NoNewPrivs:\t0");
-                    else if (shouldHideProcMapLine(line)) p.setResult("");
-                }
-            });
+            XposedBridge.hookAllMethods(BufferedReader.class, "readLine", lineFilter);
             HARDENING_HOOKS.incrementAndGet();
-            L.i("AntiDetect: proc status text filter");
         } catch (Throwable t) {
             L.e("AntiDetect.procText", t);
         }
+        // 9.3.65 里读 /proc/self/maps 的 Java 侧不止 BufferedReader 一种写法
+        // （turingcam / turingfd / tfd 各有一处，方法被混淆过）。补上另外几条常见读法，
+        // 判断共用同一张词表与同一个 maps 行判据。
+        try {
+            XposedBridge.hookAllMethods(java.io.RandomAccessFile.class, "readLine", lineFilter);
+            HARDENING_HOOKS.incrementAndGet();
+        } catch (Throwable t) {
+            L.e("AntiDetect.procText.raf", t);
+        }
+        try {
+            XposedBridge.hookAllMethods(java.nio.file.Files.class, "readAllLines", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    if (!(p.getResult() instanceof java.util.List)) return;
+                    java.util.List<?> src = (java.util.List<?>) p.getResult();
+                    java.util.ArrayList<Object> out = new java.util.ArrayList<>(src.size());
+                    boolean changed = false;
+                    for (Object item : src) {
+                        if (item instanceof String) {
+                            String fixed = sanitizeProcLine((String) item);
+                            if (fixed != null) { changed = true; out.add(fixed); continue; }
+                        }
+                        out.add(item);
+                    }
+                    if (changed) p.setResult(out);
+                }
+            });
+            XposedBridge.hookAllMethods(java.nio.file.Files.class, "readString", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    if (!(p.getResult() instanceof String)) return;
+                    String fixed = sanitizeProcText((String) p.getResult());
+                    if (fixed != null) p.setResult(fixed);
+                }
+            });
+            HARDENING_HOOKS.addAndGet(2);
+        } catch (Throwable t) {
+            L.e("AntiDetect.procText.files", t);
+        }
+        L.i("AntiDetect: proc status text filter");
+    }
+
+    /**
+     * 单行的 /proc 文本安全化。返回替换值，{@code null} 表示这一行不用动。
+     * 与 native 侧 {@code line_blocked} 同一套判据，读法不同、结果一致。
+     */
+    public static String sanitizeProcLine(String line) {
+        if (line == null || line.isEmpty()) return null;
+        if (line.startsWith("TracerPid:")) return "TracerPid:\t0";
+        if (line.startsWith("NoNewPrivs:")) return "NoNewPrivs:\t0";
+        if (shouldHideProcMapLine(line)) return "";
+        return null;
+    }
+
+    /**
+     * 整段文本的安全化，给 {@code Files.readString} 这类一次读全文的 API 用。
+     * 先做一次廉价的词表预筛（不含任何敏感词就直接放过），再逐行套
+     * {@link #sanitizeProcLine}；一行都没改也返回 {@code null}。
+     */
+    public static String sanitizeProcText(String text) {
+        if (text == null || text.isEmpty() || text.indexOf('\n') < 0) return null;
+        String lower = text.toLowerCase(Locale.ROOT);
+        boolean interesting = false;
+        for (String word : PROC_LINE_WORDS) {
+            if (lower.contains(word)) { interesting = true; break; }
+        }
+        if (!interesting) return null;
+        String[] lines = text.split("\n", -1);
+        boolean changed = false;
+        for (int i = 0; i < lines.length; i++) {
+            String fixed = sanitizeProcLine(lines[i]);
+            if (fixed != null) { lines[i] = fixed; changed = true; }
+        }
+        if (!changed) return null;
+        StringBuilder sb = new StringBuilder(text.length());
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) sb.append('\n');
+            sb.append(lines[i]);
+        }
+        return sb.toString();
     }
 
     private void hookStackAndLoader() {
@@ -1593,7 +1706,8 @@ public final class AntiDetect {
     private static final String[] PROCESS_NAME_DENY = {
             "magisk", "kernelsu", "ksud", "apatch", "supersu", "superuser", "shamiko",
             "xposed", "lsposed", "lspd", "zygisk", "edxposed", "frida", "linjector",
-            "substrate", "satori", "mapshide", "debug_ramdisk", "/data/adb"
+            "substrate", "satori", "mapshide", "debug_ramdisk", "/data/adb",
+            "susfs", "lspatch", "dobby"
     };
 
     public static boolean processNameDenied(String name) {
@@ -1743,6 +1857,89 @@ public final class AntiDetect {
         return hooked;
     }
 
+    /**
+     * 只看前缀：事件名是 {@code native_monitor_so_load} / {@code native_monitor_native_hook} /
+     * {@code native_monitor_all_so_load}，另有 {@code soMonitorCollectorReport*} 这套 IPC 名字。
+     */
+    public static boolean isNativeMonitorEvent(String name) {
+        if (name == null || name.isEmpty()) return false;
+        return name.startsWith("native_monitor") || name.startsWith("soMonitorCollectorReport");
+    }
+
+    private static void recordBeaconMonitorDrop(String event) {
+        BEACON_MONITOR_DROPPED.incrementAndGet();
+        lastBeaconDrop = clip(event, 64);
+    }
+
+    /**
+     * QQ 9.3.65 的 SO 加载 / native hook 监控（SoMonitor）。
+     *
+     * <p>装它的入口在启动步骤
+     * {@code com.tencent.mobileqq.startup.step.OpenThreadCreateHook} 的 postDelayed 里，条件是
+     * 「united config 组 100458 读得到，且 {@code System.currentTimeMillis() % 10000 < soHook}」。
+     * 默认配置 {@code soHook = -3}，所以本机现在**没装上**——{@code files/mmkv/so_monitor_so_file_info*}
+     * 里 203 条全是正规库，没有模块的 .so。但这是**服务端可随时打开的开关**；一旦装上前，
+     * native 会挂 {@code Runtime.nativeLoad} 的 ArtMethod hook，把每次 SO 加载的
+     * 路径 / md5 / 长度 / 是否合法 / backtrace 经 Beacon 报上去，而模块的 .so 是
+     * {@code System.load("/proc/self/fd/<n>")}（memfd），会被判 {@code name_illegal}（返回 1）。
+     *
+     * <p>所以拦**安装点**，不是过滤结果：不装钩子就没有数据。三个目标分别是 SO 加载钩子
+     * （两个类各一份入口）与 native hook 回调注册。{@code setupFileHook} /
+     * {@code setupOpenDexFileHook} / {@code initJniHook} / {@code initThreadHook} 是 QQ 自己的
+     * 内存、dex、线程监控，与检测无关，刻意不动。
+     */
+    private void hookNativeMonitor() {
+        int hooked = 0;
+        hooked += hookVoidMethods("com.tencent.mobileqq.data.nativemonitor.NativeMonitorConfigHelper",
+                new String[]{"setupSoLoadHook"}, "so-load monitor");
+        hooked += hookVoidMethods("com.tencent.mobileqq.nativememorymonitor.library.NativeMemoryMonitor",
+                new String[]{"setupSoLoadHook", "setNativeHookMonitor"}, "native memory monitor");
+        nativeMonitorHookCount = hooked;
+        if (hooked > 0) L.i("AntiDetect: native/so monitor disabled (" + hooked + ")");
+        else L.w("AntiDetect: native monitor entry not found");
+    }
+
+    /**
+     * 第二层：就算钩子装上了，也不让那几条事件出门。{@code QQBeaconReport.report} 有 20 多个重载，
+     * 事件名在第 1 或第 2 个参数上（{@code report(event)} / {@code report(appKey, event)} 两种拼法
+     * 都在用），所以两个都看。
+     */
+    private void hookBeaconMonitorEvents() {
+        try {
+            Class<?> beacon = ref.clsOrNull("com.tencent.mobileqq.statistics.QQBeaconReport");
+            if (beacon == null) return;
+            int hooked = 0;
+            for (final Method m : beacon.getDeclaredMethods()) {
+                if (!"report".equals(m.getName())) continue;
+                if ((m.getModifiers() & java.lang.reflect.Modifier.STATIC) == 0) continue;
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length < 1 || p[0] != String.class) continue;
+                final Class<?> returnType = m.getReturnType();
+                m.setAccessible(true);
+                XposedBridge.hookMethod(m, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null) return;
+                        int n = Math.min(2, param.args.length);
+                        for (int i = 0; i < n; i++) {
+                            if (!(param.args[i] instanceof String)) continue;
+                            String event = (String) param.args[i];
+                            if (!isNativeMonitorEvent(event)) continue;
+                            recordBeaconMonitorDrop(event);
+                            Object value = safeDefault(returnType, true);
+                            param.setResult(value == VOID_VALUE ? null : value);
+                            return;
+                        }
+                    }
+                });
+                hooked++;
+            }
+            HARDENING_HOOKS.addAndGet(hooked);
+            if (hooked > 0) L.i("AntiDetect: beacon monitor events filtered (" + hooked + ")");
+        } catch (Throwable t) {
+            L.e("AntiDetect.beaconMonitor", t);
+        }
+    }
+
     private void hookQQDetectionPatch() {
         if (blockServerKick) {
             // 内核 IKickApi 的踢线回调是 a(AppRuntime, KickedInfo)，b(...) 是它调用的私有方法。
@@ -1824,6 +2021,7 @@ public final class AntiDetect {
                 || n.contains("zygisk") || n.contains("riru") || n.contains("magisk")
                 || n.contains("shamiko") || n.contains("kernelsu") || n.contains("apatch")
                 || n.contains("frida") || n.contains("substrate") || n.contains("lsplant")
+                || n.contains("susfs") || n.contains("lspatch") || n.contains("dobby")
                 || n.contains("satori");
     }
 
@@ -3129,16 +3327,28 @@ public final class AntiDetect {
         String value = stripIgnorable(text).toLowerCase(Locale.ROOT);
         return value.contains("xposed") || value.contains("lsposed")
                 || value.contains("edxposed") || value.contains("lsplant")
+                || value.contains("lspatch") || value.contains("dobby")
                 || value.contains("com.satori.qq");
     }
 
     public static String sanitizeFrameworkText(String text) {
         if (text == null || text.isEmpty()) return text;
         String out = text;
-        String[] words = {"lsposed", "edxposed", "xposed", "lsplant", "com.satori.qq"};
+        String[] words = {"lsposed", "edxposed", "xposed", "lsplant", "lspatch",
+                "dobby", "com.satori.qq"};
         for (String word : words) out = replaceIgnoreCase(out, word, "dalvik");
         return out;
     }
+
+    /**
+     * maps 行与 /proc 文本里要抹掉的词。Java 与 native 各一份（native 在
+     * {@code native/mapshide.c} 的 {@code BLOCK[]}），改一处要两边一起改。
+     */
+    private static final String[] PROC_LINE_WORDS = {
+            "xposed", "lsposed", "edxposed", "zygisk", "riru", "magisk",
+            "mapshide", "com.satori.qq", "kernelsu", "ksud", "frida", "substrate",
+            "lsplant", "shamiko", "susfs", "lspatch", "dobby",
+    };
 
     public static boolean shouldHideProcMapLine(String line) {
         if (line == null || line.isEmpty()) return false;
@@ -3151,10 +3361,7 @@ public final class AntiDetect {
                     || (c >= 'A' && c <= 'F'))) return false;
         }
         String value = stripIgnorable(line).toLowerCase(Locale.ROOT);
-        String[] words = {"xposed", "lsposed", "edxposed", "zygisk", "riru", "magisk",
-                "mapshide", "com.satori.qq", "kernelsu", "ksud", "frida", "substrate",
-                "lsplant", "shamiko"};
-        for (String word : words) if (value.contains(word)) return true;
+        for (String word : PROC_LINE_WORDS) if (value.contains(word)) return true;
         return false;
     }
 
@@ -3210,6 +3417,8 @@ public final class AntiDetect {
                 || p.contains("sukisu")
                 || p.contains("hidemyapplist")
                 || p.contains("bootloaderspoofer")
+                || p.contains("lspatch")
+                || p.contains("susfs")
                 || p.contains("zygisk");
     }
 
@@ -3247,7 +3456,8 @@ public final class AntiDetect {
         String n = name.toLowerCase();
         return n.contains("magisk") || n.contains("zygisk") || n.contains("lsposed")
                 || n.contains("lspd") || n.contains("riru") || n.contains("kernelsu")
-                || n.contains("ksud") || n.contains("apatch") || n.contains("shamiko");
+                || n.contains("ksud") || n.contains("apatch") || n.contains("shamiko")
+                || n.contains("susfs") || n.contains("lspatch") || n.contains("dobby");
     }
 
     static String stripIgnorable(String path) {
@@ -3301,6 +3511,7 @@ public final class AntiDetect {
                 || p.contains("xposed") || p.contains("edposed") || p.contains("riru")
                 || p.contains("apatch") || p.contains("shamiko") || p.contains("ksud")
                 || p.contains("frida") || p.contains("lsplant")
+                || p.contains("susfs") || p.contains("lspatch") || p.contains("dobby")
                 || p.contains("koushikdutta") || p.contains("install-recovery.sh");
     }
 

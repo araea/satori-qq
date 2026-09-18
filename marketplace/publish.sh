@@ -10,7 +10,7 @@ PKG=com.satori.qq
 ORG_REPO="Xposed-Modules-Repo/$PKG"
 GH=/data/data/com.termux/files/usr/bin/gh
 APK="$ROOT/build/SatoriQQ.apk"
-TAG="101-0.17.0"
+TAG="102-0.18.0"
 
 for artifact in "$APK"; do
   if [ ! -f "$artifact" ]; then
@@ -35,7 +35,7 @@ git add SUMMARY README.md SOURCE_URL ic_launcher.png
 if git diff --cached --quiet; then
   echo "Metadata already up to date"
 else
-  git commit -m "Update metadata for 0.17.0"
+  git commit -m "Update metadata for 0.18.0"
   git push origin HEAD
 fi
 
@@ -46,7 +46,7 @@ fi
 
 "$GH" release create "$TAG" "$APK" \
   --repo "$ORG_REPO" \
-  --title "知弦 0.17.0" \
-  --notes-file "$MP/CHANGELOG-0.17.0.md"
+  --title "知弦 0.18.0" \
+  --notes-file "$MP/CHANGELOG-0.18.0.md"
 
 echo "Published to https://github.com/$ORG_REPO"

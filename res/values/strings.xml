@@ -1,2 +1,2 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources><string name="app_name">知弦</string></resources>
+<resources><string name="app_name">知弦</string><string name="app_description">在 Android QQ 进程内提供 Satori v1 的 HTTP 与 WebSocket 服务。</string></resources>

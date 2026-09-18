@@ -11,9 +11,9 @@ import android.provider.Settings;
 
 import com.satori.qq.L;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
+import com.satori.qq.xp.XC_MethodHook;
+import com.satori.qq.xp.XposedBridge;
+import com.satori.qq.xp.XposedHelpers;
 
 /**
  * Cooperative, VPN-style foreground-service keepalive.

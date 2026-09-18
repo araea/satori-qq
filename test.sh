@@ -11,6 +11,10 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 R=${SATORI_QQ_ROOT:-$SCRIPT_DIR}
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar
 JSON_JAR=$R/libs/json.jar
+# Compile-only Xposed API (io.github.libxposed:api); the tests never install a hook but the
+# source references it, so the jar has to be on both the compile and the run classpath.
+LIBXPOSED=$R/libs/libxposed-api-102.jar
+LIBXPOSED_URL=https://repo.maven.apache.org/maven2/io/github/libxposed/api/102.0.0/api-102.0.0.aar
 OUT=${SATORI_QQ_OUT:-$R/build}
 CLASSES=$OUT/test-classes
 
@@ -22,17 +26,24 @@ if [ ! -f "$JSON_JAR" ]; then
   echo "missing $JSON_JAR — see the download line at the top of this script" >&2
   exit 1
 fi
+if [ ! -f "$LIBXPOSED" ]; then
+  TMPAAR=$(mktemp -d)
+  curl -fsSL -o "$TMPAAR/api.aar" "$LIBXPOSED_URL"
+  ( cd "$TMPAAR" && unzip -o -q api.aar classes.jar )
+  mv "$TMPAAR/classes.jar" "$LIBXPOSED"
+  rm -rf "$TMPAAR"
+fi
 
 echo "== 1. javac =="
 rm -rf "$CLASSES" && mkdir -p "$CLASSES"
-find "$R/src" "$R/stubs" "$R/tests" -name '*.java' > "$OUT/test-sources.txt"
-javac -classpath "$JSON_JAR:$ANDROID_JAR" -encoding UTF-8 -nowarn \
+find "$R/src" "$R/tests" -name '*.java' > "$OUT/test-sources.txt"
+javac -classpath "$JSON_JAR:$ANDROID_JAR:$LIBXPOSED" -encoding UTF-8 -nowarn \
   -d "$CLASSES" @"$OUT/test-sources.txt"
 echo "   compiled $(find "$CLASSES" -name '*.class' | wc -l) classes"
 
 echo "== 2. run =="
 # json.jar 必须排在 android.jar 之前，否则 org.json 会命中桩实现。
-CP="$JSON_JAR:$ANDROID_JAR:$CLASSES"
+CP="$JSON_JAR:$ANDROID_JAR:$LIBXPOSED:$CLASSES"
 failed=0
 total=0
 for class in $(cd "$CLASSES" && find . -name '*Test.class' \

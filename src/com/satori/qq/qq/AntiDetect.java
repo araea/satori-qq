@@ -2,9 +2,9 @@ package com.satori.qq.qq;
 
 import android.content.pm.PackageManager;
 import com.satori.qq.L;
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XC_MethodReplacement;
-import de.robv.android.xposed.XposedBridge;
+import com.satori.qq.xp.XC_MethodHook;
+import com.satori.qq.xp.XC_MethodReplacement;
+import com.satori.qq.xp.XposedBridge;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -2380,11 +2380,15 @@ public final class AntiDetect {
      * 只看参数分不出来。
      *
      * <p><b>0.13.2 的写法是错的，0.13.3 修</b>：那时只做栈扫描，过滤表里没有框架自己那两个
-     * 情况——单段类名（Vector dex 里的混淆类，如 {@code g.a}）与 {@code org.matrix.vector.*}。
-     * 而框架分派帧（{@code XposedBridge$LegacyApiSupport.handleBefore} 之下那一层）比 QQ 的
+     * 情况——单段类名（框架 dex 里的混淆类，如 {@code g.a}）与框架包名。而框架分派帧比 QQ 的
      * 调用点更靠近回调，于是每一次命中都返回同一个与调用点无关的混淆帧——比不记更坏，
      * 因为它长得像答案。现在以入口标记为准（两条候选路径都是同线程内联调用），栈扫描只作为
      * 「还有第三方调用点」的兜底，且把前三个候选帧一起记出来。
+     *
+     * <p>0.16.0 起框架换到现代 API（libxposed 102）：分派帧来自 LSPosed 自己的混淆类
+     * （单段类名，如 {@code y0}/{@code l}，已被下面的单段判据滤掉）与 {@code org.lsposed.*}，
+     * 后者是本版新加的。旧的 {@code de.robv.android.xposed}/{@code org.matrix.vector} 前缀
+     * 保留，二进制里仍可能有别的模块走老路。
      */
     private static String callerTag() {
         String marked = CALLER_MARK.get();
@@ -2398,6 +2402,7 @@ public final class AntiDetect {
             for (StackTraceElement e : new Throwable().getStackTrace()) {
                 String cn = e.getClassName();
                 if (cn.startsWith("com.satori.qq") || cn.startsWith("de.robv.android.xposed")
+                        || cn.startsWith("io.github.libxposed") || cn.startsWith("org.lsposed")
                         || cn.startsWith("org.matrix.vector") || cn.startsWith("java.")
                         || cn.startsWith("android.") || cn.startsWith("com.android.internal")
                         || cn.indexOf('.') < 0 || isFrameworkProxy(cn)

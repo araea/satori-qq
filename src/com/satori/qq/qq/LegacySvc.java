@@ -9,8 +9,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
+import com.satori.qq.xp.XC_MethodHook;
+import com.satori.qq.xp.XposedBridge;
 
 /**
  * Dispatcher for QQ's legacy (pre-NT) WUP services, which are still what the Android

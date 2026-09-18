@@ -5,12 +5,13 @@ import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
 /**
- * Contract of the shipped manifest.
+ * Contract of the shipped manifest and module registration.
  *
- * The manifest keeps the xposed* meta-data so vector/LSPosed can list and register the
- * module; the management activity and the settings provider ride on the same APK. Version
- * must stay in sync with SatoriHub.APP_VERSION, the value the module reports to /healthz
- * and READY — when they disagree, "which build is actually installed" has no trusted source.
+ * <p>0.16.0 起模块走现代 libxposed API：注册信息在 APK 的 {@code META-INF/xposed/} 里
+ * （入口 {@code java_init.list}、属性 {@code module.prop}、作用域 {@code scope.list}），
+ * 清单不再有 {@code xposed*} 元数据——留着会让框架按旧式模块处理。管理 Activity 与设置
+ * Provider 仍在同一个 APK 上。版本必须与 SatoriHub.APP_VERSION 一致，那是模块报给 /healthz
+ * 与 READY 的值；两者不同时「装上的到底是哪一版」就没有可信来源。
  */
 public final class ManifestTest {
     public static void main(String[] args) throws Exception {
@@ -34,8 +35,15 @@ public final class ManifestTest {
         }
         check(versionCode > 0, "versionCode positive");
 
-        int xposed = countXposedMeta(manifest);
-        check(xposed >= 4, "keeps >=4 xposed meta-data entries, got " + xposed);
+        eq(0, countXposedMeta(manifest), "no legacy xposed meta-data");
+        File xposedDir = new File(root, "resources/META-INF/xposed");
+        check(read(new File(xposedDir, "java_init.list")).contains("com.satori.qq.Main"),
+                "java_init.list names the entry class");
+        check(read(new File(xposedDir, "scope.list")).contains("com.tencent.mobileqq"),
+                "scope.list names the QQ package");
+        String moduleProp = read(new File(xposedDir, "module.prop"));
+        check(moduleProp.contains("minApiVersion=102"), "module.prop declares minApiVersion");
+        check(moduleProp.contains("targetApiVersion=102"), "module.prop declares targetApiVersion");
 
         NodeList apps = manifest.getElementsByTagName("application");
         eq(1, apps.getLength(), "application node");
@@ -78,6 +86,11 @@ public final class ManifestTest {
             if (name.startsWith("xposed")) n++;
         }
         return n;
+    }
+
+    private static String read(File file) throws Exception {
+        if (!file.isFile()) throw new AssertionError("missing " + file);
+        return new String(java.nio.file.Files.readAllBytes(file.toPath()), "UTF-8");
     }
 
     /**

@@ -1,1 +1,1 @@
-知弦：带 Material 3 Expressive 管理界面的 QQ 本机 Satori v1 服务。
+知弦：在 Android QQ 进程内提供 Satori v1 服务，监听 127.0.0.1:3001。

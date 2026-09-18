@@ -1,36 +1,20 @@
 # 知弦 · Satori QQ
 
-在 Android QQ 进程内提供 Satori v1 HTTP 与 WebSocket 服务。服务监听 `127.0.0.1:3001`，供 Koishi `adapter-satori` 等客户端连接。
+在 Android QQ 进程内提供 Satori v1 的 HTTP 与 WebSocket 服务。服务监听 `127.0.0.1:3001`，供 Koishi `adapter-satori` 等客户端连接。
 
-已核验 QQ 9.3.55 与 9.3.60.40970（NT），要求 Android 8.0 及以上。
-
-## 知弦应用
-
-普通版带 Material 3 Expressive 管理界面，分状态、设置、诊断三页。状态页显示 QQ、本机服务、客户端数与在线时长，并给出一键复制的连接地址。设置页管端口、令牌、状态通知、前台保活、自动唤醒与 Wi-Fi 保持，区分未保存、已保存与已生效。诊断页给应用与运行版本、接口检查和错误计数，报告不含令牌、账号与消息内容。
-
-图标用企鹅和珊瑚红围巾呼应 QQ。白色腹部构成对话气泡。
-
-<details>
-<summary>查看应用界面</summary>
-
-<img src="https://raw.githubusercontent.com/araea/satori-qq/master/artwork/screenshots/status-light.png" width="260" alt="知弦状态页" /> <img src="https://raw.githubusercontent.com/araea/satori-qq/master/artwork/screenshots/settings-dark.png" width="260" alt="知弦深色设置页" /> <img src="https://raw.githubusercontent.com/araea/satori-qq/master/artwork/screenshots/diagnostics-light.png" width="260" alt="知弦诊断页" />
-
-原生界面测试截图，状态使用演示数据；实际配色随系统主题变化。
-
-</details>
+已核验 QQ 9.3.65（NT）。
 
 ## 运行条件
 
 - Android 8.0 及以上
 - QQ `com.tencent.mobileqq`
-- 可为 QQ 启用模块作用域的 Xposed 兼容框架
+- 支持 libxposed API 102 的框架（LSPosed 2.x 起）
 
 ## 安装
 
 1. 安装 `SatoriQQ.apk`
-2. 在框架中启用模块，把 QQ 加入作用域
+2. 在框架中启用模块。作用域由模块固定为 QQ，不需要手工添加
 3. 重启 QQ
-4. 打开「知弦」，在状态页确认 QQ、本机服务与客户端已连上
 
 ## 连接
 
@@ -75,9 +59,7 @@ plugins:
 
 模块自报在线、消息却一条收不到，多半是被服务端踢线。模块在多条处理链上拦截，并保住盘上的登录态。
 
-### 系统拦截关联启动时
-
-部分 ColorOS 设备会拦截知弦的配置提供程序。该程序由 QQ 在后台拉起。在**系统设置 → 应用 → 关联启动**里允许知弦，再重启 QQ。设置读不到时页面会明确提示，QQ 继续使用文件或默认配置。
+部分 ColorOS 设备会拦截知弦的配置提供程序。该程序由 QQ 在后台拉起。在**系统设置 → 应用 → 关联启动**里允许知弦，再重启 QQ。设置读不到时页面会提示，QQ 继续使用文件或默认配置。
 
 ## 源码
 

@@ -15,20 +15,33 @@ OUT=${SATORI_QQ_OUT:-$R/build}
 APK_UNSIGNED=$OUT/satori-qq.unsigned.apk
 APK=$OUT/SatoriQQ.apk
 
+# Modern Xposed API (io.github.libxposed:api). Compile-only: the framework provides these
+# classes at runtime, so the jar goes to javac and to D8 as a library, never into the dex.
+LIBXPOSED=$R/libs/libxposed-api-102.jar
+LIBXPOSED_URL=https://repo.maven.apache.org/maven2/io/github/libxposed/api/102.0.0/api-102.0.0.aar
+
+if [ ! -f "$LIBXPOSED" ]; then
+  echo "== 0. fetch libxposed api 102 =="
+  TMPAAR=$(mktemp -d)
+  curl -fsSL -o "$TMPAAR/api.aar" "$LIBXPOSED_URL"
+  ( cd "$TMPAAR" && unzip -o -q api.aar classes.jar )
+  mv "$TMPAAR/classes.jar" "$LIBXPOSED"
+  rm -rf "$TMPAAR"
+fi
+
 echo "== 1. javac =="
 rm -rf $OUT/classes && mkdir -p $OUT/classes
-find $R/src $R/stubs -name '*.java' > $OUT/sources.txt
-javac -classpath $ANDROID_JAR -source 8 -target 8 -encoding UTF-8 \
+find $R/src -name '*.java' > $OUT/sources.txt
+javac -classpath $ANDROID_JAR:$LIBXPOSED -source 8 -target 8 -encoding UTF-8 \
   -nowarn -d $OUT/classes @$OUT/sources.txt
 echo "   compiled $(find $OUT/classes -name '*.class' | wc -l) classes"
 
 echo "== 2. d8 -> dex =="
 rm -rf $OUT/dex && mkdir -p $OUT/dex
-# Exclude the compile-only Xposed API stubs (de/robv/**) from the dex — the framework
-# provides them at runtime and refuses modules that bundle the Xposed API classes.
-find $OUT/classes -name '*.class' | grep -v '/de/robv/' > $OUT/classlist.txt
+# libxposed rides along with --lib exactly like android.jar: references resolve, nothing is packaged.
+find $OUT/classes -name '*.class' > $OUT/classlist.txt
 java -cp $R8 com.android.tools.r8.D8 --release --min-api 26 \
-  --lib $ANDROID_JAR --output $OUT/dex @$OUT/classlist.txt
+  --lib $ANDROID_JAR --lib $LIBXPOSED --output $OUT/dex @$OUT/classlist.txt
 echo "   dex: $(ls -la $OUT/dex/classes.dex | awk '{print $5}') bytes"
 
 
@@ -45,8 +58,14 @@ fi
 
 echo "== 3. aapt package =="
 rm -f $APK_UNSIGNED $OUT/satori-qq.aligned.apk
-$AAPT package -f -M $R/AndroidManifest.xml -I $FRAMEWORK -A $R/assets -S $R/res -F $APK_UNSIGNED
+$AAPT package -f -M $R/AndroidManifest.xml -I $FRAMEWORK -S $R/res -F $APK_UNSIGNED
 ( cd $OUT/dex && $AAPT add $APK_UNSIGNED classes.dex >/dev/null )
+# The modern API reads its entry list, scope and properties from META-INF/xposed/ at the APK
+# root; aapt -A would only reach assets/.
+( cd $R/resources && $AAPT add $APK_UNSIGNED \
+    META-INF/xposed/java_init.list \
+    META-INF/xposed/module.prop \
+    META-INF/xposed/scope.list >/dev/null )
 if [ -f $OUT/lib/arm64-v8a/libmapshide.so ]; then ( cd $OUT && $AAPT add $APK_UNSIGNED lib/arm64-v8a/libmapshide.so >/dev/null ) && echo "   packaged libmapshide.so"; fi
 
 echo "== 4. keystore (generate once) =="
@@ -62,12 +81,17 @@ $ZIPALIGN -f -p 4 $APK_UNSIGNED $OUT/satori-qq.aligned.apk
 apksigner sign --ks $KS --ks-pass pass:satori123 --key-pass pass:satori123 \
   --out $APK $OUT/satori-qq.aligned.apk
 
-echo "== 6. assert module marker =="
-# The APK must keep the Xposed meta-data vector/LSPosed use to register the module.
-xposed=$($AAPT dump xmltree $APK AndroidManifest.xml | grep -c 'android:name(0x01010003)="xposed' || true)
-if [ "${xposed:-0}" -lt 4 ]; then
-  echo "   FAIL APK lost xposed meta-data ($xposed/4)"; exit 1
+echo "== 6. assert module registration =="
+# libxposed modules are registered by files in the APK, not by manifest meta-data.
+entries=$($AAPT list $APK | grep -c '^META-INF/xposed/')
+if [ "${entries:-0}" -lt 3 ]; then
+  echo "   FAIL APK lost META-INF/xposed registration ($entries/3)"; exit 1
 fi
-echo "   ok xposed meta-data: $xposed"
+for f in java_init.list module.prop scope.list; do
+  if ! $AAPT list $APK | grep -qx "META-INF/xposed/$f"; then
+    echo "   FAIL missing META-INF/xposed/$f"; exit 1
+  fi
+done
+echo "   ok META-INF/xposed registration: $entries"
 echo "== DONE =="
 ls -la $APK

@@ -5,8 +5,8 @@ import android.content.ComponentName;
 import android.content.Context;
 import com.satori.qq.L;
 import com.satori.qq.packet.PacketSvc;
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
+import com.satori.qq.xp.XC_MethodHook;
+import com.satori.qq.xp.XposedBridge;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;

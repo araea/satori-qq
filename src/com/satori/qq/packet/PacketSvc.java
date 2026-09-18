@@ -13,8 +13,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
+import com.satori.qq.xp.XC_MethodHook;
+import com.satori.qq.xp.XposedBridge;
 
 /**
  * Raw QQNT packet transport for QQ 9.3.50.

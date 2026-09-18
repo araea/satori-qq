@@ -1,6 +1,6 @@
 package com.satori.qq.qq;
 
-import de.robv.android.xposed.XposedHelpers;
+import com.satori.qq.xp.XposedHelpers;
 
 /** Thin reflection facade bound to QQ's ClassLoader (all QQ classes are obfuscated / off-classpath). */
 public final class Ref {

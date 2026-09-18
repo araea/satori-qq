@@ -1,7 +1,7 @@
 package com.satori.qq;
 
 import android.util.Log;
-import de.robv.android.xposed.XposedBridge;
+import com.satori.qq.xp.XposedBridge;
 
 /** Quiet-by-default logging. Verbose/Xposed logs are useful for debugging but are observable. */
 public final class L {

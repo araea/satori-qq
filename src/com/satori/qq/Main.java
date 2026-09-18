@@ -2,6 +2,7 @@ package com.satori.qq;
 
 import com.satori.qq.core.MsgStore;
 import com.satori.qq.core.SatoriHub;
+import com.satori.qq.qq.EnvShield;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
 import com.satori.qq.xp.Xp;
@@ -44,6 +45,7 @@ public final class Main extends XposedModule {
                 return;
             }
 
+            EnvShield.install(param.getClassLoader());
             L.i("bridge loading in process " + process);
             MsgStore store = new MsgStore();
             QQClient qq = new QQClient(param.getClassLoader(), true);

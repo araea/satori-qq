@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.20.0";
+    public static final String APP_VERSION = "0.21.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -342,6 +342,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("self_id", selfUin())
                         .put("qq_version", qq.qqVersion())
                         .put("compat", compatSummary())
+                        // 宿主进程内按检测库思路自查的残留证据（只读、不落盘）
+                        .put("shield", com.satori.qq.qq.EnvShield.audit())
                         .put("online_since_epoch_ms", onlineSinceMs)
                         .put("connections", server == null ? 0 : server.connectionCount())
                         .put("notice", noticeDiag())

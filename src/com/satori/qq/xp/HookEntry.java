@@ -45,15 +45,14 @@ public final class HookEntry {
 
     private final Member target;
     private final boolean isStatic;
-    private final boolean isConstructor;
     private final List<XC_MethodHook> callbacks = new CopyOnWriteArrayList<>();
 
     private volatile Member backup;
 
     HookEntry(Member target) {
         this.target = target;
-        this.isConstructor = target instanceof Constructor;
-        this.isStatic = !isConstructor && Modifier.isStatic(target.getModifiers());
+        this.isStatic = !(target instanceof Constructor)
+                && Modifier.isStatic(target.getModifiers());
     }
 
     void add(XC_MethodHook callback) {
@@ -87,10 +86,12 @@ public final class HookEntry {
     public Object dispatch(Object[] args) throws Throwable {
         Object[] callArgs;
         Object thisObject;
-        if (isStatic || isConstructor) {
+        if (isStatic) {
             thisObject = null;
             callArgs = args != null ? args : new Object[0];
         } else {
+            // 构造器同样走这支：LSPlant 生成的参数表里 is_static=false 时第一个参数就是接收者
+            // （构造器是「正在被构造的那个对象」）。
             if (args == null || args.length == 0) {
                 logFailure("hook callback without this: " + target, null);
                 return proceedWith(null, new Object[0]);
@@ -141,9 +142,11 @@ public final class HookEntry {
         if (m == null) throw new IllegalStateException("no backup method for " + target);
         try {
             if (m instanceof Method) {
-                Method method = (Method) m;
-                Object receiver = Modifier.isStatic(method.getModifiers()) ? null : thisObject;
-                return method.invoke(receiver, args);
+                // 必须无条件把接收者传进去，**不能**用 getModifiers() 判：LSPlant 的备份方法报
+                // static=true，但它是「挪过来」的原方法，ART 仍然要接收者，传 null 会抛
+                // "NullPointerException: null receiver"（2026-09-19 装机后 QQ 卡启动界面就是它）。
+                // 静态目标本来 thisObject 就是 null，这里自然也对。
+                return ((Method) m).invoke(thisObject, args);
             }
             if (m instanceof Constructor) {
                 // 构造器的「原实现」没法在同一个对象上重跑；旧 Xposed 下这里同样是无解的，

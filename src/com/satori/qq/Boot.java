@@ -52,9 +52,15 @@ public final class Boot {
                 Context app = (Context) param.args[0];
                 ClassLoader host = app.getClassLoader();
                 if (host == null) return;
-                Xp.attach(host, process);
                 L.i("host classloader ready in " + process);
-                Main.onHostReady(host, process);
+                // 引导的重活（装 ~75 个钩子、起 HTTP 服务）不能跑在这个回调里：它位于
+                // Application 创建路径上，同步做完会把 QQ 启动拖住甚至卡死，而且此时栈上
+                // 可能正停在我们要钩的方法里。丢到独立线程，QQ 照常启动。
+                Thread boot = new Thread(() -> {
+                    Xp.attach(host, process);
+                    Main.onHostReady(host, process);
+                }, "satori-boot");
+                boot.start();
             }
         });
         L.i("hooked Instrumentation.callApplicationOnCreate");

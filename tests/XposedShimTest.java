@@ -18,6 +18,7 @@ public final class XposedShimTest {
     // ------------------------------------------------------------ fixtures
 
     public static class Target {
+        public String tag = "T";
         public String seenArgs;
         public Object lastThis;
 
@@ -26,6 +27,9 @@ public final class XposedShimTest {
             lastThis = this;
             return "hi " + who;
         }
+
+        /** 读自身字段：proceed 时接收者没传对就会炸（或返回错值）。 */
+        public String tagged(String who) { return tag + ":" + who; }
 
         public String boom() {
             throw new IllegalStateException("original failure");
@@ -70,6 +74,7 @@ public final class XposedShimTest {
         beforeSetThrowableSkipsTheOriginal();
         replacementSkipsTheOriginal();
         thisObjectIsVisible();
+        proceedKeepsTheReceiver();
         staticHooksRunWithoutThis();
         constructorHooksSeeArgs();
         severalCallbacksRunInOrder();
@@ -146,6 +151,17 @@ public final class XposedShimTest {
         check(seen[0] == t, "thisObject is the receiver");
     }
 
+    /**
+     * 备份方法（LSPlant 返回的那个）**必须带上接收者**调用。它自称 static，但实际是「挪过来的
+     * 原方法」，ART 仍要接收者：传 null 会抛 "NullPointerException: null receiver"。
+     * 这条断言是 2026-09-19 「QQ 卡启动界面」那次事故的钉子。
+     */
+    private static void proceedKeepsTheReceiver() throws Throwable {
+        Target t = new Target();
+        String got = (String) wire(t, method("tagged", String.class), new Recorder(), "world");
+        eq("T:world", got, "proceed ran on the real receiver (读到的是 t.tag)");
+    }
+
     private static void staticHooksRunWithoutThis() throws Throwable {
         Method m = method("add", int.class, int.class);
         final int[] got = new int[1];
@@ -159,14 +175,21 @@ public final class XposedShimTest {
         eq(3, got[0], "after hook saw the result");
     }
 
+    /** 构造器与实例方法同一套：args[0] 是「正在被构造的对象」，其余才是参数。 */
     private static void constructorHooksSeeArgs() throws Throwable {
         Constructor<?> c = Built.class.getConstructor(int.class);
-        final Object[] seen = new Object[1];
+        Object allocated = new Built(0);
+        final Object[] seenThis = new Object[1];
+        final Object[] seenArgs = new Object[1];
         XC_MethodHook cb = new XC_MethodHook() {
-            @Override protected void beforeHookedMethod(MethodHookParam p) { seen[0] = p.args[0]; }
+            @Override protected void beforeHookedMethod(MethodHookParam p) {
+                seenThis[0] = p.thisObject;
+                seenArgs[0] = p.args.length == 1 ? p.args[0] : null;
+            }
         };
-        entry(c, cb).dispatch(new Object[]{7});
-        eq(7, seen[0], "constructor arg visible");
+        entry(c, cb).dispatch(new Object[]{allocated, 7});
+        check(seenThis[0] == allocated, "constructor receiver is args[0]");
+        eq(7, seenArgs[0], "constructor arg visible");
     }
 
     private static void severalCallbacksRunInOrder() throws Throwable {

@@ -278,13 +278,10 @@ public final class MainActivity extends Activity {
             diagnosticHint.setText("连接失败时不会沿用上次的在线状态。管理页退出不会停止 QQ 服务。");
         } else {
             JSONObject compat = health.optJSONObject("compat"); JSONObject sso = health.optJSONObject("sso");
-            long kick = health.optLong("last_kick_epoch_ms");
             diagnostics.setText("QQ 版本  " + health.optString("qq_version", "未知")
                     + "\n\n内核接口  " + (compat == null ? "待检查" : compat.optInt("passed") + " / " + compat.optInt("total"))
                     + "\n\n状态通知  " + (health.optString("notice").contains("posted=yes") ? "已发布" : "关闭或等待系统授权")
                     + "\n\n前台保活  " + (health.optString("keepalive").contains("fgs=on") ? "运行中" : "未启用或待就绪")
-                    + "\n\n离线拦截  " + health.optInt("blocked_kicks") + " 次"
-                    + "\n\n最近离线  " + (kick == 0 ? "暂无记录" : new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(new Date(kick)))
                     + "\n\n请求失败  " + (sso == null ? 0 : sso.optInt("failures")) + " 次"
                     + "\n\n会话错误  " + (sso == null ? 0 : sso.optInt("session_errors")) + " 次");
             diagnosticHint.setText(!appVersion().equals(health.optString("version")) ? "正在运行旧版模块。重新启动 QQ 后，新版本才会生效。" : "在线状态来自 QQ 内核，不能单独证明服务端会话有效。遇到消息不通时，请结合离线记录与实际连接排查。");

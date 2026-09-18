@@ -2,8 +2,6 @@ package com.satori.qq;
 
 import com.satori.qq.core.MsgStore;
 import com.satori.qq.core.SatoriHub;
-import com.satori.qq.qq.AntiDetect;
-import com.satori.qq.qq.MapsHide;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
 import com.satori.qq.xp.Xp;
@@ -41,20 +39,8 @@ public final class Main extends XposedModule {
         try {
             Cfg cfg = Cfg.load();
             L.configure(cfg.verboseLogs);
-            if (cfg.mapsHide) {
-                try { MapsHide.tryLoad(new Ref(param.getClassLoader())); }
-                catch (Throwable t) { L.e("MapsHide load failed", t); }
-            }
-            if (cfg.antiDetect) {
-                try {
-                    new AntiDetect(param.getClassLoader(), cfg.blockQsecTasks, cfg.blockQsecReports,
-                            cfg.observeFekitAttach, cfg.blockO3Report, cfg.blockTuringRisk,
-                            cfg.blockServerKick, cfg.cleanOfflineOnKick, cfg.blockFaceReport,
-                            cfg.fakeImei, cfg.fakeAndroidId, cfg.fakeSerial).install();
-                } catch (Throwable t) { L.e("AntiDetect install failed", t); }
-            }
             if (!mainProcess) {
-                L.i("anti-detect only in process " + process);
+                L.i("bridge skipped in process " + process);
                 return;
             }
 

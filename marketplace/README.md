@@ -51,7 +51,7 @@ plugins:
 | `block_server_kick` | `true` | 停止本地强制下线处理 |
 | `fake_imei` / `fake_android_id` / `fake_serial` | 空 | 设备标识；留空用真实值，设置时应保持一致 |
 
-过检测、限频与排队的其余开关见源码仓库里的示例文件。修改配置后重启 QQ。
+限频与排队的其余开关见源码仓库里的示例文件。修改配置后重启 QQ。
 
 ## 排障
 
@@ -65,4 +65,3 @@ plugins:
 
 [araea/satori-qq](https://github.com/araea/satori-qq)
 
-过检测实现参考 [QQEnhancedBypass](https://github.com/Xalsace/QQEnhancedBypass)。

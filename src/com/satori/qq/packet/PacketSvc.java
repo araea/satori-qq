@@ -58,7 +58,7 @@ public final class PacketSvc {
      * </ul>
      *
      * 模块自己造的 SSO 请求（OIDB 与裸 trpc）如果撞上这一组码，那「是接口调用把会话打废的、
-     * 不是反检测不够」这个判断就成立；如果踢线发生时这里一条都没有，方向就回到服务端主动下发的
+     * 不是检测面处理不够」这个判断就成立；如果踢线发生时这里一条都没有，方向就回到服务端主动下发的
      * 强制下线。所以这里把失败逐条落盘（{@code qk_sso.log}，app 私有目录 0600），时间戳可以直接
      * 和 {@code qk_kick.log} 对。记录只是观测，不改任何行为。
      */
@@ -265,7 +265,7 @@ public final class PacketSvc {
         appendPrivate("/data/data/com.tencent.mobileqq/files", "qk_sso.log", line);
     }
 
-    /** 追加一行到 app 私有目录，超 64KB 只留尾部 32KB。与 AntiDetect 里那份同口径。 */
+    /** 追加一行到 app 私有目录，超 64KB 只留尾部 32KB。 */
     private static void appendPrivate(String dir, String name, String line) {
         try {
             java.io.File d = new java.io.File(dir);

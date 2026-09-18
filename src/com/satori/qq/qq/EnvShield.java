@@ -184,11 +184,45 @@ public final class EnvShield {
                 continue;
             }
         }
+        out.put("pm", pmSelfCheck());
         out.put("hits", hits);
         out.put("hooks", hooks);
         out.put("findings", lines);
         if (!lastError.isEmpty()) out.put("last_error", lastError);
         return out;
+    }
+
+    /**
+     * 自隐是否真的生效：在本进程里直接查一次自己的包名。
+     * 期望 {@code visible=false} 且 {@code listed=false}。
+     */
+    private static JSONObject pmSelfCheck() throws Exception {
+        JSONObject pm = new JSONObject();
+        try {
+            Object app = Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication").invoke(null);
+            PackageManager mgr = ((android.content.Context) app).getPackageManager();
+            try {
+                mgr.getPackageInfo(SELF_PACKAGE, 0);
+                pm.put("visible", true);
+            } catch (PackageManager.NameNotFoundException e) {
+                pm.put("visible", false);
+            } catch (Throwable t) {
+                pm.put("visible_error", String.valueOf(t));
+            }
+            try {
+                boolean listed = false;
+                for (PackageInfo info : mgr.getInstalledPackages(0)) {
+                    if (SELF_PACKAGE.equals(info.packageName)) { listed = true; break; }
+                }
+                pm.put("listed", listed);
+            } catch (Throwable t) {
+                pm.put("listed_error", String.valueOf(t));
+            }
+        } catch (Throwable t) {
+            pm.put("error", String.valueOf(t));
+        }
+        return pm;
     }
 
     private static String shorten(String line) {

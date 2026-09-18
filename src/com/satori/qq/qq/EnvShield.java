@@ -47,11 +47,13 @@ public final class EnvShield {
     };
 
     private static final String[] AUDIT_PATHS = {
-            "/proc/self/maps", "/proc/self/smaps", "/proc/self/mounts", "/proc/self/mountinfo",
-            "/proc/self/cmdline", "/proc/self/status", "/proc/self/environ",
+            "/proc/self/maps", "/proc/self/mounts", "/proc/self/mountinfo",
+            "/proc/self/cmdline", "/proc/self/status",
     };
 
     private static volatile int hooks;
+    private static volatile JSONObject cachedAudit;
+    private static volatile long cachedAtMs;
     private static volatile String lastError = "";
 
     private EnvShield() {
@@ -161,7 +163,32 @@ public final class EnvShield {
      * 在宿主进程内按检测库的思路自查一遍：这些路径里还有没有黑名单字面量。
      * 只读、不落盘、不改任何状态。
      */
+    /**
+     * healthz 用的轻量版：只回答「上一次自查的结论」与「自己的包名还在不在」，
+     * 不重扫 /proc。完整自查走 {@link #audit()}。
+     */
+    public static JSONObject light() throws Exception {
+        JSONObject out = new JSONObject();
+        JSONObject cached = cachedAudit;
+        out.put("hits", cached == null ? -1 : cached.optInt("hits"));
+        out.put("checked_epoch_ms", cachedAtMs);
+        out.put("hooks", hooks);
+        out.put("pm", pmSelfCheck());
+        return out;
+    }
+
+    /** 30 秒缓存：healthz 可能被看守每秒轮询，不能每次都重扫 /proc。 */
     public static JSONObject audit() throws Exception {
+        long now = System.currentTimeMillis();
+        JSONObject cached = cachedAudit;
+        if (cached != null && now - cachedAtMs < 30000L) return cached;
+        JSONObject fresh = auditUncached();
+        cachedAudit = fresh;
+        cachedAtMs = now;
+        return fresh;
+    }
+
+    private static JSONObject auditUncached() throws Exception {
         JSONObject out = new JSONObject();
         JSONArray lines = new JSONArray();
         int hits = 0;
@@ -207,17 +234,6 @@ public final class EnvShield {
                 pm.put("visible", true);
             } catch (PackageManager.NameNotFoundException e) {
                 pm.put("visible", false);
-            } catch (Throwable t) {
-                pm.put("visible_error", String.valueOf(t));
-            }
-            try {
-                boolean listed = false;
-                for (PackageInfo info : mgr.getInstalledPackages(0)) {
-                    if (SELF_PACKAGE.equals(info.packageName)) { listed = true; break; }
-                }
-                pm.put("listed", listed);
-            } catch (Throwable t) {
-                pm.put("listed_error", String.valueOf(t));
             }
         } catch (Throwable t) {
             pm.put("error", String.valueOf(t));

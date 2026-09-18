@@ -46,6 +46,7 @@ public final class Main extends XposedModule {
             }
 
             EnvShield.install(param.getClassLoader());
+            com.satori.qq.qq.EnvProbe.hold(param.getClassLoader());
             L.i("bridge loading in process " + process);
             MsgStore store = new MsgStore();
             QQClient qq = new QQClient(param.getClassLoader(), true);

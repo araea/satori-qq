@@ -55,7 +55,7 @@ HTTP 服务、消息监听与保活只在主进程运行，APK 里不含 native 
 `IOperateCallback` 的签名是 `onResult(int, String)`，不带结果，需要返回结构的读取要用各自的回调接口，
 例如 `IGroupMemberHonorCallback`、`IKernelRecentGetContactCallback`，第三个参数才是 payload。
 不回调的入口一律不进模块，否则调用方要等满 15 秒超时。新增动作前先核三件事：类名在不在
-（`~/tmpqq/dexindex.txt`）、参数结构体的字段名（`~/tmpqq/dec_class.sh` 单类反编译）、入口会不会回调
+QQ 的 dex 类索引里、参数结构体的字段名（对单个类做反编译核对）、入口会不会回调
 （现场探测）。`packet` 只在协议需要直接发包时使用，不与内核服务混用。
 
 ## 消息链路

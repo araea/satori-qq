@@ -8,13 +8,15 @@
 
 - Android 8.0 及以上
 - QQ `com.tencent.mobileqq`
-- 支持 libxposed API 102 的框架（LSPosed 2.x 起）
+- Zygisk Next（模块由它注入；不需要 LSPosed，进程里也不带任何 hook 引擎）
 
 ## 安装
 
-1. 安装 `SatoriQQ.apk`
-2. 在框架中启用模块。作用域由模块固定为 QQ，不需要手工添加
-3. 重启 QQ
+1. 安装 `SatoriQQ.apk`（管理界面）
+2. 把 `SatoriQQ-module.zip` 作为 Magisk / KernelSU 模块刷入；或解包后把 `module.prop`、
+   `zn_modules.txt`、`zygisk/arm64-v8a.so` 放到 `/data/adb/modules/satori_qq/`
+3. 重启手机（Zygisk 模块只在开机时注册）
+4. 打开「知弦」，在状态页确认 QQ、本机服务与客户端已连上
 
 ## 连接
 
@@ -33,35 +35,45 @@ plugins:
 
 ## 配置
 
-端口、令牌、状态通知、前台保活、自动唤醒与 Wi-Fi 保持在知弦设置页里改，保存后重启 QQ 生效。其余高级选项写在：
+端口、令牌、状态通知、自动保持唤醒与 Wi-Fi 保持在知弦设置页里改，保存后重启 QQ 生效，高级选项继续按文件配置。
+
+文件按顺序读取，取第一份有效配置：
 
 ```text
 /sdcard/Android/data/com.tencent.mobileqq/files/satori-qq.json
+/storage/emulated/0/Android/data/com.tencent.mobileqq/files/satori-qq.json
+/sdcard/satori-qq.json
+/storage/emulated/0/satori-qq.json
 ```
 
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `port` | `3001` | 本地服务端口 |
+| `host` | `127.0.0.1` | 监听地址，需外部访问时改成 `0.0.0.0` |
 | `token` | 空 | HTTP 与 WebSocket 鉴权令牌 |
-| `media_retry_attempts` | `2` | 富媒体上传失败后的额外尝试次数 |
+| `status_notification` | `true` | 在 QQ 通知栏留一条常驻状态 |
+| `wake_lock_control` / `wake_lock_auto` | `true` | 唤醒锁；`auto` 为启动即持有，否则等通知栏按钮 |
+| `wifi_sustain` | `true` | 有客户端连接时保持 Wi-Fi 锁，避免息屏后上传被掐 |
+| `heartbeat` / `heartbeat_ms` | `true` / `15000` | 客户端心跳 |
+| `outbound_min_interval_ms` | `1000` | 两次写操作之间的最小间隔 |
+| `outbound_max_per_minute` | `20` | 每分钟写操作上限 |
+| `outbound_max_queued` / `outbound_queue_timeout_ms` | `8` / `30000` | 写队列长度与排队超时 |
+| `online_stabilize_ms` | `30000` | 会话恢复后等待多久才允许写 |
+| `media_retry_attempts` / `media_retry_backoff_ms` / `media_retry_budget_ms` | `2` / `4000` / `45000` | 富媒体上传失败后的重试 |
+| `manual_self_messages` / `manual_self_user_id` | `true` / 空 | 把手机上手动发的消息也作为事件投递，使用独立身份 |
+| `forward_mode` | `auto` | 合并转发策略：`auto` / `native` / `fake` |
 | `verbose_logs` | `false` | 输出调试日志 |
-| `anti_detect` | `true` | Java 层环境检测处理 |
-| `maps_hide` | `true` | Native 层进程信息过滤 |
-| `block_turing_risk` | `true` | 停止 Turing 风控入口 |
-| `block_server_kick` | `true` | 停止本地强制下线处理 |
-| `fake_imei` / `fake_android_id` / `fake_serial` | 空 | 设备标识；留空用真实值，设置时应保持一致 |
 
-限频与排队的其余开关见源码仓库里的示例文件。修改配置后重启 QQ。
+修改配置后重启 QQ。
 
 ## 排障
 
 强停或划掉 QQ 会停止服务。锁屏后文字能发而图片、合并转发失败，是网络问题。应关闭系统的「睡眠待机优化」或「深度睡眠」，并把 QQ 及所用代理或 VPN 加入电池优化白名单。
 
-模块自报在线、消息却一条收不到，多半是被服务端踢线。模块在多条处理链上拦截，并保住盘上的登录态。
+模块自报在线、消息却一条收不到，多半是登录态已失效：服务端强制下线之后，收发都会停。
 
 部分 ColorOS 设备会拦截知弦的配置提供程序。该程序由 QQ 在后台拉起。在**系统设置 → 应用 → 关联启动**里允许知弦，再重启 QQ。设置读不到时页面会提示，QQ 继续使用文件或默认配置。
 
 ## 源码
 
 [araea/satori-qq](https://github.com/araea/satori-qq)
-

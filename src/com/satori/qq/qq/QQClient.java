@@ -1849,7 +1849,7 @@ public final class QQClient {
                                     || update.contains("DEL") || update.contains("QUIT")
                                     || update.contains("EXIT"))
                                 groupInfoCache.remove(code);
-                            else groupInfoCache.put(code, gi);
+                            else groupInfoCache.put(code, mergeGroupInfo(groupInfoCache.get(code), gi));
                         }
                     }
                     Listener l = listener;
@@ -2586,6 +2586,30 @@ public final class QQClient {
             L.e("updateLocalRankSwitch", t);
             return false;
         }
+    }
+
+    /**
+     * 群列表增量更新里的 `GroupSimpleInfo` 可能只带变化了的字段——没变化的名字就是空的。
+     * 直接 put 会把已经知道的名字覆盖成空：实测测试群在活跃一段时间后会从 `guild.get` /
+     * `guild.list` 里把名字丢掉，直到下一次全量刷新才回来（2026-09-19 排查了两轮，最后靠
+     * `satori-writes.log` 里**没有**任何写入记录才定位到是这里，不是有谁把名字改空了）。
+     *
+     * <p>所以更新按「合并」处理：新值非空就用新值，旧的非空值留住。
+     */
+    private Object mergeGroupInfo(Object existing, Object incoming) {
+        if (existing == null || incoming == null) return incoming;
+        try {
+            for (String field : new String[]{"groupName", "remarkName"}) {
+                String fresh = Ref.asStr(ref.get(incoming, field));
+                if (fresh != null && !fresh.isEmpty()) continue;
+                String old = Ref.asStr(ref.get(existing, field));
+                if (old == null || old.isEmpty()) continue;
+                ref.put(incoming, field, old);
+            }
+        } catch (Throwable t) {
+            L.e("mergeGroupInfo", t);
+        }
+        return incoming;
     }
 
     public void refreshGroupList() {

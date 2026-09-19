@@ -59,6 +59,8 @@ static void *g_orig_sso_reply = nullptr;
 static char g_process[256] = {0};
 static bool g_bootstrap_started = false;
 static char g_hook_info[256] = "not-attempted";
+static unsigned long g_sso_calls = 0;       // 进过我们替换实现的次数
+static unsigned long g_sso_consumed = 0;    // 其中被本模块消费掉的次数
 
 /**
  * 记一行到 logcat **并**落到 QQ 私有目录。
@@ -352,12 +354,17 @@ static bool InstallSsoHook(JNIEnv *env, jobject loader) {
 
 /** Xp.nativeSsoHookInfo()：healthz 用，不用翻 logcat。 */
 static jstring NativeSsoHookInfo(JNIEnv *env, jclass) {
-    return env->NewStringUTF(g_hook_info);
+    char buf[320];
+    snprintf(buf, sizeof(buf), "%s calls=%lu consumed=%lu", g_hook_info,
+             __atomic_load_n(&g_sso_calls, __ATOMIC_RELAXED),
+             __atomic_load_n(&g_sso_consumed, __ATOMIC_RELAXED));
+    return env->NewStringUTF(buf);
 }
 
 /** 把回包交给 Java 侧；返回 true 表示本模块已经消费掉，不要再喂给 QQ 原生会话。 */
 static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id,
                            jstring cmd, jint result_code, jstring error_msg, jobject info) {
+    __atomic_add_fetch(&g_sso_calls, 1, __ATOMIC_RELAXED);
     if (g_callback_method != nullptr) {
         jboolean consumed = env->CallStaticBooleanMethod(
                 g_callback_class, g_callback_method, request_id, cmd, result_code, error_msg, info);
@@ -365,6 +372,7 @@ static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong re
             env->ExceptionDescribe();
             env->ExceptionClear();
         } else if (consumed == JNI_TRUE) {
+            __atomic_add_fetch(&g_sso_consumed, 1, __ATOMIC_RELAXED);
             return;
         }
     }

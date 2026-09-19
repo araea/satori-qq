@@ -237,13 +237,20 @@ public final class Reflect {
         return true;
     }
 
+    /**
+     * 按实参的运行时类型推断形参类型。
+     *
+     * <p>**传进来的 {@code Class} 对象就是一个 Class 类型的实参**，不是「形参类型提示」——
+     * 需要提示时用带 {@code parameterTypes} 的那个重载。这里曾经把 Class 当成提示，导致
+     * {@code getRuntimeService(IKernelService.class, "")} 这类调用按
+     * {@code [IKernelService, String]} 去匹配，一个方法都对不上，抛 NoSuchMethodError
+     * （2026-09-19 实测：会话抓不到、ExtraSvc 全废）。
+     */
     private static Class<?>[] typesOf(Object[] args) {
         if (args == null) return new Class<?>[0];
         Class<?>[] types = new Class<?>[args.length];
         for (int i = 0; i < args.length; i++) {
-            // A Class argument names the parameter type; anything else uses its runtime class.
-            types[i] = args[i] instanceof Class ? (Class<?>) args[i]
-                    : args[i] == null ? null : args[i].getClass();
+            types[i] = args[i] == null ? null : args[i].getClass();
         }
         return types;
     }

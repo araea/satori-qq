@@ -69,6 +69,16 @@ HTTP 服务、消息监听与保活只在主进程运行，APK 里不含 native 
 在线状态同时要求账号、NT 会话、消息服务与当前监听器可用，且前台不是登录页。离线写操作返回 Satori
 状态码 `1500`。
 
+## 群资料写入
+
+`channel.update` 换群头像走 `setHeader`；改群名只走 NapCat 同款的一条内核路径
+`modifyGroupName(group, name, isNormalMember)`：先按 `false` 调一次，结果码 1287 时把身份参数翻成
+`true` 再试一次。不做二次写入，也不回读校验——内核缓存滞后是常态，回读不匹配不代表没生效，而一次改名
+写两次才会撞上 QQ 的改名频率限制与平台处置。空名字一律拒绝。
+
+名字守卫只观察：发现某个群名字为空先全量刷新，刷新后仍为空只记一行
+`name_guard=empty:<群>(见过=<名字>)`，一个字也不写。
+
 ## QQ Native 接口
 
 会话由反射 `IKernelService.getWrapperSession()` 取得，并通过 `getMsgService` 与 `getGroupService`
@@ -95,7 +105,8 @@ UIN 转 UID 走资料服务上的 `getUidByUin`。读操作的返回结构由 `S
 
 在线时模块保持 QQ 的服务处于「已启动」状态（见 README 常驻），写入期间自动持 CPU 与 Wi-Fi 锁，
 有客户端连接时可长期持 Wi-Fi 锁。`GET /healthz` 返回在线、监听、配置修订、保活、唤醒锁、SSO、
-compat 与名字守卫状态。
+compat 与名字守卫状态；`keepalive` 报 `adj`（当前优先级，低于冻结阈值 900 就不会被冻）、`wchan`
+（`do_freezer_trap` 即被冻）与 `service`（起服务结果）。
 
 状态通知的点击目标是宿主包的 launcher activity。`PendingIntent` 用 `getLaunchIntentForPackage`
 解析一次后缓存，返回的 Intent 带 `FLAG_ACTIVITY_NEW_TASK`，QQ 在后台时回到原任务而不是新建。
@@ -136,6 +147,32 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'
 ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试后回退原文件配置，并通过 `config_status`
 暴露不含敏感信息的原因；管理页给出系统设置里的路径（应用 → 关联启动）。引导线程在 QQ 主线程初始化
 任务之后启动，不阻塞 Application 创建。
+
+## 构建与测试
+
+首次构建需 Android 35 平台、R8 与 `org.json`：
+
+```sh
+curl -fsSL -o libs/r8.jar https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar
+curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/20250517/json-20250517.jar
+./build.sh
+./test.sh
+```
+
+产物为 `build/SatoriQQ.apk` 与 `build/SatoriQQ-module.zip`。模块不含第三方原生依赖：`native/satori.cpp`
+用 Termux 的 clang 编译，dex 用 `.incbin` 内嵌进 `.so`，NEEDED 只有 `liblog/libdl/libm/libc`。
+
+`test.sh` 跑 JVM 单测（含 `Reflect` 反射层的语义测试）。真机巡检脚本要求 QQ 已上线，且显式给测试群；
+破坏性用例（改群名、全员禁言）再加 `SATORI_DESTRUCTIVE=1`：
+
+```bash
+SATORI_TEST_GROUP=<群号> node tests/ws-feature-sweep.js
+SATORI_TEST_GROUP=<群号> SATORI_DESTRUCTIVE=1 node tests/ws-write-sweep.js
+node tests/ws-health.js              # 健康与自检
+node tests/ws-ayjx-smoke.js          # 客户端视角的冒烟：协议方法、事件与扩展动作
+node tests/ws-poke.js                # 戳一戳：出站 OIDB、入站灰条事件与参数校验
+node tests/media-live-probe.js voice # 语音条与文件能不能真发出去，见脚本头注释
+```
 
 ## 版本与发布
 

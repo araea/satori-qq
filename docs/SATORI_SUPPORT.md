@@ -235,10 +235,9 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 - **缺 6 个方法**：`channel.create`、`channel.delete`、`guild.role.create|update|delete`、
   `message.update`。QQ 的群就是频道、没有自定义角色、也不支持改消息，实现只能是假的；回 404，能力表里
   也不列
-- **`channel.update` 的改名只有一条写入路径**：照 NapCat 只调内核的
-  `modifyGroupName(group, name, isNormalMember)`，结果码 1287 时把 `isNormalMember` 翻成 true 再试
-  一次；不做二次写入，也不回读校验（内核缓存滞后是常态，回读不匹配不代表没生效）。空名字一律拒绝——
-  那是不可逆的「把群名清掉」
+- **`channel.update` 的改名只有一条写入路径**：照 NapCat 只调内核的 `modifyGroupName`，**不做二次
+  写入、也不回读校验**；空名字一律拒绝。理由与实现见
+  [`ARCHITECTURE.md`](ARCHITECTURE.md#群资料写入)
 - **`reaction-removed` 而不是 `reaction-deleted`**：协议包写的是 `reaction-deleted`，但框架给插件的
   事件表（`@satorijs/core` 的 `Events`）与官方 QQ 适配器用 `reaction-added`/`reaction-removed`，两套
   名字在框架里**不是别名**，按「插件实际会监听哪个」选了后者。对接严格照协议包写的客户端时需再补发一份

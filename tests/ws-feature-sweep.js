@@ -284,17 +284,15 @@ async function main() {
     return 'deleted ' + messageId;
   });
 
-  // 同上去重约定：自己撤回自己刚发的消息也不回灌事件。
-  await check('event.self_recall_not_echoed', async () => {
+  // 与「发送回声」不同：撤回是真实的事件投递路径，自己撤回也会收到 message-deleted。
+  // （实测 2026-09-19：发送回声去重、撤回不去重，两条路各管各的。）
+  await check('event.self_recall_emitted', async () => {
     if (!messageId) throw new Error('上一步没发出消息');
-    const deadline = Date.now() + 4000;
-    while (Date.now() < deadline) {
-      const hit = client.events.find((e) => e.type === 'message-deleted'
-        && String(e.message?.id || e.id) === messageId);
-      if (hit) throw new Error('自己的撤回被回声成了 message-deleted: ' + JSON.stringify(hit).slice(0, 160));
-      await delay(150);
-    }
-    return 'no self recall echo';
+    const ev = await client.waitFor(
+      (e) => e.type === 'message-deleted' && String(e.message?.id || e.id) === messageId,
+      15000, 'message-deleted');
+    if (String(ev.channel?.id) !== GROUP) throw new Error('channel=' + ev.channel?.id);
+    return 'message=' + (ev.message?.id || ev.id);
   });
 
   await check('internal/title_display_read', async () => {

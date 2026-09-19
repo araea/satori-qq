@@ -3156,6 +3156,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             Object fetched = qq.fetchRecord(r.chatType, peer, r.msgId);
             if (fetched != null) r.msgRecord = fetched;
         }
+        rememberMyReaction(messageId, emojiKey, set);
     }
 
     private JSONObject reactionList(int messageId, long emojiId, String emojiRaw, String cursor)
@@ -3249,6 +3250,23 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     /** When getMsgEmojiLikesList returns no rows, msgRecord still tracks our own click. */
+    /**
+     * 本登录号在这条消息上加过的表情键（store 消息号 → emojiKey 集合）。
+     *
+     * <p>QQ 内核的「谁点了赞」列表不含自己，`reaction.list` 只能退化成读本地记录；而那条记录
+     * 是内核推来的，滞后一拍（2026-09-19 实测：加完立刻回读是空、清完立刻回读还是 1）。
+     * 自己做的动作自己记一份，回读才跟得上手。
+     */
+    private final ConcurrentHashMap<Integer, Set<String>> myReactions = new ConcurrentHashMap<>();
+
+    private void rememberMyReaction(int messageId, String emojiKey, boolean set) {
+        if (messageId == 0 || emojiKey == null || emojiKey.isEmpty()) return;
+        Set<String> mine = myReactions.computeIfAbsent(messageId,
+                k -> ConcurrentHashMap.newKeySet());
+        if (set) mine.add(emojiKey); else mine.remove(emojiKey);
+        if (myReactions.size() > 4000) myReactions.clear();
+    }
+
     /** 不带 emoji_id 的 reaction.list：把本登录号在这条消息上加过的表态按账号去重后返回。 */
     private JSONObject localReactionUsers(int messageId) throws Exception {
         MsgStore.Rec r = store.get(messageId);
@@ -3282,11 +3300,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         rec = rec == null ? null : Convert.unwrapRecord(rec);
         Object likes = rec == null ? null : qq.ref.get(rec, "emojiLikesList");
         if (!(likes instanceof java.util.List)) return data;
-        for (Object like : (java.util.List<?>) likes) {
+        Set<String> tracked = myReactions.get(r.id);
+        boolean mine = tracked != null && tracked.contains(emojiKey);
+        for (Object like : (mine ? java.util.Collections.emptyList() : (java.util.List<?>) likes)) {
             if (!emojiKey.equals(Ref.asStr(qq.ref.get(like, "emojiId")))) continue;
             if (qq.ref.getLong(like, "likesCnt") <= 0) continue;
             Object clicked = qq.ref.get(like, "isClicked");
-            boolean mine = clicked instanceof Boolean ? (Boolean) clicked
+            mine = clicked instanceof Boolean ? (Boolean) clicked
                     : Ref.asInt(clicked) != 0;
             if (!mine) continue;
             JSONObject user = Codec.user(selfUin(), qq.selfNick(), "");
@@ -3756,6 +3776,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             String id = Ref.asStr(qq.ref.get(like, "emojiId"));
             if (id.isEmpty()) continue;
             if (Ref.asBool(qq.ref.get(like, "isClicked"))) out.add(id);
+        }
+        Set<String> tracked = myReactions.get(messageId);
+        if (tracked != null) {
+            for (String key : tracked) if (!out.contains(key)) out.add(key);
         }
         return out;
     }

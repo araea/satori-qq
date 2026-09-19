@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.5";
+    public static final String APP_VERSION = "0.23.6";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -1074,6 +1074,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     /** QQ's built-in random dice/RPS faces (358/359), sent to a group or direct channel. */
+    /**
+     * 超级表情的 `FaceElement.faceType`：3 = 动画贴纸（NapCat 的 `FaceType.AniSticke`）。
+     * 骰子与猜拳只有用这个值、并带上贴纸身份，QQ 才会画成整条放大的动画。
+     */
+    private static final int SPECIAL_FACE_TYPE = 3;
+
     private JSONObject sendSpecialFace(JSONObject p, int faceId, String kind) throws Exception {
         String channelId = p.optString("channel_id", "");
         long groupId = p.optLong("guild_id", p.optLong("group_id", 0));
@@ -1082,17 +1088,24 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             if (Codec.isPrivateChannel(channelId)) userId = Codec.channelPeer(channelId);
             else groupId = Codec.channelPeer(channelId);
         }
-        // 骰子与猜拳是「超级表情」：faceType 必须是 2，否则 QQ 只画一个小表情。
+        // 骰子与猜拳是「超级表情」：FaceElement.faceType=3（动画贴纸）再加贴纸身份，
+        // 否则 QQ 只画一个 16px 的小脸。取值照抄 NapCat 的 dice / rps 段（见 addFace 注释）。
+        boolean dice = faceId == Codec.DICE_FACE;
         JSONArray message = new JSONArray().put(new JSONObject()
                 .put("type", "face")
                 .put("data", new JSONObject()
                         .put("id", String.valueOf(faceId))
-                        .put("face_type", cfg.specialFaceType)));
+                        .put("face_type", SPECIAL_FACE_TYPE)
+                        .put("face_text", dice ? "[骰子]" : "[包剪锤]")
+                        .put("pack_id", "1")
+                        .put("sticker_id", dice ? "33" : "34")
+                        .put("sticker_type", 2)
+                        .put("source_type", 1)));
         JSONObject sent;
         if (groupId != 0) sent = sendGroup(groupId, message, "<emoji id=\"" + faceId + "\"/>");
         else if (userId != 0) sent = sendPrivate(userId, message, "<emoji id=\"" + faceId + "\"/>");
         else throw new ApiError(1400, "missing channel_id, guild_id, or user_id");
-        sent.put("kind", kind).put("face_id", faceId).put("face_type", cfg.specialFaceType);
+        sent.put("kind", kind).put("face_id", faceId).put("face_type", SPECIAL_FACE_TYPE);
         return sent;
     }
 
@@ -1165,7 +1178,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("clean_cache").put("restart"))
                 .put("special_faces", new JSONObject()
                         .put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE)
-                        .put("face_type", cfg.specialFaceType))
+                        .put("face_type", SPECIAL_FACE_TYPE))
                 .put("params", new JSONObject()
                         .put("poke", "guild_id, user_id")
                         .put("invite", "guild_id, user_id")

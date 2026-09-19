@@ -117,17 +117,27 @@ public final class Convert {
     /**
      * 表情 -> KELEMTYPEFACE(6)。
      *
-     * <p>`faceType` 决定 QQ 怎么画：1 是普通小表情，2 是超级表情（骰子/猜拳那种整条放大的
-     * 动画）。骰子与猜拳必须走 2，否则群里收到的是一个 16px 的小脸（2026-09-19 用户实测）。
-     * 段里可以带 `face_type` 覆盖，`internal.dice` / `internal.rps` 就是靠它传的。
+     * <p>`faceType` 决定 QQ 怎么画（取值见 NapCat 的 `FaceType`）：1 老表情、2 常规表情、
+     * **3 动画贴纸（骰子/猜拳这种整条放大的超级表情）**、4 Lottie、5 可变 poke。
+     * 默认值按 NapCat 的选法：id &lt; 222 走老表情（1），222 及以上走常规表情（2）——以前一律
+     * 发 1，id 大于 222 的那些表情在 QQ 里是画不出来的。
+     *
+     * <p>组超级表情光有 `faceType=3` 不够：还要带贴纸身份（`packId` / `stickerId` /
+     * `stickerType` / `sourceType` / `faceText`），内核才会按大表情发出去。字段名与取值照抄
+     * NapCat 的 `packages/napcat-onebot/api/msg.ts` 里 dice / rps 两个段。
      */
     private void addFace(ArrayList<Object> out, org.json.JSONObject d) {
         Object e = newElement(6);
         Object f = ref.neu("com.tencent.qqnt.kernel.nativeinterface.FaceElement");
         int fid = (int) parseLong(d.optString("id", "0"));
-        int type = d.optInt("face_type", 1);
+        int type = d.optInt("face_type", fid >= 222 ? 2 : 1);
         ref.set(f, "faceIndex", fid);
         ref.set(f, "faceType", type <= 0 ? 1 : type);
+        if (d.has("face_text")) ref.set(f, "faceText", d.optString("face_text", ""));
+        if (d.has("pack_id")) ref.set(f, "packId", d.optString("pack_id", ""));
+        if (d.has("sticker_id")) ref.set(f, "stickerId", d.optString("sticker_id", ""));
+        if (d.has("sticker_type")) ref.set(f, "stickerType", Integer.valueOf(d.optInt("sticker_type", 0)));
+        if (d.has("source_type")) ref.set(f, "sourceType", Integer.valueOf(d.optInt("source_type", 0)));
         ref.set(e, "faceElement", f);
         out.add(e);
     }

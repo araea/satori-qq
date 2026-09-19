@@ -1,4 +1,4 @@
-## 0.23.5 · 知弦
+## 0.23.6 · 知弦
 
 ### 接口自述与真实能力对齐
 
@@ -7,12 +7,21 @@
 - 曾经有过、后来移除的动作（0.17.0 的内核查询、0.23.0 的 `like`）报错时与「方法名写错」分开：
   404 的响应体里带 `code=removed_action`，客户端按机器可读的字段判断，不必匹配会变的中文文案。
 
-### 骰子与猜拳改成超级表情
+### 骰子与猜拳改成超级表情（按 NapCat 的实现对齐）
 
-`internal/dice` / `internal/rps` 之前发的是 `faceType=1` 的普通表情，群里收到的是一个 16px
-的小脸。超级表情（整条放大的动画）要 `FaceElement.faceType=2`，现在按 2 发；值可以在配置里
-用 `special_face_type` 改，回执里带 `face_type`，`internal/capabilities` 的 `special_faces`
-也给出来。
+之前发的是 `FaceElement.faceType=1`，群里收到的是一个 16px 的小脸。对照
+[NapCat](https://github.com/NapNeko/NapCatQQ) 的实现改对，要点有两处：
+
+- `FaceType` 的取值是 `1 老表情 / 2 常规表情 / **3 动画贴纸 = 超级表情** / 4 Lottie / 5 poke`
+  （`packages/napcat-core/types/msg.ts`）。先前猜的 2 是「常规表情」，所以还是小脸。
+- 光有 `faceType=3` 不够，还要带贴纸身份：`faceText`（`[骰子]` / `[包剪锤]`）、`packId='1'`、
+  `stickerId`（骰子 `33`、猜拳 `34`）、`stickerType=2`、`sourceType=1`；线路上 QQ 会把它编成
+  `commonElem{serviceType:37}` 里的一段 `QBigFaceExtra`（`aniStickerPackId` / `aniStickerId` /
+  `faceId` / `sourceType` / `resultId` / `preview` / `randomType`），但那是内核自己做的转换，
+  交给内核的仍然是 `FaceElement`，照着 NapCat 的 dice / rps 段填即可。
+
+顺带把普通表情的 `faceType` 也按同一份实现的选法补齐：id ≥ 222 用 2，小于 222 用 1。
+先前一律发 1，id 大于 222 的表情在 QQ 里是画不出来的。
 
 ### 参数错的请求不再打开出站熔断
 

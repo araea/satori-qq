@@ -10,7 +10,6 @@
   "wake_lock_auto": true,
   "wifi_sustain": true,
   "verbose_logs": false,
-  "special_face_type": 2,
   "outbound_min_interval_ms": 1000,
   "outbound_queue_timeout_ms": 30000,
   "outbound_max_queued": 8,

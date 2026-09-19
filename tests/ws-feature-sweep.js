@@ -182,7 +182,7 @@ async function main() {
   });
 
   await check('error.unknown_message', async () => {
-    const msg = await client.callExpect('message.get', { message_id: 'no-such-message-id' }, 404);
+    const msg = await client.callExpect('message.get', { message_id: '999999999999999' }, 404);
     return msg;
   });
 
@@ -202,12 +202,17 @@ async function main() {
     return 'id=' + messageId;
   });
 
-  await check('event.message_created', async () => {
+  // 文档约定「机器人 API 的发送回声会去重」：自己发的消息不再回灌成 message-created，
+  // 否则 Koishi 侧会对自己的回复再触发一轮。这里断言的是「不回灌」这条行为。
+  await check('event.self_send_not_echoed', async () => {
     if (!messageId) throw new Error('上一步没发出消息');
-    const ev = await client.waitFor(
-      (e) => e.post_type === 'message-created' && String(e.id) === messageId, 15000, 'message-created');
-    if (String(ev.channel?.id) !== GROUP) throw new Error('channel=' + ev.channel?.id);
-    return 'user=' + ev.user?.id;
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      const hit = client.events.find((e) => e.type === 'message-created' && String(e.id) === messageId);
+      if (hit) throw new Error('自己的发送被回声成了 message-created: ' + JSON.stringify(hit).slice(0, 160));
+      await delay(150);
+    }
+    return 'no self echo';
   });
 
   await check('message.get', async () => {
@@ -234,11 +239,19 @@ async function main() {
     return 'emoji=4';
   });
 
-  await check('reaction.list', async () => {
+  await check('reaction.list(带 emoji_id)', async () => {
+    if (!messageId) throw new Error('上一步没发出消息');
+    const o = await client.callOk('reaction.list', { channel_id: GROUP, message_id: messageId, emoji_id: '4' });
+    if (!Array.isArray(o?.data)) throw new Error('data 不是数组: ' + JSON.stringify(o).slice(0, 120));
+    return 'users=' + o.data.length;
+  });
+
+  // 协议里 emoji_id 可选；QQ 内核一次只认一个表情，模块退化成「本登录号自己加过的那些」。
+  await check('reaction.list(不带 emoji_id)', async () => {
     if (!messageId) throw new Error('上一步没发出消息');
     const o = await client.callOk('reaction.list', { channel_id: GROUP, message_id: messageId });
-    if (!o) throw new Error('空响应');
-    return JSON.stringify(o).slice(0, 120);
+    if (!Array.isArray(o?.data)) throw new Error('data 不是数组: ' + JSON.stringify(o).slice(0, 120));
+    return 'users=' + o.data.length;
   });
 
   await check('reaction.delete', async () => {
@@ -250,8 +263,8 @@ async function main() {
   await check('internal/poke', async () => {
     await client.callOk('internal/poke', { guild_id: GROUP, user_id: selfId });
     const ev = await client.waitFor(
-      (e) => e.post_type === 'notice' && e.notice_type === 'notify' && e.sub_type === 'poke',
-      15000, 'poke notice');
+      (e) => e.type === 'internal' && e._type === 'satori-qq/poke',
+      15000, 'poke event');
     return 'target=' + ev.target_id;
   });
 
@@ -271,13 +284,17 @@ async function main() {
     return 'deleted ' + messageId;
   });
 
-  await check('event.message_deleted_or_recall', async () => {
+  // 同上去重约定：自己撤回自己刚发的消息也不回灌事件。
+  await check('event.self_recall_not_echoed', async () => {
     if (!messageId) throw new Error('上一步没发出消息');
-    const ev = await client.waitFor(
-      (e) => (e.post_type === 'message-deleted' && String(e.message?.id) === messageId)
-        || (e.post_type === 'notice' && e.notice_type === 'group' && e.sub_type === 'recall'),
-      15000, 'recall event');
-    return ev.post_type + '/' + (ev.sub_type || '');
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      const hit = client.events.find((e) => e.type === 'message-deleted'
+        && String(e.message?.id || e.id) === messageId);
+      if (hit) throw new Error('自己的撤回被回声成了 message-deleted: ' + JSON.stringify(hit).slice(0, 160));
+      await delay(150);
+    }
+    return 'no self recall echo';
   });
 
   await check('internal/title_display_read', async () => {

@@ -257,7 +257,7 @@ class SatoriClient {
       if (hit) return hit;
       if (Date.now() > deadline) {
         throw new Error('no matching ' + description + ' within ' + timeoutMs + 'ms; got ' +
-          JSON.stringify(this.events.map((e) => ({ t: e.post_type, d: e.detail_type, n: e.notice_type, s: e.sub_type }))));
+          JSON.stringify(this.events.map((e) => ({ t: e.type, d: e.detail_type, s: e.sub_type, id: e.id }))));
       }
       await delay(150);
     }

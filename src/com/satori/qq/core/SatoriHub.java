@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.0";
+    public static final String APP_VERSION = "0.23.1";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -837,9 +837,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 return new JSONObject().put("cleared", cleared);
             }
             case "reaction.list": {
-                String emojiRaw = p.optString("emoji_id", "");
+                String emojiRaw = p.optString("emoji_id", "").trim();
                 int messageId = requireMessage(p.optString("message_id", ""), p).id;
                 validateMessageChannel(p, messageId);
+                // 协议里 emoji_id 是可选的，但 QQ 内核的 getMsgEmojiLikesList 一次只认一个表情，
+                // 也没有「列出这条消息上所有表态的人」的调用。不带 emoji_id 时给出本登录号自己
+                // 加过的那些（与 reaction.clear 同源），至少不把合规客户端挡在 400 外面。
+                if (emojiRaw.isEmpty()) return localReactionUsers(messageId);
                 return reactionList(messageId, parseEmoji(emojiRaw), emojiRaw,
                         p.optString("next", ""));
             }
@@ -860,8 +864,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 setGroupAddRequest(p.optString("message_id", ""),
                         p.optBoolean("approve", true), p.optString("comment", ""));
                 return new JSONObject();
-            case "upload.create":
-                throw new NotImplemented("upload.create");
             default:
                 throw new NotImplemented(method);
         }
@@ -1622,7 +1624,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         MsgStore.Rec rec = store.resolve(raw);
         if (rec == null) rec = fetchMessage(raw, p);
         if (rec == null) {
-            boolean missing = raw == null || raw.trim().isEmpty() || parseLongQuiet(raw) == 0;
+            // 只有真的没给才算 1400；给了但查不到（含非数字这种本模块不认的 id）是 404，
+            // 否则客户端拿着一个可疑 id 会看到 "missing message_id" 这种误导性的说法。
+            boolean missing = raw == null || raw.trim().isEmpty();
             throw new ApiError(missing ? 1400 : 1404,
                     missing ? "missing message_id" : "message not found: " + raw);
         }
@@ -3245,6 +3249,27 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     /** When getMsgEmojiLikesList returns no rows, msgRecord still tracks our own click. */
+    /** 不带 emoji_id 的 reaction.list：把本登录号在这条消息上加过的表态按账号去重后返回。 */
+    private JSONObject localReactionUsers(int messageId) throws Exception {
+        MsgStore.Rec r = store.get(messageId);
+        if (r == null) throw new ApiError(1404, "message not found: " + messageId);
+        JSONArray data = new JSONArray();
+        for (String key : reactionEmojiKeys(messageId)) {
+            JSONArray one = reactionListFromRecord(r, key);
+            for (int i = 0; i < one.length(); i++) {
+                JSONObject u = one.optJSONObject(i);
+                if (u == null) continue;
+                boolean dup = false;
+                for (int j = 0; j < data.length(); j++) {
+                    JSONObject seen = data.optJSONObject(j);
+                    if (seen != null && seen.optString("id").equals(u.optString("id"))) { dup = true; break; }
+                }
+                if (!dup) data.put(u);
+            }
+        }
+        return new JSONObject().put("data", data);
+    }
+
     private JSONArray reactionListFromRecord(MsgStore.Rec r, String emojiKey) throws Exception {
         JSONArray data = new JSONArray();
         Object rec = r.msgRecord;
@@ -4099,6 +4124,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     // ============ lifecycle / online status / heartbeat ============
+    /** READY 里报出去的账号。换了号就要通知并回收客户端——旧 id 在新账号下会被判成别的登录。 */
+    private volatile long advertisedUin = 0;
+    private volatile long pendingUin = 0;
+    private volatile int pendingUinTicks = 0;
+
     private void startStatusMonitor() {
         Thread t = new Thread(() -> {
             boolean previous = qq.isOnline();
@@ -4118,6 +4148,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         emitLoginUpdated();
                         previous = online;
                     }
+                    trackLoginChange();
                     if (cfg.heartbeat && now >= nextHeartbeat) {
                         nextHeartbeat = now + interval;
                     }
@@ -4134,6 +4165,55 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }, "pool-5-thread-1");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * 盯住当前账号。切号时客户端攥着旧 READY 里的 id，会被 {@link #isForeignLogin} 判成
+     * 「别的登录」，所有请求 404、整条连接哑掉——而 HTTP 与 WebSocket 是分开的，服务端没法
+     * 只凭请求头认出「这个旧 id 是它当初从我们这儿拿的」。所以只能主动断开让它们重连重取
+     * READY。换号要连续两拍才认，避免 selfUin() 抖动时来回断连。
+     */
+    private void trackLoginChange() {
+        try {
+            long uin = selfUin();
+            if (uin == 0) return;
+            if (advertisedUin == 0) {
+                advertisedUin = uin;
+                return;
+            }
+            if (uin == advertisedUin) {
+                pendingUin = 0;
+                pendingUinTicks = 0;
+                return;
+            }
+            if (uin != pendingUin) {
+                pendingUin = uin;
+                pendingUinTicks = 1;
+                return;
+            }
+            if (++pendingUinTicks < 2) return;
+
+            L.i("login changed " + advertisedUin + " -> " + uin + "; recycling clients");
+            advertisedUin = uin;
+            pendingUin = 0;
+            pendingUinTicks = 0;
+            emitLoginUpdated();
+            recycleClients();
+        } catch (Throwable t) {
+            L.e("trackLoginChange", t);
+        }
+    }
+
+    /** 断开所有客户端，让它们重连后拿到带新账号的 READY。 */
+    private void recycleClients() {
+        for (WsConn c : new java.util.ArrayList<>(identified)) {
+            try { c.sendClose(); } catch (Throwable ignore) { }
+        }
+        identified.clear();
+        for (WsConn c : new java.util.ArrayList<>(awaitingReady.keySet())) {
+            try { c.sendClose(); } catch (Throwable ignore) { }
+        }
+        awaitingReady.clear();
     }
 
     /** Deliver READY to the clients that identified before QQ could name its account. */

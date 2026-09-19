@@ -177,8 +177,8 @@ public final class MainActivity extends Activity {
         Button copyToken = ui.button("复制令牌", false); copyToken.setOnClickListener(v -> { if (tokenInput.length() == 0) toast("当前令牌为空"); else copy("连接令牌", tokenInput.getText().toString(), true); }); network.addView(copyToken, params(8));
         content.addView(network, params(16));
         LinearLayout behavior = card(ui.container, 24); behavior.addView(ui.text("运行偏好", 20, ui.ink, true), params(0));
-        String[] labels = {"状态通知", "自动保持唤醒", "保持 Wi-Fi 连接"};
-        String[] hints = {"显示连接状态。", "QQ 启动时自动获取唤醒锁，会增加待机耗电。", "客户端连接期间保持 Wi-Fi 锁，有助于息屏传输。"};
+        String[] labels = {"状态通知", "自动保持唤醒", "保持 Wi-Fi 连接", "手机手动发的消息也投递"};
+        String[] hints = {"显示连接状态。", "QQ 启动时自动获取唤醒锁，会增加待机耗电。", "客户端连接期间保持 Wi-Fi 锁，有助于息屏传输。", "把你在 QQ 客户端里手动发出的消息也作为消息事件投递，作者用独立身份（qq-client:账号），便于在手机上手动发消息测试机器人。"};
         for (int i = 0; i < toggles.length; i++) {
             Switch toggle = toggle(labels[i]); final int index = i;
             toggle.setChecked(state == null ? config.optBoolean(ManagedConfig.SWITCHES[i], true) : state.getBoolean("toggle" + i));

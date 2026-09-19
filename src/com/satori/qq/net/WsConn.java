@@ -22,7 +22,7 @@ public final class WsConn {
     }
 
     void sendPong(byte[] payload) { try { writeFrame(0xA, payload); } catch (Throwable ignore) {} }
-    void sendClose() { try { writeFrame(0x8, new byte[0]); } catch (Throwable ignore) {} finally { close(); } }
+    public void sendClose() { try { writeFrame(0x8, new byte[0]); } catch (Throwable ignore) {} finally { close(); } }
 
     private void writeFrame(int opcode, byte[] payload) throws Exception {
         if (closed) return;

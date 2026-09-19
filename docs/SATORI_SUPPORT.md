@@ -219,10 +219,12 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 - **缺 6 个方法**：`channel.create`、`channel.delete`、`guild.role.create|update|delete`、
   `message.update`。QQ 的群就是频道、没有自定义角色、也不支持改消息，实现它们只能是假的；
   调用回 404，能力表里也不列。
-- **`channel.update` 只支持换群头像**：`data.name` 一律回 400。改群名曾经实现过，但它要在
-  `modifyGroupName` 之后再补一次 `modifyGroupDetailInfoV2`（NapCat 只有前一条），审计实测一次改名
-  会在服务端产生两次群资料修改，是改名频率限制（`code=1010`）与平台侧处置的触发形状；2026-09-19
-  删掉，要改群名请在 QQ 客户端里改。
+- **`channel.update` 的改名只有一条写入路径**（这张表里其余项都对齐，这条是刻意如此）：照 NapCat
+  的做法只调内核的 `modifyGroupName(group, name, isNormalMember)`，结果码 1287 时把
+  `isNormalMember` 翻成 true 再试一次；**不做二次写入**（曾经补过一条
+  `modifyGroupDetailInfoV2` 兜底，审计实测一次改名会产生两次群资料修改，是改名频率限制
+  `code=1010` 与平台侧处置的触发形状），也**不在写入侧回读校验**（内核缓存滞后是常态，回读不匹配
+  不代表没生效）。空名字一律拒绝——那是不可逆的「把群名清掉」。
 - **`reaction-removed` 而不是 `reaction-deleted`**：协议包（1.0.0 到 1.7.0 一致）写的是
   `reaction-deleted`，但框架给插件的事件表（`@satorijs/core` 的 `Events`）和官方 QQ 适配器用的是
   `reaction-added` / `reaction-removed`，两套名字在框架里**不是别名**。按「插件实际会监听哪个」选了

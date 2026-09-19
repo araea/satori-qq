@@ -210,18 +210,50 @@ async function main() {
   let originalName = await readNameFromGet();
   if (!originalName) originalName = await readNameFromList();
 
-  // 改名能力已移除（2026-09-19，理由见 QQClient 里那段注释）。这条用例现在反过来断言
-  // 「本实现端不写群名」：给它一个名字必须明确拒绝，而且**群名不许变**。
-  await check('channel.update 拒绝改群名', async () => {
+  // 空名字必须被挡住：那是「把群名清掉」，不可逆。这一条不需要真的写。
+  await check('channel.update 拒绝空群名', async () => {
     const before = String((await client.callOk('guild.get', { guild_id: GROUP }))?.name || '');
     if (!before) throw new Error('群里读不到群名，没法判断有没有被改');
     const message = await expectFailure(client, 'channel.update',
-      { channel_id: GROUP, data: { name: before + '·不该生效' } }, 400, 'not supported');
+      { channel_id: GROUP, data: { name: '   ' } }, 400, 'name');
     await delay(1500);
     const after = String((await client.callOk('guild.get', { guild_id: GROUP }))?.name || '');
     if (after !== before) throw new Error('群名被改了：' + JSON.stringify(before) + ' -> ' + JSON.stringify(after));
     return message;
   });
+
+  // ---- 改名（默认不跑：它改的是对外可见的群名）----
+  // 2026-09-19 的教训：QQ 对改名有频率限制（实测 code=1010），别在默认回归里反复写；
+  // 要跑就 SATORI_DESTRUCTIVE=1，而且无论校验成功与否都必须在 finally 里还原。
+  if (process.env.SATORI_DESTRUCTIVE === '1') {
+    await check('channel.update (改名并还原)', async () => {
+      const original = String((await client.callOk('guild.get', { guild_id: GROUP }))?.name || '');
+      if (!original) throw new Error('读不到当前群名，跳过以免改坏');
+      const temp = original + '·测试';
+      const readName = async () => String((await client.callOk('guild.get', { guild_id: GROUP }))?.name || '');
+      const waitForName = async (want) => {
+        for (let i = 0; i < 12; i++) {
+          await delay(1000);
+          if (await readName() === want) return true;
+        }
+        return false;
+      };
+      let renamed = false;
+      try {
+        await client.callOk('channel.update', { channel_id: GROUP, data: { name: temp } });
+        renamed = true;
+        if (!await waitForName(temp)) throw new Error('改名没读到生效');
+      } finally {
+        if (renamed) {
+          await client.callOk('channel.update', { channel_id: GROUP, data: { name: original } });
+          if (!await waitForName(original)) {
+            throw new Error('还原后没读到 ' + JSON.stringify(original) + '，请手工确认群名');
+          }
+        }
+      }
+      return original + ' -> ' + temp + ' -> ' + original;
+    });
+  }
 
   // ---- 全员禁言（同样默认不跑：它会打断群里所有人的发言） ----
   if (process.env.SATORI_DESTRUCTIVE === '1') {

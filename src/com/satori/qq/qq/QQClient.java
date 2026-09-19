@@ -2167,15 +2167,42 @@ public final class QQClient {
             ref.call(gs, "modifyMemberRole", groupCode, uid, role, cb);
         });
     }
-    // 改名能力已移除（2026-09-19）。
-    //
-    // 对照 NapCat（packages/napcat-core/apis/group.ts 的 setGroupName）：它们只调一次内核的
-    // `modifyGroupName(group, name, isNormalMember)`，result=1287 时翻一下 isNormalMember 再来一次，
-    // **没有第二条写入路径**。我们这边多了一条 `modifyGroupDetailInfoV2` 的兜底写（原意是绕开
-    // QQ 9.3.55「只更新会话缓存、群资料页仍读不到名字」的毛病），于是一次改名会在服务端产生两次
-    // 群资料修改——正好是改名频率限制（实测 code=1010）与平台侧处置的触发形状。名字被清空这件事
-    // 再也抓不到本地写入之后，用户同意直接去掉这个功能：Satori 的 `channel.update` 现在只支持换
-    // 群头像，`data.name` 一律拒绝。要改群名请在 QQ 客户端里改。
+    /**
+     * 改群名（照 NapCat 的做法）。
+     *
+     * <p>**只有一条内核写入路径**：`modifyGroupName(group, name, isNormalMember)`。NapCat
+     * （`packages/napcat-core/apis/group.ts`）先按 `isNormalMember=false` 调一次，结果码是
+     * **1287**（身份参数不对）时把它翻成 `true` 再来一次；我们不自己猜身份，照它的顺序试。
+     *
+     * <p>以前这里在 `modifyGroupName` 之后还补过一条 `modifyGroupDetailInfoV2` 兜底写（原意是绕开
+     * QQ「只更新会话缓存、群资料页读不到名字」的老毛病）。审计实测那会让**一次改名产生两次群资料
+     * 修改**，正是 QQ 改名频率限制（`code=1010`）与平台侧处置的触发形状，已删除且不再回来。
+     *
+     * <p>空名字一律拒绝：那是「把群名清掉」，不可逆。
+     */
+    public OpResult setGroupName(long groupCode, String name) {
+        OpResult refused = new OpResult();
+        final String wanted = name == null ? "" : name.trim();
+        if (wanted.isEmpty()) {
+            refused.msg = "refusing to set an empty group name";
+            audit("groupName refused empty group=" + groupCode);
+            return refused;
+        }
+        OpResult r = modifyGroupName(groupCode, wanted, false);
+        audit("groupName modifyGroupName group=" + groupCode + " name=" + wanted
+                + " normal=false -> " + r.describe());
+        if (r.ok() || r.code != 1287) return r;
+        OpResult retry = modifyGroupName(groupCode, wanted, true);
+        audit("groupName modifyGroupName group=" + groupCode + " name=" + wanted
+                + " normal=true -> " + retry.describe());
+        return retry;
+    }
+
+    /** 内核 `IKernelGroupService.modifyGroupName(groupCode, name, isNormalMember)`。 */
+    private OpResult modifyGroupName(long groupCode, String name, boolean isNormalMember) {
+        return awaitGroup(OPERATE_CB, "modifyGroupName",
+                (gs, cb) -> ref.call(gs, "modifyGroupName", groupCode, name, isNormalMember, cb));
+    }
 
     private static final String AUDIT_FILE =
             "/data/data/com.tencent.mobileqq/files/satori-writes.log";

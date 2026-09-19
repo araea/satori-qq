@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.15";
+    public static final String APP_VERSION = "0.23.16";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -1460,10 +1460,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String name = data.optString("name", "").trim();
         String avatar = data.optString("avatar", "").trim();
         if (gid == 0) throw new ApiError(1400, "missing channel_id");
-        if (!name.isEmpty())
-            throw new ApiError(1400, "group name change is not supported by this implementation; change it in QQ");
-        if (avatar.isEmpty())
-            throw new ApiError(1400, "missing channel avatar");
+        if (name.isEmpty() && avatar.isEmpty())
+            throw new ApiError(1400, "missing channel name or avatar");
+        // 改名走 NapCat 的那一条路径（QQClient.setGroupName），不做二次写入、也不在这里回读校验：
+        // 内核缓存滞后是常态，回读不匹配不代表改名没生效，据此再写一次才是以前出事的地方。
+        if (!name.isEmpty()) requireOp(qq.setGroupName(gid, name));
         if (!avatar.isEmpty()) {
             java.io.File file = resolveAvatarFile(avatar);
             requireOp(qq.setGroupHeader(gid, file.getAbsolutePath()));

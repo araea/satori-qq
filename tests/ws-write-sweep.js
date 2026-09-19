@@ -31,18 +31,26 @@ function record(name, ok, detail) {
   console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || detail === undefined ? '' : '  ' + String(detail).slice(0, 220)));
 }
 
-/** 出站熔断打开时等着，再重试一次。 */
+/**
+ * 出站护栏说「等一下再试」时等着重试。
+ *
+ * 三种情况都会带 `retry after Ns`：熔断打开、一分钟写额度用尽、在线稳定期。
+ * 额度是按分钟窗口算的，紧跟在 `ws-feature-sweep` 后面跑本脚本很容易一头撞上，
+ * 所以这里按它给的秒数重试，最多三轮（2026-09-19 之前只重试一次，撞上额度窗口会
+ * 连着把后面几项一起带崩）。
+ */
 async function retryOnCircuit(fn) {
-  try {
-    return await fn();
-  } catch (error) {
-    const message = String((error && error.message) || error);
-    const hit = /retry after (\d+)s/.exec(message);
-    if (!hit) throw error;
-    const wait = (parseInt(hit[1], 10) + 2) * 1000;
-    console.log('       (circuit open, waiting ' + Math.round(wait / 1000) + 's)');
-    await delay(wait);
-    return fn();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const message = String((error && error.message) || error);
+      const hit = /retry after (\d+)s/.exec(message);
+      if (!hit || attempt >= 2) throw error;
+      const wait = (parseInt(hit[1], 10) + 2) * 1000;
+      console.log('       (' + message.slice(0, 60) + ' → waiting ' + Math.round(wait / 1000) + 's)');
+      await delay(wait);
+    }
   }
 }
 
@@ -152,12 +160,26 @@ async function main() {
     return 'id=' + scratch;
   });
 
+  // 读回要容错：`reaction.list` 走内核的 getMsgEmojiLikesList（实时查），但**服务端自己**有
+  // 一两秒的可见性延迟——刚 create 完立刻 list 拿到空、刚 clear 完立刻 list 拿到上一步的 create，
+  // 都是这个延迟，不是实现端读错了（2026-09-19 手工逐步复现确认）。这里轮询到清空为止。
+  const awaitReactionGone = async (emojiId) => {
+    for (let i = 0; i < 8; i++) {
+      const left = await client.callOk('reaction.list', { channel_id: GROUP, message_id: scratch, emoji_id: emojiId });
+      const users = Array.isArray(left?.data) ? left.data.length : -1;
+      if (users === 0) return true;
+      await delay(1500);
+    }
+    return false;
+  };
+
   await check('reaction.clear (按 emoji_id)', async () => {
     if (!scratch) throw new Error('上一步没造出消息');
     await client.callOk('reaction.clear', { channel_id: GROUP, message_id: scratch, emoji_id: '4' });
-    const left = await client.callOk('reaction.list', { channel_id: GROUP, message_id: scratch, emoji_id: '4' });
-    const users = Array.isArray(left?.data) ? left.data.length : -1;
-    if (users !== 0) throw new Error('清完之后 emoji 4 还有 ' + users + ' 个');
+    if (!await awaitReactionGone('4')) {
+      const left = await client.callOk('reaction.list', { channel_id: GROUP, message_id: scratch, emoji_id: '4' });
+      throw new Error('清完并等 12 秒后 emoji 4 还有 ' + (left?.data || []).length + ' 个');
+    }
     return 'emoji4 已清空';
   });
 

@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.9";
+    public static final String APP_VERSION = "0.23.10";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -3352,7 +3352,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return data;
     }
 
-    /** When getMsgEmojiLikesList returns no rows, msgRecord still tracks our own click. */
     /**
      * 本登录号在这条消息上加过的表情键（store 消息号 → emojiKey 集合）。
      *
@@ -3391,36 +3390,50 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return new JSONObject().put("data", data);
     }
 
+    /**
+     * 本地兜底：内核那条「谁点了赞」的记录里，本登录号自己那一条。
+     *
+     * <p>两个来源的优先级是**本地记账优先**：`myReactions` 记的是本进程亲眼看到的加/取消动作，
+     * 而内核记录滞后一拍。反过来的写法会把「刚清掉的表情」重新读出来——2026-09-19 实测：
+     * `reaction.clear` 之后立刻 `reaction.list` 会回 1 个人（就是我们自己），等到内核推来新
+     * 记录才消失，于是巡检与客户端都会看到「清不掉」的假象。没有本地记账时（模块重启过）才退到
+     * 内核记录的 `isClicked`。
+     */
     private JSONArray reactionListFromRecord(MsgStore.Rec r, String emojiKey) throws Exception {
         JSONArray data = new JSONArray();
-        Object rec = r.msgRecord;
-        if (rec == null && r.msgId != 0) {
-            String peer = r.peerUid == null || r.peerUid.isEmpty()
-                    ? String.valueOf(r.peerUin) : r.peerUid;
-            rec = qq.fetchRecord(r.chatType, peer, r.msgId);
-            if (rec != null) r.msgRecord = rec;
-        }
-        rec = rec == null ? null : Convert.unwrapRecord(rec);
-        Object likes = rec == null ? null : qq.ref.get(rec, "emojiLikesList");
-        if (!(likes instanceof java.util.List)) return data;
         Set<String> tracked = myReactions.get(r.id);
-        boolean mine = tracked != null && tracked.contains(emojiKey);
-        for (Object like : (mine ? java.util.Collections.emptyList() : (java.util.List<?>) likes)) {
-            if (!emojiKey.equals(Ref.asStr(qq.ref.get(like, "emojiId")))) continue;
-            if (qq.ref.getLong(like, "likesCnt") <= 0) continue;
-            Object clicked = qq.ref.get(like, "isClicked");
-            mine = clicked instanceof Boolean ? (Boolean) clicked
-                    : Ref.asInt(clicked) != 0;
-            if (!mine) continue;
-            JSONObject user = Codec.user(selfUin(), qq.selfNick(), "");
-            JSONObject login = loginSlim().optJSONObject("user");
-            if (login != null) {
-                String avatar = login.optString("avatar", "");
-                if (!avatar.isEmpty()) user.put("avatar", avatar);
+        boolean mine;
+        if (tracked != null) {
+            mine = tracked.contains(emojiKey);
+        } else {
+            Object rec = r.msgRecord;
+            if (rec == null && r.msgId != 0) {
+                String peer = r.peerUid == null || r.peerUid.isEmpty()
+                        ? String.valueOf(r.peerUin) : r.peerUid;
+                rec = qq.fetchRecord(r.chatType, peer, r.msgId);
+                if (rec != null) r.msgRecord = rec;
             }
-            data.put(user);
-            break;
+            rec = rec == null ? null : Convert.unwrapRecord(rec);
+            Object likes = rec == null ? null : qq.ref.get(rec, "emojiLikesList");
+            mine = false;
+            if (likes instanceof java.util.List) {
+                for (Object like : (java.util.List<?>) likes) {
+                    if (!emojiKey.equals(Ref.asStr(qq.ref.get(like, "emojiId")))) continue;
+                    if (qq.ref.getLong(like, "likesCnt") <= 0) continue;
+                    Object clicked = qq.ref.get(like, "isClicked");
+                    mine = clicked instanceof Boolean ? (Boolean) clicked : Ref.asInt(clicked) != 0;
+                    break;
+                }
+            }
         }
+        if (!mine) return data;
+        JSONObject user = Codec.user(selfUin(), qq.selfNick(), "");
+        JSONObject login = loginSlim().optJSONObject("user");
+        if (login != null) {
+            String avatar = login.optString("avatar", "");
+            if (!avatar.isEmpty()) user.put("avatar", avatar);
+        }
+        data.put(user);
         return data;
     }
 

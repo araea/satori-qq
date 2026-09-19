@@ -261,7 +261,12 @@ async function main() {
   });
 
   await check('internal/poke', async () => {
-    await client.callOk('internal/poke', { guild_id: GROUP, user_id: selfId });
+    // 戳别人，别戳自己：服务端对「戳自己」会回 Process_Nudge failed（实测），
+    // 那是服务端拒绝，不是实现端或协议的问题，拿它当用例会得出错误结论。
+    const membersRes = await client.callOk('guild.member.list', { guild_id: GROUP });
+    const other = (membersRes?.data || []).map((m) => String(m.user?.id))
+      .find((id) => id && id !== String(selfId)) || String(selfId);
+    await client.callOk('internal/poke', { guild_id: GROUP, user_id: other });
     const ev = await client.waitFor(
       (e) => e.type === 'internal' && e._type === 'satori-qq/poke',
       15000, 'poke event');

@@ -2163,17 +2163,36 @@ public final class QQClient {
             ref.call(gs, "modifyMemberRole", groupCode, uid, role, cb);
         });
     }
+    /**
+     * 改群名。
+     *
+     * <p>**空名字一律拒绝**：那条路就是「把群名清掉」，而清掉一个群名是不可逆的破坏——2026-09-19
+     * 测试群被清空过一次（客户端 API 与测试都可能走到这条路上），之后在这里挡死：调用方要空名字
+     * 就直接失败，不给内核发任何东西。
+     */
     public OpResult setGroupName(long groupCode, String name) {
-        final String wanted = name == null ? "" : name;
+        OpResult refused = new OpResult();
+        final String wanted = name == null ? "" : name.trim();
+        if (wanted.isEmpty()) {
+            refused.msg = "refusing to set an empty group name";
+            audit("groupName refused empty group=" + groupCode);
+            return refused;
+        }
         final boolean normalMember = isNormalGroupMember(groupCode);
         OpResult primary = awaitGroup(OPERATE_CB, "modifyGroupName",
                 (gs, cb) -> ref.call(gs, "modifyGroupName", groupCode, wanted, normalMember, cb));
+        audit("groupName modifyGroupName group=" + groupCode
+                + " name=" + wanted + " -> " + primary.describe());
         if (!primary.ok()) return primary;
         if (refreshAndVerifyGroupName(groupCode, wanted)) return primary;
 
         // QQ 9.3.55 can acknowledge modifyGroupName after only updating the conversation-side
         // TroopInfo cache. The group detail page then still sees an empty groupName. Persist the
         // same field through the filtered V2 detail API, so unrelated group settings are untouched.
+        //
+        // 这条兜底也是唯一一处「按字段写入」的路径：写进去的字段名对不上时 put 会静默失败，
+        // 然后带着一个空的 groupName 发出去 = 把群名清空。所以下面先读回来确认值真的在，
+        // 不在就整条不发，宁可报错。
         OpResult detail = awaitGroup(OPERATE_CB, "modifyGroupDetailInfoV2(groupName)", (gs, cb) -> {
             Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupModifyInfoReq");
             ref.put(req, "groupCode", groupCode);
@@ -2183,14 +2202,38 @@ public final class QQClient {
                 throw new IllegalStateException("GroupModifyInfoReq fields unavailable");
             ref.put(filter, "groupName", 1);
             ref.put(info, "groupName", wanted);
+            if (!wanted.equals(Ref.asStr(ref.get(info, "groupName"))))
+                throw new IllegalStateException("GroupModifyInfo.groupName did not take " + wanted);
             ref.call(gs, "modifyGroupDetailInfoV2", req, 0, cb);
         });
+        audit("groupName modifyGroupDetailInfoV2 group=" + groupCode
+                + " name=" + wanted + " -> " + detail.describe());
         if (!detail.ok()) return detail;
         if (refreshAndVerifyGroupName(groupCode, wanted)) return detail;
 
         OpResult failed = new OpResult();
         failed.msg = "group name write was acknowledged but read-back did not match";
         return failed;
+    }
+
+    private static final String AUDIT_FILE =
+            "/data/data/com.tencent.mobileqq/files/satori-writes.log";
+
+    /**
+     * 会改群资料的写操作记一行。
+     *
+     * <p>群名被清空这类事事后只能靠这一行定性：谁写的、写的什么值、内核怎么回的。logcat 主缓冲
+     * 只有 256KiB，QQ 几秒就刷掉了（native 侧早就因为同样的理由落盘）。
+     */
+    private static void audit(String line) {
+        try {
+            java.io.File f = new java.io.File(AUDIT_FILE);
+            if (f.exists() && f.length() > 256 * 1024) f.delete();
+            java.io.FileWriter w = new java.io.FileWriter(f, true);
+            w.write(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT)
+                    .format(new java.util.Date()) + " " + line + "\n");
+            w.close();
+        } catch (Throwable ignore) { }
     }
 
     /** Matches QQ 9.3.55 TroopOperationRepo: the boolean is isNormalMember. */
@@ -2219,8 +2262,10 @@ public final class QQClient {
 
     /** NT IKernelGroupService.setHeader(groupCode, localPath). Owner/admin only. */
     public OpResult setGroupHeader(long groupCode, String path) {
-        return awaitGroup(OPERATE_CB, "setHeader",
+        OpResult r = awaitGroup(OPERATE_CB, "setHeader",
                 (gs, cb) -> ref.call(gs, "setHeader", groupCode, path == null ? "" : path, cb));
+        audit("groupHeader group=" + groupCode + " path=" + path + " -> " + r.describe());
+        return r;
     }
 
     /**

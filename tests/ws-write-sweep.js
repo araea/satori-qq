@@ -183,7 +183,9 @@ async function main() {
   let originalName = await readNameFromGet();
   if (!originalName) originalName = await readNameFromList();
 
-  await check('channel.update (改名并还原)', async () => {
+  // 改名是**默认不跑**的破坏性用例：群名是对外可见、且清掉就补不回来的东西，而这里过去真把
+  // 测试群改成过空的（原名读成空串、还原写回空串）。要跑就显式 SATORI_DESTRUCTIVE=1。
+  if (process.env.SATORI_DESTRUCTIVE === '1') await check('channel.update (改名并还原)', async () => {
     if (!originalName) throw new Error('读不到当前群名，跳过以免改坏');
     const temp = originalName + '·测试';
     // 读回等缓存跟上；读到空串也当成「还没跟上」，绝不当成目标值。
@@ -213,13 +215,17 @@ async function main() {
     return originalName + ' -> ' + temp + ' -> ' + originalName;
   });
 
-  // ---- 全员禁言 ----
-  await check('channel.mute (开 3 秒再解除)', async () => {
-    await client.callOk('channel.mute', { guild_id: GROUP, duration: 3000 });
-    await delay(1200);
-    await client.callOk('channel.mute', { guild_id: GROUP, duration: 0 });
-    return 'ok';
-  });
+  // ---- 全员禁言（同样默认不跑：它会打断群里所有人的发言） ----
+  if (process.env.SATORI_DESTRUCTIVE === '1') {
+    await check('channel.mute (开 3 秒再解除)', async () => {
+      await client.callOk('channel.mute', { guild_id: GROUP, duration: 3000 });
+      await delay(1200);
+      await client.callOk('channel.mute', { guild_id: GROUP, duration: 0 });
+      return 'ok';
+    });
+  } else {
+    console.log('skip channel.update / channel.mute（破坏性，SATORI_DESTRUCTIVE=1 才跑）');
+  }
 
   // ---- 成员级动作：目标取群里除自己外的第一个成员，做完还原 ----
   if (!target) {

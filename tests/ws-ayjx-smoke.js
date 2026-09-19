@@ -49,9 +49,13 @@ async function main() {
 
   // ---- 只读：ayjx 的上下文与身份 ----
   await check('login.get', async () => {
+    // HTTP login.get 回扁平的一个 Login（`self_id` / `user` / `features`）；WS READY 里是
+    // `logins[]`。两种形状 ayjx 都要认，这里两种都查。
     const o = await client.callOk('login.get', {});
-    const login = (o.logins || [])[0] || {};
-    if (String(login.user?.id) !== selfId) throw new Error('logins[0].user.id=' + login.user?.id);
+    const flat = o.self_id || o.user?.id;
+    if (String(flat) !== selfId) throw new Error('self_id=' + flat);
+    const wsLogin = (client.ready?.logins || [])[0] || {};
+    if (String(wsLogin.user?.id) !== selfId) throw new Error('READY logins[0].user.id=' + wsLogin.user?.id);
     if (!Array.isArray(o.features) || o.features.length === 0) throw new Error('features 为空');
     return 'features=' + o.features.length;
   });
@@ -90,7 +94,10 @@ async function main() {
   });
 
   await check('reaction.list', async () => {
-    const o = await client.callOk('reaction.list', { channel_id: GROUP, message_id: '1', emoji_id: '4' });
+    const list = await client.callOk('message.list', { channel_id: GROUP, limit: 1 });
+    const mid = list?.data?.[0]?.id;
+    if (!mid) throw new Error('群里没有消息可查表态');
+    const o = await client.callOk('reaction.list', { channel_id: GROUP, message_id: String(mid), emoji_id: '4' });
     if (!Array.isArray(o.data)) throw new Error('data 不是数组');
     return 'users=' + o.data.length;
   });
@@ -103,9 +110,11 @@ async function main() {
   });
 
   await check('internal/get_forward', async () => {
-    const o = await client.callOk('internal/get_forward', { id: 'native:1', channel_id: GROUP });
-    if (!o || typeof o !== 'object') throw new Error('空响应');
-    return 'ok';
+    // 拿一个不存在的父消息去问：期望的不是 200，而是**内核真的回了话**（code=4 Data Not Existed），
+    // 那说明路由通了；只有 404 API not found 才算实现端没有这个能力。
+    const detail = await expectRouted(client, 'internal/get_forward', { id: 'native:1', channel_id: GROUP });
+    if (/API not found/i.test(detail)) throw new Error(detail);
+    return detail;
   });
 
   // sign 会真的打卡，只在显式开启时跑

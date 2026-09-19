@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.4";
+    public static final String APP_VERSION = "0.23.5";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -738,7 +738,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private Object guarded(String method, Work work) throws Exception {
         OutboundGuard.Lease lease = null;
         boolean ok = false;
-        boolean transportOnly = false;
+        boolean kernelNeutral = false;
         com.satori.qq.qq.WakeLockCtl w = wakeLock;
         // QQ's kernel uploads media inline while sendMsg runs; on a locked screen a parked CPU
         // and Wi-Fi radio make that transfer fail while plain text still rides the live socket.
@@ -755,21 +755,36 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             ok = true;
             return data;
         } catch (Throwable t) {
-            // A failed media upload must not open the breaker: the caller's very next move is the
-            // text fallback on the same connection, and that one usually still gets through.
-            transportOnly = isTransportFailure(t);
+            kernelNeutral = isKernelNeutralFailure(t);
             throw t;
         } finally {
             if (lease != null) {
-                if (!ok && transportOnly) lease.failTransport(); else lease.complete(ok);
+                if (!ok && kernelNeutral) lease.failTransport(); else lease.complete(ok);
             }
             if (w != null) w.end();
         }
     }
 
     /** True for an error whose cause is the network under one payload, not QQ refusing to work. */
-    private static boolean isTransportFailure(Throwable t) {
+    /**
+     * 这次失败说不说明内核不健康？说不说明的，就不该开熔断。
+     *
+     * <p>两类：
+     * <ul>
+     *   <li>富媒体上传失败——调用方的下一个动作通常是同一连接上的纯文本兜底，那一条往往还能过；
+     *       把它算进熔断，等于把「降级但可用」变成持续 {@code circuitOpenMs} 的全断。</li>
+     *   <li>**调用方参数就不对**（1400／1404）。那是我们自己在进内核之前回绝的，跟内核健不健康没有
+     *       关系。不排除的话，任何客户端连发三个缺参请求就能把出站通道锁两分钟
+     *       （2026-09-19 实测：巡检里的缺参用例正好把熔断打开了，后面十几项全被拒）。</li>
+     * </ul>
+     */
+    private static boolean isKernelNeutralFailure(Throwable t) {
         for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof ApiError) {
+                int code = ((ApiError) c).code;
+                if (code == 1400 || code == 1404) return true;
+            }
+            if (c instanceof NotImplemented) return true;
             String m = c.getMessage();
             if (m == null) continue;
             String lower = m.toLowerCase(java.util.Locale.ROOT);

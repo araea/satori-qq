@@ -123,6 +123,8 @@ ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试
 
 `versionName` 走语义化版本 `主.次.补丁`，从 0.9.0 开始。主版本对应 Satori 方法表或 `/v1/internal` 动作的破坏性变更。次版本对应新增方法、动作、事件，以及对 QQ 的行为适配或反检测策略这类影响兼容性的改动。补丁版本对应修 bug、改文案、改默认值。需要区分同一天发的多次构建时，第 4 段临时当构建号用（`0.9.1.2`），下一次发版并回三段。
 
-`versionCode` 独立递增。Android 判升级、市场判更新、Xposed 管理器判「有新版本」用的都是它，`versionName` 只负责给人看。版本号要同步改两处：`AndroidManifest.xml` 与 `SatoriHub.APP_VERSION`，`tests/ManifestTest` 会校验两者一致。发布走 `marketplace/publish.sh`，tag 为 `{versionCode}-{versionName}`。
+`versionCode` 独立递增。Android 判升级与模块管理器判「有新版本」用的都是它，`versionName` 只负责给人看。版本号要同步改两处：`AndroidManifest.xml` 与 `SatoriHub.APP_VERSION`，`tests/ManifestTest` 会校验两者一致。
 
-0.9.0 之前的三段固定成 `0.8.9`、只递增第 4 段（`0.8.9.1` 到 `0.8.9.46`），文档里那些 `0.8.9.x 起` 的说法指的是旧编号。两套编号的对应关系见 [`marketplace/`](../marketplace/) 下的变更记录。
+发布只在 [araea/satori-qq](https://github.com/araea/satori-qq) 上打 GitHub Release，tag 为 `{versionCode}-{versionName}`，正文取 `changelogs/CHANGELOG-{versionName}.md`。0.23.0 起不再是 Xposed 模块，`Xposed-Modules-Repo` 下的市场仓库已删除，不再向该市场发布。
+
+0.9.0 之前的三段固定成 `0.8.9`、只递增第 4 段（`0.8.9.1` 到 `0.8.9.46`），文档里那些 `0.8.9.x 起` 的说法指的是旧编号。两套编号的对应关系见 [`changelogs/`](../changelogs/) 下的变更记录。

@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.1";
+    public static final String APP_VERSION = "0.23.2";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -351,6 +351,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             JSONObject body = parseBody(req);
             if (OutboundGuard.isMutation(method)) return jsonResult(guarded(method, () -> dispatch(method, body)));
             return jsonResult(dispatch(method, body));
+        } catch (RemovedAction ra) {
+            // 404 但带 code：这是「曾经有过、现在没了」，不是方法名写错。
+            return HttpServer.HttpResult.json(404, errorJson(ra.getMessage(), "removed_action"));
         } catch (NotImplemented ni) {
             // 404, not 501: every method here is one QQ has no equivalent for at all. The body
             // stays JSON like every other error so a client can parse it uniformly.
@@ -510,8 +513,16 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private static String errorJson(String msg) {
-        try { return new JSONObject().put("message", msg == null ? "" : msg).toString(); }
-        catch (Exception e) { return "{\"message\":\"error\"}"; }
+        return errorJson(msg, null);
+    }
+
+    /** 错误体。带 `code` 时客户端可以按机器可读的字段判断，不必去匹配文案。 */
+    private static String errorJson(String msg, String code) {
+        try {
+            JSONObject o = new JSONObject().put("message", msg == null ? "" : msg);
+            if (code != null) o.put("code", code);
+            return o.toString();
+        } catch (Exception e) { return "{\"message\":\"error\"}"; }
     }
 
     private static JSONObject opJson(int op, JSONObject body) throws Exception {
@@ -670,6 +681,46 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
     private static final class NotImplemented extends RuntimeException {
         NotImplemented(String method) { super("API not found: " + method); }
+    }
+
+    /**
+     * 曾经提供、后来移除的动作。
+     *
+     * <p>必须和「从来没这个方法」分开报：客户端要靠这个把能力标成不可用，而不是每轮重试
+     * （ayjx 的资料卡点赞就是这种用法——它按回执文案记住「平台不让做」，之后就不再调）。
+     * 所以除了 404，响应体里还带 `code=removed_action`。
+     */
+    private static final class RemovedAction extends RuntimeException {
+        RemovedAction(String method, String since, String why) {
+            super(method + " 已移除（" + since + "起）：" + why);
+        }
+    }
+
+    /** 0.17.0 收掉的 QQ 内核查询与本地会话状态接口。 */
+    private static final java.util.Set<String> REMOVED_0_17 = new java.util.HashSet<>(java.util.Arrays.asList(
+            "group_overview", "group_extra", "member_info", "group_member_search", "recent_contacts",
+            "contact_search", "friend_relation", "group_remark", "profile_self", "group_honor",
+            "group_shut_up_list", "group_active", "group_anniversary", "group_detail",
+            "group_statistic", "user_detail", "voice_to_text", "message_context", "message_search",
+            "group_file", "get_resource", "mark_read", "session_top", "group_msg_mask",
+            "qzone.publish", "offline"));
+
+    /** 0.23.0 收掉的：这些在旧实现里靠通用 Java hook 才成立。 */
+    private static final java.util.Map<String, String> REMOVED_0_23 = new java.util.HashMap<>();
+    static {
+        REMOVED_0_23.put("like", "资料卡点赞走 QQ 的 WUP/Handler 通道，本实现端只走 JNI 层");
+    }
+
+    /** 动作是不是「移除过」，是的话返回移除时的版本。 */
+    private static String removedSince(String name) {
+        if (REMOVED_0_23.containsKey(name)) return "0.23.0";
+        if (REMOVED_0_17.contains(name)) return "0.17.0";
+        return null;
+    }
+
+    private static String removedWhy(String name, String since) {
+        String why = REMOVED_0_23.get(name);
+        return why != null ? why : "QQ 内核查询接口不再向客户端暴露";
     }
 
     private void ensureOutboundReady() {
@@ -973,6 +1024,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "version":
                 return versionInfo();
             default:
+                String gone = removedSince(name);
+                if (gone != null) throw new RemovedAction("internal/" + name, gone, removedWhy(name, gone));
                 throw new NotImplemented("internal/" + name);
         }
     }
@@ -1082,8 +1135,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         // 本地会话状态那些内核接口；客户端原来靠它探测能力，现在探测到的就是全部。
         return new JSONObject()
                 .put("version", APP_VERSION)
+                // 只列真正还实现得出来的（移除过的见下面的 removed）：列了却 404 会让客户端
+                // 白试一轮，ayjx 的资料卡点赞就吃过这个亏。
                 .put("actions", new JSONArray()
-                        .put("poke").put("like").put("invite")
+                        .put("poke").put("invite")
                         .put("card").put("special_title").put("title_display")
                         .put("honor_display").put("sign").put("essence")
                         .put("dice").put("rps").put("get_forward")
@@ -1094,7 +1149,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE))
                 .put("params", new JSONObject()
                         .put("poke", "guild_id, user_id")
-                        .put("like", "user_id, times?=1..10")
                         .put("invite", "guild_id, user_id")
                         .put("card", "guild_id, user_id?, card")
                         .put("special_title", "guild_id, user_id, title")
@@ -1110,10 +1164,24 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("get_forward")
                         .put("status").put("version").put("capabilities").put("compat"))
                 .put("write_actions", new JSONArray()
-                        .put("poke").put("like").put("invite").put("card")
+                        .put("poke").put("invite").put("card")
                         .put("special_title").put("title_display").put("honor_display")
                         .put("sign").put("essence").put("dice").put("rps")
-                        .put("clean_cache").put("restart"));
+                        .put("clean_cache").put("restart"))
+                // 曾经有过、现在没有的动作。客户端按这个把能力标成不可用，不必逐轮试。
+                .put("removed", removedActionsJson());
+    }
+
+    /** `removed` 段的构造：key 是动作名，value 是「哪个版本、为什么」。 */
+    private static JSONObject removedActionsJson() throws Exception {
+        JSONObject o = new JSONObject();
+        for (java.util.Map.Entry<String, String> e : REMOVED_0_23.entrySet()) {
+            o.put(e.getKey(), "0.23.0 起移除：" + e.getValue());
+        }
+        for (String name : REMOVED_0_17) {
+            o.put(name, "0.17.0 起移除：QQ 内核查询接口不再向客户端暴露");
+        }
+        return o;
     }
 
     private JSONArray messageCreate(JSONObject p) throws Exception {
@@ -2950,7 +3018,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             try {
                 JSONObject o = new JSONObject();
                 long gid = Ref.asLong(qq.ref.get(gi, "groupCode"));
-                String name = Ref.asStr(qq.ref.get(gi, "groupName"));
+                String name = qq.groupName(gid);
                 rememberGroup(gid, name);
                 o.put("group_id", gid);
                 o.put("group_name", name);
@@ -3052,7 +3120,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (gi == null) throw new ApiError(1404, "group not found: " + groupId);
         JSONObject o = new JSONObject();
         o.put("group_id", Ref.asLong(qq.ref.get(gi, "groupCode")));
-        o.put("group_name", Ref.asStr(qq.ref.get(gi, "groupName")));
+        // 群名走 qq.groupNameWait()：内核 simple-info 的名字对某些群是空的，那里有兜底，
+        // 而且愿意等异步的群详情回来（单个群的显式查询，空名字会被当成实现端漏字段）。
+        o.put("group_name", qq.groupNameWait(groupId, 3000));
         o.put("member_count", Ref.asInt(qq.ref.get(gi, "memberCount")));
         o.put("max_member_count", Ref.asInt(qq.ref.get(gi, "maxMember")));
         int flag3 = Ref.asInt(qq.ref.get(gi, "groupFlagExt3"));
@@ -3497,6 +3567,28 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 }
             });
     private final java.util.Set<Long> selfSendPollScheduled = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    // 入站侧的计数。事件收不到时先看这几个：能区分「记录压根没进来」（回调计数不动）、
+    // 「进来了但没转成事件」（有计数没有 emit）与「转了但客户端没消费」（有 emit）。
+    private final java.util.concurrent.atomic.AtomicLong inRecv = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong inAdd = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong inUpdate = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong inGrayTip = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong inEmit = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong inNotice = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong inManualSelf = new java.util.concurrent.atomic.AtomicLong();
+
+    /** 记录里带不带灰条元素（elementType 8）——戳一戳、禁言、成员变动都从这儿来。 */
+    private boolean hasGrayTip(Object rec) {
+        try {
+            Object elements = qq.ref.get(Convert.unwrapRecord(rec), "elements");
+            if (!(elements instanceof List)) return false;
+            for (Object e : (List<?>) elements) {
+                if (e != null && Ref.asInt(qq.ref.get(e, "elementType")) == 8) return true;
+            }
+        } catch (Throwable ignore) { }
+        return false;
+    }
+
     private static final long OUTBOUND_MSG_TTL_MS = 120_000;
 
     private void rememberOutboundMsgId(long msgId) {
@@ -3679,6 +3771,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 emittedMsgIds.add(msgId);
                 if (emittedMsgIds.size() > 8000) emittedMsgIds.clear();
             }
+            inEmit.incrementAndGet();
+            if (!ev.optString("notice_type", "").isEmpty()) inNotice.incrementAndGet();
+            if (ev.optBoolean("manual_self", false)) inManualSelf.incrementAndGet();
             emitObEvent(ev);
             L.d("event -> " + ev.optString("post_type") + "/"
                     + ev.optString("message_type", ev.optString("notice_type"))
@@ -3691,6 +3786,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     @Override public void onRecvMsgs(List<?> records) {
+        if (records != null) inRecv.addAndGet(records.size());
         for (Object rec : records) {
             try {
                 int result = tryEmitInboundMsgInternal(rec, null);
@@ -3706,6 +3802,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     @Override public void onAddSendMsg(Object rec) {
         if (rec == null) return;
+        inAdd.incrementAndGet();
         try {
             int result = tryEmitInboundMsgInternal(rec, null);
             if (result == EMIT_SKIP_EMPTY || result == EMIT_SKIP_NULL) scheduleSelfSendEmit(rec);
@@ -3716,8 +3813,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     @Override public void onMsgUpdates(List<?> records) {
         if (records == null) return;
+        inUpdate.addAndGet(records.size());
         for (Object record : records) {
             try {
+                if (hasGrayTip(record)) inGrayTip.incrementAndGet();
                 emitReactionChanges(record);
                 // Updates also carry reactions and edits to old records. Only a self-authored
                 // candidate seen through add/recv can be a newly typed message. This prevents
@@ -4288,6 +4387,14 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("outbound_guard", outboundGuard.stats())
                 // QQ 自己的环境结论（只读探针）
                 .put("qsec", com.satori.qq.qq.EnvProbe.snapshot())
+                .put("inbound", new JSONObject()
+                        .put("recv", inRecv.get())
+                        .put("add", inAdd.get())
+                        .put("update", inUpdate.get())
+                        .put("gray_tip", inGrayTip.get())
+                        .put("emitted", inEmit.get())
+                        .put("notices", inNotice.get())
+                        .put("manual_self", inManualSelf.get()))
                 .put("outbound_guard_ok", true);
     }
 

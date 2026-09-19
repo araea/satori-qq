@@ -2582,6 +2582,115 @@ public final class QQClient {
         return groupInfoCache.get(groupCode);
     }
 
+    private static final String GROUP_INFO_SOURCE =
+            "com.tencent.qqnt.kernel.nativeinterface.GroupInfoSource";
+
+    /** 内核 simple-info 里名字为空的群，这里存向内核要回来的真名。 */
+    private final java.util.concurrent.ConcurrentHashMap<Long, String> groupNameDetail =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<Long> groupNameFetching =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * 群名。
+     *
+     * <p>内核的 {@code GroupSimpleInfo.groupName} 对某些群是空的——实测测试群
+     * 280183116 就是，{@code guild.list} 与 {@code guild.get} 一起读回来都是空。这时依次
+     * 退到 {@code remarkName} 和一次群详情查询。详情是异步的，第一次调用通常还拿不到，
+     * 拿回来之后进缓存，之后每次都有。
+     */
+    public String groupName(long groupCode) {
+        if (groupCode == 0) return "";
+        String name = infoName(groupInfoCache.get(groupCode));
+        if (!name.isEmpty()) return name;
+        String cached = groupNameDetail.get(groupCode);
+        if (cached != null) return cached;
+        // 只在确实认得的群上去问详情：未知 id 问一次也是白问。
+        if (groupInfoCache.containsKey(groupCode) && groupNameFetching.add(groupCode)) {
+            fetchGroupDetailName(groupCode);
+        }
+        return "";
+    }
+
+    /**
+     * 同 {@link #groupName}，但会给异步的详情查询最多 {@code timeoutMs} 的等待。
+     *
+     * <p>单个群的显式查询（{@code guild.get} / {@code channel.get}）用它：空名字看着像
+     * 实现端漏了字段，等一小会儿比让调用方自己重试友好。列表接口用异步版本，不该为了
+     * 一个群把整页拖住。
+     */
+    public String groupNameWait(long groupCode, long timeoutMs) {
+        String name = groupName(groupCode);
+        long deadline = System.currentTimeMillis() + Math.max(0, timeoutMs);
+        while (name.isEmpty() && System.currentTimeMillis() < deadline) {
+            String cached = groupNameDetail.get(groupCode);
+            if (cached != null) name = cached;
+            else if (!groupNameFetching.contains(groupCode)) break;   // 没在查了，等也没用
+            else try { Thread.sleep(100); } catch (InterruptedException e) { break; }
+        }
+        return name.isEmpty() ? groupName(groupCode) : name;
+    }
+
+    private String infoName(Object gi) {
+        if (gi == null) return "";
+        try {
+            String name = Ref.asStr(ref.get(gi, "groupName"));
+            if (name != null && !name.isEmpty()) return name;
+            String remark = Ref.asStr(ref.get(gi, "remarkName"));
+            return remark == null ? "" : remark;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** 向内核要一次群详情（异步），只要名字。失败就丢掉这次尝试，下次调用会再试。 */
+    private void fetchGroupDetailName(long groupCode) {
+        Thread t = new Thread(() -> {
+            try {
+                Object gs = getGroupService();
+                if (gs == null) return;
+                final CountDownLatch latch = new CountDownLatch(1);
+                final String[] found = new String[]{""};
+                Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, args) -> {
+                    if ("onResult".equals(m.getName()) && args != null && args.length >= 3
+                            && args[2] instanceof List) {
+                        for (Object item : (List<?>) args[2]) {
+                            String name = Ref.asStr(ref.get(item, "groupName"));
+                            if (name != null && !name.isEmpty()) { found[0] = name; break; }
+                        }
+                        latch.countDown();
+                    }
+                    return defOf(m.getReturnType());
+                });
+                ref.call(gs, "getGroupDetailInfo", groupCode, groupInfoSource(), cb);
+                if (latch.await(15, TimeUnit.SECONDS) && !found[0].isEmpty()) {
+                    groupNameDetail.put(groupCode, found[0]);
+                    L.i("group detail name " + groupCode + " = " + found[0]);
+                }
+            } catch (Throwable e) {
+                L.e("fetchGroupDetailName " + groupCode, e);
+            } finally {
+                groupNameFetching.remove(groupCode);
+            }
+        }, "pool-4-thread-3");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** {@code GroupInfoSource} 里挑一个常量：优先 KAIO，取不到就用第一个非 null 的。 */
+    private Object groupInfoSource() {
+        try {
+            Object[] constants = ref.cls(GROUP_INFO_SOURCE).getEnumConstants();
+            if (constants != null) {
+                for (Object o : constants) if (o != null && "KAIO".equals(String.valueOf(o))) return o;
+                for (Object o : constants) if (o != null) return o;
+            }
+        } catch (Throwable t) {
+            L.e("groupInfoSource", t);
+        }
+        return null;
+    }
+
     /** Resolve a uin to its QQNT uid via the profile service (synchronous). Empty on failure. */
     @SuppressWarnings("unchecked")
     public String resolveUid(long uin) {

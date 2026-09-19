@@ -58,24 +58,21 @@ plugins:
 | `port` | `3001` | 本地服务端口 |
 | `token` | 空 | HTTP 与 WebSocket 鉴权令牌 |
 | `status_notification` | `true` | 显示运行状态通知，点击切换到 QQ |
-| `foreground_keepalive` | `true` | 在线时以前台服务保持 QQ 主进程 |
 | `request_battery_exemption` | `true` | 首次在线时申请电池优化豁免 |
 | `wake_lock_control` | `true` | 在通知中提供唤醒锁开关 |
 | `wake_lock_auto` | `true` | 启动时自动获取唤醒锁 |
 | `wifi_sustain` | `true` | 有客户端连接时保持 Wi-Fi 锁 |
+| `manual_self_messages` | `true` | 把在 QQ 客户端里手打的消息也作为事件投递，作者是 `qq-client:{selfUin}` |
+| `manual_self_user_id` | 空 | 上面那个身份的 id；留空用 `qq-client:{selfUin}` |
+| `forward_mode` | `auto` | 合并转发的实现：`auto` / `native` / `fake` |
 | `media_retry_attempts` | `2` | 富媒体上传失败后的额外尝试次数 |
 | `verbose_logs` | `false` | 输出调试日志 |
-| `anti_detect` | `true` | Java 层环境检测处理 |
-| `maps_hide` | `true` | Native 层进程信息过滤 |
-| `block_turing_risk` | `true` | 停止 Turing 风控入口 |
-| `block_server_kick` | `true` | 停止本地强制下线处理；服务端会话失效时仍需重新登录 |
-| `fake_imei` / `fake_android_id` / `fake_serial` | 空 | 设备标识；留空用真实值，设置时应保持一致 |
 
 限频与排队的其余开关见示例文件。修改配置后重启 QQ。
 
 ## 排障
 
-强停或划掉 QQ 会停止服务。前台服务与唤醒锁能降低进程被回收或冻结的概率。两者都不能阻止系统在息屏期间断网。
+强停或划掉 QQ 会停止服务。唤醒锁能降低进程被回收或冻结的概率，但不能阻止系统在息屏期间断网。
 
 锁屏后文字能发而图片、合并转发失败，是网络问题。文字只需在既有长连接上发一个包。富媒体上传要新建连接并持续传输。
 

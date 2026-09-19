@@ -210,36 +210,17 @@ async function main() {
   let originalName = await readNameFromGet();
   if (!originalName) originalName = await readNameFromList();
 
-  // 改名是**默认不跑**的破坏性用例：群名是对外可见、且清掉就补不回来的东西，而这里过去真把
-  // 测试群改成过空的（原名读成空串、还原写回空串）。要跑就显式 SATORI_DESTRUCTIVE=1。
-  if (process.env.SATORI_DESTRUCTIVE === '1') await check('channel.update (改名并还原)', async () => {
-    if (!originalName) throw new Error('读不到当前群名，跳过以免改坏');
-    const temp = originalName + '·测试';
-    // 读回等缓存跟上；读到空串也当成「还没跟上」，绝不当成目标值。
-    const waitForName = async (want) => {
-      for (let i = 0; i < 12; i++) {
-        await delay(1000);
-        const list = await readNameFromList();
-        const one = await readNameFromGet();
-        if (list === want || one === want) return true;
-      }
-      return false;
-    };
-    let renamed = false;
-    try {
-      await client.callOk('channel.update', { channel_id: GROUP, data: { name: temp } });
-      renamed = true;
-      if (!await waitForName(temp)) throw new Error('改名没读到生效');
-    } finally {
-      // 无论校验成功与否都要还原：上一次失败就是漏了这一步，群里留下一个没名字的群。
-      if (renamed) {
-        await client.callOk('channel.update', { channel_id: GROUP, data: { name: originalName } });
-        if (!await waitForName(originalName)) {
-          throw new Error('还原后没读到 ' + JSON.stringify(originalName) + '，请手工确认群名');
-        }
-      }
-    }
-    return originalName + ' -> ' + temp + ' -> ' + originalName;
+  // 改名能力已移除（2026-09-19，理由见 QQClient 里那段注释）。这条用例现在反过来断言
+  // 「本实现端不写群名」：给它一个名字必须明确拒绝，而且**群名不许变**。
+  await check('channel.update 拒绝改群名', async () => {
+    const before = String((await client.callOk('guild.get', { guild_id: GROUP }))?.name || '');
+    if (!before) throw new Error('群里读不到群名，没法判断有没有被改');
+    const message = await expectFailure(client, 'channel.update',
+      { channel_id: GROUP, data: { name: before + '·不该生效' } }, 400, 'not supported');
+    await delay(1500);
+    const after = String((await client.callOk('guild.get', { guild_id: GROUP }))?.name || '');
+    if (after !== before) throw new Error('群名被改了：' + JSON.stringify(before) + ' -> ' + JSON.stringify(after));
+    return message;
   });
 
   // ---- 全员禁言（同样默认不跑：它会打断群里所有人的发言） ----
@@ -251,7 +232,7 @@ async function main() {
       return 'ok';
     });
   } else {
-    console.log('skip channel.update / channel.mute（破坏性，SATORI_DESTRUCTIVE=1 才跑）');
+    console.log("skip channel.mute（破坏性，SATORI_DESTRUCTIVE=1 才跑）");
   }
 
   // ---- 成员级动作：目标取群里除自己外的第一个成员，做完还原 ----

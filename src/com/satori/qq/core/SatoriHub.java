@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.14";
+    public static final String APP_VERSION = "0.23.15";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -1460,9 +1460,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String name = data.optString("name", "").trim();
         String avatar = data.optString("avatar", "").trim();
         if (gid == 0) throw new ApiError(1400, "missing channel_id");
-        if (name.isEmpty() && avatar.isEmpty())
-            throw new ApiError(1400, "missing channel name or avatar");
-        if (!name.isEmpty()) requireOp(qq.setGroupName(gid, name));
+        if (!name.isEmpty())
+            throw new ApiError(1400, "group name change is not supported by this implementation; change it in QQ");
+        if (avatar.isEmpty())
+            throw new ApiError(1400, "missing channel avatar");
         if (!avatar.isEmpty()) {
             java.io.File file = resolveAvatarFile(avatar);
             requireOp(qq.setGroupHeader(gid, file.getAbsolutePath()));
@@ -1471,6 +1472,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             try { name = groupInfoJson(gid).optString("group_name"); }
             catch (Exception ignore) { name = ""; }
         }
+        // 名字只用于事件（改了头像也得把当前名字带上），本实现端不写群名。
         emitGuildChannelChange("updated", gid, name);
         return new JSONObject();
     }
@@ -4303,8 +4305,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private volatile int pendingUinTicks = 0;
 
     private volatile long lastNameGuardMs;
-    private long nameRestores;
-    private long nameRestoreWindowStart;
     private volatile String nameGuardDiag = "idle";
 
     /** 名字守卫的最近一次结论，healthz / internal/status 里看得到。 */
@@ -4313,11 +4313,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     /**
      * 群名守卫。
      *
-     * <p>2026-09-19 起，测试群的名字反复变空，而 `satori-writes.log` 里**没有任何写入记录**：
-     * 不是我们的改名路径干的，也一直没抓到是谁。这里做两件确定有用的事——
-     * 先用**全量刷新**把「本地缓存没名字」与「真的没名字」分开（前者刷新就回来了，一个字也不写），
-     * 刷新后还是空，就用我们见过的那个名字写回去，并记进审计。每小时最多恢复 2 次：
-     * 万一有个未知的清除者在打拉锯，日志里看得见，也不至于变成无限改名。
+     * <p>2026-09-19 起，群名反复变空而 `satori-writes.log` 里没有任何写入记录。改名能力后来
+     * 整个删掉了（见 QQClient），所以现在这层只做**观察与归因**：用一次全量刷新把「本地缓存没名字」
+     * 与「真的没名字」分开（前者刷新就回来了，实测修好过 818965288），刷新后仍是空就记一行
+     * `name_guard=empty:<群>(见过=<名字>)` 留在 healthz 里，供事后对照时间线，一个字也不写。
      */
     private void nameGuardTick(long now) {
         if (now - lastNameGuardMs < 120_000) return;
@@ -4336,10 +4335,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }
         if (empty.isEmpty()) return;
         qq.refreshGroupList();
-        if (nameRestoreWindowStart == 0 || now - nameRestoreWindowStart > 3_600_000L) {
-            nameRestoreWindowStart = now;
-            nameRestores = 0;
-        }
         StringBuilder d = new StringBuilder();
         for (Long gid : empty) {
             if (!qq.groupName(gid).isEmpty()) {
@@ -4347,20 +4342,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 continue;   // 只是本地缓存空了，刷新就回来了，不写
             }
             String want = qq.knownGroupName(gid);
-            if (!cfg.restoreEmptyGroupName) {
-                // 默认只观察。名字变空更可能是平台侧处置（见 Cfg.restoreEmptyGroupName），
-                // 跟平台抢着改回去不是实现端该做的事。
-                d.append("empty:").append(gid).append("(见过=").append(want)
-                        .append("，restore_empty_group_name=false 不写)").append(' ');
-                continue;
-            }
-            if (nameRestores >= 2) {
-                d.append("budget-used:").append(gid).append(' ');
-                continue;
-            }
-            QQClient.OpResult r = qq.setGroupName(gid, want);
-            nameRestores++;
-            d.append("restored:").append(gid).append('=').append(want).append('/').append(r.describe()).append(' ');
+            // 只观察、不写：本实现端已经没有任何写群名的路径（见 QQClient 里「改名能力已移除」），
+            // 所以「名字变空」一定不是本进程干的；这里只把「哪个群、我们见过什么名字」记下来。
+            d.append("empty:").append(gid).append("(见过=").append(want).append(')').append(' ');
         }
         nameGuardDiag = d.length() == 0 ? "idle" : d.toString().trim();
     }

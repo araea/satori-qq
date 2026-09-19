@@ -40,13 +40,6 @@ public final class Cfg {
     public volatile int outboundCircuitOpenMs = 120000;
     /** Deliver messages typed in the QQ UI to Koishi as a distinct operator identity. */
     public volatile boolean manualSelfMessages = true;
-    /**
-     * 群名变空时是否自动写回我们见过的名字。默认关：名字变空更可能是**平台侧**的处置
-     * （2026-09-19 测试群反复变空，satori-writes.log 里没有任何写入记录；同一天的群设置类操作
-     * 频繁撞上 code=1010 / 120101154 的限流），跟平台抢着改回去不是实现端该做的事。
-     * 打开后每小时最多恢复 2 次。
-     */
-    public volatile boolean restoreEmptyGroupName = false;
     /** Empty uses the stable, non-QQ id "qq-client:{selfUin}". */
     public volatile String manualSelfUserId = "";
     /** Merge-forward strategy: "auto" (native first, fake fallback), "native" (self-chat
@@ -95,7 +88,6 @@ public final class Cfg {
                 c.mediaRetryBudgetMs = bounded(o.optInt("media_retry_budget_ms", c.mediaRetryBudgetMs), 0, 300000);
                 c.outboundCircuitOpenMs = bounded(o.optInt("outbound_circuit_open_ms", c.outboundCircuitOpenMs), 1000, 1800000);
                 c.manualSelfMessages = o.optBoolean("manual_self_messages", c.manualSelfMessages);
-                c.restoreEmptyGroupName = o.optBoolean("restore_empty_group_name", c.restoreEmptyGroupName);
                 c.manualSelfUserId = o.optString("manual_self_user_id", c.manualSelfUserId).trim();
                 c.forwardMode = normalizeForwardMode(o.optString("forward_mode", c.forwardMode));
                 L.i("Config loaded from " + p + " (port=" + c.port + ", auth=" + (c.token.isEmpty()?"off":"on") + ")");

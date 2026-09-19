@@ -2167,58 +2167,15 @@ public final class QQClient {
             ref.call(gs, "modifyMemberRole", groupCode, uid, role, cb);
         });
     }
-    /**
-     * 改群名。
-     *
-     * <p>**空名字一律拒绝**：那条路就是「把群名清掉」，而清掉一个群名是不可逆的破坏——2026-09-19
-     * 测试群被清空过一次（客户端 API 与测试都可能走到这条路上），之后在这里挡死：调用方要空名字
-     * 就直接失败，不给内核发任何东西。
-     */
-    public OpResult setGroupName(long groupCode, String name) {
-        OpResult refused = new OpResult();
-        final String wanted = name == null ? "" : name.trim();
-        if (wanted.isEmpty()) {
-            refused.msg = "refusing to set an empty group name";
-            audit("groupName refused empty group=" + groupCode);
-            return refused;
-        }
-        final boolean normalMember = isNormalGroupMember(groupCode);
-        OpResult primary = awaitGroup(OPERATE_CB, "modifyGroupName",
-                (gs, cb) -> ref.call(gs, "modifyGroupName", groupCode, wanted, normalMember, cb));
-        audit("groupName modifyGroupName group=" + groupCode
-                + " name=" + wanted + " -> " + primary.describe());
-        if (!primary.ok()) return primary;
-        if (refreshAndVerifyGroupName(groupCode, wanted)) return primary;
-
-        // QQ 9.3.55 can acknowledge modifyGroupName after only updating the conversation-side
-        // TroopInfo cache. The group detail page then still sees an empty groupName. Persist the
-        // same field through the filtered V2 detail API, so unrelated group settings are untouched.
-        //
-        // 这条兜底也是唯一一处「按字段写入」的路径：写进去的字段名对不上时 put 会静默失败，
-        // 然后带着一个空的 groupName 发出去 = 把群名清空。所以下面先读回来确认值真的在，
-        // 不在就整条不发，宁可报错。
-        OpResult detail = awaitGroup(OPERATE_CB, "modifyGroupDetailInfoV2(groupName)", (gs, cb) -> {
-            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupModifyInfoReq");
-            ref.put(req, "groupCode", groupCode);
-            Object filter = ref.get(req, "filter");
-            Object info = ref.get(req, "modifyInfo");
-            if (filter == null || info == null)
-                throw new IllegalStateException("GroupModifyInfoReq fields unavailable");
-            ref.put(filter, "groupName", 1);
-            ref.put(info, "groupName", wanted);
-            if (!wanted.equals(Ref.asStr(ref.get(info, "groupName"))))
-                throw new IllegalStateException("GroupModifyInfo.groupName did not take " + wanted);
-            ref.call(gs, "modifyGroupDetailInfoV2", req, 0, cb);
-        });
-        audit("groupName modifyGroupDetailInfoV2 group=" + groupCode
-                + " name=" + wanted + " -> " + detail.describe());
-        if (!detail.ok()) return detail;
-        if (refreshAndVerifyGroupName(groupCode, wanted)) return detail;
-
-        OpResult failed = new OpResult();
-        failed.msg = "group name write was acknowledged but read-back did not match";
-        return failed;
-    }
+    // 改名能力已移除（2026-09-19）。
+    //
+    // 对照 NapCat（packages/napcat-core/apis/group.ts 的 setGroupName）：它们只调一次内核的
+    // `modifyGroupName(group, name, isNormalMember)`，result=1287 时翻一下 isNormalMember 再来一次，
+    // **没有第二条写入路径**。我们这边多了一条 `modifyGroupDetailInfoV2` 的兜底写（原意是绕开
+    // QQ 9.3.55「只更新会话缓存、群资料页仍读不到名字」的毛病），于是一次改名会在服务端产生两次
+    // 群资料修改——正好是改名频率限制（实测 code=1010）与平台侧处置的触发形状。名字被清空这件事
+    // 再也抓不到本地写入之后，用户同意直接去掉这个功能：Satori 的 `channel.update` 现在只支持换
+    // 群头像，`data.name` 一律拒绝。要改群名请在 QQ 客户端里改。
 
     private static final String AUDIT_FILE =
             "/data/data/com.tencent.mobileqq/files/satori-writes.log";
@@ -2238,30 +2195,6 @@ public final class QQClient {
                     .format(new java.util.Date()) + " " + line + "\n");
             w.close();
         } catch (Throwable ignore) { }
-    }
-
-    /** Matches QQ 9.3.55 TroopOperationRepo: the boolean is isNormalMember. */
-    private boolean isNormalGroupMember(long groupCode) {
-        Object info = groupInfo(groupCode);
-        if (info == null) return true;
-        try {
-            Object role = ref.get(info, "memberRole");
-            String roleName;
-            if (role instanceof Enum) roleName = ((Enum<?>) role).name();
-            else roleName = role == null ? "" : String.valueOf(ref.call(role, "name"));
-            roleName = roleName.toUpperCase(java.util.Locale.ROOT);
-            return !(roleName.contains("OWNER") || roleName.contains("ADMIN"));
-        } catch (Throwable t) {
-            L.e("read group memberRole " + groupCode, t);
-            return true;
-        }
-    }
-
-    private boolean refreshAndVerifyGroupName(long groupCode, String wanted) {
-        refreshGroupList();
-        Object info = groupInfoCache.get(groupCode);
-        if (info == null) return false;
-        return wanted.equals(Ref.asStr(ref.get(info, "groupName")));
     }
 
     /** NT IKernelGroupService.setHeader(groupCode, localPath). Owner/admin only. */

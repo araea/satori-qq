@@ -1,4 +1,4 @@
-## 0.23.14 · 知弦
+## 0.23.15 · 知弦
 
 ### 接口自述与真实能力对齐
 
@@ -22,6 +22,24 @@
 
 顺带把普通表情的 `faceType` 也按同一份实现的选法补齐：id ≥ 222 用 2，小于 222 用 1。
 先前一律发 1，id 大于 222 的表情在 QQ 里是画不出来的。
+
+### 去掉改名能力：`channel.update` 只换群头像
+
+对照 NapCat 之后决定删掉这个功能（用户同意「做不好可以不做」）：
+
+- **NapCat 只有一条写路径**：`session.getGroupService().modifyGroupName(group, name, isNormalMember)`，
+  只在 `result=1287` 时把 `isNormalMember` 翻成 true 再来一次（`packages/napcat-core/apis/group.ts`）。
+- **我们有两条**：`modifyGroupName` 之后还有一条 `modifyGroupDetailInfoV2` 兜底（原意是绕开
+  QQ 9.3.55「只更新会话缓存、群资料页读不到名字」的毛病）。审计日志实测证实了后果——
+  18:02 那次改名发了两行：`modifyGroupName ... code=0` 紧跟 `modifyGroupDetailInfoV2 ... code=0`。
+  一次改名在服务端产生两次群资料修改，正是改名频率限制（当天实测 `code=1010`）与平台侧处置的触发形状。
+- 名字被清空始终没能在本地侧抓到写入（审计里没有记录），而这个功能是唯一能碰群名的东西，
+  收益（自动改群名）远小于风险（群名被平台处置、账号被限流）。**直接删掉**：
+  `channel.update` 的 `data.name` 一律回 400 `group name change is not supported by this implementation`，
+  要改群名请在 QQ 客户端里改；换群头像的能力保留。
+- 名字守卫因此只剩**观察**：发现名字为空先全量刷新（本地缓存空会自动回来，实测修好过 818965288），
+  仍为空就记一行 `name_guard=empty:<群>(见过=<名字>)`。配置项 `restore_empty_group_name` 已删除。
+- 写巡检里那条改名用例反过来断言「拒绝改群名，且群名不许变」。
 
 ### 测试群 280183116 已解散；回归脚本改为必须显式指定测试群
 

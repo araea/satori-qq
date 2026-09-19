@@ -100,8 +100,14 @@ async function main() {
 
   await check('reaction.list', async () => {
     const list = await client.callOk('message.list', { channel_id: GROUP, limit: 1 });
-    const mid = list?.data?.[0]?.id;
-    if (!mid) throw new Error('群里没有消息可查表态');
+    let mid = list?.data?.[0]?.id;
+    if (!mid) {
+      // 新群里可能一条消息都没有；表态是挂在消息上的，先造一条（测试群，允许发消息）。
+      const sent = await client.callOk('message.create', { channel_id: GROUP, content: 'ayjx-smoke 表态探针' });
+      const arr = Array.isArray(sent) ? sent : [sent];
+      mid = arr[0]?.id;
+    }
+    if (!mid) throw new Error('群里没有消息、也发不出一条');
     const o = await client.callOk('reaction.list', { channel_id: GROUP, message_id: String(mid), emoji_id: '4' });
     if (!Array.isArray(o.data)) throw new Error('data 不是数组');
     return 'users=' + o.data.length;

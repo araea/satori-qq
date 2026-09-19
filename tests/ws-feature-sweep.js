@@ -23,14 +23,30 @@ function record(name, ok, detail) {
   console.log((ok ? 'ok   ' : 'FAIL ') + name + (ok || detail === undefined ? '' : '  ' + String(detail).slice(0, 200)));
 }
 
+/**
+ * 出站护栏说「等一下再试」时等着重试。
+ *
+ * 三种都会带 `retry after Ns`：熔断打开、一分钟写额度用尽、在线稳定期。额度是按分钟窗口算的，
+ * 巡检里写操作密集，一头撞上是常态（2026-09-19：紧跟 ayjx 冒烟之后跑，前几项全被额度挡下，
+ * 看着像实现端坏了）。按它给的秒数重试，最多三轮。
+ */
 async function check(name, fn) {
-  try {
-    const detail = await fn();
-    record(name, true, detail);
-    return detail;
-  } catch (error) {
-    record(name, false, error && error.message || error);
-    return undefined;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const detail = await fn();
+      record(name, true, detail);
+      return detail;
+    } catch (error) {
+      const message = String((error && error.message) || error);
+      const hit = /retry after (\d+)s/.exec(message);
+      if (!hit || attempt >= 2) {
+        record(name, false, message);
+        return undefined;
+      }
+      const wait = (parseInt(hit[1], 10) + 2) * 1000;
+      console.log('       (' + message.slice(0, 60) + ' → waiting ' + Math.round(wait / 1000) + 's)');
+      await delay(wait);
+    }
   }
 }
 
@@ -321,7 +337,7 @@ async function main() {
     return JSON.stringify(o).slice(0, 120);
   });
 
-  await check('internal/honor_display_read', async () => {
+  if (process.env.SATORI_DESTRUCTIVE === '1') await check('internal/honor_display_read', async () => {
     const o = await client.callOk('internal/honor_display', { guild_id: GROUP, user_id: selfId });
     if (!o) throw new Error('空响应');
     return JSON.stringify(o).slice(0, 120);

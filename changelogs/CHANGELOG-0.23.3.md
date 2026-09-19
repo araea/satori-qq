@@ -1,4 +1,4 @@
-## 0.23.2 · 知弦
+## 0.23.3 · 知弦
 
 ### 接口自述与真实能力对齐
 
@@ -11,8 +11,14 @@
 
 内核的 `GroupSimpleInfo.groupName` 对某些群是空的（实测测试群 `280183116` 就是，`guild.list`
 与 `guild.get` 一起读回来都是空），于是 `guild.get` / `channel.get` 的名字字段整个是缺的。
-现在依次退到 `remarkName` 与一次群详情查询：单个群的显式查询会最多等 3 秒拿到详情里的真名，
-列表接口仍然走异步（不为一个群把整页拖住），拿回来之后进缓存。
+现在依次退到 `remarkName` 与群详情里的真名，且会话一就绪就自己预热一批（数量封顶）：
+单个群的显式查询最多等 3 秒，列表接口仍走异步，不为一个群把整页拖住。
+
+`getGroupDetailInfo` 的 `IOperateCallback` 只有 `onResult(int, String)`——**回调里没有值**，
+名字落在内核缓存里；能读到值的是 `batchQueryCachedGroupDetailInfo` 的
+`onResult(ArrayList<GroupDetailInfo>)`。所以是「先读缓存，空了拉一次，再读缓存」两步。
+第一版只调前者并指望回调带列表，于是 latch 永不释放、每次都超时——`internal/status` 现在有
+`group_name_probe` 记着最近一次的过程，别再犯这种「回调形状猜错就静默超时」的错。
 
 ### 入站计数
 

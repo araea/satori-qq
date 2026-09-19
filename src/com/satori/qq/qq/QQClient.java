@@ -135,54 +135,117 @@ public final class QQClient {
      * 反射问一次内核会话；任何一步拿不到都返回 null，并把卡在哪一步记进 {@link #sessionProbe}
      * （healthz 的 session 段直接看得到，不用翻 logcat）。
      */
+    /**
+     * 反射问一次内核会话。
+     *
+     * <p>不写死某一条反射路径：QQ 9.3.65 上 {@code AppRuntime.getRuntimeService(Class, String)}
+     * 已经不存在了（2026-09-19 实测 NoSuchMethodError）。所以按「先从 runtime 要 session，再要
+     * kernel service，再从 service 要 session」三段走，每段都先试名字，名字对不上就扫类上无参、
+     * 返回类型名匹配的方法。任何一步失败都把现场记进 {@link #sessionProbe}。
+     */
     private Object peekSession() {
-        try {
-            Object runtime = appRuntime();
-            if (runtime == null) { sessionProbe = "appRuntime=null"; return null; }
-            Object kernel;
+        StringBuilder log = new StringBuilder();
+
+        Object runtime = appRuntime();
+        if (runtime == null) {
+            log.append("runtime=null;");
+            Object mobileqq;
             try {
-                kernel = ref.call(runtime, "getRuntimeService", ref.cls(KERNEL_SERVICE), "");
+                mobileqq = ref.callS(MOBILEQQ, "getMobileQQ");
             } catch (Throwable t) {
-                sessionProbe = "getRuntimeService: " + t;
+                sessionProbe = "getMobileQQ: " + t;
                 return null;
             }
-            if (kernel == null) { sessionProbe = "runtimeService=null"; return null; }
-            try {
-                Object s = ref.call(kernel, "getWrapperSession");
-                if (s != null) { sessionProbe = "ok/getWrapperSession"; return s; }
-            } catch (Throwable t) {
-                sessionProbe = "getWrapperSession: " + t;
+            if (mobileqq == null) { sessionProbe = "getMobileQQ=null"; return null; }
+            try { runtime = ref.call(mobileqq, "peekAppRuntime"); }
+            catch (Throwable t) { log.append("peekAppRuntime:").append(t).append(';'); }
+            if (runtime == null) {
+                try { runtime = ref.get(mobileqq, "mAppRuntime"); }
+                catch (Throwable t) { log.append("mAppRuntime:").append(t).append(';'); }
             }
-            // 方法名对不上时（QQ 侧改名/换成 Kotlin 属性）扫一遍实现类：无参、返回类型名里带
-            // IQQNTWrapperSession 的都算候选。只读，不改任何状态。
-            Object scanned = scanForSession(kernel);
-            if (scanned != null) return scanned;
-            if (sessionProbe.startsWith("ok/")) sessionProbe = "getWrapperSession=null";
-            return null;
+            if (runtime == null) {
+                sessionProbe = log + " on " + mobileqq.getClass().getName();
+                return null;
+            }
+        }
+
+        // 1) runtime 自己就可能是 session 的持有者
+        Object direct = scanNoArgReturning(runtime, "IQQNTWrapperSession");
+        if (direct != null) { sessionProbe = "ok/runtime." + scanHit; return direct; }
+
+        // 2) 要 kernel service：先按名字，再扫
+        Object kernel = null;
+        Throwable namedFailure = null;
+        try {
+            kernel = ref.call(runtime, "getRuntimeService", ref.cls(KERNEL_SERVICE), "");
         } catch (Throwable t) {
-            sessionProbe = "probe: " + t;
+            namedFailure = t;
+            try { kernel = ref.call(runtime, "getRuntimeService", ref.cls(KERNEL_SERVICE)); }
+            catch (Throwable ignored) { }
+        }
+        if (kernel == null) kernel = scanNoArgReturning(runtime, "IKernelService");
+        if (kernel == null) {
+            sessionProbe = log + "no-kernel-service(" + runtime.getClass().getName() + ")"
+                    + (namedFailure == null ? "" : " getRuntimeService:" + namedFailure)
+                    + " | candidates=" + describeMethods(runtime.getClass(), "runtimeservice");
             return null;
         }
+
+        // 3) 从 service 要 session
+        try {
+            Object s = ref.call(kernel, "getWrapperSession");
+            if (s != null) { sessionProbe = "ok/getWrapperSession"; return s; }
+        } catch (Throwable t) {
+            log.append("getWrapperSession:").append(t).append(';');
+        }
+        Object scanned = scanNoArgReturning(kernel, "IQQNTWrapperSession");
+        if (scanned != null) { sessionProbe = "ok/service." + scanHit; return scanned; }
+        sessionProbe = log + "no-session on " + kernel.getClass().getName()
+                + " | candidates=" + describeMethods(kernel.getClass(), "session");
+        return null;
     }
 
-    private Object scanForSession(Object kernel) {
-        StringBuilder seen = new StringBuilder();
-        for (Class<?> c = kernel.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+    private volatile String scanHit = "";
+
+    /** 扫一个类（含父类）上「无参 + 返回类型名以 suffix 结尾」的方法，返回第一个非 null 结果。 */
+    private Object scanNoArgReturning(Object target, String suffix) {
+        scanHit = "";
+        StringBuilder errors = new StringBuilder();
+        for (Class<?> c = target.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
             for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
                 if (m.getParameterCount() != 0) continue;
-                if (!m.getReturnType().getName().endsWith("IQQNTWrapperSession")) continue;
+                if (!m.getReturnType().getName().endsWith(suffix)) continue;
                 try {
                     m.setAccessible(true);
-                    Object s = m.invoke(kernel);
-                    if (s != null) { sessionProbe = "ok/scan:" + m.getName(); return s; }
+                    Object v = m.invoke(target);
+                    if (v != null) { scanHit = m.getName(); return v; }
                 } catch (Throwable t) {
-                    seen.append(m.getName()).append(':').append(t.getClass().getSimpleName()).append(' ');
+                    if (errors.length() < 200) errors.append(m.getName()).append(':')
+                            .append(t.getClass().getSimpleName()).append(' ');
                 }
             }
         }
-        sessionProbe = (sessionProbe.startsWith("ok/") ? sessionProbe : sessionProbe)
-                + (seen.length() == 0 ? " | no-candidate" : " | scan:" + seen);
+        scanHit = "scan-empty" + (errors.length() == 0 ? "" : "[" + errors + "]");
         return null;
+    }
+
+    /** 把一个类（含父类）上名字含 {@code filter} 的方法签名拼成一行，给 healthz 看。 */
+    private static String describeMethods(Class<?> cls, String filter) {
+        StringBuilder b = new StringBuilder();
+        for (Class<?> c = cls; c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                if (!m.getName().toLowerCase().contains(filter)) continue;
+                if (b.length() > 400) { b.append("..."); return b.toString(); }
+                b.append(m.getName()).append('(');
+                Class<?>[] p = m.getParameterTypes();
+                for (int i = 0; i < p.length; i++) {
+                    if (i > 0) b.append(',');
+                    b.append(p[i].getSimpleName());
+                }
+                b.append(")->").append(m.getReturnType().getSimpleName()).append(' ');
+            }
+        }
+        return b.length() == 0 ? "none" : b.toString();
     }
 
     private volatile boolean listenerPollerStarted;

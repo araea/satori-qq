@@ -33,17 +33,22 @@ sleep 20
     logcat -d -s SatoriZygisk Q.Kernel 2>&1 | tail -250
 } >> "$OUT"
 
-for i in $(seq 1 45); do
-    body=$(curl -s --max-time 3 http://127.0.0.1:3001/healthz 2>/dev/null)
-    if [ -n "$body" ]; then
-        {
-            echo
-            echo "=== healthz at $(date) ==="
-            echo "$body"
-        } >> "$OUT"
-        break
-    fi
-    sleep 4
+# healthz 采四次：开机时用户还没解锁，管理页 provider 要等解锁后才通，
+# 单采一次会看到 provider-unavailable 的瞬时态。
+for round in 1 2 3 4; do
+    for i in $(seq 1 30); do
+        body=$(curl -s --max-time 3 http://127.0.0.1:3001/healthz 2>/dev/null)
+        if [ -n "$body" ]; then
+            {
+                echo
+                echo "=== healthz round $round at $(date) ==="
+                echo "$body"
+            } >> "$OUT"
+            break
+        fi
+        sleep 4
+    done
+    sleep 45
 done
 
 logcat -d -s SatoriZygisk Q.Kernel > "$LOG" 2>&1

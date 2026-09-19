@@ -8,12 +8,14 @@
 
 - Android 8.0 及以上
 - QQ `com.tencent.mobileqq`
-- 支持 libxposed API 102 的框架（LSPosed 2.x 起）
+- Zygisk Next（模块由它注入，不需要 LSPosed 或任何 Xposed 框架）
 
 ## 安装
 
-0.22.0 起不是 Xposed 模块：注入由自带的 Zygisk 模块完成（引擎也是自带的，进程里不需要任何
-框架在场——框架在场会让 QQ 的人脸验证失败）。
+不是 Xposed 模块：注入由自带的 Zygisk 模块完成，进程里不需要任何框架在场——框架在场会让 QQ
+的人脸验证失败。
+
+0.23.0 起进程内**不挂钩子引擎**：引导、内核会话与回包通道都走 JNI 层，一条 ArtMethod 都不改写。
 
 1. 安装发布包里的 `SatoriQQ.apk`（管理界面与设置接口）
 2. 把 `SatoriQQ-module.zip` 作为 Magisk / KernelSU 模块刷入，或解包后放到
@@ -38,7 +40,7 @@ plugins:
 
 ## 配置
 
-首次使用按文件或默认值运行。管理页保存后，页面中的六项设置在 QQ 下次启动时覆盖文件同名项，高级选项继续按文件配置。「使用文件配置」可解除页面覆盖，同样在下次启动生效。
+首次使用按文件或默认值运行。管理页保存后，页面中的设置在 QQ 下次启动时覆盖文件同名项，高级选项继续按文件配置。「使用文件配置」可解除页面覆盖，同样在下次启动生效。
 
 文件按顺序读取，取第一份有效配置：
 
@@ -99,9 +101,11 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 ./test.sh
 ```
 
-模块按 `io.github.libxposed:api:102.0.0` 构建，该依赖只用于编译；`build.sh` 与 `test.sh` 会在缺少时从 Maven Central 取到 `libs/libxposed-api-102.jar`。产物为 `build/SatoriQQ.apk`。
+模块不含任何第三方原生依赖：`native/satori.cpp` 用 Termux 的 clang 直接编译，dex 用 `.incbin`
+内嵌进 `.so`，产物的 NEEDED 只有 `liblog/libdl/libm/libc`。产物为 `build/SatoriQQ.apk` 与
+`build/SatoriQQ-module.zip`。
 
-`test.sh` 先跑 JVM 单测（含 libxposed 兼容层）。真机巡检脚本需要 QQ 已上线，入口在 `tests/`：
+`test.sh` 先跑 JVM 单测（含 `Reflect` 反射层的语义测试）。真机巡检脚本需要 QQ 已上线，入口在 `tests/`：
 
 ```sh
 node tests/ws-health.js             # 健康与自检

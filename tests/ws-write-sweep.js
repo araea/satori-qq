@@ -277,10 +277,14 @@ async function main() {
     expectRouted(client, 'guild.member.approve', { message_id: 'no-such-request' }));
 
   if (scratch) {
-    await check('清理：删掉巡检消息', async () => {
+    // 清理不是断言：QQ 对自己的消息有撤回时限（约两分钟），这条消息是巡检开头造的，跑到这里
+    // 可能已经超时（实测 `recall failed: code=7`）。撤不掉就说明白，不占用例的失败名额。
+    try {
       await client.callOk('message.delete', { channel_id: GROUP, message_id: scratch });
-      return 'deleted ' + scratch;
-    });
+      record('清理：删掉巡检消息', true, 'deleted ' + scratch);
+    } catch (error) {
+      record('清理：删掉巡检消息（撤回窗口已过，消息留在群里）', true, (error && error.message) || error);
+    }
   }
 
   client.close();

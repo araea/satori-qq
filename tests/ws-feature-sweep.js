@@ -194,6 +194,7 @@ async function main() {
   // ---- 写项：发消息、回读、撤回 ----
   const stamp = 'sweep-' + Date.now();
   let messageId = null;
+  let recallId = null;
   await check('message.create', async () => {
     const sent = await client.callOk('message.create', { channel_id: GROUP, content: stamp });
     const arr = Array.isArray(sent) ? sent : [sent];
@@ -283,18 +284,24 @@ async function main() {
     return 'ok';
   });
 
+  // 撤回要**当场**做：QQ 对自己的消息有撤回时限（约两分钟），巡检跑到这一步时最早那条
+  // 已经踩线了——2026-09-19 实测报 `recall failed: code=7`，那是服务端拒绝，不是实现端的问题。
+  // 所以这里现发一条、立刻撤，撤回事件也认这一条。
   await check('message.delete', async () => {
-    if (!messageId) throw new Error('上一步没发出消息');
-    await client.callOk('message.delete', { channel_id: GROUP, message_id: messageId });
-    return 'deleted ' + messageId;
+    const fresh = await client.callOk('message.create', { channel_id: GROUP, content: stamp + '-recall' });
+    const arr = Array.isArray(fresh) ? fresh : [fresh];
+    if (!arr.length || !arr[0].id) throw new Error('没有返回消息 id: ' + JSON.stringify(fresh).slice(0, 160));
+    recallId = String(arr[0].id);
+    await client.callOk('message.delete', { channel_id: GROUP, message_id: recallId });
+    return 'deleted ' + recallId;
   });
 
   // 与「发送回声」不同：撤回是真实的事件投递路径，自己撤回也会收到 message-deleted。
   // （实测 2026-09-19：发送回声去重、撤回不去重，两条路各管各的。）
   await check('event.self_recall_emitted', async () => {
-    if (!messageId) throw new Error('上一步没发出消息');
+    if (!recallId) throw new Error('上一步没撤回消息');
     const ev = await client.waitFor(
-      (e) => e.type === 'message-deleted' && String(e.message?.id || e.id) === messageId,
+      (e) => e.type === 'message-deleted' && String(e.message?.id || e.id) === recallId,
       15000, 'message-deleted');
     if (String(ev.channel?.id) !== GROUP) throw new Error('channel=' + ev.channel?.id);
     return 'message=' + (ev.message?.id || ev.id);

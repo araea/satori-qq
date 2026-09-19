@@ -1,37 +1,35 @@
 // 知弦的 Zygisk 原生模块。
 //
-// 这个 .so 由 Zygisk Next 直接加载进 QQ 的每个进程（main / :MSF ...）。它自带 ART hook 引擎
-// （LSPlant，静态链接）与内联钩子后端（Dobby，静态链接），不需要任何外部 .so：NEEDED 只有
-// liblog/libz/libdl/libm/libc。
+// 这个 .so 由 Zygisk Next 直接加载进 QQ 的每个进程（main / :MSF ...），不带任何 ART hook
+// 引擎：全部能力都走 JNI 层。为什么换成这条路：自带 LSPlant 的版本功能完全正常，但人脸验证
+// 仍被判失败，而「零动作只注入」的探针能过——被判的正是 hook 引擎自己留下的痕迹（libart
+// 内联钩子、可执行 trampoline、生成的 hooker dex）。所以这里一条 ArtMethod 都不改写。
 //
-// 为什么要自带引擎：QQ 的人脸验证会把「进程里有 LSPosed 模块」判成环境异常（实测零钩子的
-// LSPosed 模块也失败），而只注入的 Zygisk 模块能过。所以框架不能在场，hook 能力得自己带。
+// 用到的 JNI 层手段：
+//   1. 引导：.so 起来后在独立线程里轮询 android.app.ActivityThread.currentApplication()，
+//      拿到 Application 的 classloader。**不需要钩 Instrumentation.callApplicationOnCreate**。
+//   2. 加载自己：dex 用 .incbin 嵌在 .so 的 rodata（注入后进程已在应用沙箱里，读不了
+//      /data/adb/modules），运行时 InMemoryDexClassLoader 加载。
+//   3. 注册自己：模块 .so 不在应用的库搜索路径里，System.loadLibrary 找不到它，所以 native
+//      侧自己 RegisterNatives 把 Xp 的入口挂上去。
+//   4. 抓会话：QQ 的会话对象不用钩构造器——IKernelService.getWrapperSession() 就是公开接口
+//      方法，Java 侧反射直接拿（见 QQClient）。
+//   5. 抓回包：QQNT 的裸 SSO 请求只有一条回包路，就是 native 方法
+//      IQQNTWrapperSession$CppProxy.native_onSendSSOReply。用 RegisterNatives 换成自己的
+//      实现（纯 JNI，不改 ArtMethod）；非本模块的 requestId 再转交原实现——原函数指针从
+//      ArtMethod 的 data_ 字段读出来（只读不写，见 InstallSsoHook 里的前后比对）。
 //
-// 引导顺序（都在 postAppSpecialize，此时进程已 fork 完、沙箱已生效）：
-//   1. LSPlant::Init —— 符号解析器读 libart.so 的 .symtab（含带 .__uniq. 后缀的本地符号，
-//      必须支持前缀匹配），内联钩子走 Dobby。
-//   2. 关掉 hidden API 限制（VMRuntime.setHiddenApiExemptions，走 JNI 调用，不受 Java 侧限制）。
-//   3. 用内嵌在自己 rodata 里的 classes.dex 建 InMemoryDexClassLoader（parent 用 boot
-//      classloader）。把 dex 装在 .so 里是为了绕开权限问题：postAppSpecialize 时进程已在应用
-//      沙箱里，读不了 /data/adb/modules。
-//   4. 调 com.satori.qq.Boot.start(进程名)；拿到 QQ 的 classloader、装真正的钩子都在那之后。
+// 没有 STL、没有第三方依赖：NEEDED 只有 liblog/libdl/libm/libc。
 #include <jni.h>
 #include <dlfcn.h>
-#include <fcntl.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 #include <android/log.h>
 
-#include <cctype>
-#include <cstdio>
-#include <cstring>
-#include <string>
-#include <string_view>
-
 #include "zygisk.hpp"
-#include "lsplant.hpp"
-#include "dobby.h"
-#include "elf_util.h"
 
 #define TAG "SatoriZygisk"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -41,219 +39,65 @@
 extern "C" const uint8_t satori_dex_start[];
 extern "C" const uint8_t satori_dex_end[];
 
-namespace {
+static const char *kTarget = "com.tencent.mobileqq";
+static const char *kXpClass = "com.satori.qq.xp.Xp";
+static const char *kSsoClass = "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
+static const char *kSsoMethod = "native_onSendSSOReply";
+static const char *kSsoSignature =
+        "(JJLjava/lang/String;ILjava/lang/String;Lcom/tencent/qqnt/kernel/nativeinterface/MsfRspInfo;)V";
+static const char *kSsoCallbackClass = "com.satori.qq.packet.PacketSvc";
+static const char *kSsoCallbackMethod = "onNativeSsoReply";
+static const char *kSsoCallbackSignature = "(JLjava/lang/String;ILjava/lang/String;Ljava/lang/Object;)Z";
 
-constexpr const char *kTarget = "com.tencent.mobileqq";
+static JavaVM *g_vm = nullptr;
+static jclass g_sso_class = nullptr;          // 全局引用
+static jclass g_callback_class = nullptr;     // 全局引用
+static jmethodID g_callback_method = nullptr;
+static void *g_orig_sso_reply = nullptr;
+static char g_process[256] = {0};
+static bool g_bootstrap_started = false;
 
-// ---- 诊断档位（交接文档 §4）------------------------------------------------
-//
-// 目的：把「人脸被判失败」拆成三层，定位到底哪一层的痕迹被判。
-//   off    只注入，零动作（已知能过，做基线；不读 /proc、不写文件、只打日志）
-//   inert  只初始化 hook 引擎，不装任何钩子（引擎自身的痕迹：libart 内联钩子 /
-//          Dobby trampoline / 可执行内存）
-//   boot   引擎 + 只钩引导锚点 Instrumentation.callApplicationOnCreate，
-//          拿到宿主 classloader 就停（一个 bootclasspath 方法的 ArtMethod 改写）
-//   hooks  完整功能（默认）
-//
-// 档位从 QQ 自己的 files 目录读（注入进程就是 QQ 的 uid，能读自己的数据目录）：
-//   /data/data/com.tencent.mobileqq/files/satori-zygisk-mode
-// 文件不存在时按 hooks 走，保证功能不受影响。
-constexpr const char *kModeFile = "/data/data/com.tencent.mobileqq/files/satori-zygisk-mode";
-constexpr const char *kReportFile = "/data/data/com.tencent.mobileqq/files/satori-selfcheck.txt";
+// 替换 QQ native 方法的函数：必须在取地址之前先行声明。
+static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id,
+                           jstring cmd, jint result_code, jstring error_msg, jobject info);
 
-std::string g_mode = "hooks";
+// ---- JNI 小工具 -----------------------------------------------------------------
 
-std::string ReadModeFile() {
-    int fd = open(kModeFile, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return "hooks";
-    char buf[64];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (n <= 0) return "hooks";
-    buf[n] = '\0';
-    std::string s(buf);
-    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t')) {
-        s.pop_back();
-    }
-    size_t b = s.find_first_not_of(" \t");
-    if (b != std::string::npos) s.erase(0, b); else s.clear();
-    if (s.empty()) return "hooks";
-    return s;
-}
-
-/**
- * 进程内自查：按 QQ 检测库读 /proc/self/maps 的思路数一遍。
- *
- * 必须从进程内读——从 Termux 里 grep /proc/<pid>/maps 是内核视角（能看见进程内
- * 过滤过的行），不是检测库视角。只读，不改任何状态。
- */
-void SelfCheck(const char *stage) {
-    FILE *f = fopen("/proc/self/maps", "re");
-    if (f == nullptr) {
-        LOGE("selfcheck(%s): no /proc/self/maps", stage);
-        return;
-    }
-    static const char *kTokens[] = {
-            "lsposed", "zygisk", "magisk", "libriru", "me.bmax.apatch",
-            "kernelsu", "apatch", "susfs", "lsplant", "dobby", "satori", "memfd:",
-    };
-    int total = 0, exec_cnt = 0, anon_exec = 0, rwx = 0, hit_cnt = 0;
-    long exec_bytes = 0;
-    std::string hits;
-    char line[1024];
-    while (fgets(line, sizeof(line), f) != nullptr) {
-        total++;
-        unsigned long start = 0, end = 0, off = 0, ino = 0;
-        char perms[8] = {0}, dev[24] = {0}, path[600] = {0};
-        int n = sscanf(line, "%lx-%lx %7s %lx %23s %lu %599[^\n]",
-                       &start, &end, perms, &off, dev, &ino, path);
-        bool has_path = n >= 7;
-        bool is_exec = strlen(perms) >= 3 && perms[2] == 'x';
-        bool is_rwx = strlen(perms) >= 3 && perms[0] == 'r' && perms[1] == 'w' && perms[2] == 'x';
-        if (is_exec) {
-            exec_cnt++;
-            exec_bytes += static_cast<long>(end - start);
-        }
-        if (is_rwx) rwx++;
-        // 匿名可执行段：没有路径名、又是 x。自研引擎最容易多出来的就是这一类。
-        if (is_exec && !has_path) anon_exec++;
-        if (!has_path) continue;
-        std::string lower(path);
-        while (!lower.empty() && (lower[0] == ' ' || lower[0] == '\t')) lower.erase(0, 1);
-        for (char &c : lower) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-        for (const char *t : kTokens) {
-            if (lower.find(t) != std::string::npos) {
-                hit_cnt++;
-                if (hits.size() < 4096) hits += "  " + lower + "\n";
-                break;
-            }
-        }
-    }
-    fclose(f);
-
-    char head[256];
-    snprintf(head, sizeof(head),
-             "[%s] stage=%s mode=%s pid=%d total=%d exec=%d(%.1fMB) anon_exec=%d rwx=%d hits=%d\n",
-             TAG, stage, g_mode.c_str(), getpid(), total, exec_cnt,
-             static_cast<double>(exec_bytes) / 1048576.0, anon_exec, rwx, hit_cnt);
-    LOGI("%s", head);
-    if (!hits.empty()) LOGI("selfcheck hits:\n%s", hits.c_str());
-
-    FILE *out = fopen(kReportFile, "ae");
-    if (out == nullptr) return;
-    // 15 秒一条，别让它无限长；超过 256KB 就从头再来。
-    if (ftell(out) > 256 * 1024) {
-        fclose(out);
-        out = fopen(kReportFile, "we");
-        if (out == nullptr) return;
-    }
-    fputs(head, out);
-    if (!hits.empty()) {
-        fputs("hits:\n", out);
-        fputs(hits.c_str(), out);
-    }
-    fclose(out);
-}
-
-bool g_self_check_loop_started = false;
-
-void *SelfCheckLoop(void *) {
-    for (;;) {
-        sleep(15);
-        SelfCheck("tick");
+/** 在当前线程拿 JNIEnv；native 线程要自己 attach。 */
+static JNIEnv *GetEnv(bool *attached) {
+    *attached = false;
+    if (g_vm == nullptr) return nullptr;
+    JNIEnv *env = nullptr;
+    jint r = g_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+    if (r == JNI_OK) return env;
+    if (r == JNI_EDETACHED && g_vm->AttachCurrentThread(&env, nullptr) == JNI_OK) {
+        *attached = true;
+        return env;
     }
     return nullptr;
 }
 
-/** 周期快照：人脸验证发生在注入很久之后，只拍开机那一下不够。 */
-void StartSelfCheckLoop() {
-    if (g_self_check_loop_started) return;
-    g_self_check_loop_started = true;
-    pthread_t t;
-    if (pthread_create(&t, nullptr, SelfCheckLoop, nullptr) == 0) {
-        pthread_detach(t);
-    } else {
-        LOGE("cannot start self-check thread");
-    }
+static void ReleaseEnv(bool attached) {
+    if (attached && g_vm != nullptr) g_vm->DetachCurrentThread();
 }
 
-/** 让 Java 侧知道当前档位（Boot 用 boot 档在拿到 classloader 后停下）。 */
-void SetJavaMode(JNIEnv *env, const std::string &mode) {
-    jclass sys = env->FindClass("java/lang/System");
-    if (sys == nullptr) { env->ExceptionClear(); return; }
-    jmethodID set_prop = env->GetStaticMethodID(
-            sys, "setProperty", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-    if (set_prop == nullptr) { env->ExceptionClear(); return; }
-    jstring k = env->NewStringUTF("satori.zygisk.mode");
-    jstring v = env->NewStringUTF(mode.c_str());
-    env->CallStaticObjectMethod(sys, set_prop, k, v);
-    if (env->ExceptionCheck()) env->ExceptionClear();
-    env->DeleteLocalRef(v);
-    env->DeleteLocalRef(k);
-    env->DeleteLocalRef(sys);
+/** 用给定 classloader 按名字取类；取不到返回 nullptr（并清掉异常）。 */
+static jclass LoadClass(JNIEnv *env, jobject loader, const char *name) {
+    if (loader == nullptr) return nullptr;
+    jclass loader_cls = env->FindClass("java/lang/ClassLoader");
+    if (loader_cls == nullptr) { env->ExceptionClear(); return nullptr; }
+    jmethodID load_class = env->GetMethodID(loader_cls, "loadClass",
+                                            "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (load_class == nullptr) { env->ExceptionClear(); return nullptr; }
+    jstring n = env->NewStringUTF(name);
+    auto cls = static_cast<jclass>(env->CallObjectMethod(loader, load_class, n));
+    env->DeleteLocalRef(n);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    return cls;
 }
 
-elfx::Elf g_art;
-
-void *ArtSymbol(std::string_view name) {
-    if (!g_art.loaded() && !g_art.Load("/libart.so")) {
-        LOGE("cannot map libart.so");
-        return nullptr;
-    }
-    std::string n(name);
-    if (void *p = g_art.Sym(n.c_str())) return p;
-    // .symtab 里的 ART 内部函数常带 .__uniq.<hash> 后缀，按前缀退一步找。
-    void *p = g_art.SymPrefix(name);
-    if (p == nullptr) LOGI("ART symbol missing: %s", n.c_str());
-    return p;
-}
-
-void *ArtPrefix(std::string_view prefix) {
-    if (!g_art.loaded() && !g_art.Load("/libart.so")) return nullptr;
-    return g_art.SymPrefix(prefix);
-}
-
-void *InlineHook(void *target, void *hooker) {
-    void *backup = nullptr;
-    return DobbyHook(target, hooker, &backup) == 0 ? backup : nullptr;
-}
-
-bool InlineUnhook(void *func) { return DobbyDestroy(func) == 0; }
-
-/**
- * Xp.nativeHook：把 target 换成 hooker.dispatch(Object[])，返回备份方法。
- *
- * LSPlant 要求回调是 hooker 对象的**实例**方法（它会生成一个桩类去调这个成员方法），
- * 写成 static 会抛 IncompatibleClassChangeError。
- */
-jobject NativeHook(JNIEnv *env, jclass, jobject target, jobject hooker) {
-    if (target == nullptr || hooker == nullptr) return nullptr;
-    jclass hooker_cls = env->GetObjectClass(hooker);
-    if (hooker_cls == nullptr) return nullptr;
-    jmethodID dispatch = env->GetMethodID(hooker_cls, "dispatch",
-                                          "([Ljava/lang/Object;)Ljava/lang/Object;");
-    if (dispatch == nullptr) {
-        LOGE("hooker has no dispatch(Object[])");
-        env->ExceptionClear();
-        return nullptr;
-    }
-    jobject callback = env->ToReflectedMethod(hooker_cls, dispatch, JNI_FALSE);
-    if (callback == nullptr) return nullptr;
-    jobject backup = lsplant::Hook(env, target, hooker, callback);
-    if (backup == nullptr && env->ExceptionCheck()) {
-        env->ExceptionDescribe();
-        env->ExceptionClear();
-    }
-    return backup;
-}
-
-jboolean NativeUnhook(JNIEnv *env, jclass, jobject target) {
-    if (target == nullptr) return JNI_FALSE;
-    return lsplant::UnHook(env, target) ? JNI_TRUE : JNI_FALSE;
-}
-
-/** 关掉 hidden API 限制：我们的 Java 层要反射 QQ 的内部类。走 JNI 调用，不走 Java 反射。 */
-void ExemptHiddenApis(JNIEnv *env) {
+/** 关掉 hidden API 限制：Java 侧要反射 QQ 的内部类。走 JNI 调用，不走 Java 反射。 */
+static void ExemptHiddenApis(JNIEnv *env) {
     jclass vm_runtime = env->FindClass("dalvik/system/VMRuntime");
     if (vm_runtime == nullptr) { env->ExceptionClear(); return; }
     jmethodID get_runtime = env->GetStaticMethodID(vm_runtime, "getRuntime",
@@ -269,61 +113,251 @@ void ExemptHiddenApis(JNIEnv *env) {
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         LOGI("setHiddenApiExemptions rejected; continuing without it");
-    } else {
-        LOGI("hidden api exemptions installed");
     }
     env->DeleteLocalRef(arr);
     env->DeleteLocalRef(all);
     env->DeleteLocalRef(runtime);
 }
 
-/** 用内嵌 dex 建一个 classloader 并调用 com.satori.qq.Boot.start(进程名)。 */
-bool StartJava(JNIEnv *env, const char *process) {    const auto *begin = satori_dex_start;
+/**
+ * 轮询宿主的 Application。
+ *
+ * 这就是「不用钩子也能引导」的那一步：0.22.0 的 Instrumentation.callApplicationOnCreate
+ * 钩子只是当时拿 classloader 的手段，而 ActivityThread 上本来就有公开静态方法一直返回它。
+ * 三条路依次退：currentApplication() → currentActivityThread().getApplication() → 读
+ * mInitialApplication 字段。
+ */
+static jobject CurrentApplicationOnce(JNIEnv *env, jclass at_cls, jmethodID current_app,
+                                      jmethodID current_at, jmethodID get_app,
+                                      jfieldID initial_app) {
+    if (current_app != nullptr) {
+        jobject a = env->CallStaticObjectMethod(at_cls, current_app);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); }
+        else if (a != nullptr) return a;
+    }
+    jobject at = nullptr;
+    if (current_at != nullptr) {
+        at = env->CallStaticObjectMethod(at_cls, current_at);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); at = nullptr; }
+    }
+    if (at != nullptr) {
+        if (get_app != nullptr) {
+            jobject a = env->CallObjectMethod(at, get_app);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); }
+            else if (a != nullptr) return a;
+        }
+        if (initial_app != nullptr) {
+            jobject a = env->GetObjectField(at, initial_app);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); }
+            else if (a != nullptr) return a;
+        }
+    }
+    return nullptr;
+}
+
+static jobject WaitForApplication(JNIEnv *env, int timeout_ms) {
+    jclass at_cls = env->FindClass("android/app/ActivityThread");
+    if (at_cls == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return nullptr; }
+    jmethodID current_app = env->GetStaticMethodID(at_cls, "currentApplication",
+                                                   "()Landroid/app/Application;");
+    env->ExceptionClear();
+    jmethodID current_at = env->GetStaticMethodID(at_cls, "currentActivityThread",
+                                                  "()Landroid/app/ActivityThread;");
+    env->ExceptionClear();
+    jmethodID get_app = env->GetMethodID(at_cls, "getApplication",
+                                         "()Landroid/app/Application;");
+    env->ExceptionClear();
+    jfieldID initial_app = env->GetFieldID(at_cls, "mInitialApplication",
+                                           "Landroid/app/Application;");
+    env->ExceptionClear();
+    if (current_app == nullptr && current_at == nullptr) {
+        LOGE("ActivityThread has no currentApplication/currentActivityThread");
+        return nullptr;
+    }
+    for (int waited = 0; waited < timeout_ms; waited += 20) {
+        jobject app = CurrentApplicationOnce(env, at_cls, current_app, current_at, get_app,
+                                             initial_app);
+        if (app != nullptr) return app;
+        usleep(20 * 1000);
+    }
+    return nullptr;
+}
+
+static jobject HostLoaderFromApplication(JNIEnv *env, jobject app) {
+    jclass context_cls = env->FindClass("android/content/Context");
+    jmethodID get_loader = env->GetMethodID(context_cls, "getClassLoader",
+                                            "()Ljava/lang/ClassLoader;");
+    if (get_loader == nullptr) { env->ExceptionClear(); return nullptr; }
+    jobject loader = env->CallObjectMethod(app, get_loader);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    return loader;
+}
+
+static jobject MakeEmbeddedLoader(JNIEnv *env, jobject parent) {
+    const auto *begin = satori_dex_start;
     size_t size = static_cast<size_t>(satori_dex_end - satori_dex_start);
-    if (size == 0) { LOGE("embedded dex is empty"); return false; }
-
+    if (size == 0) { LOGE("embedded dex is empty"); return nullptr; }
     jobject buffer = env->NewDirectByteBuffer(const_cast<uint8_t *>(begin), size);
-    if (buffer == nullptr) { LOGE("NewDirectByteBuffer failed"); return false; }
-
+    if (buffer == nullptr) { LOGE("NewDirectByteBuffer failed"); return nullptr; }
     jclass loader_cls = env->FindClass("dalvik/system/InMemoryDexClassLoader");
-    if (loader_cls == nullptr) { LOGE("no InMemoryDexClassLoader"); return false; }
+    if (loader_cls == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return nullptr; }
     jmethodID ctor = env->GetMethodID(loader_cls, "<init>",
                                       "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
-    if (ctor == nullptr) { LOGE("no InMemoryDexClassLoader ctor"); return false; }
-    jobject loader = env->NewObject(loader_cls, ctor, buffer, nullptr);
-    if (loader == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return false; }
+    if (ctor == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return nullptr; }
+    jobject loader = env->NewObject(loader_cls, ctor, buffer, parent);
+    if (loader == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return nullptr; }
+    return loader;
+}
 
-    jclass cl_cls = env->FindClass("java/lang/ClassLoader");
-    jmethodID load_class = env->GetMethodID(cl_cls, "loadClass",
-                                            "(Ljava/lang/String;)Ljava/lang/Class;");
-    jstring name = env->NewStringUTF("com.satori.qq.Boot");
-    auto boot = static_cast<jclass>(env->CallObjectMethod(loader, load_class, name));
-    if (env->ExceptionCheck() || boot == nullptr) {
-        env->ExceptionDescribe();
+// ---- native_onSendSSOReply 的替换 -------------------------------------------------
+
+/**
+ * 在 ArtMethod 里找 data_（native 方法里存的 JNI 函数指针）。
+ *
+ * 不写死字段偏移，靠两条特征一起认：值必须落在一段可执行的映射里，而且不在 libart（那里是
+ * 通用 JNI trampoline 的地址）也不在本模块自己的 .so 里。
+ */
+static bool IsExecutableAddress(const void *p) {
+    if (p == nullptr) return false;
+    FILE *f = fopen("/proc/self/maps", "re");
+    if (f == nullptr) return false;
+    char line[512];
+    auto target = reinterpret_cast<uintptr_t>(p);
+    bool found = false;
+    while (fgets(line, sizeof(line), f) != nullptr) {
+        uintptr_t start = 0, end = 0;
+        char perms[8] = {0};
+        if (sscanf(line, "%lx-%lx %7s", &start, &end, perms) != 3) continue;
+        if (target >= start && target < end) {
+            found = perms[2] == 'x';
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+static int FindJniEntrySlot(uintptr_t *words, int kWords, void **out) {
+    for (int i = 0; i < kWords; ++i) {
+        auto *p = reinterpret_cast<void *>(words[i]);
+        if (p == nullptr || !IsExecutableAddress(p)) continue;
+        Dl_info di{};
+        if (dladdr(p, &di) == 0 || di.dli_fname == nullptr) continue;
+        if (strstr(di.dli_fname, "libart") != nullptr) continue;
+        if (strstr(di.dli_fname, "libsatori") != nullptr) continue;
+        *out = p;
+        return i;
+    }
+    return -1;
+}
+
+/**
+ * 装 SSO 回包的拦截。
+ *
+ * RegisterNatives 不给旧函数指针，所以先自己把原实现读出来：在 ArtMethod 里认出 data_
+ * （见 {@link FindJniEntrySlot}），认不出来就**不注册**——装了却转交不了原实现会把 QQ 自己
+ * 的 SSO 回包全丢掉。注册完再验一次那个字是不是变成了自己的函数地址，不是就用原指针原样
+ * 注册回去。
+ */
+static bool InstallSsoHook(JNIEnv *env, jobject loader) {
+    jclass cpp = LoadClass(env, loader, kSsoClass);
+    if (cpp == nullptr) { LOGE("cannot load %s", kSsoClass); return false; }
+    jclass cb = LoadClass(env, loader, kSsoCallbackClass);
+    if (cb == nullptr) { LOGE("cannot load %s", kSsoCallbackClass); return false; }
+    jmethodID cb_method = env->GetStaticMethodID(cb, kSsoCallbackMethod, kSsoCallbackSignature);
+    if (cb_method == nullptr) {
         env->ExceptionClear();
-        LOGE("com.satori.qq.Boot not found in the embedded dex");
+        LOGE("cannot find %s.%s%s", kSsoCallbackClass, kSsoCallbackMethod, kSsoCallbackSignature);
         return false;
     }
-    jmethodID start = env->GetStaticMethodID(boot, "start", "(Ljava/lang/String;)V");
-    if (start == nullptr) { LOGE("Boot.start(String) not found"); return false; }
 
-    // Xp 里的两个 native 方法由这里注册：模块的 .so 是 Zygisk Next 从模块目录直接加载的，
-    // 不在应用的库搜索路径里，Java 侧没法 System.loadLibrary。
-    jstring xp_name = env->NewStringUTF("com.satori.qq.xp.Xp");
-    auto xp = static_cast<jclass>(env->CallObjectMethod(loader, load_class, xp_name));
-    if (xp == nullptr || env->ExceptionCheck()) {
-        env->ExceptionDescribe();
+    jmethodID mid = env->GetMethodID(cpp, kSsoMethod, kSsoSignature);
+    if (mid == nullptr) {
         env->ExceptionClear();
-        LOGE("Xp class not found");
+        LOGE("no %s%s", kSsoMethod, kSsoSignature);
         return false;
     }
+
+    auto *words = reinterpret_cast<uintptr_t *>(mid);
+    constexpr int kWords = 8;
+
+    void *orig = nullptr;
+    int slot = FindJniEntrySlot(words, kWords, &orig);
+    if (slot < 0) {
+        LOGE("cannot locate the JNI entry slot in ArtMethod of %s", kSsoMethod);
+        return false;
+    }
+    Dl_info di{};
+    if (dladdr(orig, &di) != 0 && di.dli_fname != nullptr) {
+        LOGI("%s jni entry at slot %d: %p in %s", kSsoMethod, slot, orig, di.dli_fname);
+    }
+
+    JNINativeMethod method{kSsoMethod, const_cast<char *>(kSsoSignature),
+                           reinterpret_cast<void *>(&SatoriSsoReply)};
+    if (env->RegisterNatives(cpp, &method, 1) != JNI_OK) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        LOGE("RegisterNatives(%s) failed", kSsoMethod);
+        return false;
+    }
+    if (words[slot] != reinterpret_cast<uintptr_t>(&SatoriSsoReply)) {
+        LOGE("slot %d did not take our function; rolling back", slot);
+        JNINativeMethod back{kSsoMethod, const_cast<char *>(kSsoSignature), orig};
+        env->RegisterNatives(cpp, &back, 1);
+        env->ExceptionClear();
+        return false;
+    }
+
+    g_callback_class = static_cast<jclass>(env->NewGlobalRef(cb));
+    g_callback_method = cb_method;
+    g_orig_sso_reply = orig;
+    g_sso_class = static_cast<jclass>(env->NewGlobalRef(cpp));
+    LOGI("hooked %s", kSsoMethod);
+    return true;
+}
+
+/** 把回包交给 Java 侧；返回 true 表示本模块已经消费掉，不要再喂给 QQ 原生会话。 */
+static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id,
+                           jstring cmd, jint result_code, jstring error_msg, jobject info) {
+    if (g_callback_method != nullptr) {
+        jboolean consumed = env->CallStaticBooleanMethod(
+                g_callback_class, g_callback_method, request_id, cmd, result_code, error_msg, info);
+        if (env->ExceptionCheck()) {
+            env->ExceptionDescribe();
+            env->ExceptionClear();
+        } else if (consumed == JNI_TRUE) {
+            return;
+        }
+    }
+    if (g_orig_sso_reply != nullptr) {
+        using OrigFn = void (*)(JNIEnv *, jobject, jlong, jlong, jstring, jint, jstring, jobject);
+        reinterpret_cast<OrigFn>(g_orig_sso_reply)(
+                env, thiz, native_ref, request_id, cmd, result_code, error_msg, info);
+    }
+}
+
+/** Xp.nativeInstallSsoHook(ClassLoader)：Java 侧在拿到宿主 classloader 后调用一次。 */
+static jboolean NativeInstallSsoHook(JNIEnv *env, jclass, jobject loader) {
+    if (g_orig_sso_reply != nullptr) return JNI_TRUE;  // 幂等
+    return InstallSsoHook(env, loader) ? JNI_TRUE : JNI_FALSE;
+}
+
+// ---- 引导 ------------------------------------------------------------------------
+
+static bool StartJava(JNIEnv *env, jobject loader, jobject host, const char *process) {
+    jclass boot = LoadClass(env, loader, "com.satori.qq.Boot");
+    if (boot == nullptr) { LOGE("com.satori.qq.Boot not found in the embedded dex"); return false; }
+    jmethodID start = env->GetStaticMethodID(
+            boot, "start", "(Ljava/lang/String;Ljava/lang/ClassLoader;)V");
+    if (start == nullptr) { LOGE("Boot.start(String, ClassLoader) not found"); return false; }
+
+    jclass xp = LoadClass(env, loader, kXpClass);
+    if (xp == nullptr) { LOGE("Xp class not found"); return false; }
     static const JNINativeMethod kXpMethods[] = {
-            {"nativeHook", "(Ljava/lang/reflect/Member;Ljava/lang/Object;)Ljava/lang/reflect/Member;",
-             reinterpret_cast<void *>(&NativeHook)},
-            {"nativeUnhook", "(Ljava/lang/reflect/Member;)Z",
-             reinterpret_cast<void *>(&NativeUnhook)},
+            {"nativeInstallSsoHook", "(Ljava/lang/ClassLoader;)Z",
+             reinterpret_cast<void *>(&NativeInstallSsoHook)},
     };
-    if (env->RegisterNatives(xp, kXpMethods, 2) != JNI_OK) {
+    if (env->RegisterNatives(xp, kXpMethods, 1) != JNI_OK) {
         env->ExceptionDescribe();
         env->ExceptionClear();
         LOGE("RegisterNatives(Xp) failed");
@@ -331,7 +365,8 @@ bool StartJava(JNIEnv *env, const char *process) {    const auto *begin = satori
     }
 
     jstring proc = env->NewStringUTF(process);
-    env->CallStaticVoidMethod(boot, start, proc);
+    env->CallStaticVoidMethod(boot, start, proc, host);
+    env->DeleteLocalRef(proc);
     if (env->ExceptionCheck()) {
         env->ExceptionDescribe();
         env->ExceptionClear();
@@ -341,68 +376,64 @@ bool StartJava(JNIEnv *env, const char *process) {    const auto *begin = satori
     return true;
 }
 
-void Bootstrap(JNIEnv *env, const char *process) {
-    if (g_mode == "off") {
-        // 基线：只留一行日志。不读 /proc、不写文件、不起线程——和当初「只注入零动作」
-        // 能过人脸的那版探针保持一致。
-        LOGI("mode=off: injected, doing nothing pid=%d name=%s", getpid(), process);
-        return;
-    }
+static void *BootstrapThread(void *) {
+    bool attached = false;
+    JNIEnv *env = GetEnv(&attached);
+    if (env == nullptr) { LOGE("cannot attach bootstrap thread"); return nullptr; }
 
-    SelfCheck("pre-init");
-
-    lsplant::InitInfo info{};
-    info.inline_hooker = &InlineHook;
-    info.inline_unhooker = &InlineUnhook;
-    info.art_symbol_resolver = &ArtSymbol;
-    info.art_symbol_prefix_resolver = &ArtPrefix;
-    if (!lsplant::Init(env, info)) {
-        LOGE("lsplant init failed in %s", process);
-        return;
-    }
-    LOGI("lsplant ready in %s (mode=%s)", process, g_mode.c_str());
-    SelfCheck("post-init");
-    StartSelfCheckLoop();
-
-    if (g_mode == "inert") {
-        // 引擎初始化完了，一个钩子都不装，到这里为止。
-        LOGI("mode=inert: engine initialized, no hooks installed in %s", process);
-        return;
-    }
-
+    // 先放开 hidden API：下面要问的 ActivityThread 那几个入口都是 hidden 的。
     ExemptHiddenApis(env);
-    SetJavaMode(env, g_mode);
-    StartJava(env, process);
+
+    jobject app = WaitForApplication(env, 120000);
+    if (app == nullptr) { LOGE("Application never appeared"); ReleaseEnv(attached); return nullptr; }
+    LOGI("application ready in %s", g_process);
+
+    jobject host = HostLoaderFromApplication(env, app);
+    if (host == nullptr) { LOGE("no host classloader"); ReleaseEnv(attached); return nullptr; }
+    LOGI("host classloader captured");
+
+    // 内嵌 dex 的父加载器就用宿主的：这样模块自己的 Java 代码可以直接按名字引用 QQ 的类，
+    // 也让 native 侧 loadClass 一次就能同时找到两边的类。
+    jobject loader = MakeEmbeddedLoader(env, host);
+    if (loader == nullptr) { LOGE("cannot create embedded dex loader"); ReleaseEnv(attached); return nullptr; }
+
+    StartJava(env, loader, host, g_process);
+    ReleaseEnv(attached);
+    return nullptr;
 }
 
 class SatoriModule : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
-        api_ = api;
+        (void) api;
         env_ = env;
+        env->GetJavaVM(&g_vm);
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
-        if (args == nullptr || args->nice_name == nullptr) return;
+        if (args == nullptr || args->nice_name == nullptr || env_ == nullptr) return;
         const char *name = env_->GetStringUTFChars(args->nice_name, nullptr);
         if (name == nullptr) return;
-        process_ = name;
+        if (strncmp(name, kTarget, strlen(kTarget)) == 0) {
+            strncpy(g_process, name, sizeof(g_process) - 1);
+        }
         env_->ReleaseStringUTFChars(args->nice_name, name);
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
-        if (env_ == nullptr || process_.empty()) return;
-        if (process_.compare(0, strlen(kTarget), kTarget) != 0) return;
-        g_mode = ReadModeFile();
-        Bootstrap(env_, process_.c_str());
+        if (g_process[0] == '\0' || g_bootstrap_started) return;
+        g_bootstrap_started = true;
+        pthread_t t;
+        if (pthread_create(&t, nullptr, BootstrapThread, nullptr) == 0) {
+            pthread_detach(t);
+            LOGI("bootstrap thread started for %s", g_process);
+        } else {
+            LOGE("cannot start bootstrap thread");
+        }
     }
 
 private:
-    zygisk::Api *api_ = nullptr;
     JNIEnv *env_ = nullptr;
-    std::string process_;
 };
-
-}  // namespace
 
 REGISTER_ZYGISK_MODULE(SatoriModule)

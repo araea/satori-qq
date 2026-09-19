@@ -5,8 +5,6 @@ import android.content.ComponentName;
 import android.content.Context;
 import com.satori.qq.L;
 import com.satori.qq.packet.PacketSvc;
-import com.satori.qq.xp.XC_MethodHook;
-import com.satori.qq.xp.XposedBridge;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
@@ -61,7 +59,6 @@ public final class QQClient {
 
     public final Ref ref;
     private final PacketSvc packetSvc;
-    private final LegacySvc legacySvc;
     private final ExtraSvc extraSvc;
     private volatile Object session;        // IQQNTWrapperSession
     private volatile boolean listenerRegistered;
@@ -88,53 +85,63 @@ public final class QQClient {
         this.ref = new Ref(cl);
         this.mainProcess = mainProcess;
         this.packetSvc = new PacketSvc(this);
-        this.legacySvc = new LegacySvc(this);
         this.extraSvc = new ExtraSvc(this);
     }
 
     public void setListener(Listener l) { this.listener = l; }
 
     /** Install hooks that capture the live kernel session as soon as QQ creates it. */
+    /**
+     * 接上内核会话与回包通道。幂等。
+     *
+     * <p>会话不再靠钩构造器拿：{@code IKernelService.getWrapperSession()} 本来就是公开的接口
+     * 方法，反射直接问就行。QQ 建会话比注入晚，所以起一个轮询线程，拿到就停。
+     *
+     * <p>回包通道是 native 侧的 {@code RegisterNatives}（见 {@link com.satori.qq.xp.Xp} 与
+     * {@link PacketSvc}）。
+     */
     public void installHooks() {
         packetSvc.installHooks();
-        legacySvc.installHooks();
-        try {
-            Class<?> sc = ref.cls(SESSION_CPP);
-            XposedBridge.hookAllConstructors(sc, new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam p) {
-                    onSession(p.thisObject);
-                }
-            });
-            // Fallback capture. The constructor hook only sees sessions built AFTER it is
-            // installed. If QQ created the session before this hook ran — a module reload
-            // without a QQ restart, or a timing race after a QQ client update — the ctor
-            // never fires, so `session` stays null and every send fails with
-            // "kernel offline or not ready" even though QQ itself is online and the Satori
-            // HTTP port is up (a state no external port/activity probe can distinguish).
-            // QQ calls these no-arg service getters on the live session constantly during
-            // normal operation, so capturing `thisObject` here recovers a missed session
-            // within seconds, with no QQ restart. A lock-free identity check keeps the
-            // already-captured hot path free of the synchronized onSession() cost.
-            XC_MethodHook capture = new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam p) {
-                    Object s = p.thisObject;
-                    if (s != null && session != s) onSession(s);
-                }
-            };
-            for (String m : SESSION_CAPTURE_GETTERS) {
-                try { XposedBridge.hookAllMethods(sc, m, capture); }
-                catch (Throwable t) { L.e("Failed to hook session." + m + " (fallback capture)", t); }
-            }
-            L.i("Hooked session ctor + fallback getters: " + SESSION_CPP);
-        } catch (Throwable t) {
-            L.e("Failed to hook session ctor", t);
-        }
+        startSessionPoll();
     }
 
-    /** No-arg session getters QQ calls during routine operation; used as a fallback path to
-     *  recover a live session the constructor hook missed. All are methods this module already
-     *  invokes, so they are guaranteed to exist on the session CppProxy for supported clients. */
-    private static final String[] SESSION_CAPTURE_GETTERS = { "getMsgService", "getGroupService" };
+    private static final String KERNEL_SERVICE = "com.tencent.qqnt.kernel.api.IKernelService";
+    private volatile boolean sessionPollStarted;
+
+    /**
+     * 轮询内核会话。拿到之前 1 秒一次，拿到之后降到 10 秒一次——重登/切号时 QQ 会把会话换掉，
+     * 换了要重新注册监听器。
+     */
+    private synchronized void startSessionPoll() {
+        if (sessionPollStarted) return;
+        sessionPollStarted = true;
+        Thread t = new Thread(() -> {
+            for (;;) {
+                Object s = peekSession();
+                if (s != null && s != session) onSession(s);
+                try {
+                    Thread.sleep(session == null ? 1000L : 10000L);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "pool-7-thread-1");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** 反射问一次内核会话；任何一步拿不到都返回 null（会话没建好或进程里没有内核）。 */
+    private Object peekSession() {
+        try {
+            Object runtime = appRuntime();
+            if (runtime == null) return null;
+            Object kernel = ref.call(runtime, "getRuntimeService", ref.cls(KERNEL_SERVICE), "");
+            if (kernel == null) return null;
+            return ref.call(kernel, "getWrapperSession");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
 
     private volatile boolean listenerPollerStarted;
 
@@ -182,7 +189,6 @@ public final class QQClient {
 
     public Object getSession() { return session; }
     public PacketSvc packets() { return packetSvc; }
-    public LegacySvc legacy() { return legacySvc; }
     public ExtraSvc extra() { return extraSvc; }
     /**
      * Current QQ AppRuntime, or null while logged out / before account startup.

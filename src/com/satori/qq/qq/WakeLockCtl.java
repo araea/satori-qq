@@ -15,9 +15,8 @@ import com.satori.qq.L;
  * Termux-style, user-toggled wake lock exposed as a notification action button, plus a
  * ref-counted hold the module takes on its own around outbound work.
  *
- * <p>The foreground-service keepalive ({@link Keepalive}) keeps QQ's <em>process</em> resident, but
- * a process kept in the foreground-service priority band can still have its CPU parked once the
- * device enters Doze — enough to stall the Satori websocket for minutes. Mirroring Termux's
+ * <p>进程活着不等于 CPU 醒着：设备进 Doze 之后 QQ 进程的 CPU 照样会被停掉，足以让 Satori
+ * 的 websocket 卡住几分钟。仿 Termux 的
  * "ACQUIRE WAKELOCK / RELEASE WAKELOCK" toggle, this holds a {@code PARTIAL_WAKE_LOCK} (plus a
  * best-effort high-performance Wi-Fi lock) so the CPU and radio stay awake while the operator wants
  * maximum residency, and releases them to save battery otherwise.

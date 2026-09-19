@@ -11,7 +11,6 @@ import com.satori.qq.qq.Convert;
 import com.satori.qq.qq.Compat;
 import com.satori.qq.qq.ExtraSvc;
 import com.satori.qq.qq.Media;
-import com.satori.qq.qq.LegacySvc;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
 import com.satori.qq.satori.Codec;
@@ -29,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.22.1";
+    public static final String APP_VERSION = "0.23.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -47,7 +46,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private HttpServer server;
     private volatile long managedRevision = -1;
     private volatile StatusNotice notice;
-    private volatile com.satori.qq.qq.Keepalive keepalive;
     private volatile com.satori.qq.qq.WakeLockCtl wakeLock;
     private volatile long onlineSinceMs;
     private final Set<WsConn> identified = ConcurrentHashMap.newKeySet();
@@ -126,7 +124,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
      *  disabled. The Context-bound helpers are created lazily: at hub start QQ's Application (and thus
      *  its Context) is not ready yet, so we keep retrying each monitor tick until it is. */
     private void refreshNotice() {
-        if (!cfg.statusNotification && !cfg.foregroundKeepalive) {
+        if (!cfg.statusNotification) {
             // Radio sustain is independent of whether a notification is requested.
             driveWifiSustain(qq.isOnline(), server != null && server.isListening());
             return;
@@ -149,18 +147,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         int conns = server == null ? 0 : server.connectionCount();
         String uin = qq.selfUin(), nick = qq.selfNick();
 
-        // Human-readable status entry (also the FGS notification when keepalive is on).
+        // Human-readable status entry.
         try {
             n.update(online, listening, uin, nick, cfg.port, conns, onlineSinceMs);
         } catch (Throwable t) { L.e("status notice refresh", t); }
 
         try { driveWifiSustain(online, listening); }
         catch (Throwable t) { L.e("wifi sustain tick", t); }
-
-        if (cfg.foregroundKeepalive) {
-            try { driveKeepalive(n, online, listening, uin, nick, conns); }
-            catch (Throwable t) { L.e("keepalive tick", t); }
-        }
     }
 
     /** Lazily create the Termux-style wake-lock toggle and hang it on the resident notification, so
@@ -189,28 +182,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (w == null) return;
         boolean serving = online && listening && server != null && server.connectionCount() > 0;
         w.sustainWifi(cfg.wifiSustain && serving);
-    }
-
-    /** VPN-style keepalive: while online, hold QQ's main process as a foreground service whose
-     *  notification is the same status entry. Stops with the process when the user closes QQ. */
-    private void driveKeepalive(StatusNotice n, boolean online, boolean listening,
-                                String uin, String nick, int conns) {
-        com.satori.qq.qq.Keepalive k = keepalive;
-        if (k == null) {
-            android.content.Context ctx = qq.appContext();
-            if (ctx == null) return;
-            k = new com.satori.qq.qq.Keepalive(qq.ref.cl, ctx, StatusNotice.NOTIFY_ID);
-            k.install();
-            keepalive = k;
-        }
-        if (!k.hooked()) return;
-        k.setNotification(n.build(online, listening, uin, nick, cfg.port, conns, onlineSinceMs));
-        if (online) {
-            if (!k.started()) k.enable();
-            if (cfg.requestBatteryExemption) k.requestBatteryExemptionOnce();
-        } else {
-            k.markStopped();
-        }
     }
 
     private long selfUin() { try { return Long.parseLong(qq.selfUin()); } catch (Throwable t) { return 0; } }
@@ -342,12 +313,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("self_id", selfUin())
                         .put("qq_version", qq.qqVersion())
                         .put("compat", compatSummary())
-                        // 宿主进程内按检测库思路自查的残留证据（只读、不落盘）
-                        .put("shield", com.satori.qq.qq.EnvShield.light())
                         .put("online_since_epoch_ms", onlineSinceMs)
                         .put("connections", server == null ? 0 : server.connectionCount())
                         .put("notice", noticeDiag())
-                        .put("keepalive", keepaliveDiag())
                         .put("wakelock", wakeLockDiag())
                         // 模块自己发的 SSO 请求失败了几条。`session_errors` 涨了说明有请求
                         // 撞上 QQ 认「票据失效」的那组错误码——即「接口层把会话打废」，
@@ -912,11 +880,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 return guarded("internal.poke", () -> {
                     sendPoke(params.optLong("guild_id", params.optLong("group_id", 0)),
                             parseId(params.optString("user_id", "")));
-                    return new JSONObject();
-                });
-            case "like":
-                return guarded("internal.like", () -> {
-                    sendLike(parseId(params.optString("user_id", "")), params.optInt("times", 1));
                     return new JSONObject();
                 });
             case "special-title":
@@ -3448,27 +3411,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         qq.getAllMembers(groupId, true);
     }
 
-    /**
-     * Like a user's profile card {@code times} times (the server caps the daily total).
-     *
-     * <p>Android QQ has no profile-like kernel service and does not accept the desktop
-     * {@code OidbSvcTrpcTcp.0x7E5_104} command — the server answers {@code oidb=319
-     * "[oidb] rule type not match appid"} for every source because that rule is gated to
-     * the desktop appid. The mobile client likes a card through the legacy
-     * {@code VisitorSvc.ReqFavorite} WUP call, so we drive that same path through
-     * {@link LegacySvc} and report the server's own reply code.</p>
-     */
-    private void sendLike(long userId, int times) throws Exception {
-        if (userId == 0) throw new ApiError(1400, "missing user_id");
-        if (times < 1) times = 1;
-        LegacySvc legacy = qq.legacy();
-        if (!legacy.isReady()) throw new ApiError(1500, "send_like failed: legacy service not ready");
-        LegacySvc.Outcome outcome = legacy.likeProfile(userId, LegacySvc.SOURCE_CARD, times);
-        if (!outcome.success) {
-            throw new ApiError(1500, "send_like failed: " + outcome.describe());
-        }
-    }
-
     /** go-cqhttp send_poke: 0xED3_1. Group uses groupUin+target; friend uses friendUin=target. */
     private void sendPoke(long groupId, long userId) throws Exception {
         if (userId == 0) throw new ApiError(1400, "missing user_id");
@@ -4224,14 +4166,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         try { return n.diag(); } catch (Throwable t) { return "err:" + t; }
     }
 
-    private String keepaliveDiag() {
-        if (!cfg.foregroundKeepalive) return "off";
-        com.satori.qq.qq.Keepalive k = keepalive;
-        if (k == null) return "pending-context";
-        return (k.hooked() ? "hooked" : "no-hook") + "/fgs=" + (k.started() ? "on" : "off")
-                + "/" + k.info();
-    }
-
     private String wakeLockDiag() {
         if (!cfg.wakeLockControl && !cfg.wifiSustain) return "off";
         com.satori.qq.qq.WakeLockCtl w = wakeLock;
@@ -4245,8 +4179,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("good", online)
                 .put("online_since_epoch_ms", onlineSinceMs)
                 .put("outbound_guard", outboundGuard.stats())
-                // 完整自查：按检测库思路读 /proc，结论进缓存供 healthz 复用
-                .put("env", com.satori.qq.qq.EnvShield.audit())
                 // QQ 自己的环境结论（只读探针）
                 .put("qsec", com.satori.qq.qq.EnvProbe.snapshot())
                 .put("outbound_guard_ok", true);

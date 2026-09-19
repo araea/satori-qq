@@ -13,25 +13,22 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Reflection facade with the legacy {@code XposedHelpers} surface, implemented on plain
- * {@code java.lang.reflect}. The modern API dropped these helpers; this module calls them from
- * {@code Ref} (the single reflection entry point for QQ's obfuscated classes) and from
- * {@code Keepalive}.
+ * 反射门面：对 {@code java.lang.reflect} 的一层薄封装，给 {@code Ref}（读 QQ 混淆类的唯一入口）
+ * 与其它调用点用。
  *
- * <p>Two details are kept from the legacy implementation because callers depend on them:
- * argument matching treats a boxed value as its primitive type (so {@code Integer 1} resolves to
- * an {@code int} parameter), and an exception thrown by the invoked method is rethrown as itself
- * rather than wrapped in {@link InvocationTargetException}.
+ * <p>两条从历史实现里保留下来的行为，调用方依赖它们：参数匹配把装箱值当成对应的原始类型
+ * （所以 {@code Integer 1} 能找到 {@code int} 参数）；被调方法抛出的异常原样再抛，不包
+ * {@link InvocationTargetException}。
  */
-public final class XposedHelpers {
+public final class Reflect {
 
     private static final Map<String, Field> FIELD_CACHE = new ConcurrentHashMap<>();
     private static final Map<String, Method> METHOD_CACHE = new ConcurrentHashMap<>();
 
-    private XposedHelpers() {}
+    private Reflect() {}
 
     public static Class<?> findClass(String className, ClassLoader classLoader) {
-        if (classLoader == null) classLoader = XposedHelpers.class.getClassLoader();
+        if (classLoader == null) classLoader = Reflect.class.getClassLoader();
         try {
             return Class.forName(className, false, classLoader);
         } catch (ClassNotFoundException e) {

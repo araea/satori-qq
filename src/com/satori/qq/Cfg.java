@@ -15,9 +15,6 @@ public final class Cfg {
     public volatile int heartbeatMs = 15000;
     /** Post a resident status notification (in QQ's notification shade) while the service runs. */
     public volatile boolean statusNotification = true;
-    /** VPN-style keepalive: hold QQ's main process as a foreground service while online, so the OS
-     *  won't background-freeze/kill it. Cooperative — closing QQ stops it, no watchdog relaunch. */
-    public volatile boolean foregroundKeepalive = true;
     /** One-time cooperative request for Doze battery-optimization exemption (system dialog). */
     public volatile boolean requestBatteryExemption = true;
     /** Termux-style acquire/release wake-lock toggle on the resident notification (opt-in per tap). */
@@ -75,7 +72,6 @@ public final class Cfg {
                 c.heartbeat = o.optBoolean("heartbeat", c.heartbeat);
                 c.heartbeatMs = o.optInt("heartbeat_ms", c.heartbeatMs);
                 c.statusNotification = o.optBoolean("status_notification", c.statusNotification);
-                c.foregroundKeepalive = o.optBoolean("foreground_keepalive", c.foregroundKeepalive);
                 c.requestBatteryExemption = o.optBoolean("request_battery_exemption", c.requestBatteryExemption);
                 c.wakeLockControl = o.optBoolean("wake_lock_control", c.wakeLockControl);
                 c.wakeLockAuto = o.optBoolean("wake_lock_auto", c.wakeLockAuto);

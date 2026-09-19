@@ -1,15 +1,14 @@
 package com.satori.qq.xp;
 
-import java.lang.reflect.Member;
-
 /**
- * 本进程的 hook 运行时：宿主（QQ）的 classloader + 到 native 引擎（LSPlant）的入口。
+ * 本进程的运行环境：宿主（QQ）的 classloader，以及到 native 侧那几个 JNI 入口。
  *
- * <p>以前的版本这里持的是 libxposed 框架给的 {@code XposedModule}。改走 Zygisk 之后框架不在场
- * （QQ 会把 LSPosed 模块判成环境异常，实测连零钩子的也失败），引擎由模块自带的 .so 提供。
- * native 侧只认两件事：被钩成员的反射对象、以及一个持有回调方法的普通 Java 对象。
+ * <p>0.23.0 起模块不再带 ART hook 引擎，这里也就没有「hook 运行时」这回事了：native 只暴露
+ * 一个能力——把 QQNT 的 {@code native_onSendSSOReply} 换成自己的实现（纯 {@code RegisterNatives}，
+ * 不改 ArtMethod）。
  *
- * <p>状态是每进程一份：内嵌在 .so 里的 dex 由 native 在注入时各自加载。
+ * <p>状态是每进程一份：内嵌在 .so 里的 dex 由 native 在注入时各自加载，native 侧在建好
+ * 这个类之后自己 {@code RegisterNatives}。
  */
 public final class Xp {
 
@@ -44,11 +43,11 @@ public final class Xp {
     // 不在应用的库搜索路径里；native 侧在建好这个类之后自己 RegisterNatives。
 
     /**
-     * 把 {@code target} 换成 {@code hooker} 的 {@code dispatch(Object[])}，返回备份成员
-     * （反射调用它等于调用原实现）。失败返回 null。
+     * 把 QQNT 的 {@code IQQNTWrapperSession$CppProxy.native_onSendSSOReply} 换成模块自己的实现，
+     * 之后每条 SSO 回包都会先交给 {@code PacketSvc.onNativeSsoReply}。幂等。
+     *
+     * @return 装上返回 true；QQ 那边接口变了/取不到原函数指针时返回 false（裸 SSO 相关的功能
+     *         —— 合并转发、部分群管理 —— 会报不可用，其余照常）。
      */
-    static native Member nativeHook(Member target, Object hooker);
-
-    /** 撤销一次 hook；{@code target} 必须是当初传进去的那个成员。 */
-    static native boolean nativeUnhook(Member target);
+    public static native boolean nativeInstallSsoHook(ClassLoader loader);
 }

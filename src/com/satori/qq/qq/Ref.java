@@ -1,29 +1,29 @@
 package com.satori.qq.qq;
 
-import com.satori.qq.xp.XposedHelpers;
+import com.satori.qq.xp.Reflect;
 
 /** Thin reflection facade bound to QQ's ClassLoader (all QQ classes are obfuscated / off-classpath). */
 public final class Ref {
     public final ClassLoader cl;
     public Ref(ClassLoader cl) { this.cl = cl; }
 
-    public Class<?> cls(String name) { return XposedHelpers.findClass(name, cl); }
-    public Class<?> clsOrNull(String name) { return XposedHelpers.findClassIfExists(name, cl); }
+    public Class<?> cls(String name) { return Reflect.findClass(name, cl); }
+    public Class<?> clsOrNull(String name) { return Reflect.findClassIfExists(name, cl); }
 
-    public Object neu(String clsName, Object... args) { return XposedHelpers.newInstance(cls(clsName), args); }
-    public Object neu(Class<?> c, Object... args) { return XposedHelpers.newInstance(c, args); }
-    public Object neuTyped(String clsName, Class<?>[] types, Object[] args) { return XposedHelpers.newInstance(cls(clsName), types, args); }
+    public Object neu(String clsName, Object... args) { return Reflect.newInstance(cls(clsName), args); }
+    public Object neu(Class<?> c, Object... args) { return Reflect.newInstance(c, args); }
+    public Object neuTyped(String clsName, Class<?>[] types, Object[] args) { return Reflect.newInstance(cls(clsName), types, args); }
 
-    public Object call(Object o, String m, Object... args) { return XposedHelpers.callMethod(o, m, args); }
+    public Object call(Object o, String m, Object... args) { return Reflect.callMethod(o, m, args); }
     public Object callTyped(Object o, String m, Class<?>[] types, Object... args) {
-        return XposedHelpers.callMethod(o, m, types, args);
+        return Reflect.callMethod(o, m, types, args);
     }
-    public Object callS(String clsName, String m, Object... args) { return XposedHelpers.callStaticMethod(cls(clsName), m, args); }
-    public Object callS(Class<?> c, String m, Object... args) { return XposedHelpers.callStaticMethod(c, m, args); }
+    public Object callS(String clsName, String m, Object... args) { return Reflect.callStaticMethod(cls(clsName), m, args); }
+    public Object callS(Class<?> c, String m, Object... args) { return Reflect.callStaticMethod(c, m, args); }
 
-    public Object get(Object o, String f) { return XposedHelpers.getObjectField(o, f); }
+    public Object get(Object o, String f) { return Reflect.getObjectField(o, f); }
     /**
-     * Read an optional field without asking XposedHelpers to resolve a field that may not exist.
+     * Read an optional field without asking Reflect to resolve a field that may not exist.
      * QQ occasionally removes nativeinterface fields between releases; those compatibility probes
      * must fall through instead of aborting the whole message conversion.
      */
@@ -44,20 +44,20 @@ public final class Ref {
     }
     public long getLong(Object o, String f) {
         try {
-            Object v = XposedHelpers.getObjectField(o, f);
+            Object v = Reflect.getObjectField(o, f);
             if (v instanceof Number) return ((Number) v).longValue();
             if (v != null) {
                 try { return Long.parseLong(String.valueOf(v).trim()); } catch (Exception ignore) {}
             }
         } catch (Throwable ignore) {}
-        try { return XposedHelpers.getLongField(o, f); } catch (Throwable ignore) {}
+        try { return Reflect.getLongField(o, f); } catch (Throwable ignore) {}
         return 0;
     }
-    public void set(Object o, String f, Object v) { XposedHelpers.setObjectField(o, f, v); }
+    public void set(Object o, String f, Object v) { Reflect.setObjectField(o, f, v); }
     /** Public field write that accepts boxed numbers for primitive ints/longs. */
     public void put(Object o, String f, Object v) {
         try {
-            java.lang.reflect.Field field = XposedHelpers.findField(o.getClass(), f);
+            java.lang.reflect.Field field = Reflect.findField(o.getClass(), f);
             field.setAccessible(true);
             Class<?> t = field.getType();
             if (t == int.class) field.setInt(o, v == null ? 0 : ((Number) v).intValue());
@@ -68,7 +68,7 @@ public final class Ref {
             set(o, f, v);
         }
     }
-    public Object getStatic(String clsName, String f) { return XposedHelpers.getStaticObjectField(cls(clsName), f); }
+    public Object getStatic(String clsName, String f) { return Reflect.getStaticObjectField(cls(clsName), f); }
 
     /** A no-op proxy of the given callback interface (for fire-and-forget kernel calls). */
     public Object nullCb(String cbClass) {

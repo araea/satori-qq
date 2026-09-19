@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# 知弦的构建：Java dex → Zygisk 原生模块（自带 ART hook 引擎）→ APK + Magisk 模块包。
+# 知弦的构建：Java dex → Zygisk 原生模块（纯 JNI 层，无 ART hook 引擎）→ APK + Magisk 模块包。
 #
-# 0.22.0 起不再依赖 libxposed：模块由 Zygisk Next 注入，hook 引擎（LSPlant + Dobby）静态链接在
-# native/libsatori.so 里，dex 用 .incbin 内嵌进这个 .so，运行时用 InMemoryDexClassLoader 加载。
+# 0.23.0 起不再依赖 libxposed，也不再带 ART hook 引擎：模块由 Zygisk Next 注入，全部能力走 JNI 层
+# （引导用 ActivityThread.currentApplication 轮询，回包用 RegisterNatives 换 native_onSendSSOReply）。
 #
 # NOTE: libs/r8.jar 与 libs/json.jar 被 gitignore。首次克隆后下载一次：
 #   curl -fsSL -o libs/r8.jar https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar
@@ -20,7 +20,6 @@ KS=$R/build/satori.keystore
 OUT=${SATORI_QQ_OUT:-$R/build}
 APK_UNSIGNED=$OUT/satori-qq.unsigned.apk
 APK=$OUT/SatoriQQ.apk
-TP=$OUT/third_party
 MODULE=$OUT/module
 
 echo "== 1. javac =="
@@ -37,10 +36,7 @@ java -cp $R8 com.android.tools.r8.D8 --release --min-api 26 \
   --lib $ANDROID_JAR --output $OUT/dex @$OUT/classlist.txt
 echo "   dex: $(ls -la $OUT/dex/classes.dex | awk '{print $5}') bytes"
 
-echo "== 2b. native 依赖（LSPlant / Dobby / libc++） =="
-bash $R/native/build.sh
-
-echo "== 2c. libsatori.so =="
+echo "== 2c. libsatori.so（纯 JNI 层，无第三方依赖） =="
 # dex 内嵌进 .so 的 rodata：注入后进程已在应用沙箱里，读不了 /data/adb/modules 下的文件。
 cat > $OUT/dex_blob.S <<EOF
 	.section .rodata
@@ -51,19 +47,14 @@ satori_dex_start:
 satori_dex_end:
 EOF
 clang++ -c -o $OUT/dex_blob.o $OUT/dex_blob.S
-clang++ -shared -fPIC -std=c++20 -O2 -fno-exceptions -fno-rtti -nostdinc++ \
-  -isystem $TP/cxx/prefab/modules/cxx/include -I $R/native -I $TP/out/include \
+clang++ -shared -fPIC -std=c++20 -O2 -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ -nostdlib++ \
+  -I $R/native \
   -o $OUT/libsatori.so $R/native/satori.cpp $OUT/dex_blob.o \
-  $TP/out/libdobby.a $TP/out/liblsplant_static.a $TP/out/libdex_builder_static.a $TP/out/libcxx.a \
-  -nostdlib++ -Wl,--no-undefined -L$TP/syslibs -llog -lz -ldl -lm
+  -Wl,--no-undefined -llog -ldl -lm
 echo "   libsatori.so: $(ls -la $OUT/libsatori.so | awk '{print $5}') bytes"
-# -Wl,--no-undefined 保证所有符号在链接期就对上了系统库：漏了归档的话链接会直接失败，
+# -Wl,--no-undefined 保证所有符号在链接期就对上了系统库：漏了什么会直接链接失败，
 # 而不是等到 dlopen 时报 "cannot locate symbol"（那要烧一次重启才发现）。
-STRAY=$(llvm-nm -D -u $OUT/libsatori.so | awk '{print $2}' | grep -E '^_ZN7(startop|lsplant|art)' || true)
-if [ -n "$STRAY" ]; then
-  echo "   FAIL static archives not fully linked:"; echo "$STRAY" | head; exit 1
-fi
-NEEDED=$(readelf -d $OUT/libsatori.so | grep NEEDED | grep -v 'liblog\|libz\|libdl\|libm\|libc\.so' || true)
+NEEDED=$(readelf -d $OUT/libsatori.so | grep NEEDED | grep -v 'liblog\|libdl\|libm\|libc\.so' || true)
 if [ -n "$NEEDED" ]; then
   echo "   FAIL unexpected dependencies:"; echo "$NEEDED"; exit 1
 fi
@@ -97,7 +88,7 @@ name=知弦
 version=$VER_NAME
 versionCode=$VER_CODE
 author=araea
-description=QQ 的 Satori v1 实现端（Zygisk 注入，自带 ART hook 引擎，不需要 LSPosed）。
+description=QQ 的 Satori v1 实现端（Zygisk 注入，纯 JNI 层，不挂钩子引擎）。
 EOF
 # Zygisk Next 只认模块目录里这张表；缺它不会加载（踩过）。
 printf 'name=com.tencent.mobileqq zygisk/arm64-v8a.so\n' > $MODULE/zn_modules.txt

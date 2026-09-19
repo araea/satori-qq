@@ -5,7 +5,7 @@ import org.json.JSONObject;
 
 /** Deliberately small configuration surface; file-only advanced options remain untouched. */
 public final class ManagedConfig {
-    public static final String[] SWITCHES = {"status_notification", "foreground_keepalive", "wake_lock_auto", "wifi_sustain"};
+    public static final String[] SWITCHES = {"status_notification", "wake_lock_auto", "wifi_sustain"};
     private ManagedConfig() {}
 
     public static JSONObject validate(JSONObject raw) throws Exception {
@@ -38,7 +38,6 @@ public final class ManagedConfig {
         cfg.port = value.getInt("port");
         cfg.token = value.getString("token");
         cfg.statusNotification = value.getBoolean("status_notification");
-        cfg.foregroundKeepalive = value.getBoolean("foreground_keepalive");
         cfg.wakeLockAuto = value.getBoolean("wake_lock_auto");
         cfg.wifiSustain = value.getBoolean("wifi_sustain");
     }
@@ -46,7 +45,6 @@ public final class ManagedConfig {
     public static JSONObject snapshot(Cfg cfg) throws Exception {
         return new JSONObject().put("port", cfg.port).put("token", cfg.token)
                 .put("status_notification", cfg.statusNotification)
-                .put("foreground_keepalive", cfg.foregroundKeepalive)
                 .put("wake_lock_auto", cfg.wakeLockAuto).put("wifi_sustain", cfg.wifiSustain);
     }
 }

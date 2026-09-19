@@ -111,8 +111,8 @@ public final class Compat {
     };
 
     /**
-     * 模块会写入的字段名。结构体的字段改名是静默失败：`Ref.put` 找不到字段就退化成
-     * `XposedHelpers` 的老路，值写不进去，服务端只回参数错误。
+     * 模块会写入的字段名。结构体的字段改名是静默失败：`Ref.put` 找不到字段就没法写入，
+     * 服务端只回参数错误。
      */
     private static final String[][] STRUCT_FIELDS = {
             {"GroupDetailInfoReq", "groupCode", "appid"},

@@ -67,7 +67,7 @@ public final class MainActivity extends Activity {
     private TextView versionStatus, diagnostics, diagnosticHint, dirtyLabel, sourceLabel;
     private Button refreshButton, saveButton, revealButton, reportButton, shareButton;
     private EditText portInput, tokenInput;
-    private final Switch[] toggles = new Switch[4];
+    private final Switch[] toggles = new Switch[ManagedConfig.SWITCHES.length];
     private ExpressiveProgress progress;
     private final Runnable poll = new Runnable() { @Override public void run() { if (resumed) refresh(); } };
 
@@ -177,8 +177,8 @@ public final class MainActivity extends Activity {
         Button copyToken = ui.button("复制令牌", false); copyToken.setOnClickListener(v -> { if (tokenInput.length() == 0) toast("当前令牌为空"); else copy("连接令牌", tokenInput.getText().toString(), true); }); network.addView(copyToken, params(8));
         content.addView(network, params(16));
         LinearLayout behavior = card(ui.container, 24); behavior.addView(ui.text("运行偏好", 20, ui.ink, true), params(0));
-        String[] labels = {"状态通知", "前台保活", "自动保持唤醒", "保持 Wi-Fi 连接"};
-        String[] hints = {"显示连接状态；启用前台保活时仍需保留服务通知。", "QQ 在线时使用前台服务，降低后台进程被回收的概率。", "QQ 启动时自动获取唤醒锁，会增加待机耗电。", "客户端连接期间保持 Wi-Fi 锁，有助于息屏传输。"};
+        String[] labels = {"状态通知", "自动保持唤醒", "保持 Wi-Fi 连接"};
+        String[] hints = {"显示连接状态。", "QQ 启动时自动获取唤醒锁，会增加待机耗电。", "客户端连接期间保持 Wi-Fi 锁，有助于息屏传输。"};
         for (int i = 0; i < toggles.length; i++) {
             Switch toggle = toggle(labels[i]); final int index = i;
             toggle.setChecked(state == null ? config.optBoolean(ManagedConfig.SWITCHES[i], true) : state.getBoolean("toggle" + i));
@@ -281,7 +281,6 @@ public final class MainActivity extends Activity {
             diagnostics.setText("QQ 版本  " + health.optString("qq_version", "未知")
                     + "\n\n内核接口  " + (compat == null ? "待检查" : compat.optInt("passed") + " / " + compat.optInt("total"))
                     + "\n\n状态通知  " + (health.optString("notice").contains("posted=yes") ? "已发布" : "关闭或等待系统授权")
-                    + "\n\n前台保活  " + (health.optString("keepalive").contains("fgs=on") ? "运行中" : "未启用或待就绪")
                     + "\n\n请求失败  " + (sso == null ? 0 : sso.optInt("failures")) + " 次"
                     + "\n\n会话错误  " + (sso == null ? 0 : sso.optInt("session_errors")) + " 次");
             diagnosticHint.setText(!appVersion().equals(health.optString("version")) ? "正在运行旧版模块。重新启动 QQ 后，新版本才会生效。" : "在线状态来自 QQ 内核，不能单独证明服务端会话有效。遇到消息不通时，请结合离线记录与实际连接排查。");

@@ -17,9 +17,8 @@ import com.satori.qq.L;
  * POST_NOTIFICATIONS grant — the module declares no notification permission of its own.
  * A single low-importance (silent) channel carries one ongoing entry whose text tracks the
  * live service state, giving the operator a human-readable "is the bot alive" indicator that
- * mirrors the machine-readable {@code GET /healthz} line. When foreground keepalive is on the
- * same {@link Notification} is handed to {@code startForeground} (see {@code Keepalive}); this
- * class only builds and posts it, it grants no keep-alive priority by itself.
+ * mirrors the machine-readable {@code GET /healthz} line. 本类只负责构建与发布，不附带任何
+ * 保活优先级。
  *
  * <p>Tapping the entry opens QQ. The module runs under QQ's identity, so the host package is QQ
  * itself and its launcher activity is the tap target. The {@link PendingIntent} is resolved once

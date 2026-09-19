@@ -6,15 +6,13 @@ import com.satori.qq.L;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
 
-import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import com.satori.qq.xp.XC_MethodHook;
-import com.satori.qq.xp.XposedBridge;
+import com.satori.qq.xp.Xp;
 
 /**
  * Raw QQNT packet transport for QQ 9.3.50.
@@ -27,14 +25,13 @@ import com.satori.qq.xp.XposedBridge;
  * therefore unnecessary and fragile (the actual API is getSign(String, byte[]), not the
  * three-argument signature that older community notes sometimes show).</p>
  *
- * <p>Replies are correlated by the NT requestId at
- * IQQNTWrapperSession.CppProxy.onSendSSOReply(...). Replies belonging to this class are consumed
- * before they reach the native session, because their requestIds were allocated here rather than
- * by the native kernel.  All ordinary QQNT replies pass through untouched.</p>
+ * <p>Replies are correlated by the NT requestId. 0.23.0 起回包通道完全走 JNI 层：native 用
+ * {@code RegisterNatives} 把 {@code IQQNTWrapperSession$CppProxy.native_onSendSSOReply} 换成
+ * 自己的实现，再回调 {@link #onNativeSsoReply}。属于本模块的 requestId 在这里被消费掉，
+ * native 不会把它们喂进 QQ 的原生会话（那些 id 是模块自己分配的，QQ 那边找不到）；
+ * 其余回包原样转交原实现，普通 QQNT 收发不受影响。</p>
  */
 public final class PacketSvc {
-    private static final String SESSION_CPP =
-            "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
     private static final String KERNEL_SERVICE = "com.tencent.qqnt.kernel.api.IKernelService";
     private static final String SEND_PARAM =
             "com.tencent.qqnt.kernel.nativeinterface.SendRequestParam";
@@ -129,67 +126,64 @@ public final class PacketSvc {
 
     private final QQClient qq;
     private final Ref ref;
-    private final ConcurrentHashMap<Long, Pending> pending = new ConcurrentHashMap<>();
-    private volatile boolean hookInstalled;
+    /** 回包回调是 static（native 直接调），所以待处理表和反射句柄都放静态。 */
+    private static final ConcurrentHashMap<Long, Pending> pending = new ConcurrentHashMap<>();
+    private static volatile Ref sref;
+    private static volatile boolean ssoHookInstalled;
 
     public PacketSvc(QQClient qq) {
         this.qq = qq;
         this.ref = qq.ref;
+        sref = qq.ref;
     }
 
-    /** Install the requestId reply hook. Safe to call more than once. */
+    /**
+     * 装 SSO 回包通道。幂等。
+     *
+     * <p>native 那边取不到 QQ 的原函数指针时（客户端换实现 / ART 用了 opaque jni id）会返回
+     * false：裸 SSO 相关的功能报不可用，其余照常。
+     */
     public synchronized void installHooks() {
-        if (hookInstalled) return;
+        if (ssoHookInstalled) return;
+        sref = ref;
         try {
-            Class<?> sessionClass = ref.cls(SESSION_CPP);
-            Method reply = null;
-            for (Method m : sessionClass.getDeclaredMethods()) {
-                Class<?>[] p = m.getParameterTypes();
-                if (m.getName().equals("onSendSSOReply") && p.length == 5
-                        && p[0] == long.class && p[1] == String.class && p[2] == int.class) {
-                    reply = m;
-                    break;
-                }
-            }
-            if (reply == null) throw new NoSuchMethodException("CppProxy.onSendSSOReply(long,...)");
-            reply.setAccessible(true);
-            XposedBridge.hookMethod(reply, new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam p) {
-                    if (p.args == null || p.args.length < 5) return;
-                    long requestId = Ref.asLong(p.args[0]);
-                    Pending wait = pending.remove(requestId);
-                    if (wait == null) return; // QQ's own request: never interfere.
-                    try {
-                        // QQ 9.3.50 signature is
-                        // (requestId, ssoCmd, resultCode, errorMsg, MsfRspInfo). Retain the numeric
-                        // command/sub-command in Pending for callers.
-                        wait.result = decodeReply(requestId, wait.command,
-                                wait.subCommand, wait.oidb, Ref.asInt(p.args[2]),
-                                Ref.asStr(p.args[3]), p.args[4]);
-                    } catch (Throwable t) {
-                        Result r = new Result();
-                        r.requestId = requestId;
-                        r.command = wait.command;
-                        r.subCommand = wait.subCommand;
-                        r.error = "reply decode failed: " + t;
-                        wait.result = r;
-                    } finally {
-                        wait.latch.countDown();
-                    }
-                    // This requestId was allocated outside the native kernel. Do not feed the
-                    // matching reply into its native pending-request table.
-                    p.setResult(null);
-                }
-            });
-            hookInstalled = true;
-            L.i("PacketSvc: hooked QQNT onSendSSOReply");
+            ssoHookInstalled = Xp.nativeInstallSsoHook(Xp.host());
         } catch (Throwable t) {
             L.e("PacketSvc hook install failed", t);
+            return;
         }
+        if (ssoHookInstalled) L.i("PacketSvc: replaced native_onSendSSOReply");
+        else L.e("PacketSvc: native SSO hook unavailable; raw SSO features disabled", null);
+    }
+
+    /**
+     * native 侧收到 SSO 回包时回调这里（它替换了 QQ 的 {@code native_onSendSSOReply}）。
+     *
+     * @return true 表示本模块已经消费掉这条回包，native 不要再转给 QQ 的原生会话——这些
+     *         requestId 是模块自己分配的，喂进去 QQ 也找不到对应请求。
+     */
+    public static boolean onNativeSsoReply(long requestId, String ssoCmd, int resultCode,
+                                           String errorMsg, Object info) {
+        Pending wait = pending.remove(requestId);
+        if (wait == null) return false;  // QQ 自己的请求：原样放行
+        try {
+            wait.result = decodeReply(requestId, wait.command, wait.subCommand, wait.oidb,
+                    resultCode, errorMsg, info);
+        } catch (Throwable t) {
+            Result r = new Result();
+            r.requestId = requestId;
+            r.command = wait.command;
+            r.subCommand = wait.subCommand;
+            r.error = "reply decode failed: " + t;
+            wait.result = r;
+        } finally {
+            wait.latch.countDown();
+        }
+        return true;
     }
 
     public boolean isReady() {
-        return hookInstalled && qq.getSession() != null && qq.appRuntime() != null;
+        return ssoHookInstalled && qq.getSession() != null && qq.appRuntime() != null;
     }
 
     public Result sendOidb(int command, int subCommand, byte[] body) {
@@ -291,7 +285,7 @@ public final class PacketSvc {
         Result failure = new Result();
         failure.command = command;
         failure.subCommand = subCommand;
-        if (!hookInstalled) {
+        if (!ssoHookInstalled) {
             failure.error = "PacketSvc reply hook is not installed";
             return failure;
         }
@@ -316,8 +310,8 @@ public final class PacketSvc {
         try {
             Object kernel = ref.call(runtime, "getRuntimeService", ref.cls(KERNEL_SERVICE), "");
             if (kernel == null) throw new IllegalStateException("IKernelService unavailable");
-            // Private factory used by QQNT during session init. XposedHelpers.callMethod can invoke
-            // it reflectively and returns the exact adapter wired to this KernelServiceImpl.
+            // Private factory used by QQNT during session init; reflective call returns the exact
+            // adapter wired to this KernelServiceImpl.
             Object adapter = ref.call(kernel, "getIDependsAdapter");
             if (adapter == null) throw new IllegalStateException("IDependsAdapter unavailable");
 
@@ -360,8 +354,8 @@ public final class PacketSvc {
         }
     }
 
-    private Result decodeReply(long requestId, int command, int subCommand, boolean oidb,
-                               int callbackResult, String callbackError, Object info) {
+    private static Result decodeReply(long requestId, int command, int subCommand, boolean oidb,
+                                      int callbackResult, String callbackError, Object info) {
         Result r = new Result();
         r.requestId = requestId;
         r.command = command;
@@ -376,7 +370,7 @@ public final class PacketSvc {
         r.trpcFuncCode = intField(info, "trpcFuncCode", -1);
         String msfError = strField(info, "errorMsg");
         r.error = appendError(r.error, msfError);
-        Object packet = ref.get(info, "pbBuffer");
+        Object packet = sref.get(info, "pbBuffer");
         if (packet instanceof byte[]) r.packet = (byte[]) packet;
         if (!oidb) {
             // Raw trpc reply: hand the body back untouched, no OIDB envelope to parse.
@@ -400,12 +394,12 @@ public final class PacketSvc {
         return r;
     }
 
-    private int intField(Object o, String field, int fallback) {
-        try { return Ref.asInt(ref.get(o, field)); } catch (Throwable t) { return fallback; }
+    private static int intField(Object o, String field, int fallback) {
+        try { return Ref.asInt(sref.get(o, field)); } catch (Throwable t) { return fallback; }
     }
 
-    private String strField(Object o, String field) {
-        try { return Ref.asStr(ref.get(o, field)); } catch (Throwable t) { return ""; }
+    private static String strField(Object o, String field) {
+        try { return Ref.asStr(sref.get(o, field)); } catch (Throwable t) { return ""; }
     }
 
     private static String appendError(String a, String b) {

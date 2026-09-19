@@ -3,7 +3,6 @@ package com.satori.qq;
 import com.satori.qq.core.MsgStore;
 import com.satori.qq.core.SatoriHub;
 import com.satori.qq.qq.EnvProbe;
-import com.satori.qq.qq.EnvShield;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.xp.Xp;
 
@@ -11,7 +10,7 @@ import com.satori.qq.xp.Xp;
  * 桥接入口（0.22.0 起由 {@link Boot} 从 Zygisk 注入路径调进来，不再由 libxposed 框架回调）。
  *
  * <p>每个 QQ 进程都会走到这里：主进程起 Satori 桥接，其余进程（:MSF 等）什么都不做——
- * 钩子只在需要它们的进程里装。
+ * 需要内核会话与回包钩子的只有主进程。
  */
 public final class Main {
 
@@ -43,7 +42,6 @@ public final class Main {
                 return;
             }
 
-            EnvShield.install(host);
             EnvProbe.hold(host);
             L.i("bridge loading in process " + process);
             MsgStore store = new MsgStore();

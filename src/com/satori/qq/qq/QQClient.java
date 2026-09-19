@@ -2655,6 +2655,22 @@ public final class QQClient {
         return groupInfoCache.get(groupCode);
     }
 
+    /** 见过的群名（群号 → 名字）。只记非空的，用来判断「名字变空了」是不是真空了。 */
+    private final java.util.concurrent.ConcurrentHashMap<Long, String> knownGroupNames =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    public void rememberGroupName(long groupCode, String name) {
+        if (groupCode == 0 || name == null || name.isEmpty()) return;
+        String prev = knownGroupNames.put(groupCode, name);
+        if (prev != null && !prev.equals(name)) L.i("group name " + groupCode + ": " + prev + " -> " + name);
+    }
+
+    /** 我们见过的这个群的名字；没见过（或一直是空）返回 null。 */
+    public String knownGroupName(long groupCode) { return knownGroupNames.get(groupCode); }
+
+    /** 见过名字的群号。名字守卫只处理这些群——本来就没名字的群不该被改名。 */
+    public java.util.Set<Long> knownGroupCodes() { return knownGroupNames.keySet(); }
+
     /**
      * 群名：读内核 simple-info 的 `groupName`，空了退到 `remarkName`（本地备注名）。
      *

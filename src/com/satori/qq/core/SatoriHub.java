@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.10";
+    public static final String APP_VERSION = "0.23.11";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -320,6 +320,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         // 抗冻状态：adj 低于本机 freezer 阈值（900）就不会被冻，
                         // service 是「让 QQ 自己的服务保持已启动」那一步的结果。
                         .put("keepalive", com.satori.qq.qq.Keepalive.diag())
+                        .put("name_guard", nameGuardDiag())
                         // 模块自己发的 SSO 请求失败了几条。`session_errors` 涨了说明有请求
                         // 撞上 QQ 认「票据失效」的那组错误码——即「接口层把会话打废」，
                         // 而不是环境检测。这是把踢线成因分开的判据，详见 PacketSvc。
@@ -3054,6 +3055,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 JSONObject o = new JSONObject();
                 long gid = Ref.asLong(qq.ref.get(gi, "groupCode"));
                 String name = qq.groupName(gid);
+                qq.rememberGroupName(gid, name);
                 rememberGroup(gid, name);
                 o.put("group_id", gid);
                 o.put("group_name", name);
@@ -3155,7 +3157,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (gi == null) throw new ApiError(1404, "group not found: " + groupId);
         JSONObject o = new JSONObject();
         o.put("group_id", Ref.asLong(qq.ref.get(gi, "groupCode")));
-        o.put("group_name", qq.groupName(groupId));
+        String groupName = qq.groupName(groupId);
+        qq.rememberGroupName(groupId, groupName);
+        o.put("group_name", groupName);
         o.put("member_count", Ref.asInt(qq.ref.get(gi, "memberCount")));
         o.put("max_member_count", Ref.asInt(qq.ref.get(gi, "maxMember")));
         int flag3 = Ref.asInt(qq.ref.get(gi, "groupFlagExt3"));
@@ -4298,6 +4302,59 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private volatile long pendingUin = 0;
     private volatile int pendingUinTicks = 0;
 
+    private volatile long lastNameGuardMs;
+    private long nameRestores;
+    private long nameRestoreWindowStart;
+    private volatile String nameGuardDiag = "idle";
+
+    /** 名字守卫的最近一次结论，healthz / internal/status 里看得到。 */
+    private String nameGuardDiag() { return nameGuardDiag; }
+
+    /**
+     * 群名守卫。
+     *
+     * <p>2026-09-19 起，测试群的名字反复变空，而 `satori-writes.log` 里**没有任何写入记录**：
+     * 不是我们的改名路径干的，也一直没抓到是谁。这里做两件确定有用的事——
+     * 先用**全量刷新**把「本地缓存没名字」与「真的没名字」分开（前者刷新就回来了，一个字也不写），
+     * 刷新后还是空，就用我们见过的那个名字写回去，并记进审计。每小时最多恢复 2 次：
+     * 万一有个未知的清除者在打拉锯，日志里看得见，也不至于变成无限改名。
+     */
+    private void nameGuardTick(long now) {
+        if (now - lastNameGuardMs < 120_000) return;
+        lastNameGuardMs = now;
+        java.util.Set<Long> known = qq.knownGroupCodes();
+        if (known.isEmpty()) return;
+        java.util.List<Long> empty = new java.util.ArrayList<>();
+        for (Long gid : known) {
+            if (gid == null || gid == 0) continue;
+            if (!qq.groupName(gid).isEmpty()) continue;
+            if (qq.knownGroupName(gid) == null) continue;
+            empty.add(gid);
+        }
+        if (empty.isEmpty()) return;
+        qq.refreshGroupList();
+        if (nameRestoreWindowStart == 0 || now - nameRestoreWindowStart > 3_600_000L) {
+            nameRestoreWindowStart = now;
+            nameRestores = 0;
+        }
+        StringBuilder d = new StringBuilder();
+        for (Long gid : empty) {
+            if (!qq.groupName(gid).isEmpty()) {
+                d.append("refresh-back:").append(gid).append(' ');
+                continue;   // 只是本地缓存空了，刷新就回来了，不写
+            }
+            if (nameRestores >= 2) {
+                d.append("budget-used:").append(gid).append(' ');
+                continue;
+            }
+            String want = qq.knownGroupName(gid);
+            QQClient.OpResult r = qq.setGroupName(gid, want);
+            nameRestores++;
+            d.append("restored:").append(gid).append('=').append(want).append('/').append(r.describe()).append(' ');
+        }
+        nameGuardDiag = d.length() == 0 ? "idle" : d.toString().trim();
+    }
+
     private void startStatusMonitor() {
         Thread t = new Thread(() -> {
             boolean previous = qq.isOnline();
@@ -4318,6 +4375,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         previous = online;
                     }
                     trackLoginChange();
+                    try { nameGuardTick(now); } catch (Throwable e) { L.e("nameGuardTick", e); }
                     if (cfg.heartbeat && now >= nextHeartbeat) {
                         nextHeartbeat = now + interval;
                     }

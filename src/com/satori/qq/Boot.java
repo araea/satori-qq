@@ -22,6 +22,9 @@ import java.lang.reflect.Method;
  */
 public final class Boot {
 
+    /** native 侧的诊断档位（交接文档 §4）：见 native/satori.cpp 里的 kModeFile。 */
+    private static final String MODE_BOOT = "boot";
+
     private static volatile boolean started;
 
     private Boot() {}
@@ -30,15 +33,16 @@ public final class Boot {
     public static void start(String process) {
         if (started) return;
         started = true;
-        L.i("zygisk bootstrap in " + process);
+        final String mode = System.getProperty("satori.zygisk.mode", "hooks");
+        L.i("zygisk bootstrap in " + process + " mode=" + mode);
         try {
-            hookApplicationCreate(process);
+            hookApplicationCreate(process, mode);
         } catch (Throwable t) {
             L.e("bootstrap failed in " + process, t);
         }
     }
 
-    private static void hookApplicationCreate(final String process) throws Throwable {
+    private static void hookApplicationCreate(final String process, final String mode) throws Throwable {
         Class<?> instrumentation = Class.forName("android.app.Instrumentation");
         Method target = instrumentation.getDeclaredMethod("callApplicationOnCreate",
                 Application.class);
@@ -52,17 +56,23 @@ public final class Boot {
                 Context app = (Context) param.args[0];
                 ClassLoader host = app.getClassLoader();
                 if (host == null) return;
-                L.i("host classloader ready in " + process);
+                L.i("host classloader ready in " + process + " mode=" + mode);
                 // 引导的重活（装 ~75 个钩子、起 HTTP 服务）不能跑在这个回调里：它位于
                 // Application 创建路径上，同步做完会把 QQ 启动拖住甚至卡死，而且此时栈上
                 // 可能正停在我们要钩的方法里。丢到独立线程，QQ 照常启动。
                 Thread boot = new Thread(() -> {
                     Xp.attach(host, process);
+                    if (MODE_BOOT.equals(mode)) {
+                        // 诊断档：只证明「引擎 + 一个引导锚点」能拿到宿主 classloader，
+                        // 不装任何 QQ 的钩子、不起服务。人脸验证的结果决定这一层是否干净。
+                        L.i("mode=boot: classloader captured, stopping before any QQ hook");
+                        return;
+                    }
                     Main.onHostReady(host, process);
                 }, "satori-boot");
                 boot.start();
             }
         });
-        L.i("hooked Instrumentation.callApplicationOnCreate");
+        L.i("hooked Instrumentation.callApplicationOnCreate mode=" + mode);
     }
 }

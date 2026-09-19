@@ -17,9 +17,14 @@
 //   4. 调 com.satori.qq.Boot.start(进程名)；拿到 QQ 的 classloader、装真正的钩子都在那之后。
 #include <jni.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <android/log.h>
 
+#include <cctype>
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include <string_view>
 
@@ -39,6 +44,154 @@ extern "C" const uint8_t satori_dex_end[];
 namespace {
 
 constexpr const char *kTarget = "com.tencent.mobileqq";
+
+// ---- 诊断档位（交接文档 §4）------------------------------------------------
+//
+// 目的：把「人脸被判失败」拆成三层，定位到底哪一层的痕迹被判。
+//   off    只注入，零动作（已知能过，做基线；不读 /proc、不写文件、只打日志）
+//   inert  只初始化 hook 引擎，不装任何钩子（引擎自身的痕迹：libart 内联钩子 /
+//          Dobby trampoline / 可执行内存）
+//   boot   引擎 + 只钩引导锚点 Instrumentation.callApplicationOnCreate，
+//          拿到宿主 classloader 就停（一个 bootclasspath 方法的 ArtMethod 改写）
+//   hooks  完整功能（默认）
+//
+// 档位从 QQ 自己的 files 目录读（注入进程就是 QQ 的 uid，能读自己的数据目录）：
+//   /data/data/com.tencent.mobileqq/files/satori-zygisk-mode
+// 文件不存在时按 hooks 走，保证功能不受影响。
+constexpr const char *kModeFile = "/data/data/com.tencent.mobileqq/files/satori-zygisk-mode";
+constexpr const char *kReportFile = "/data/data/com.tencent.mobileqq/files/satori-selfcheck.txt";
+
+std::string g_mode = "hooks";
+
+std::string ReadModeFile() {
+    int fd = open(kModeFile, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return "hooks";
+    char buf[64];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return "hooks";
+    buf[n] = '\0';
+    std::string s(buf);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t')) {
+        s.pop_back();
+    }
+    size_t b = s.find_first_not_of(" \t");
+    if (b != std::string::npos) s.erase(0, b); else s.clear();
+    if (s.empty()) return "hooks";
+    return s;
+}
+
+/**
+ * 进程内自查：按 QQ 检测库读 /proc/self/maps 的思路数一遍。
+ *
+ * 必须从进程内读——从 Termux 里 grep /proc/<pid>/maps 是内核视角（能看见进程内
+ * 过滤过的行），不是检测库视角。只读，不改任何状态。
+ */
+void SelfCheck(const char *stage) {
+    FILE *f = fopen("/proc/self/maps", "re");
+    if (f == nullptr) {
+        LOGE("selfcheck(%s): no /proc/self/maps", stage);
+        return;
+    }
+    static const char *kTokens[] = {
+            "lsposed", "zygisk", "magisk", "libriru", "me.bmax.apatch",
+            "kernelsu", "apatch", "susfs", "lsplant", "dobby", "satori", "memfd:",
+    };
+    int total = 0, exec_cnt = 0, anon_exec = 0, rwx = 0, hit_cnt = 0;
+    long exec_bytes = 0;
+    std::string hits;
+    char line[1024];
+    while (fgets(line, sizeof(line), f) != nullptr) {
+        total++;
+        unsigned long start = 0, end = 0, off = 0, ino = 0;
+        char perms[8] = {0}, dev[24] = {0}, path[600] = {0};
+        int n = sscanf(line, "%lx-%lx %7s %lx %23s %lu %599[^\n]",
+                       &start, &end, perms, &off, dev, &ino, path);
+        bool has_path = n >= 7;
+        bool is_exec = strlen(perms) >= 3 && perms[2] == 'x';
+        bool is_rwx = strlen(perms) >= 3 && perms[0] == 'r' && perms[1] == 'w' && perms[2] == 'x';
+        if (is_exec) {
+            exec_cnt++;
+            exec_bytes += static_cast<long>(end - start);
+        }
+        if (is_rwx) rwx++;
+        // 匿名可执行段：没有路径名、又是 x。自研引擎最容易多出来的就是这一类。
+        if (is_exec && !has_path) anon_exec++;
+        if (!has_path) continue;
+        std::string lower(path);
+        while (!lower.empty() && (lower[0] == ' ' || lower[0] == '\t')) lower.erase(0, 1);
+        for (char &c : lower) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        for (const char *t : kTokens) {
+            if (lower.find(t) != std::string::npos) {
+                hit_cnt++;
+                if (hits.size() < 4096) hits += "  " + lower + "\n";
+                break;
+            }
+        }
+    }
+    fclose(f);
+
+    char head[256];
+    snprintf(head, sizeof(head),
+             "[%s] stage=%s mode=%s pid=%d total=%d exec=%d(%.1fMB) anon_exec=%d rwx=%d hits=%d\n",
+             TAG, stage, g_mode.c_str(), getpid(), total, exec_cnt,
+             static_cast<double>(exec_bytes) / 1048576.0, anon_exec, rwx, hit_cnt);
+    LOGI("%s", head);
+    if (!hits.empty()) LOGI("selfcheck hits:\n%s", hits.c_str());
+
+    FILE *out = fopen(kReportFile, "ae");
+    if (out == nullptr) return;
+    // 15 秒一条，别让它无限长；超过 256KB 就从头再来。
+    if (ftell(out) > 256 * 1024) {
+        fclose(out);
+        out = fopen(kReportFile, "we");
+        if (out == nullptr) return;
+    }
+    fputs(head, out);
+    if (!hits.empty()) {
+        fputs("hits:\n", out);
+        fputs(hits.c_str(), out);
+    }
+    fclose(out);
+}
+
+bool g_self_check_loop_started = false;
+
+void *SelfCheckLoop(void *) {
+    for (;;) {
+        sleep(15);
+        SelfCheck("tick");
+    }
+    return nullptr;
+}
+
+/** 周期快照：人脸验证发生在注入很久之后，只拍开机那一下不够。 */
+void StartSelfCheckLoop() {
+    if (g_self_check_loop_started) return;
+    g_self_check_loop_started = true;
+    pthread_t t;
+    if (pthread_create(&t, nullptr, SelfCheckLoop, nullptr) == 0) {
+        pthread_detach(t);
+    } else {
+        LOGE("cannot start self-check thread");
+    }
+}
+
+/** 让 Java 侧知道当前档位（Boot 用 boot 档在拿到 classloader 后停下）。 */
+void SetJavaMode(JNIEnv *env, const std::string &mode) {
+    jclass sys = env->FindClass("java/lang/System");
+    if (sys == nullptr) { env->ExceptionClear(); return; }
+    jmethodID set_prop = env->GetStaticMethodID(
+            sys, "setProperty", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+    if (set_prop == nullptr) { env->ExceptionClear(); return; }
+    jstring k = env->NewStringUTF("satori.zygisk.mode");
+    jstring v = env->NewStringUTF(mode.c_str());
+    env->CallStaticObjectMethod(sys, set_prop, k, v);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(sys);
+}
 
 elfx::Elf g_art;
 
@@ -189,6 +342,15 @@ bool StartJava(JNIEnv *env, const char *process) {    const auto *begin = satori
 }
 
 void Bootstrap(JNIEnv *env, const char *process) {
+    if (g_mode == "off") {
+        // 基线：只留一行日志。不读 /proc、不写文件、不起线程——和当初「只注入零动作」
+        // 能过人脸的那版探针保持一致。
+        LOGI("mode=off: injected, doing nothing pid=%d name=%s", getpid(), process);
+        return;
+    }
+
+    SelfCheck("pre-init");
+
     lsplant::InitInfo info{};
     info.inline_hooker = &InlineHook;
     info.inline_unhooker = &InlineUnhook;
@@ -198,8 +360,18 @@ void Bootstrap(JNIEnv *env, const char *process) {
         LOGE("lsplant init failed in %s", process);
         return;
     }
-    LOGI("lsplant ready in %s", process);
+    LOGI("lsplant ready in %s (mode=%s)", process, g_mode.c_str());
+    SelfCheck("post-init");
+    StartSelfCheckLoop();
+
+    if (g_mode == "inert") {
+        // 引擎初始化完了，一个钩子都不装，到这里为止。
+        LOGI("mode=inert: engine initialized, no hooks installed in %s", process);
+        return;
+    }
+
     ExemptHiddenApis(env);
+    SetJavaMode(env, g_mode);
     StartJava(env, process);
 }
 
@@ -221,6 +393,7 @@ public:
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
         if (env_ == nullptr || process_.empty()) return;
         if (process_.compare(0, strlen(kTarget), kTarget) != 0) return;
+        g_mode = ReadModeFile();
         Bootstrap(env_, process_.c_str());
     }
 

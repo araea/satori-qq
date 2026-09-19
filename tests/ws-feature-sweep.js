@@ -10,7 +10,12 @@
 
 const { connect, delay } = require('./satori-client');
 
-const GROUP = String(process.env.SATORI_TEST_GROUP || '280183116');
+// 测试群必须显式给：原来的默认群 280183116 已于 2026-09-19 解散。
+const GROUP = String(process.env.SATORI_TEST_GROUP || '');
+if (!GROUP) {
+  console.error('需要 SATORI_TEST_GROUP=<群号>：原来的默认测试群 280183116 已于 2026-09-19 解散。');
+  process.exit(2);
+}
 
 const results = [];
 function record(name, ok, detail) {

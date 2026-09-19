@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.13";
+    public static final String APP_VERSION = "0.23.14";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -4327,6 +4327,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         java.util.List<Long> empty = new java.util.ArrayList<>();
         for (Long gid : known) {
             if (gid == null || gid == 0) continue;
+            // 已经不在群列表里的（退群、被移出、群被解散）读出来也是空，但那不是「名字变空」，
+            // 别一直挂在 name_guard 里——2026-09-19 测试群解散后就留下过一条这样的噪音。
+            if (qq.groupInfo(gid) == null) continue;
             if (!qq.groupName(gid).isEmpty()) continue;
             if (qq.knownGroupName(gid) == null) continue;
             empty.add(gid);

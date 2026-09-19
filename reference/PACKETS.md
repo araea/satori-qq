@@ -24,7 +24,7 @@ body `{uin:target, ext:0, groupUin或friendUin:peer}`。群传 groupUin，私聊
 
 ### send_like（点赞资料卡）
 
-安卓 QQ 9.3.55 没有 ProfileLikeService 内核服务，也不能照搬桌面端的 `OidbSvcTrpcTcp.0x7E5_104`：服务端把该 rule 绑定在桌面 appid 上，手机 appid 发过去一律回 `oidb=319 "[oidb] rule type not match appid"`。换 source 值无效，也不是包格式问题。命令号错会回 236 `cmd not found`。手机客户端走的是老式 WUP：`VisitorSvc.ReqFavorite`，已实现于 `qq/LegacySvc.java`，真机 QQ 9.3.55 回包成功。
+安卓 QQ 9.3.55 没有 ProfileLikeService 内核服务，也不能照搬桌面端的 `OidbSvcTrpcTcp.0x7E5_104`：服务端把该 rule 绑定在桌面 appid 上，手机 appid 发过去一律回 `oidb=319 "[oidb] rule type not match appid"`。换 source 值无效，也不是包格式问题。命令号错会回 236 `cmd not found`。手机客户端走的是老式 WUP：`VisitorSvc.ReqFavorite`，曾实现于 `qq/LegacySvc.java`，真机 QQ 9.3.55 回包成功。该动作（`like`）与 `LegacySvc` 已随 0.23.0 移除，本段只留包格式备查。
 
 发送：构造 `ToServiceMsg("mobileqq.service", selfUin, "VisitorSvc.ReqFavorite")`，`extraData` 填 `selfUin`(long)、`targetUin`(long)、`favoriteSource`(int)、`iCount`(int)、`from`(int)，交给 `AppInterface#sendToService`。QQ 的 `MobileQQServiceBase` 会用 `com.tencent.mobileqq.app.ch#g` 编码 `QQService.ReqFavorite`（JCE，非 protobuf）并签名，无需手工拼包。`ReqFavorite` 字段号：
 
@@ -76,5 +76,5 @@ body field3=`DownloadReq{1:group,2:appId=7,3:busId(默认102),4:fileId}`。响�
 
 1. `PacketSvc` 反射取 `IKernelService.getIDependsAdapter()`，调用 `onSendSSORequest`，传精确的 `OidbSvcTrpcTcp.0x{CMD大写HEX}_{sub}` 与 `Pb.oidb(...)`
 2. QQ 的 `KernelServlet` / MSF 继续负责 SSO framing、账号元数据与 QSec 签名，无需手工 QSign
-3. hook `IQQNTWrapperSession$CppProxy.onSendSSOReply`，按自分配 requestId 关联回包，只消费模块自己的请求
+3. 用 `RegisterNatives` 换掉 `IQQNTWrapperSession$CppProxy.native_onSendSSOReply` 的入口，按自分配 requestId 关联回包，只消费模块自己的请求
 4. 不要改用 `onSendOidbRequest`：它在本机把 0x8FC 的数值 2300 拼成字符串 `0x2300`，实测得到 236 `cmd not found`。改为显式 SSO serviceCmd 后，在内部群主测试群 `675983807` 以原值写回空头衔，真机返回成功（status=ok, retcode=0）

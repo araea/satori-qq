@@ -4507,7 +4507,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("platform", PLATFORM)
                 .put("adapter", ADAPTER)
                 .put("qq_version", qqVersion.isEmpty() ? "unknown" : qqVersion)
-                .put("runtime", "Android QQNT/Xposed")
+                .put("runtime", "Android QQNT/Zygisk (JNI)")
                 .put("manual_self_messages", cfg.manualSelfMessages)
                 .put("manual_self_user_id", manualSelfUserId(selfUin()))
                 .put("hist", "60");

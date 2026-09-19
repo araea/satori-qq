@@ -194,3 +194,38 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 - Koishi 的 `server.selfUrl` 须与 `server.port` 一致，QQ 进程才读得到资源地址
 - `manual_self_messages=true` 时投递 QQ 客户端手动发送的消息，`manual_self_user_id` 可覆盖其虚拟作者 ID
 - 私聊自己产生的消息不投递
+
+## 与官方协议的对照
+
+2026-09-19 逐条核对过。对照物：`@satorijs/protocol@1.7.0`（协议类型定义就是规范本体）、
+`@satorijs/core@4.6.0`（客户端框架）、`@satorijs/adapter-satori@1.5.1`（官方客户端）与
+`@satorijs/server` 里那份 satori 服务端实现。
+
+对齐的（都是对着实现核过的，不是照着文档猜的）：
+
+| 面 | 结论 |
+| --- | --- |
+| 传输 | `GET /v1/events` 升级 WebSocket；动作 `POST /v1/<method>`；扩展 `POST /v1/internal/<name>`（官方服务端同样只暴露 `/v1/internal/*`）。`GET` 打到动作上回 405，文案与官方服务端同义 |
+| 网关 | `IDENTIFY{token,sn}` / `READY{logins,proxy_urls}` / `PING`→`PONG` / `EVENT`，opcode 与协议一致；`sn` 递增，重连时带 `sn` 会补发错过的动作回执 |
+| 认证 | HTTP 用 `Authorization: Bearer`，WS 用 IDENTIFY 里的 `token`（官方客户端正是这样发的）；`Satori-User-ID` / `Satori-Platform` 必须指向本实现端的登录 |
+| 对象 | `Login{sn,adapter,platform,status,features,user}`、`Guild`、`Channel`、`GuildMember`、`Message`、`List{data,next?}`、`Meta{logins,proxy_urls}` |
+| 方法 | 官方 37 个里实现 31 个，`features` 只列实现得了的（客户端据此判断能力） |
+| 上传 | `upload.create` 是 multipart，回 `{<字段名>: <引用>}`，引用形如 `internal:<platform>/<selfId>/_tmp/<id>`，客户端按该路径取回——与官方服务端一致 |
+| 事件名 | `message-created`（官方客户端显式认这个，`message` 只是框架里的别名）、`guild-member-added/updated/removed`、`guild-request`、`guild-member-request`、`friend-request` |
+| 非标准事件 | 纯自定义走 `type=internal` + `_type`/`_data`；标准事件加细节走 `type=guild-member-updated` + `_type=satori-qq/mute`。前者被框架的 `dispatch` 直接派发成 `_type` 事件，后者被 `setInternal` 记成内部数据——两种约定都按框架的实现走 |
+
+刻意不同的（连同理由）：
+
+- **缺 6 个方法**：`channel.create`、`channel.delete`、`guild.role.create|update|delete`、
+  `message.update`。QQ 的群就是频道、没有自定义角色、也不支持改消息，实现它们只能是假的；
+  调用回 404，能力表里也不列。
+- **`reaction-removed` 而不是 `reaction-deleted`**：协议包（1.0.0 到 1.7.0 一致）写的是
+  `reaction-deleted`，但框架给插件的事件表（`@satorijs/core` 的 `Events`）和官方 QQ 适配器用的是
+  `reaction-added` / `reaction-removed`，两套名字在框架里**不是别名**。按「插件实际会监听哪个」选了
+  后者。要对接严格照协议包写的客户端时，这里得再补发一份 `reaction-deleted`。
+- **`login-updated`**：不在协议包的 `EventName` 里，但官方客户端的 WS 分支显式处理它（还有
+  `login-added` / `login-removed`），换号时靠它通知客户端重连。
+- **列表分页**：`List.next` 一律不返回（一次给完），官方客户端的迭代器因此只取一页。
+- **`channel.get` 多回一个 `avatar`**：协议里 `Channel` 没有这个字段，客户端会原样忽略。
+- **错误码**：令牌不对回 401（官方服务端回 403）、未知 `Satori-User-ID` 回 404（官方回 403）。
+  客户端两种都当失败处理，没有实际差别。

@@ -1,4 +1,4 @@
-## 0.23.8 · 知弦
+## 0.23.9 · 知弦
 
 ### 接口自述与真实能力对齐
 
@@ -22,6 +22,32 @@
 
 顺带把普通表情的 `faceType` 也按同一份实现的选法补齐：id ≥ 222 用 2，小于 222 用 1。
 先前一律发 1，id 大于 222 的表情在 QQ 里是画不出来的。
+
+### 常驻与抗冻：不用 hook 也要留住进程
+
+0.22.x 及更早是靠 hook 把 QQ 的服务提成前台服务来保活，去掉 hook 引擎后那条路没了。这一版补上
+不 hook 也能做的那一半，并把兜底挪到 root 侧：
+
+- **模块**：会话就绪后每十分钟把自己（QQ）的服务重新 `start` 一遍。本机实测 app freezer 的判据是
+  `oom_score_adj ≥ 900`，QQ 主进程在有已启动服务时是 ~700，冻不着；服务全停才掉进可冻结区间。
+  `/healthz` 与 `internal/status` 新增 `keepalive` 字段（`adj` / `wchan` / `service`），抗冻到底有没有
+  生效一眼能看到。
+- **看守**（`scripts/qq-revive.sh`）：解冻从「`monkey` 拉到前台」改成**写进程自己的 freezer cgroup**
+  （AOSP 按进程冻、ColorOS 按 uid 冻，两处都写 0），不打断用户、不重新登录、不消耗重启预算。
+- **手动停掉 QQ 就不再拉起**：判据是包状态的 `stopped=true`（「强行停止」置位，系统自己杀进程不会）。
+  实测：强停后看守只记一行 `skip: ... 用户手动停掉了 QQ（stopped=true），不拉起`，QQ 保持关闭；
+  手动启回来时标志自动清零，模块照常上线。
+
+移动数据侧补了说明：`wifi_sustain` 只在 Wi-Fi 下有意义（`WifiLock` 对蜂窝无效），蜂窝下靠的是
+进程不被冻/不被杀与后台数据没被限制。App 里那条设置的提示也改成了实话。
+
+### 与官方 Satori 协议的对照
+
+拉 `@satorijs/protocol@1.7.0`（协议类型即规范）、`@satorijs/core@4.6.0`、官方客户端
+`@satorijs/adapter-satori@1.5.1` 与官方服务端实现逐条核过：传输、网关 opcode、认证、对象形状、
+上传回执、事件名都对齐；结论与刻意不同的地方（缺的 6 个方法、`reaction-removed` 与协议包里
+`reaction-deleted` 的取舍、`login-updated`、列表不分页、401/403）写进了
+[docs/SATORI_SUPPORT.md](docs/SATORI_SUPPORT.md) 的「与官方协议的对照」。
 
 ### 群名「变空」的真正原因：增量更新把已知的名字覆盖掉了
 

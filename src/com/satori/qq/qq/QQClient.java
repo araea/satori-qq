@@ -271,6 +271,10 @@ public final class QQClient {
         if (mainProcess) {
             packetSvc.installHooks();
             ensureListenerAsync();
+            // 会话就绪时顺手把「让 QQ 自己的服务保持已启动」这件事起起来（见 Keepalive）：
+            // 它撑住的是本进程的 oom_score_adj，也就撑住了「不被 app freezer 冻住」。
+            Keepalive.install(appContext());
+            Keepalive.kickNow();
         }
     }
 

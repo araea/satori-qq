@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.8";
+    public static final String APP_VERSION = "0.23.9";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -317,6 +317,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("connections", server == null ? 0 : server.connectionCount())
                         .put("notice", noticeDiag())
                         .put("wakelock", wakeLockDiag())
+                        // 抗冻状态：adj 低于本机 freezer 阈值（900）就不会被冻，
+                        // service 是「让 QQ 自己的服务保持已启动」那一步的结果。
+                        .put("keepalive", com.satori.qq.qq.Keepalive.diag())
                         // 模块自己发的 SSO 请求失败了几条。`session_errors` 涨了说明有请求
                         // 撞上 QQ 认「票据失效」的那组错误码——即「接口层把会话打废」，
                         // 而不是环境检测。这是把踢线成因分开的判据，详见 PacketSvc。
@@ -4415,6 +4418,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("good", online)
                 .put("online_since_epoch_ms", onlineSinceMs)
                 .put("outbound_guard", outboundGuard.stats())
+                .put("keepalive", com.satori.qq.qq.Keepalive.diag())
                 // QQ 自己的环境结论（只读探针）
                 .put("qsec", com.satori.qq.qq.EnvProbe.snapshot())
                 .put("inbound", new JSONObject()

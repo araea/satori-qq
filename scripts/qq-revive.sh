@@ -30,6 +30,13 @@
 #   设备自己没网 -> 只记一行，不动 QQ（重启也连不上）。
 #
 # 停止：kill $(cat $QQ_REVIVE_PIDFILE)；或注释掉 service.d 里的启动行。
+#
+# 2026-09-19 两条改动（用户要求「像 Termux 的前台保护那样常驻，但不要反复无限拉起」）：
+#   1. 解冻改成写 freezer cgroup（thaw_qq），不再 monkey 拉到前台：不打断用户、不重新登录。
+#      模块侧同时做了不 hook 的那一半——让它自己的服务保持已启动，QQ 主进程因此停在
+#      adj≈700（SERVICE_ADJ），低于本机 freezing 的判据区间；极端情况下才轮到这里的解冻。
+#   2. **用户手动停掉 QQ 就不许拉起**：判据是包状态里的 stopped=true（设置里「强行停止」会置位，
+#      系统自己杀（LMK/冻死回收）不会）。restart_qq 第一件事就查它，命中就只记一行 skip。
 set -u
 # 系统工具优先。这条顺序是有代价换来的：Termux 的 $PREFIX/bin/am 是个转发给 Termux:API 的
 # 脚本，**以 root 跑不通**（它要连 Termux:API 的本地 socket）。原来把 Termux 的 bin 放在最前，
@@ -71,6 +78,12 @@ GUARD_LOG=${QQ_REVIVE_GUARD_LOG:-/data/data/com.tencent.mobileqq/files/qk_guard.
 #   （本机是 ColorOS 的 OplusHansManager，按 uid 冻、而且**前台服务不在它的判据里**，
 #    所以 dumpsys 里 FGS 正常也可能照样被冻）。oom_score_adj=200 不是「掉 cached 档」，
 #    200 是前台服务/PERCEPTIBLE 档，被冻时才抬到 1001，别拿 200 当判据。
+# 解冻方式（2026-09-19 改版）：**写进程自己的 freezer cgroup**，不再用 `monkey` 把 QQ 拉到前台。
+# 拉前台会打断用户，用户手动关掉 QQ 时还会被硬拉起来——用户 2026-09-19 明确要求不要这样。
+# AOSP 的 app freezer 按进程冻（/sys/fs/cgroup/apps/uid_<uid>/pid_<pid>），ColorOS 的
+# OplusHansManager 按 uid 冻（/sys/fs/cgroup/apps/uid_<uid>），两处都写 0；本来没冻时写 0 无害。
+# root（ksu 域）实测可写（2026-09-19 验证）。
+CGROUP_APPS=${QQ_REVIVE_CGROUP_APPS:-/sys/fs/cgroup/apps}
 THAW_WAIT=${QQ_REVIVE_THAW_WAIT:-25}
 THAW_LIMIT=${QQ_REVIVE_THAW_LIMIT:-3}
 # 冻结不一定是「一直不回」：ColorOS 的冻结是振荡的，:MSF 每约 5 分钟被 startmsf 唤醒一次，
@@ -86,6 +99,8 @@ KICK_LOG=${QQ_REVIVE_KICK_LOG:-/data/data/${PKG}/files/qk_kick.log}
 # 绝对路径，别再让 PATH 决定杀不杀得掉 QQ。
 AM=${QQ_REVIVE_AM:-/system/bin/am}
 MONKEY=${QQ_REVIVE_MONKEY:-/system/bin/monkey}
+DUMPSYS=${QQ_REVIVE_DUMPSYS:-/system/bin/dumpsys}
+STAT=${QQ_REVIVE_STAT:-/system/bin/stat}
 
 # 日志与 pid 放在 /data/adb/satori-qq 下（root 可读，普通应用读不到）。
 # 不要放到 /data/local/tmp：那个目录普通应用能进，libfekit 里也带着这个路径字符串。
@@ -240,14 +255,48 @@ session_dead_recently() {
 # 2026-09-16 干跑时实测过一次：看守把发起测试的那个 shell 杀了。
 
 # 把被冻住的 QQ 打到前台。不消耗重启预算，也不会多一次登录。
+# 精确解冻：写 QQ 自己进程的 freezer cgroup。不拉起、不重启、不动前台。
 thaw_qq() {
-    log "thaw: $PKG 进程还在但 /healthz 无响应，打到前台解冻（第 ${thaws}/${THAW_LIMIT} 次，不重启）"
-    "$MONKEY" -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    local uid d n=0 wrote=""
+    uid=$("$STAT" -c %u "/data/data/$PKG" 2>/dev/null)
+    case "$uid" in
+        ''|*[!0-9]*) uid="" ;;
+    esac
+    log "thaw: $PKG 被冻住，写 freezer cgroup 解冻（第 ${thaws}/${THAW_LIMIT} 次，不重启；uid=${uid:-?}）"
+    if [ -n "$uid" ]; then
+        if [ -w "$CGROUP_APPS/uid_$uid/cgroup.freeze" ]; then
+            printf 0 > "$CGROUP_APPS/uid_$uid/cgroup.freeze" 2>/dev/null && { n=$((n + 1)); wrote="$wrote uid"; }
+        fi
+        for d in "$CGROUP_APPS/uid_$uid"/pid_*; do
+            [ -d "$d" ] || continue
+            [ -w "$d/cgroup.freeze" ] || continue
+            printf 0 > "$d/cgroup.freeze" 2>/dev/null && { n=$((n + 1)); wrote="$wrote ${d##*/}"; }
+        done
+    fi
+    if [ "$n" -eq 0 ]; then
+        log "thaw: 一个 freezer cgroup 都没写成（uid=${uid:-?}，路径 $CGROUP_APPS），这轮不动 QQ"
+    else
+        log "thaw: 写了 $n 个 freezer cgroup:$wrote"
+    fi
     sleep "$THAW_WAIT"
+}
+
+# 用户手动停掉 QQ 了吗。`stopped=true` 由「强行停止」置位；系统自己杀进程不置位。
+# 命中就什么都不做——用户想关 QQ 的时候，看守不能跟他抢。
+qq_user_stopped() {
+    # 别用 `grep -m1 "User 0:"`：dumpsys 里还有一行 `Preferred Activities User 0:`，
+    # 它先命中，于是这个判据永远为假（2026-09-19 写完就发现）。认那行带字段的：
+    local line
+    line=$("$DUMPSYS" package "$PKG" 2>/dev/null | grep -m1 "[[:space:]]User 0: ")
+    case "$line" in *"stopped=true"*) return 0 ;; *) return 1 ;; esac
 }
 
 restart_qq() {
     local why=$1 blocked before after rc
+    if qq_user_stopped; then
+        log "skip: 想重启（$why）但用户手动停掉了 QQ（stopped=true），不拉起"
+        return 0
+    fi
     if [ "$giveup" -ne 0 ]; then
         log "skip: 想重启（$why）但已经放弃自动重启（连续 ${restarts_no_online} 次没换来在线），等账号回到在线或人工处理"
         return 0

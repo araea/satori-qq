@@ -120,6 +120,8 @@ public final class QQClient {
             for (;;) {
                 Object s = peekSession();
                 if (s != null && s != session) onSession(s);
+                // 会话在了但回包通道还没装上（QQ 的原生库可能比会话晚一步注册），继续试。
+                if (session != null && !PacketSvc.ssoHookInstalled()) packetSvc.installHooks();
                 try {
                     Thread.sleep(session == null ? 1000L : 10000L);
                 } catch (InterruptedException e) {
@@ -263,7 +265,13 @@ public final class QQClient {
         }
         session = s;
         L.d("Captured wrapper session: " + s.getClass().getName());
-        if (mainProcess) ensureListenerAsync();
+        // SSO 回包通道要等到这里才装：QQ 的原生库是建会话时才注册 native_onSendSSOReply 的，
+        // 早于那一步去 RegisterNatives，换掉的是 ART 的解析存根，转交原实现会变成互相递归
+        // （2026-09-19 实测：把 QQ 打满几个核）。installHooks 幂等，装上了就不会再试。
+        if (mainProcess) {
+            packetSvc.installHooks();
+            ensureListenerAsync();
+        }
     }
 
     /** msgService may not be ready the instant the session is created; poll until it is. */

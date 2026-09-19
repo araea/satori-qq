@@ -241,35 +241,66 @@ static jobject MakeEmbeddedLoader(JNIEnv *env, jobject parent) {
  * 不写死字段偏移，靠两条特征一起认：值必须落在一段可执行的映射里，而且不在 libart（那里是
  * 通用 JNI trampoline 的地址）也不在本模块自己的 .so 里。
  */
-static bool IsExecutableAddress(const void *p) {
+static bool MappingOf(const void *p, bool *exec, char *path, size_t path_size) {
+    if (path_size > 0) path[0] = '\0';
     if (p == nullptr) return false;
     FILE *f = fopen("/proc/self/maps", "re");
     if (f == nullptr) return false;
-    char line[512];
+    char line[1024];
     auto target = reinterpret_cast<uintptr_t>(p);
     bool found = false;
     while (fgets(line, sizeof(line), f) != nullptr) {
         uintptr_t start = 0, end = 0;
         char perms[8] = {0};
         if (sscanf(line, "%lx-%lx %7s", &start, &end, perms) != 3) continue;
-        if (target >= start && target < end) {
-            found = perms[2] == 'x';
-            break;
+        if (target < start || target >= end) continue;
+        *exec = perms[2] == 'x';
+        // 路径在第 6 个字段之后；找不到就留空（匿名映射）。
+        const char *sp = strchr(line, ' ');
+        for (int i = 0; sp != nullptr && i < 4; i++) sp = strchr(sp + 1, ' ');
+        if (sp != nullptr) {
+            while (*sp == ' ') sp++;
+            snprintf(path, path_size, "%s", sp);
+            size_t n = strlen(path);
+            while (n > 0 && (path[n - 1] == '\n' || path[n - 1] == ' ')) path[--n] = '\0';
         }
+        found = true;
+        break;
     }
     fclose(f);
     return found;
 }
 
-static int FindJniEntrySlot(uintptr_t *words, int kWords, void **out) {
+static bool IsExecutableAddress(const void *p) {
+    bool exec = false;
+    return MappingOf(p, &exec, nullptr, 0) && exec;
+}
+
+/**
+ * 原实现必须在**某个第三方 .so**里。
+ *
+ * 我们装钩子的时机可能早于 QQ 原生库注册这块 JNI：那时 data_ 里放的还是 ART 的解析存根
+ * （落在 /system 或 boot.oat 里），把它当成原实现去调，存根会把调用派回方法自己的 JNI 入口
+ * ——也就是我们，于是两边互相递归，每秒几百万次把 CPU 打满（2026-09-19 实测）。
+ */
+static bool LooksLikeThirdPartyJni(void *p, char *path, size_t path_size) {
+    bool exec = false;
+    if (!MappingOf(p, &exec, path, path_size) || !exec) return false;
+    if (path[0] == '\0') return false;                       // 匿名映射：说不清是谁的，不装
+    if (strstr(path, "/system/") != nullptr) return false;
+    if (strstr(path, "/apex/") != nullptr) return false;
+    if (strstr(path, ".oat") != nullptr) return false;
+    return strstr(path, ".so") != nullptr;
+}
+
+static int FindJniEntrySlot(uintptr_t *words, int kWords, void **out, char *path, size_t path_size) {
     for (int i = 0; i < kWords; ++i) {
         auto *p = reinterpret_cast<void *>(words[i]);
-        if (p == nullptr || !IsExecutableAddress(p)) continue;
-        Dl_info di{};
-        if (dladdr(p, &di) == 0 || di.dli_fname == nullptr) continue;
-        if (strstr(di.dli_fname, "libart") != nullptr) continue;
-        if (strstr(di.dli_fname, "libsatori") != nullptr) continue;
+        char candidate[512];
+        if (!LooksLikeThirdPartyJni(p, candidate, sizeof(candidate))) continue;
+        if (strstr(candidate, "libsatori") != nullptr) continue;
         *out = p;
+        snprintf(path, path_size, "%s", candidate);
         return i;
     }
     return -1;
@@ -316,14 +347,14 @@ static bool InstallSsoHook(JNIEnv *env, jobject loader) {
     constexpr int kWords = 8;
 
     void *orig = nullptr;
-    int slot = FindJniEntrySlot(words, kWords, &orig);
+    char lib[512] = {0};
+    int slot = FindJniEntrySlot(words, kWords, &orig, lib, sizeof(lib));
     if (slot < 0) {
-        snprintf(g_hook_info, sizeof(g_hook_info), "failed: no jni entry slot in ArtMethod");
-        NLog("cannot locate the JNI entry slot in ArtMethod of %s", kSsoMethod);
+        snprintf(g_hook_info, sizeof(g_hook_info),
+                 "failed: no third-party jni entry in ArtMethod (natives not registered yet?)");
+        NLog("%s", g_hook_info);
         return false;
     }
-    Dl_info di{};
-    const char *lib = (dladdr(orig, &di) != 0 && di.dli_fname != nullptr) ? di.dli_fname : "?";
 
     JNINativeMethod method{kSsoMethod, const_cast<char *>(kSsoSignature),
                            reinterpret_cast<void *>(&SatoriSsoReply)};
@@ -362,8 +393,14 @@ static jstring NativeSsoHookInfo(JNIEnv *env, jclass) {
 }
 
 /** 把回包交给 Java 侧；返回 true 表示本模块已经消费掉，不要再喂给 QQ 原生会话。 */
+static thread_local bool g_in_sso_reply = false;
+
 static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id,
                            jstring cmd, jint result_code, jstring error_msg, jobject info) {
+    // 重入护栏：如果被换掉的那个入口本来就指向「派回方法自身」的存根，转交原实现会再进到这里。
+    // 没有这道闸就是每秒几百万次的互相递归（实测过）。重入直接返回。
+    if (g_in_sso_reply) return;
+    g_in_sso_reply = true;
     __atomic_add_fetch(&g_sso_calls, 1, __ATOMIC_RELAXED);
     if (g_callback_method != nullptr) {
         jboolean consumed = env->CallStaticBooleanMethod(
@@ -373,6 +410,7 @@ static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong re
             env->ExceptionClear();
         } else if (consumed == JNI_TRUE) {
             __atomic_add_fetch(&g_sso_consumed, 1, __ATOMIC_RELAXED);
+            g_in_sso_reply = false;
             return;
         }
     }
@@ -381,6 +419,7 @@ static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong re
         reinterpret_cast<OrigFn>(g_orig_sso_reply)(
                 env, thiz, native_ref, request_id, cmd, result_code, error_msg, info);
     }
+    g_in_sso_reply = false;
 }
 
 /** Xp.nativeInstallSsoHook(ClassLoader)：Java 侧在拿到宿主 classloader 后调用一次。 */

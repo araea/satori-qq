@@ -186,6 +186,11 @@ public final class PacketSvc {
         return ssoHookInstalled && qq.getSession() != null && qq.appRuntime() != null;
     }
 
+    /** healthz 用：native 那边到底有没有把回包通道换掉。 */
+    public static boolean ssoHookInstalled() {
+        return ssoHookInstalled;
+    }
+
     public Result sendOidb(int command, int subCommand, byte[] body) {
         return sendOidb(command, subCommand, body, true, DEFAULT_TIMEOUT_MS);
     }

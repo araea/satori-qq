@@ -25,6 +25,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <android/log.h>
@@ -39,6 +40,7 @@
 extern "C" const uint8_t satori_dex_start[];
 extern "C" const uint8_t satori_dex_end[];
 
+static const char *kNLogFile = "/data/data/com.tencent.mobileqq/files/satori-native.log";
 static const char *kTarget = "com.tencent.mobileqq";
 static const char *kXpClass = "com.satori.qq.xp.Xp";
 static const char *kSsoClass = "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
@@ -56,6 +58,26 @@ static jmethodID g_callback_method = nullptr;
 static void *g_orig_sso_reply = nullptr;
 static char g_process[256] = {0};
 static bool g_bootstrap_started = false;
+static char g_hook_info[256] = "not-attempted";
+
+/**
+ * 记一行到 logcat **并**落到 QQ 私有目录。
+ *
+ * 只写 logcat 不够：主缓冲只有 256KiB，QQ 启动时几秒就把它刷掉了，重启后回头再看什么都没有
+ * （2026-09-19 首启实测）。这个文件也不给 healthz 用，是事后翻查用的。
+ */
+static void NLog(const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    __android_log_print(ANDROID_LOG_INFO, TAG, "%s", buf);
+    FILE *f = fopen(kNLogFile, "ae");
+    if (f == nullptr) return;
+    fprintf(f, "%s\n", buf);
+    fclose(f);
+}
 
 // 替换 QQ native 方法的函数：必须在取地址之前先行声明。
 static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id,
@@ -261,20 +283,30 @@ static int FindJniEntrySlot(uintptr_t *words, int kWords, void **out) {
  */
 static bool InstallSsoHook(JNIEnv *env, jobject loader) {
     jclass cpp = LoadClass(env, loader, kSsoClass);
-    if (cpp == nullptr) { LOGE("cannot load %s", kSsoClass); return false; }
+    if (cpp == nullptr) {
+        snprintf(g_hook_info, sizeof(g_hook_info), "failed: cannot load %s", kSsoClass);
+        NLog("%s", g_hook_info);
+        return false;
+    }
     jclass cb = LoadClass(env, loader, kSsoCallbackClass);
-    if (cb == nullptr) { LOGE("cannot load %s", kSsoCallbackClass); return false; }
+    if (cb == nullptr) {
+        snprintf(g_hook_info, sizeof(g_hook_info), "failed: cannot load %s", kSsoCallbackClass);
+        NLog("%s", g_hook_info);
+        return false;
+    }
     jmethodID cb_method = env->GetStaticMethodID(cb, kSsoCallbackMethod, kSsoCallbackSignature);
     if (cb_method == nullptr) {
         env->ExceptionClear();
-        LOGE("cannot find %s.%s%s", kSsoCallbackClass, kSsoCallbackMethod, kSsoCallbackSignature);
+        snprintf(g_hook_info, sizeof(g_hook_info), "failed: no callback %s", kSsoCallbackMethod);
+        NLog("%s", g_hook_info);
         return false;
     }
 
     jmethodID mid = env->GetMethodID(cpp, kSsoMethod, kSsoSignature);
     if (mid == nullptr) {
         env->ExceptionClear();
-        LOGE("no %s%s", kSsoMethod, kSsoSignature);
+        snprintf(g_hook_info, sizeof(g_hook_info), "failed: no %s in QQ", kSsoMethod);
+        NLog("%s", g_hook_info);
         return false;
     }
 
@@ -284,27 +316,28 @@ static bool InstallSsoHook(JNIEnv *env, jobject loader) {
     void *orig = nullptr;
     int slot = FindJniEntrySlot(words, kWords, &orig);
     if (slot < 0) {
-        LOGE("cannot locate the JNI entry slot in ArtMethod of %s", kSsoMethod);
+        snprintf(g_hook_info, sizeof(g_hook_info), "failed: no jni entry slot in ArtMethod");
+        NLog("cannot locate the JNI entry slot in ArtMethod of %s", kSsoMethod);
         return false;
     }
     Dl_info di{};
-    if (dladdr(orig, &di) != 0 && di.dli_fname != nullptr) {
-        LOGI("%s jni entry at slot %d: %p in %s", kSsoMethod, slot, orig, di.dli_fname);
-    }
+    const char *lib = (dladdr(orig, &di) != 0 && di.dli_fname != nullptr) ? di.dli_fname : "?";
 
     JNINativeMethod method{kSsoMethod, const_cast<char *>(kSsoSignature),
                            reinterpret_cast<void *>(&SatoriSsoReply)};
     if (env->RegisterNatives(cpp, &method, 1) != JNI_OK) {
         env->ExceptionDescribe();
         env->ExceptionClear();
-        LOGE("RegisterNatives(%s) failed", kSsoMethod);
+        snprintf(g_hook_info, sizeof(g_hook_info), "failed: RegisterNatives rejected");
+        NLog("%s", g_hook_info);
         return false;
     }
     if (words[slot] != reinterpret_cast<uintptr_t>(&SatoriSsoReply)) {
-        LOGE("slot %d did not take our function; rolling back", slot);
         JNINativeMethod back{kSsoMethod, const_cast<char *>(kSsoSignature), orig};
         env->RegisterNatives(cpp, &back, 1);
         env->ExceptionClear();
+        snprintf(g_hook_info, sizeof(g_hook_info), "failed: slot %d did not take our fn", slot);
+        NLog("%s", g_hook_info);
         return false;
     }
 
@@ -312,8 +345,14 @@ static bool InstallSsoHook(JNIEnv *env, jobject loader) {
     g_callback_method = cb_method;
     g_orig_sso_reply = orig;
     g_sso_class = static_cast<jclass>(env->NewGlobalRef(cpp));
-    LOGI("hooked %s", kSsoMethod);
+    snprintf(g_hook_info, sizeof(g_hook_info), "installed slot=%d orig=%p in %s", slot, orig, lib);
+    NLog("%s jni entry at slot %d: %p in %s", kSsoMethod, slot, orig, lib);
     return true;
+}
+
+/** Xp.nativeSsoHookInfo()：healthz 用，不用翻 logcat。 */
+static jstring NativeSsoHookInfo(JNIEnv *env, jclass) {
+    return env->NewStringUTF(g_hook_info);
 }
 
 /** 把回包交给 Java 侧；返回 true 表示本模块已经消费掉，不要再喂给 QQ 原生会话。 */
@@ -356,8 +395,10 @@ static bool StartJava(JNIEnv *env, jobject loader, jobject host, const char *pro
     static const JNINativeMethod kXpMethods[] = {
             {"nativeInstallSsoHook", "(Ljava/lang/ClassLoader;)Z",
              reinterpret_cast<void *>(&NativeInstallSsoHook)},
+            {"nativeSsoHookInfo", "()Ljava/lang/String;",
+             reinterpret_cast<void *>(&NativeSsoHookInfo)},
     };
-    if (env->RegisterNatives(xp, kXpMethods, 1) != JNI_OK) {
+    if (env->RegisterNatives(xp, kXpMethods, 2) != JNI_OK) {
         env->ExceptionDescribe();
         env->ExceptionClear();
         LOGE("RegisterNatives(Xp) failed");
@@ -385,18 +426,19 @@ static void *BootstrapThread(void *) {
     ExemptHiddenApis(env);
 
     jobject app = WaitForApplication(env, 120000);
-    if (app == nullptr) { LOGE("Application never appeared"); ReleaseEnv(attached); return nullptr; }
-    LOGI("application ready in %s", g_process);
+    if (app == nullptr) { NLog("Application never appeared"); ReleaseEnv(attached); return nullptr; }
+    NLog("application ready in %s", g_process);
 
     jobject host = HostLoaderFromApplication(env, app);
-    if (host == nullptr) { LOGE("no host classloader"); ReleaseEnv(attached); return nullptr; }
-    LOGI("host classloader captured");
+    if (host == nullptr) { NLog("no host classloader"); ReleaseEnv(attached); return nullptr; }
+    NLog("host classloader captured");
 
     // 内嵌 dex 的父加载器就用宿主的：这样模块自己的 Java 代码可以直接按名字引用 QQ 的类，
     // 也让 native 侧 loadClass 一次就能同时找到两边的类。
     jobject loader = MakeEmbeddedLoader(env, host);
-    if (loader == nullptr) { LOGE("cannot create embedded dex loader"); ReleaseEnv(attached); return nullptr; }
+    if (loader == nullptr) { NLog("cannot create embedded dex loader"); ReleaseEnv(attached); return nullptr; }
 
+    NLog("StartJava(%s)", g_process);
     StartJava(env, loader, host, g_process);
     ReleaseEnv(attached);
     return nullptr;

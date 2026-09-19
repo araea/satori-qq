@@ -188,6 +188,14 @@ public final class QQClient {
     }
 
     public Object getSession() { return session; }
+
+    /** healthz 用：会话抓到没有、监听器挂上没有。 */
+    public String sessionDiag() {
+        Object s = session;
+        if (s == null) return "no-session";
+        boolean listening = listenerRegistered && listenerSession == s;
+        return (listening ? "ready" : "session-no-listener") + "/" + s.getClass().getSimpleName();
+    }
     public PacketSvc packets() { return packetSvc; }
     public ExtraSvc extra() { return extraSvc; }
     /**

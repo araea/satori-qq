@@ -17,6 +17,7 @@ import com.satori.qq.satori.Codec;
 import com.satori.qq.satori.Elements;
 import com.satori.qq.satori.Multipart;
 import com.satori.qq.satori.Protocol;
+import com.satori.qq.xp.Xp;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -321,9 +322,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         // 撞上 QQ 认「票据失效」的那组错误码——即「接口层把会话打废」，
                         // 而不是环境检测。这是把踢线成因分开的判据，详见 PacketSvc。
                         .put("sso", new JSONObject()
+                                .put("hooked", PacketSvc.ssoHookInstalled())
+                                .put("native", Xp.ssoHookInfo())
                                 .put("failures", PacketSvc.ssoFailures())
                                 .put("session_errors", PacketSvc.ssoSessionErrors())
                                 .put("log", new org.json.JSONArray(PacketSvc.ssoLog())))
+                        .put("session", qq.sessionDiag())
                         .toString());
             }
             if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");

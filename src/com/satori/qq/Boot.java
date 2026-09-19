@@ -27,10 +27,34 @@ public final class Boot {
         }
         Xp.attach(host, process);
         L.i("zygisk bootstrap in " + process);
+        awaitApplicationBound();
         try {
             Main.onHostReady(host, process);
         } catch (Throwable t) {
             L.e("bootstrap failed in " + process, t);
+        }
+    }
+
+    /**
+     * 等宿主的 Application 真正绑定完。
+     *
+     * <p>native 侧是从 {@code ActivityThread.currentApplication()} 拿到 Application 的，而那个
+     * 字段在 {@code handleBindApplication} 中途就被赋值——**ContentProvider 还没装**。此时去问
+     * QQ 那边要 {@code com.satori.qq.control}，只会拿到
+     * {@code provider-unavailable: Failed to find provider info}（2026-09-19 首启实测）。
+     *
+     * <p>往主线程的 looper 投一个空任务再等它跑完：主线程此刻还在
+     * {@code handleBindApplication} 里，任务只会在它返回、{@code Looper.loop()} 之后才被执行。
+     */
+    private static void awaitApplicationBound() {
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        try {
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(latch::countDown);
+            if (!latch.await(15, java.util.concurrent.TimeUnit.SECONDS)) {
+                L.e("main looper did not come up in 15s", null);
+            }
+        } catch (Throwable t) {
+            L.e("awaitApplicationBound failed", t);
         }
     }
 }

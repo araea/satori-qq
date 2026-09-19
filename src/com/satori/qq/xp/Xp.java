@@ -50,4 +50,20 @@ public final class Xp {
      *         —— 合并转发、部分群管理 —— 会报不可用，其余照常）。
      */
     public static native boolean nativeInstallSsoHook(ClassLoader loader);
+
+    /**
+     * native 侧对这次 SSO 回包替换的说明：装上了会写 {@code installed slot=N orig=... in xxx.so}，
+     * 失败写失败原因。healthz 用它，不用翻 logcat。
+     */
+    public static native String nativeSsoHookInfo();
+
+    /** healthz 用：拿不到 native 说明（模块自己的进程里没注册）时给个短串。 */
+    public static String ssoHookInfo() {
+        try {
+            String s = nativeSsoHookInfo();
+            return s == null ? "unknown" : s;
+        } catch (Throwable t) {
+            return "unavailable";
+        }
+    }
 }

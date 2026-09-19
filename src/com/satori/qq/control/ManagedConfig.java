@@ -5,7 +5,7 @@ import org.json.JSONObject;
 
 /** Deliberately small configuration surface; file-only advanced options remain untouched. */
 public final class ManagedConfig {
-    public static final String[] SWITCHES = {"status_notification", "wake_lock_auto", "wifi_sustain", "manual_self_messages"};
+    public static final String[] SWITCHES = {"status_notification", "wake_lock_auto", "wifi_sustain", "manual_self_messages", "restore_empty_group_name"};
     private ManagedConfig() {}
 
     public static JSONObject validate(JSONObject raw) throws Exception {
@@ -39,6 +39,7 @@ public final class ManagedConfig {
         cfg.token = value.getString("token");
         cfg.statusNotification = value.getBoolean("status_notification");
         cfg.manualSelfMessages = value.getBoolean("manual_self_messages");
+        cfg.restoreEmptyGroupName = value.getBoolean("restore_empty_group_name");
         cfg.wakeLockAuto = value.getBoolean("wake_lock_auto");
         cfg.wifiSustain = value.getBoolean("wifi_sustain");
     }
@@ -47,6 +48,7 @@ public final class ManagedConfig {
         return new JSONObject().put("port", cfg.port).put("token", cfg.token)
                 .put("status_notification", cfg.statusNotification)
                 .put("manual_self_messages", cfg.manualSelfMessages)
+                .put("restore_empty_group_name", cfg.restoreEmptyGroupName)
                 .put("wake_lock_auto", cfg.wakeLockAuto).put("wifi_sustain", cfg.wifiSustain);
     }
 }

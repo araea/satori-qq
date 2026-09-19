@@ -21,6 +21,7 @@
   "media_retry_backoff_ms": 4000,
   "media_retry_budget_ms": 45000,
   "manual_self_messages": true,
+  "restore_empty_group_name": false,
   "manual_self_user_id": "",
   "forward_mode": "auto"
 }

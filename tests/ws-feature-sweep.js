@@ -307,7 +307,10 @@ async function main() {
     return 'message=' + (ev.message?.id || ev.id);
   });
 
-  await check('internal/title_display_read', async () => {
+  // 这两个名字带 read 的用例**其实会写群设置**（把群头衔/荣誉的显示开关翻一遍再翻回来），
+  // 2026-09-19 起默认不跑：同一天对这个群的群设置写入太多，QQ 已经开始用 code=1010 /
+  // 120101154 限流（改名被拒过一次），别再往同一个群上堆写操作。
+  if (process.env.SATORI_DESTRUCTIVE === '1') await check('internal/title_display_read', async () => {
     const o = await client.callOk('internal/title_display', { guild_id: GROUP, user_id: selfId });
     if (!o) throw new Error('空响应');
     return JSON.stringify(o).slice(0, 120);

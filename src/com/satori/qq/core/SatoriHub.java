@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.12";
+    public static final String APP_VERSION = "0.23.13";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -4343,11 +4343,18 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 d.append("refresh-back:").append(gid).append(' ');
                 continue;   // 只是本地缓存空了，刷新就回来了，不写
             }
+            String want = qq.knownGroupName(gid);
+            if (!cfg.restoreEmptyGroupName) {
+                // 默认只观察。名字变空更可能是平台侧处置（见 Cfg.restoreEmptyGroupName），
+                // 跟平台抢着改回去不是实现端该做的事。
+                d.append("empty:").append(gid).append("(见过=").append(want)
+                        .append("，restore_empty_group_name=false 不写)").append(' ');
+                continue;
+            }
             if (nameRestores >= 2) {
                 d.append("budget-used:").append(gid).append(' ');
                 continue;
             }
-            String want = qq.knownGroupName(gid);
             QQClient.OpResult r = qq.setGroupName(gid, want);
             nameRestores++;
             d.append("restored:").append(gid).append('=').append(want).append('/').append(r.describe()).append(' ');

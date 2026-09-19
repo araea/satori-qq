@@ -46,6 +46,7 @@ fi
 
 "$GH" release create "$TAG" "$APK" \
   --repo "$ORG_REPO" \
+  --draft=false \
   --title "知弦 0.23.0" \
   --notes-file "$MP/CHANGELOG-0.23.0.md"
 

@@ -147,7 +147,7 @@ public final class PacketSvc {
         if (ssoHookInstalled) return;
         sref = ref;
         try {
-            ssoHookInstalled = Xp.nativeInstallSsoHook(Xp.host());
+            ssoHookInstalled = Xp.nativeInstallSsoHook(PacketSvc.class.getClassLoader());
         } catch (Throwable t) {
             L.e("PacketSvc hook install failed", t);
             return;

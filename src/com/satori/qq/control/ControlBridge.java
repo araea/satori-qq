@@ -9,34 +9,99 @@ import org.json.JSONObject;
 /** Runs once on the server worker, before binding the port; never blocks QQ's main thread. */
 public final class ControlBridge {
     private ControlBridge() {}
+
     private static volatile String status = "pending";
+    private static volatile long revision = -1;
+    private static volatile boolean retrying;
+
     public static String status() { return status; }
+    public static long revision() { return revision; }
+
+    /**
+     * 读一次管理页设置并回报运行状态。
+     *
+     * <p>开机早期去问 QQ 的 ContentResolver 会拿到 {@code Unknown URI}：QQ 是开机自启的，那时
+     * 用户往往还没解锁，模块的 provider（不是 direct-boot aware）在凭据加密存储里还没挂上
+     * （2026-09-19 首启实测）。所以失败不当作终局，改成后台继续重试，界面上的设置晚一点生效，
+     * 而不是永远停在 provider-unavailable。
+     */
     public static long bootstrap(Context context, Cfg config, String version) {
+        Bundle result = tryRead(context, 4, 400);
+        if (result == null) {
+            startBackgroundRetry(context, config, version);
+            return -1;
+        }
+        return apply(context, config, version, result);
+    }
+
+    private static Bundle tryRead(Context context, int attempts, long gapMs) {
         Bundle result = null;
         String failure = "no-provider";
-        // Provider startup/package replacement can transiently fail even after Application.attach.
-        for (int attempt = 0; attempt < 4 && result == null; attempt++) {
-            try { result = context.getContentResolver().call(ControlProvider.URI, "bootstrap", null, null); }
-            catch (Throwable error) { failure = error.getClass().getSimpleName(); }
-            if (result == null && attempt < 3) {
-                try { Thread.sleep(400); } catch (InterruptedException stop) { Thread.currentThread().interrupt(); return -1; }
+        for (int attempt = 0; attempt < attempts && result == null; attempt++) {
+            try {
+                result = context.getContentResolver().call(ControlProvider.URI, "bootstrap", null, null);
+            } catch (Throwable error) {
+                failure = error.getClass().getSimpleName();
+            }
+            if (result == null && attempt < attempts - 1) {
+                try { Thread.sleep(gapMs); } catch (InterruptedException stop) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
             }
         }
-        if (result == null) { status = "provider-unavailable:" + failure; L.e("Management settings unavailable: " + failure, null); return -1; }
-        final long revision;
+        if (result == null) status = "provider-unavailable:" + failure;
+        return result;
+    }
+
+    private static void startBackgroundRetry(Context context, Cfg config, String version) {
+        synchronized (ControlBridge.class) {
+            if (retrying) return;
+            retrying = true;
+        }
+        Thread t = new Thread(() -> {
+            try {
+                for (int attempt = 0; attempt < 30; attempt++) {
+                    try { Thread.sleep(20_000L); } catch (InterruptedException stop) { return; }
+                    Bundle result = tryRead(context, 1, 0);
+                    if (result != null) {
+                        L.i("Management settings became available after " + (attempt + 1) + " retries");
+                        apply(context, config, version, result);
+                        return;
+                    }
+                }
+                L.e("Management settings still unavailable after retries; keeping file/defaults", null);
+            } finally {
+                retrying = false;
+            }
+        }, "pool-5-thread-1");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private static long apply(Context context, Cfg config, String version, Bundle result) {
+        final long rev;
         try {
             String raw = result.getString("config", "");
             if (!raw.isEmpty()) ManagedConfig.apply(config, new JSONObject(raw));
-            revision = result.getLong("revision", 0);
-        } catch (Exception invalid) { status = "invalid-settings"; L.e("Management settings invalid; retaining file/default settings", null); return -1; }
+            rev = result.getLong("revision", 0);
+        } catch (Exception invalid) {
+            status = "invalid-settings";
+            L.e("Management settings invalid; retaining file/default settings", null);
+            return -1;
+        }
+        revision = rev;
         status = "applied";
         try {
             JSONObject runtime = new JSONObject().put("config", ManagedConfig.snapshot(config))
-                    .put("host", config.host).put("revision", revision).put("version", version)
+                    .put("host", config.host).put("revision", rev).put("version", version)
                     .put("started", System.currentTimeMillis());
             Bundle extra = new Bundle(); extra.putString("value", runtime.toString());
             context.getContentResolver().call(ControlProvider.URI, "runtime", null, extra);
-        } catch (Throwable error) { status = "applied:status-sync-unavailable"; L.e("Management status sync unavailable: " + error.getClass().getSimpleName(), null); }
-        return revision;
+        } catch (Throwable error) {
+            status = "applied:status-sync-unavailable";
+            L.e("Management status sync unavailable: " + error.getClass().getSimpleName(), null);
+        }
+        return rev;
     }
 }

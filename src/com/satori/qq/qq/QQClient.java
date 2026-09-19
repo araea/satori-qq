@@ -107,6 +107,7 @@ public final class QQClient {
 
     private static final String KERNEL_SERVICE = "com.tencent.qqnt.kernel.api.IKernelService";
     private volatile boolean sessionPollStarted;
+    private volatile String sessionProbe = "not-attempted";
 
     /**
      * 轮询内核会话。拿到之前 1 秒一次，拿到之后降到 10 秒一次——重登/切号时 QQ 会把会话换掉，
@@ -130,17 +131,58 @@ public final class QQClient {
         t.start();
     }
 
-    /** 反射问一次内核会话；任何一步拿不到都返回 null（会话没建好或进程里没有内核）。 */
+    /**
+     * 反射问一次内核会话；任何一步拿不到都返回 null，并把卡在哪一步记进 {@link #sessionProbe}
+     * （healthz 的 session 段直接看得到，不用翻 logcat）。
+     */
     private Object peekSession() {
         try {
             Object runtime = appRuntime();
-            if (runtime == null) return null;
-            Object kernel = ref.call(runtime, "getRuntimeService", ref.cls(KERNEL_SERVICE), "");
-            if (kernel == null) return null;
-            return ref.call(kernel, "getWrapperSession");
+            if (runtime == null) { sessionProbe = "appRuntime=null"; return null; }
+            Object kernel;
+            try {
+                kernel = ref.call(runtime, "getRuntimeService", ref.cls(KERNEL_SERVICE), "");
+            } catch (Throwable t) {
+                sessionProbe = "getRuntimeService: " + t;
+                return null;
+            }
+            if (kernel == null) { sessionProbe = "runtimeService=null"; return null; }
+            try {
+                Object s = ref.call(kernel, "getWrapperSession");
+                if (s != null) { sessionProbe = "ok/getWrapperSession"; return s; }
+            } catch (Throwable t) {
+                sessionProbe = "getWrapperSession: " + t;
+            }
+            // 方法名对不上时（QQ 侧改名/换成 Kotlin 属性）扫一遍实现类：无参、返回类型名里带
+            // IQQNTWrapperSession 的都算候选。只读，不改任何状态。
+            Object scanned = scanForSession(kernel);
+            if (scanned != null) return scanned;
+            if (sessionProbe.startsWith("ok/")) sessionProbe = "getWrapperSession=null";
+            return null;
         } catch (Throwable t) {
+            sessionProbe = "probe: " + t;
             return null;
         }
+    }
+
+    private Object scanForSession(Object kernel) {
+        StringBuilder seen = new StringBuilder();
+        for (Class<?> c = kernel.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                if (m.getParameterCount() != 0) continue;
+                if (!m.getReturnType().getName().endsWith("IQQNTWrapperSession")) continue;
+                try {
+                    m.setAccessible(true);
+                    Object s = m.invoke(kernel);
+                    if (s != null) { sessionProbe = "ok/scan:" + m.getName(); return s; }
+                } catch (Throwable t) {
+                    seen.append(m.getName()).append(':').append(t.getClass().getSimpleName()).append(' ');
+                }
+            }
+        }
+        sessionProbe = (sessionProbe.startsWith("ok/") ? sessionProbe : sessionProbe)
+                + (seen.length() == 0 ? " | no-candidate" : " | scan:" + seen);
+        return null;
     }
 
     private volatile boolean listenerPollerStarted;
@@ -189,12 +231,13 @@ public final class QQClient {
 
     public Object getSession() { return session; }
 
-    /** healthz 用：会话抓到没有、监听器挂上没有。 */
+    /** healthz 用：会话抓到没有、监听器挂上没有、没抓到的话卡在哪一步。 */
     public String sessionDiag() {
         Object s = session;
-        if (s == null) return "no-session";
+        if (s == null) return "no-session [" + sessionProbe + "]";
         boolean listening = listenerRegistered && listenerSession == s;
-        return (listening ? "ready" : "session-no-listener") + "/" + s.getClass().getSimpleName();
+        return (listening ? "ready" : "session-no-listener") + "/" + s.getClass().getSimpleName()
+                + " [" + sessionProbe + "]";
     }
     public PacketSvc packets() { return packetSvc; }
     public ExtraSvc extra() { return extraSvc; }

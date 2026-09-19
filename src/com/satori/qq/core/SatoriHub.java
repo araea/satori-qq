@@ -45,7 +45,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     // HTTP requests run on separate threads; never share a send condition between callers.
     private final ThreadLocal<MessageFreshness.Condition> sendCondition = new ThreadLocal<>();
     private HttpServer server;
-    private volatile long managedRevision = -1;
     private volatile StatusNotice notice;
     private volatile com.satori.qq.qq.WakeLockCtl wakeLock;
     private volatile long onlineSinceMs;
@@ -107,7 +106,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 try { Thread.sleep(50); } catch (InterruptedException stopped) { return; }
                 context = qq.appContext();
             }
-            if (contextReady(context)) managedRevision = com.satori.qq.control.ControlBridge.bootstrap(context, cfg, APP_VERSION);
+            if (contextReady(context)) com.satori.qq.control.ControlBridge.bootstrap(context, cfg, APP_VERSION);
             server.start();
             refreshNotice();
             startStatusMonitor();
@@ -307,7 +306,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 boolean online = qq.isOnline();
                 return HttpServer.HttpResult.json(online ? 200 : 503, new JSONObject()
                         .put("name", APP_NAME).put("version", APP_VERSION)
-                        .put("config_revision", managedRevision)
+                        .put("config_revision", com.satori.qq.control.ControlBridge.revision())
                         .put("config_status", com.satori.qq.control.ControlBridge.status())
                         .put("online", online)
                         .put("listening", server != null && server.isListening())

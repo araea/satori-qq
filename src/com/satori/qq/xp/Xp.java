@@ -46,6 +46,9 @@ public final class Xp {
      * 把 QQNT 的 {@code IQQNTWrapperSession$CppProxy.native_onSendSSOReply} 换成模块自己的实现，
      * 之后每条 SSO 回包都会先交给 {@code PacketSvc.onNativeSsoReply}。幂等。
      *
+     * @param loader 模块自己的 classloader（{@code PacketSvc.class.getClassLoader()}）。它的父
+     *               加载器是宿主的，所以 QQ 的类和模块的类都能查到；别传 {@link #host()}，那样查
+     *               不到模块自己的类。
      * @return 装上返回 true；QQ 那边接口变了/取不到原函数指针时返回 false（裸 SSO 相关的功能
      *         —— 合并转发、部分群管理 —— 会报不可用，其余照常）。
      */

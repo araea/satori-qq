@@ -34,7 +34,7 @@ public final class Convert {
                 switch (type) {
                     case "text": addText(out, d.optString("text", "")); break;
                     case "at":   addAt(out, d.optString("qq", "")); break;
-                    case "face": addFace(out, d.optString("id", "0")); break;
+                    case "face": addFace(out, d); break;
                     case "reply":addReply(out, d.optString("id", "")); break;
                     case "image": addImage(out, d); break;
                     case "json":  addArk(out, d.optString("data", d.optString("content", ""))); break;
@@ -114,12 +114,20 @@ public final class Convert {
         out.add(e);
     }
 
-    private void addFace(ArrayList<Object> out, String id) {
+    /**
+     * 表情 -> KELEMTYPEFACE(6)。
+     *
+     * <p>`faceType` 决定 QQ 怎么画：1 是普通小表情，2 是超级表情（骰子/猜拳那种整条放大的
+     * 动画）。骰子与猜拳必须走 2，否则群里收到的是一个 16px 的小脸（2026-09-19 用户实测）。
+     * 段里可以带 `face_type` 覆盖，`internal.dice` / `internal.rps` 就是靠它传的。
+     */
+    private void addFace(ArrayList<Object> out, org.json.JSONObject d) {
         Object e = newElement(6);
         Object f = ref.neu("com.tencent.qqnt.kernel.nativeinterface.FaceElement");
-        int fid = (int) parseLong(id);
+        int fid = (int) parseLong(d.optString("id", "0"));
+        int type = d.optInt("face_type", 1);
         ref.set(f, "faceIndex", fid);
-        ref.set(f, "faceType", 1);
+        ref.set(f, "faceType", type <= 0 ? 1 : type);
         ref.set(e, "faceElement", f);
         out.add(e);
     }

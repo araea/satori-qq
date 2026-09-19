@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.3";
+    public static final String APP_VERSION = "0.23.4";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -1067,14 +1067,17 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             if (Codec.isPrivateChannel(channelId)) userId = Codec.channelPeer(channelId);
             else groupId = Codec.channelPeer(channelId);
         }
+        // 骰子与猜拳是「超级表情」：faceType 必须是 2，否则 QQ 只画一个小表情。
         JSONArray message = new JSONArray().put(new JSONObject()
                 .put("type", "face")
-                .put("data", new JSONObject().put("id", String.valueOf(faceId))));
+                .put("data", new JSONObject()
+                        .put("id", String.valueOf(faceId))
+                        .put("face_type", cfg.specialFaceType)));
         JSONObject sent;
         if (groupId != 0) sent = sendGroup(groupId, message, "<emoji id=\"" + faceId + "\"/>");
         else if (userId != 0) sent = sendPrivate(userId, message, "<emoji id=\"" + faceId + "\"/>");
         else throw new ApiError(1400, "missing channel_id, guild_id, or user_id");
-        sent.put("kind", kind).put("face_id", faceId);
+        sent.put("kind", kind).put("face_id", faceId).put("face_type", cfg.specialFaceType);
         return sent;
     }
 
@@ -1146,7 +1149,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("status").put("version")
                         .put("clean_cache").put("restart"))
                 .put("special_faces", new JSONObject()
-                        .put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE))
+                        .put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE)
+                        .put("face_type", cfg.specialFaceType))
                 .put("params", new JSONObject()
                         .put("poke", "guild_id, user_id")
                         .put("invite", "guild_id, user_id")
@@ -3120,9 +3124,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (gi == null) throw new ApiError(1404, "group not found: " + groupId);
         JSONObject o = new JSONObject();
         o.put("group_id", Ref.asLong(qq.ref.get(gi, "groupCode")));
-        // 群名走 qq.groupNameWait()：内核 simple-info 的名字对某些群是空的，那里有兜底，
-        // 而且愿意等异步的群详情回来（单个群的显式查询，空名字会被当成实现端漏字段）。
-        o.put("group_name", qq.groupNameWait(groupId, 3000));
+        o.put("group_name", qq.groupName(groupId));
         o.put("member_count", Ref.asInt(qq.ref.get(gi, "memberCount")));
         o.put("max_member_count", Ref.asInt(qq.ref.get(gi, "maxMember")));
         int flag3 = Ref.asInt(qq.ref.get(gi, "groupFlagExt3"));
@@ -4395,8 +4397,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("emitted", inEmit.get())
                         .put("notices", inNotice.get())
                         .put("manual_self", inManualSelf.get()))
-                // 群名兜底的最近一次过程（内核 simple-info 的名字可能为空）
-                .put("group_name_probe", qq.groupDetailProbe())
                 .put("outbound_guard_ok", true);
     }
 

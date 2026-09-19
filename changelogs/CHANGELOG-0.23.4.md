@@ -1,4 +1,4 @@
-## 0.23.3 · 知弦
+## 0.23.4 · 知弦
 
 ### 接口自述与真实能力对齐
 
@@ -7,18 +7,22 @@
 - 曾经有过、后来移除的动作（0.17.0 的内核查询、0.23.0 的 `like`）报错时与「方法名写错」分开：
   404 的响应体里带 `code=removed_action`，客户端按机器可读的字段判断，不必匹配会变的中文文案。
 
-### 群名兜底
+### 骰子与猜拳改成超级表情
 
-内核的 `GroupSimpleInfo.groupName` 对某些群是空的（实测测试群 `280183116` 就是，`guild.list`
-与 `guild.get` 一起读回来都是空），于是 `guild.get` / `channel.get` 的名字字段整个是缺的。
-现在依次退到 `remarkName` 与群详情里的真名，且会话一就绪就自己预热一批（数量封顶）：
-单个群的显式查询最多等 3 秒，列表接口仍走异步，不为一个群把整页拖住。
+`internal/dice` / `internal/rps` 之前发的是 `faceType=1` 的普通表情，群里收到的是一个 16px
+的小脸。超级表情（整条放大的动画）要 `FaceElement.faceType=2`，现在按 2 发；值可以在配置里
+用 `special_face_type` 改，回执里带 `face_type`，`internal/capabilities` 的 `special_faces`
+也给出来。
 
-`getGroupDetailInfo` 的 `IOperateCallback` 只有 `onResult(int, String)`——**回调里没有值**，
-名字落在内核缓存里；能读到值的是 `batchQueryCachedGroupDetailInfo` 的
-`onResult(ArrayList<GroupDetailInfo>)`。所以是「先读缓存，空了拉一次，再读缓存」两步。
-第一版只调前者并指望回调带列表，于是 latch 永不释放、每次都超时——`internal/status` 现在有
-`group_name_probe` 记着最近一次的过程，别再犯这种「回调形状猜错就静默超时」的错。
+### 群名：一段追错了方向的兜底，已收掉
+
+0.23.2/0.23.3 加过一层「内核 simple-info 没名字就去要群详情」的兜底（最后自己写了三个内核
+接口的调用）。事后查明那个空名字是**测试自己改坏的**——`ws-write-sweep` 的改名用例把原名读成
+空串，还原时写回空串，群里就留下一个没名字的群。兜底本身没有存在的理由，已收回，只保留
+「`groupName` 空了退 `remarkName`」这一行。
+
+真正的修复在测试侧：改名用例现在两个来源都读一遍原名、读到空串就不改名、**还原放进 `finally`**、
+读回带重试，还原后读不到原名会明确报错要人工确认。
 
 ### 入站计数
 

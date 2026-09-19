@@ -25,6 +25,8 @@ public final class Cfg {
      *  save cannot park the radio under an outbound upload or delay inbound events. */
     public volatile boolean wifiSustain = true;
     public volatile boolean verboseLogs = false; // verbose logcat/Xposed logs are observable; opt in for debugging
+    /** 骰子/猜拳这种「超级表情」用的 FaceElement.faceType：1 是普通小表情，2 是整条放大的动画。 */
+    public volatile int specialFaceType = 2;
     public volatile int outboundMinIntervalMs = 1000; // serialize writes and avoid bursty QQ operations
     public volatile int outboundQueueTimeoutMs = 30000;
     public volatile int outboundMaxQueued = 8;
@@ -77,6 +79,7 @@ public final class Cfg {
                 c.wakeLockAuto = o.optBoolean("wake_lock_auto", c.wakeLockAuto);
                 c.wifiSustain = o.optBoolean("wifi_sustain", c.wifiSustain);
                 c.verboseLogs = o.optBoolean("verbose_logs", c.verboseLogs);
+                c.specialFaceType = bounded(o.optInt("special_face_type", c.specialFaceType), 1, 9);
                 c.outboundMinIntervalMs = bounded(o.optInt("outbound_min_interval_ms", c.outboundMinIntervalMs), 0, 60000);
                 c.outboundQueueTimeoutMs = bounded(o.optInt("outbound_queue_timeout_ms", c.outboundQueueTimeoutMs), 1000, 120000);
                 c.outboundMaxQueued = bounded(o.optInt("outbound_max_queued", c.outboundMaxQueued), 1, 128);

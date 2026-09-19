@@ -92,15 +92,8 @@ async function main() {
     const ch = await client.callOk('channel.get', { channel_id: GROUP });
     if (String(ch.id) !== GROUP) throw new Error('id=' + ch.id);
     if (ch.type !== 0) throw new Error('type=' + ch.type);
-    // 群名是补出来的：内核的 GroupSimpleInfo.groupName 对个别群是空的，实现端会去要一次群详情，
-    // 会话就绪后预热、拿第一次问时最多等 3 秒。刚启动的实例可能还在补，这里给它 30 秒。
-    let name = ch.name;
-    for (let i = 0; i < 10 && !name; i++) {
-      await delay(3000);
-      name = (await client.callOk('channel.get', { channel_id: GROUP })).name;
-    }
-    if (!name) throw new Error('没有群名（等 30 秒仍未补上）');
-    return name;
+    if (!ch.name) throw new Error('没有群名');
+    return ch.name;
   });
 
   await check('channel.list', async () => {

@@ -271,34 +271,7 @@ public final class QQClient {
         if (mainProcess) {
             packetSvc.installHooks();
             ensureListenerAsync();
-            warmGroupNamesAsync();
         }
-    }
-
-    /**
-     * 群名预热。
-     *
-     * <p>内核 simple-info 里少数群的 `groupName` 是空的，靠客户端来问才去补；`guild.list`
-     * 就会先给一段空名字。会话一就绪就自己补一遍（数量封顶），别让第一个来问的客户端看到空。
-     */
-    private void warmGroupNamesAsync() {
-        Thread t = new Thread(() -> {
-            try {
-                if (groupInfoCache.isEmpty()) getGroupList();
-                int budget = 10;
-                for (java.util.Map.Entry<Long, Object> e : groupInfoCache.entrySet()) {
-                    if (budget <= 0) break;
-                    Long code = e.getKey();
-                    if (code == null || code == 0) continue;
-                    if (!infoName(e.getValue()).isEmpty()) continue;
-                    if (groupNameFetching.add(code)) { fetchGroupDetailName(code); budget--; }
-                }
-            } catch (Throwable e) {
-                L.e("warmGroupNames", e);
-            }
-        }, "pool-4-thread-4");
-        t.setDaemon(true);
-        t.start();
     }
 
     /** msgService may not be ready the instant the session is created; poll until it is. */
@@ -2609,60 +2582,15 @@ public final class QQClient {
         return groupInfoCache.get(groupCode);
     }
 
-    private static final String GROUP_INFO_SOURCE =
-            "com.tencent.qqnt.kernel.nativeinterface.GroupInfoSource";
-    private static final String BATCH_DETAIL_REQ =
-            "com.tencent.qqnt.kernel.nativeinterface.BatchQueryCachedGroupDetailInfoReq";
-    private static final String BATCH_DETAIL_CB =
-            "com.tencent.qqnt.kernel.nativeinterface.IBatchQueryCachedGroupDetailInfoCallback";
-
-    /** 内核 simple-info 里名字为空的群，这里存向内核要回来的真名。 */
-    private final java.util.concurrent.ConcurrentHashMap<Long, String> groupNameDetail =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.Set<Long> groupNameFetching =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
-
     /**
-     * 群名。
+     * 群名：读内核 simple-info 的 `groupName`，空了退到 `remarkName`（本地备注名）。
      *
-     * <p>内核的 {@code GroupSimpleInfo.groupName} 对某些群是空的——实测测试群
-     * 280183116 就是，{@code guild.list} 与 {@code guild.get} 一起读回来都是空。这时依次
-     * 退到 {@code remarkName} 和一次群详情查询。详情是异步的，第一次调用通常还拿不到，
-     * 拿回来之后进缓存，之后每次都有。
+     * <p>2026-09-19 这里一度套了一层「名字为空就去要群详情」的兜底，追的是当时看到的空名字；
+     * 事后查明那个空名字是测试自己改坏的（见 `tests/ws-write-sweep.js` 的改名用例），不是内核
+     * 缺数据，兜底本身也就没有存在的理由——三个内核接口、一百多行，全是给一个不存在的问题写的。
      */
     public String groupName(long groupCode) {
-        if (groupCode == 0) return "";
-        String name = infoName(groupInfoCache.get(groupCode));
-        if (!name.isEmpty()) return name;
-        String cached = groupNameDetail.get(groupCode);
-        if (cached != null) return cached;
-        // 只在确实认得的群上去问详情：未知 id 问一次也是白问。
-        if (groupInfoCache.containsKey(groupCode) && groupNameFetching.add(groupCode)) {
-            fetchGroupDetailName(groupCode);
-        }
-        return "";
-    }
-
-    /**
-     * 同 {@link #groupName}，但会给异步的详情查询最多 {@code timeoutMs} 的等待。
-     *
-     * <p>单个群的显式查询（{@code guild.get} / {@code channel.get}）用它：空名字看着像
-     * 实现端漏了字段，等一小会儿比让调用方自己重试友好。列表接口用异步版本，不该为了
-     * 一个群把整页拖住。
-     */
-    public String groupNameWait(long groupCode, long timeoutMs) {
-        String name = groupName(groupCode);
-        long deadline = System.currentTimeMillis() + Math.max(0, timeoutMs);
-        while (name.isEmpty() && System.currentTimeMillis() < deadline) {
-            String cached = groupNameDetail.get(groupCode);
-            if (cached != null) name = cached;
-            else if (!groupNameFetching.contains(groupCode)) break;   // 没在查了，等也没用
-            else try { Thread.sleep(100); } catch (InterruptedException e) { break; }
-        }
-        return name.isEmpty() ? groupName(groupCode) : name;
-    }
-
-    private String infoName(Object gi) {
+        Object gi = groupInfoCache.get(groupCode);
         if (gi == null) return "";
         try {
             String name = Ref.asStr(ref.get(gi, "groupName"));
@@ -2672,119 +2600,6 @@ public final class QQClient {
         } catch (Throwable t) {
             return "";
         }
-    }
-
-    /** 最近一次群详情查询的过程，给排障用（`internal/status` 里看得到）。 */
-    private volatile String groupDetailProbe = "not-attempted";
-
-    public String groupDetailProbe() { return groupDetailProbe; }
-
-    /**
-     * 拿一次群详情里的名字（异步）。
-     *
-     * <p>分两步，因为这两个内核接口的分工不一样：`batchQueryCachedGroupDetailInfo` 只读缓存，
-     * 回调 `onResult(ArrayList)` 里就是 `GroupDetailInfo`；`getGroupDetailInfo` 会去拉一次，但它的
-     * `IOperateCallback` 只有 `onResult(int, String)`——**拿不到值**，只能靠它把缓存喂上。
-     * 所以先读缓存，空了再拉一次，然后再读。
-     *
-     * <p>（2026-09-19 之前这里只调 `getGroupDetailInfo` 并指望回调里带列表，于是 latch 永远不
-     * 释放、每次都超时，名字一直是空的。）
-     */
-    private void fetchGroupDetailName(long groupCode) {
-        Thread t = new Thread(() -> {
-            StringBuilder trace = new StringBuilder();
-            try {
-                Object gs = getGroupService();
-                if (gs == null) { groupDetailProbe = "no-group-service"; return; }
-                String name = cachedGroupDetailName(gs, groupCode);
-                trace.append("cached=").append(name.isEmpty() ? "empty" : "hit");
-                if (name.isEmpty()) {
-                    trace.append(" prime=").append(primeGroupDetail(gs, groupCode));
-                    name = cachedGroupDetailName(gs, groupCode);
-                    trace.append(" after=").append(name.isEmpty() ? "empty" : "hit");
-                }
-                if (!name.isEmpty()) groupNameDetail.put(groupCode, name);
-                groupDetailProbe = "group=" + groupCode + " " + trace;
-                L.i("group detail name " + groupCode + " -> " + (name.isEmpty() ? "(空)" : name)
-                        + " [" + trace + "]");
-            } catch (Throwable e) {
-                groupDetailProbe = "group=" + groupCode + " error=" + e;
-                L.e("fetchGroupDetailName " + groupCode, e);
-            } finally {
-                groupNameFetching.remove(groupCode);
-            }
-        }, "pool-4-thread-3");
-        t.setDaemon(true);
-        t.start();
-    }
-
-    /** 读内核缓存里的群详情，只要名字。回调是 {@code onResult(ArrayList<GroupDetailInfo>)}。 */
-    private String cachedGroupDetailName(Object gs, long groupCode) {
-        final CountDownLatch latch = new CountDownLatch(1);
-        final String[] found = new String[]{""};
-        try {
-            Object req = ref.neu(BATCH_DETAIL_REQ);
-            ArrayList<Long> codes = new ArrayList<>();
-            codes.add(groupCode);
-            ref.put(req, "groupCodes", codes);
-            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(BATCH_DETAIL_CB)},
-                    (p, m, args) -> {
-                        if ("onResult".equals(m.getName()) && args != null && args.length >= 1
-                                && args[0] instanceof List) {
-                            for (Object item : (List<?>) args[0]) {
-                                String n = Ref.asStr(ref.get(item, "groupName"));
-                                if (n != null && !n.isEmpty()) { found[0] = n; break; }
-                            }
-                            latch.countDown();
-                        }
-                        return defOf(m.getReturnType());
-                    });
-            ref.call(gs, "batchQueryCachedGroupDetailInfo", req, cb);
-            if (!latch.await(10, TimeUnit.SECONDS)) return "";
-        } catch (Throwable t) {
-            L.e("cachedGroupDetailName " + groupCode, t);
-            return "";
-        }
-        return found[0];
-    }
-
-    /** 让内核去拉一次群详情（值落进缓存里，回调本身不带数据）。返回 `code/msg`。 */
-    private String primeGroupDetail(Object gs, long groupCode) {
-        final CountDownLatch latch = new CountDownLatch(1);
-        final int[] code = new int[]{-1};
-        final String[] msg = new String[]{""};
-        try {
-            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)},
-                    (p, m, args) -> {
-                        // IOperateCallback.onResult(int, String)：只有成败，没有值。
-                        if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
-                            code[0] = Ref.asInt(args[0]);
-                            if (args.length >= 2) msg[0] = Ref.asStr(args[1]);
-                            latch.countDown();
-                        }
-                        return defOf(m.getReturnType());
-                    });
-            ref.call(gs, "getGroupDetailInfo", groupCode, groupInfoSource(), cb);
-            if (!latch.await(15, TimeUnit.SECONDS)) return "timeout";
-        } catch (Throwable t) {
-            L.e("primeGroupDetail " + groupCode, t);
-            return "error=" + t;
-        }
-        return code[0] + "/" + (msg[0] == null ? "" : msg[0]);
-    }
-
-    /** {@code GroupInfoSource} 里挑一个常量：优先 KAIO，取不到就用第一个非 null 的。 */
-    private Object groupInfoSource() {
-        try {
-            Object[] constants = ref.cls(GROUP_INFO_SOURCE).getEnumConstants();
-            if (constants != null) {
-                for (Object o : constants) if (o != null && "KAIO".equals(String.valueOf(o))) return o;
-                for (Object o : constants) if (o != null) return o;
-            }
-        } catch (Throwable t) {
-            L.e("groupInfoSource", t);
-        }
-        return null;
     }
 
     /** Resolve a uin to its QQNT uid via the profile service (synchronous). Empty on failure. */

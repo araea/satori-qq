@@ -168,35 +168,48 @@ async function main() {
   });
 
   // ---- 群资料 ----
-  // 名字优先从 guild.list 取：guild.get 直接读内核缓存的 GroupSimpleInfo，某些群那个字段是空的
-  // （实测这个账号的测试群就是），guild.list 走的是同一份缓存但会带上其它群的名字。
-  let originalName = '';
-  try {
+  // 原名两个来源都读一遍：`guild.get` 与 `guild.list` 都取自内核的 GroupSimpleInfo，谁先更新
+  // 不一定。读到空串就**不改名**——把空串写回去等于把群名清掉（2026-09-19 就是这么把测试群
+  // 改坏的：校验读到的还是旧值，抛错走了「没还原」的分支，群里留下一个没名字的群）。
+  const readNameFromList = async () => {
     const list = await client.callOk('guild.list', {});
     const hit = (list?.data || []).find((g) => String(g.id) === GROUP);
-    originalName = String(hit?.name || '');
-  } catch (_) { /* 读不到就跳过改名 */ }
-  if (!originalName) {
-    try { originalName = String((await client.callOk('guild.get', { guild_id: GROUP }))?.name || ''); }
-    catch (_) { /* 同上 */ }
-  }
+    return String(hit?.name || '');
+  };
+  const readNameFromGet = async () => {
+    try { return String((await client.callOk('guild.get', { guild_id: GROUP }))?.name || ''); }
+    catch (_) { return ''; }
+  };
+  let originalName = await readNameFromGet();
+  if (!originalName) originalName = await readNameFromList();
 
   await check('channel.update (改名并还原)', async () => {
     if (!originalName) throw new Error('读不到当前群名，跳过以免改坏');
     const temp = originalName + '·测试';
-    const readName = async () => {
-      const list = await client.callOk('guild.list', {});
-      const hit = (list?.data || []).find((g) => String(g.id) === GROUP);
-      return String(hit?.name || '');
+    // 读回等缓存跟上；读到空串也当成「还没跟上」，绝不当成目标值。
+    const waitForName = async (want) => {
+      for (let i = 0; i < 12; i++) {
+        await delay(1000);
+        const list = await readNameFromList();
+        const one = await readNameFromGet();
+        if (list === want || one === want) return true;
+      }
+      return false;
     };
-    await client.callOk('channel.update', { channel_id: GROUP, data: { name: temp } });
-    await delay(1500);
-    const mid = await readName();
-    if (mid !== temp) throw new Error('改名没生效，读到的是 ' + JSON.stringify(mid));
-    await client.callOk('channel.update', { channel_id: GROUP, data: { name: originalName } });
-    await delay(1500);
-    const end = await readName();
-    if (end !== originalName) throw new Error('还原失败，当前群名 ' + JSON.stringify(end));
+    let renamed = false;
+    try {
+      await client.callOk('channel.update', { channel_id: GROUP, data: { name: temp } });
+      renamed = true;
+      if (!await waitForName(temp)) throw new Error('改名没读到生效');
+    } finally {
+      // 无论校验成功与否都要还原：上一次失败就是漏了这一步，群里留下一个没名字的群。
+      if (renamed) {
+        await client.callOk('channel.update', { channel_id: GROUP, data: { name: originalName } });
+        if (!await waitForName(originalName)) {
+          throw new Error('还原后没读到 ' + JSON.stringify(originalName) + '，请手工确认群名');
+        }
+      }
+    }
     return originalName + ' -> ' + temp + ' -> ' + originalName;
   });
 
@@ -221,13 +234,22 @@ async function main() {
     });
 
     await check('guild.member.role.set/unset (上管理再撤)', async () => {
+      const isAdmin = async () => {
+        const now = await client.callOk('guild.member.role.list', { guild_id: GROUP, user_id: target });
+        return (now?.data || []).some((r) => r.id === 'admin');
+      };
       await client.callOk('guild.member.role.set', { guild_id: GROUP, user_id: target, role_id: 'admin' });
-      const on = await client.callOk('guild.member.role.list', { guild_id: GROUP, user_id: target });
-      const has = (on?.data || []).some((r) => r.id === 'admin');
-      await client.callOk('guild.member.role.unset', { guild_id: GROUP, user_id: target, role_id: 'admin' });
-      const off = await client.callOk('guild.member.role.list', { guild_id: GROUP, user_id: target });
-      const still = (off?.data || []).some((r) => r.id === 'admin');
-      if (still) throw new Error('撤销失败，目标仍是管理员');
+      const has = await isAdmin();
+      // QQ 偶发驳回撤销（实测 code=120101154，手工重试就过），重试两轮；撤不掉要报出来，
+      // 不能把目标留在管理员位上悄悄过去。
+      let still = true;
+      for (let i = 0; i < 3 && still; i++) {
+        try { await client.callOk('guild.member.role.unset', { guild_id: GROUP, user_id: target, role_id: 'admin' }); }
+        catch (error) { if (i === 2) throw error; }
+        await delay(1500);
+        still = await isAdmin();
+      }
+      if (still) throw new Error('撤销失败，目标仍挂着 admin，请手工撤');
       return 'set=' + has + ' unset=' + !still;
     });
   }

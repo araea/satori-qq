@@ -2655,21 +2655,92 @@ public final class QQClient {
         return groupInfoCache.get(groupCode);
     }
 
-    /** 见过的群名（群号 → 名字）。只记非空的，用来判断「名字变空了」是不是真空了。 */
+    /**
+     * 见过的群名（群号 → 名字）。只记非空的，用来判断「名字变空了」是不是真空了。
+     *
+     * <p>落盘一份：名字守卫要能对付「重启之后名字是空的」这种情形，而进程内的记忆一重启就没了
+     * （2026-09-19 用户两次都是在重启后发现名字变空）。文件很小（一百来个群），改动时整体重写。
+     */
     private final java.util.concurrent.ConcurrentHashMap<Long, String> knownGroupNames =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile boolean groupNamesLoaded;
+    private volatile long groupNamesSavedAt;
+
+    private static final String GROUP_NAMES_FILE =
+            "/data/data/com.tencent.mobileqq/files/satori-group-names.tsv";
 
     public void rememberGroupName(long groupCode, String name) {
         if (groupCode == 0 || name == null || name.isEmpty()) return;
+        ensureGroupNamesLoaded();
         String prev = knownGroupNames.put(groupCode, name);
         if (prev != null && !prev.equals(name)) L.i("group name " + groupCode + ": " + prev + " -> " + name);
+        if (prev == null || !prev.equals(name)) saveGroupNames();
+    }
+
+    private synchronized void ensureGroupNamesLoaded() {
+        if (groupNamesLoaded) return;
+        groupNamesLoaded = true;
+        try {
+            java.io.File f = new java.io.File(GROUP_NAMES_FILE);
+            if (!f.exists()) return;
+            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f));
+            try {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    int tab = line.indexOf('\t');
+                    if (tab <= 0) continue;
+                    long gid = parseLongSafe(line.substring(0, tab));
+                    String nm = line.substring(tab + 1);
+                    if (gid != 0 && !nm.isEmpty()) knownGroupNames.put(gid, nm);
+                }
+            } finally {
+                r.close();
+            }
+        } catch (Throwable t) {
+            L.e("loadGroupNames", t);
+        }
+    }
+
+    /** 整体重写；同一分钟内最多写一次，别让列表刷新把磁盘写热。 */
+    private synchronized void saveGroupNames() {
+        long now = System.currentTimeMillis();
+        if (now - groupNamesSavedAt < 60_000L) return;
+        groupNamesSavedAt = now;
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (java.util.Map.Entry<Long, String> e : knownGroupNames.entrySet()) {
+                sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
+            }
+            java.io.FileWriter w = new java.io.FileWriter(GROUP_NAMES_FILE, false);
+            try {
+                w.write(sb.toString());
+            } finally {
+                w.close();
+            }
+        } catch (Throwable t) {
+            L.e("saveGroupNames", t);
+        }
+    }
+
+    private static long parseLongSafe(String s) {
+        try {
+            return Long.parseLong(s.trim());
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /** 我们见过的这个群的名字；没见过（或一直是空）返回 null。 */
-    public String knownGroupName(long groupCode) { return knownGroupNames.get(groupCode); }
+    public String knownGroupName(long groupCode) {
+        ensureGroupNamesLoaded();
+        return knownGroupNames.get(groupCode);
+    }
 
     /** 见过名字的群号。名字守卫只处理这些群——本来就没名字的群不该被改名。 */
-    public java.util.Set<Long> knownGroupCodes() { return knownGroupNames.keySet(); }
+    public java.util.Set<Long> knownGroupCodes() {
+        ensureGroupNamesLoaded();
+        return knownGroupNames.keySet();
+    }
 
     /**
      * 群名：读内核 simple-info 的 `groupName`，空了退到 `remarkName`（本地备注名）。

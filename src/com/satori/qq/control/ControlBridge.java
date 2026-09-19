@@ -34,6 +34,9 @@ public final class ControlBridge {
         return apply(context, config, version, result);
     }
 
+    /** 本模块包名。 */
+    private static final String SELF_PACKAGE = "com.satori.qq";
+
     private static Bundle tryRead(Context context, int attempts, long gapMs) {
         Bundle result = null;
         String failure = "no-provider";
@@ -41,7 +44,7 @@ public final class ControlBridge {
             try {
                 result = context.getContentResolver().call(ControlProvider.URI, "bootstrap", null, null);
             } catch (Throwable error) {
-                failure = error.getClass().getSimpleName();
+                failure = describe(error);
             }
             if (result == null && attempt < attempts - 1) {
                 try { Thread.sleep(gapMs); } catch (InterruptedException stop) {
@@ -50,8 +53,43 @@ public final class ControlBridge {
                 }
             }
         }
-        if (result == null) status = "provider-unavailable:" + failure;
+        if (result == null) status = "provider-unavailable:" + failure + " [" + visibilityProbe(context) + "]";
         return result;
+    }
+
+    /**
+     * 把异常的类名、消息、cause 一起写进状态。
+     *
+     * <p>{@code ContentResolver.call} 在拿不到 provider 时抛的就是
+     * {@code IllegalArgumentException("Unknown URI ...")}，只记类名看不出是「没权限」「看不见包」
+     * 还是「provider 没起来」，所以消息必须留着。
+     */
+    private static String describe(Throwable t) {
+        StringBuilder b = new StringBuilder(t.getClass().getSimpleName());
+        String msg = t.getMessage();
+        if (msg != null && !msg.isEmpty()) b.append('(').append(cap(msg, 160)).append(')');
+        Throwable cause = t.getCause();
+        if (cause != null && cause != t) {
+            b.append(" <- ").append(cause.getClass().getSimpleName());
+            String cm = cause.getMessage();
+            if (cm != null && !cm.isEmpty()) b.append('(').append(cap(cm, 120)).append(')');
+        }
+        return b.toString();
+    }
+
+    private static String cap(String s, int max) {
+        String one = s.replace('\n', ' ').replace('\r', ' ');
+        return one.length() <= max ? one : one.substring(0, max) + "…";
+    }
+
+    /** 本模块的包在 QQ 进程里看不看得见——这条直接决定 provider 能不能被解析。 */
+    private static String visibilityProbe(Context context) {
+        try {
+            context.getPackageManager().getApplicationInfo(SELF_PACKAGE, 0);
+            return "self-package=visible";
+        } catch (Throwable t) {
+            return "self-package=" + t.getClass().getSimpleName();
+        }
     }
 
     private static void startBackgroundRetry(Context context, Cfg config, String version) {

@@ -1,0 +1,46 @@
+# 知弦 · qqguard 配置示例。
+# 放到 /data/adb/satori-qq/guard.conf，改完 `qqguard restart` 或重启手机生效。
+# 每一项都可以用同名（QQGUARD_ 前缀）环境变量临时覆盖，环境变量优先。
+# 去掉某一行就用脚本内置默认值。
+
+# 检测间隔（秒）。越小越费电，30 秒足够。
+QQGUARD_INTERVAL=30
+
+# 两次重启之间的最小间隔（秒），以及任意 1 小时内的重启上限。
+# 这两个是「不做无限快速重启」的硬约束。
+QQGUARD_MIN_GAP=120
+QQGUARD_MAX_RESTARTS=4
+
+# 连续崩溃保护：CRASH_WINDOW 秒内重启达到 CRASH_LIMIT 次，就转入 PAUSED 等人工处理，
+# 不再继续拉起，避免把账号送进风控。
+QQGUARD_CRASH_LIMIT=3
+QQGUARD_CRASH_WINDOW=600
+
+# 指数退避：连续重启失败时，等待 BACKOFF_BASE 起步翻倍，封顶 BACKOFF_MAX（秒）。
+QQGUARD_BACKOFF_BASE=60
+QQGUARD_BACKOFF_MAX=900
+
+# 稳定运行超过这个秒数就清零连续失败与退避。
+QQGUARD_STABLE_WINDOW=600
+
+# 拉起后多久内不判「进程又死了」（登录/冷启动要时间）。
+QQGUARD_GRACE=180
+
+# 拉起后等多久再进入下一轮判据。
+QQGUARD_RECOVER_WAIT=60
+
+# /healthz 连续无响应多少轮才判定挂死、按预算强拉起。
+QQGUARD_UNRESPONSIVE_LIMIT=6
+
+# 同一个冷却期内最多解冻一次（秒）。被冻只解冻，不因为冻结就强杀重启。
+QQGUARD_THAW_COOLDOWN=60
+
+# /healthz 报 offline 连续多少轮才尝试自动登录，以及「最近在线」的有效期（秒）。
+QQGUARD_OFFLINE_LIMIT=10
+QQGUARD_OFFLINE_RESTART_WINDOW=1800
+
+# 用户在系统里手动「强行停止」QQ 时：1 = 尊重并转入 PAUSED；0 = ARMED 时照常拉起。
+QQGUARD_RESPECT_FORCE_STOP=1
+
+# 1 = 额外尝试厂商自启动/关联启动 AppOps（不同 ROM 支持不一致，失败会被忽略）。
+QQGUARD_OEM=0

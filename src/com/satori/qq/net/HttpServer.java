@@ -321,6 +321,7 @@ public final class HttpServer {
                 off += r;
             }
             if (masked) for (int i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+            conn.noteInbound();
 
             switch (opcode) {
                 case 0x0:

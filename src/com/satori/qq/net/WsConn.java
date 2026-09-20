@@ -9,8 +9,25 @@ public final class WsConn {
     private final OutputStream out;
     private final Object writeLock = new Object();
     private volatile boolean closed;
+    // Liveness for the server-side heartbeat: any inbound frame (data or pong) proves the peer is
+    // still there, so the reaper can drop half-open sockets that TCP alone will not report.
+    private volatile long lastInboundMs = System.currentTimeMillis();
+    private volatile long lastPingMs;
 
     WsConn(Socket socket, OutputStream out) { this.socket = socket; this.out = out; }
+
+    /** Called by the frame reader for every inbound frame, cheap and lock-free. */
+    void noteInbound() { lastInboundMs = System.currentTimeMillis(); }
+
+    public long lastInboundMs() { return lastInboundMs; }
+
+    public long lastPingMs() { return lastPingMs; }
+
+    /** Server-initiated WebSocket ping. Clients answer with a pong, which is what marks them live. */
+    public void sendPing() {
+        try { lastPingMs = System.currentTimeMillis(); writeFrame(0x9, new byte[0]); }
+        catch (Throwable ignore) { close(); }
+    }
 
     public void send(String text) {
         try {

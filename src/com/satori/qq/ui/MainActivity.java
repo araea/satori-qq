@@ -39,6 +39,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import com.satori.qq.control.ControlStore;
 import com.satori.qq.control.ManagedConfig;
+import com.satori.qq.guard.GuardCommand;
 import org.json.JSONObject;
 import java.security.SecureRandom;
 import java.text.SimpleDateFormat;
@@ -65,6 +66,8 @@ public final class MainActivity extends Activity {
     private int currentPort = 3001;
     private TextView stateTitle, stateDetail, clients, uptime, endpoint, updated, configurationStatus;
     private TextView versionStatus, diagnostics, diagnosticHint, dirtyLabel, sourceLabel;
+    private TextView guardState;
+    private boolean guardBusy;
     private Button refreshButton, saveButton, revealButton, reportButton, shareButton;
     private EditText portInput, tokenInput;
     private final Switch[] toggles = new Switch[ManagedConfig.SWITCHES.length];
@@ -150,7 +153,17 @@ public final class MainActivity extends Activity {
         Button copy = ui.button("复制连接地址", false); copy.setOnClickListener(v -> copy("连接地址", endpoint.getText().toString(), false)); connection.addView(copy, params(16));
         content.addView(connection, params(12));
         Button open = ui.button("打开 QQ", true); open.setOnClickListener(v -> openQQ()); content.addView(open, params(20));
-        refreshButton = ui.button("刷新状态", false); refreshButton.setOnClickListener(v -> refresh()); content.addView(refreshButton, params(8));
+        LinearLayout guard = card(ui.container, 24);
+        guard.addView(ui.text("常驻守护", 20, ui.ink, true), params(0));
+        guardState = ui.text("正在读取守护状态…", 13, ui.muted, false); guard.addView(guardState, params(8));
+        Button guardOn = ui.button("开启守护（7×24 保活）", true); guardOn.setOnClickListener(v -> guardAction("start")); guard.addView(guardOn, params(12));
+        Button guardOff = ui.button("暂停守护（不关 QQ）", false); guardOff.setOnClickListener(v -> guardAction("stop")); guard.addView(guardOff, params(8));
+        Button guardKill = ui.button("停止保活并关闭 QQ", false);
+        guardKill.setOnClickListener(v -> confirm("停止保活并关闭 QQ？", "先把看守切成 PAUSED，再强停 QQ。之后不会再自动拉起；想恢复请重新开启守护。", "确认关闭", () -> guardAction("kill")));
+        guard.addView(guardKill, params(8));
+        guard.addView(ui.text("守护需要 Root（KernelSU / ReSukiSU）。首次使用会在 root 管理器里请求授权；也可在快捷设置里用「知弦守护」磁贴控制。", 12, ui.muted, false), params(12));
+        content.addView(guard, params(16));
+        refreshButton = ui.button("刷新状态", false); refreshButton.setOnClickListener(v -> { refresh(); refreshGuard(); }); content.addView(refreshButton, params(8));
         updated = ui.text("", 12, ui.muted, false); updated.setGravity(Gravity.CENTER); content.addView(updated, params(12));
         TextView serviceHint = ui.text("管理页关闭后，服务仍随 QQ 运行。", 12, ui.muted, false);
         serviceHint.setGravity(Gravity.CENTER);
@@ -360,7 +373,53 @@ public final class MainActivity extends Activity {
         tokenInput.setSelection(tokenInput.length()); revealButton.setText(value ? "隐藏令牌" : "显示令牌");
         if (value) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE); else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
     }
-    @Override protected void onResume() { super.onResume(); resumed = true; refresh(); }
+    @Override protected void onResume() { super.onResume(); resumed = true; refresh(); refreshGuard(); }
+
+    /** 读一次 root 侧看守状态，套用界面。走工作线程，绝不阻塞主线程。 */
+    private void refreshGuard() {
+        if (guardBusy || guardState == null) return;
+        guardBusy = true;
+        worker.execute(() -> {
+            final GuardCommand.Result result = GuardCommand.status();
+            main.post(() -> {
+                guardBusy = false;
+                if (isDestroyed() || guardState == null) return;
+                if (!result.ok) {
+                    guardState.setText("守护状态不可用：" + result.error + "\n需要 Root 与知弦模块（KernelSU / ReSukiSU）。");
+                    return;
+                }
+                JSONObject s = result.status;
+                StringBuilder line = new StringBuilder();
+                line.append("模式 ").append(result.armed() ? "ARMED（保活中）" : "PAUSED（已暂停）");
+                line.append("  ·  watchdog ").append(result.running() ? "运行中" : "未运行");
+                line.append("\nQQ ").append(result.qqAlive() ? "进程在" : "进程不在");
+                line.append(s != null && s.optBoolean("qq_frozen") ? "（被冻结）" : "");
+                line.append(result.online() ? "  ·  在线" : "  ·  离线");
+                line.append("\n最近 1h 重启 ").append(s == null ? 0 : s.optInt("restarts_1h"))
+                        .append(" 次  ·  连续失败 ").append(s == null ? 0 : s.optInt("consec_fail"))
+                        .append("  ·  退避 ").append(s == null ? 0 : s.optInt("backoff_s")).append("s");
+                guardState.setText(line.toString());
+            });
+        });
+    }
+
+    /** start / stop / kill 三种动作都走同一个 root 包装。 */
+    private void guardAction(String action) {
+        if (guardBusy) { toast("正在处理，请稍候"); return; }
+        guardBusy = true;
+        guardState.setText("正在执行…");
+        worker.execute(() -> {
+            GuardCommand.Result result;
+            String message;
+            switch (action) {
+                case "start": result = GuardCommand.arm(); message = "守护已开启"; break;
+                case "kill": result = GuardCommand.stopAndKill(); message = "已停止保活并关闭 QQ"; break;
+                default: result = GuardCommand.pause(); message = "守护已暂停（QQ 未关闭）"; break;
+            }
+            final String text = result.ok ? message : result.error;
+            main.post(() -> { guardBusy = false; if (!isDestroyed()) { toast(text); refreshGuard(); } });
+        });
+    }
     @Override protected void onPause() { resumed = false; main.removeCallbacks(poll); reveal(false); super.onPause(); }
     @Override protected void onDestroy() { main.removeCallbacks(poll); worker.shutdown(); super.onDestroy(); }
     @Override protected void onSaveInstanceState(Bundle out) {

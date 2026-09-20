@@ -50,4 +50,7 @@ if [ "$failed" -ne 0 ]; then
   echo "== $failed/$total FAILED =="
   exit 1
 fi
-echo "== DONE: $total passed =="
+
+echo "== 3. qqguard 状态机（shell，不需要 root） =="
+bash "$R/tests/qqguard-test.sh"
+echo "== DONE: $total JVM + qqguard passed =="

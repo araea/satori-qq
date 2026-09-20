@@ -92,6 +92,36 @@ description=QQ 的 Satori v1 实现端（Zygisk 注入，纯 JNI 层，不挂钩
 EOF
 # Zygisk Next 只认模块目录里这张表；缺它不会加载（踩过）。
 printf 'name=com.tencent.mobileqq zygisk/arm64-v8a.so\n' > $MODULE/zn_modules.txt
+
+# 常驻看守：模块自带的 service.sh 在 KernelSU late_start 阶段恢复 qqguard。
+# 状态与日志放 /data/adb/satori-qq（模块之外），升级模块不会把 ARMED/PAUSED 冲掉。
+cp $R/scripts/qqguard.sh $MODULE/qqguard.sh
+chmod 0755 $MODULE/qqguard.sh
+cat > $MODULE/service.sh <<'EOF'
+#!/system/bin/sh
+# KernelSU / ReSukiSU service：开机恢复 qqguard 状态（独立 watchdog，root 运行）。
+MODDIR=${0%/*}
+GUARD=/data/adb/satori-qq/qqguard.sh
+mkdir -p /data/adb/satori-qq
+cp -f "$MODDIR/qqguard.sh" "$GUARD" 2>/dev/null
+chmod 0755 "$GUARD" 2>/dev/null
+[ -x "$GUARD" ] || exit 0
+setsid "$GUARD" boot </dev/null >>/data/adb/satori-qq/boot-guard.log 2>&1 &
+EOF
+cat > $MODULE/action.sh <<'EOF'
+#!/system/bin/sh
+# KernelSU 模块管理页的「操作」按钮：切换 Guard ON/OFF。
+GUARD=/data/adb/satori-qq/qqguard.sh
+[ -x "$GUARD" ] || GUARD="${0%/*}/qqguard.sh"
+"$GUARD" toggle
+EOF
+cat > $MODULE/uninstall.sh <<'EOF'
+#!/system/bin/sh
+# 卸载模块时先暂停 watchdog，别留下一个还在动 QQ 的看守。
+[ -x /data/adb/satori-qq/qqguard.sh ] && /data/adb/satori-qq/qqguard.sh stop
+EOF
+chmod 0755 $MODULE/service.sh $MODULE/action.sh $MODULE/uninstall.sh
+
 rm -f $OUT/SatoriQQ-module.zip
 # 刷机包要求 module.prop 在 zip 根目录（Magisk / KernelSU 都按根目录读）。
 ( cd $MODULE && zip -qr $OUT/SatoriQQ-module.zip . )

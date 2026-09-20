@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.satori.qq"
-    android:versionCode="127"
-    android:versionName="0.23.16">
+    android:versionCode="128"
+    android:versionName="0.24.0">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <queries><package android:name="com.tencent.mobileqq" /></queries>
@@ -23,5 +23,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- 快捷设置磁贴：单击切 Guard ON/OFF（关闭只暂停，不关 QQ）。 -->
+        <service
+            android:name=".ui.GuardTileService"
+            android:exported="true"
+            android:label="@string/guard_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <!-- 行动作：停止保活并关闭 QQ。 -->
+        <service
+            android:name=".ui.GuardStopTileService"
+            android:exported="true"
+            android:label="@string/guard_stop_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

@@ -70,21 +70,32 @@ plugins:
 
 QQ 被冻住或杀掉就掉线，三层保护：
 
-1. **模块**（`Keepalive`）：会话就绪后每 10 分钟重新启动 QQ 自己的服务，让进程保持在前台服务优先级，
+1. **root 看守 `qqguard`**（[`scripts/qqguard.sh`](scripts/qqguard.sh)，详见
+   [`docs/GUARD.md`](docs/GUARD.md)）：基于 KernelSU / ReSukiSU 的原生能力，以 root 独立运行，
+   不依赖 Termux、LSPosed 或 Zygisk。默认每 30 秒判一次：进程不在就按预算拉起，被冻住只写 freezer
+   cgroup 解冻（有冷却），`/healthz` 挂死或掉登录才在「最近在线过」的前提下触发自动登录。
+   开机由模块自带的 `service.sh` 调 `qqguard boot` 恢复上次的 ARMED / PAUSED 状态。
+   常用控制：`qqguard start`（开启）/ `stop`（暂停，不关 QQ）/ `restart` / `status`；
+   `qqguard kill` 是「停止保活并关闭 QQ」。快捷设置里也有「知弦守护」与「停止保活并关闭 QQ」两个磁贴。
+2. **模块**（`Keepalive`）：会话就绪后每 10 分钟重新启动 QQ 自己的服务，让进程保持在前台服务优先级，
    并持 CPU 唤醒锁。状态见 `/healthz.keepalive`。
-2. **root 看守**（[`scripts/qq-revive.sh`](scripts/qq-revive.sh)，装法见
-   [`scripts/98-qq-revive.sh`](scripts/98-qq-revive.sh)）：每 60 秒查一次 `/healthz`、MSF 上游连接与
-   踢线记录，被冻时写 freezer cgroup 解冻，进程真没了才按预算重启（两次间隔 ≥10 分钟、每小时 ≤3 次）。
-   手动强停的 QQ 不拉起。
-3. **系统**：电池优化白名单、关闭 Doze（[`scripts/99-no-doze.sh`](scripts/99-no-doze.sh)）与 ColorOS
-   「睡眠待机优化」，见排障。
+3. **系统**：`qqguard start` 会应用电池优化（Doze）白名单、必要 AppOps（`RUN_IN_BACKGROUND` /
+   `RUN_ANY_IN_BACKGROUND` 等）、App Standby Bucket 与 Data Saver 白名单；ColorOS
+   「睡眠待机优化」见排障。需要关掉整机 Doze 时另见 [`scripts/99-no-doze.sh`](scripts/99-no-doze.sh)。
+
+看守的完整参数（检测间隔、重启预算、退避、解冻冷却等）见
+[`scripts/guard.conf.sample`](scripts/guard.conf.sample)，拷成 `/data/adb/satori-qq/guard.conf` 即可。
+不用模块 zip 时，把 [`scripts/98-qqguard.sh`](scripts/98-qqguard.sh) 放进 `/data/adb/service.d/` 也能开机恢复。
 
 `wifi_sustain` 持的是 `WifiLock`，只在 Wi-Fi 下有效；蜂窝下靠前两层，另需确认系统没限制 QQ 的
 「后台数据」。
 
 ## 排障
 
-- 强停或划掉 QQ 会停止服务，看守不会把手动停掉的 QQ 拉回来。
+- 强停或划掉 QQ 会停止服务。看守默认尊重系统里的「强行停止」（`stopped=true`），会自动转入
+  PAUSED 而不是跟你抢；想重新保活就 `qqguard start` 或点「知弦守护」磁贴。
+- 状态通知在 QQ 前台时消失过：0.24.0 起每轮会检查条目是否还在，被 QQ 自己清掉后自动补发；
+  看 `/healthz.notice` 的 `reposts`。
 - 锁屏后文字能发而图片、合并转发失败，是网络问题：文字走既有长连接，富媒体要新建连接持续传输。关闭
   系统的「睡眠待机优化」或「深度睡眠」，ColorOS 的开关未必写回配置，确认
   `deep_sleep_is_disable_net_allowed` 与 `deepsleep_network_switch` 已归零。

@@ -8,7 +8,8 @@
 | --- | --- |
 | `Main` | 只在 QQ 主进程启动 Satori 服务，其他进程不加载模块代码 |
 | `Cfg` / `L` | 文件配置与日志，详细日志默认关闭 |
-| `ui` | 知弦管理页，在应用自身进程运行，前台只读探测状态 |
+| `ui` | 知弦管理页与两个快捷设置磁贴，在应用自身进程运行，前台只读探测状态 |
+| `guard` | App → root `qqguard` 的调用桥：只拼写死的 `su -c` 命令，不接收任何界面/网络输入 |
 | `control` | 私有设置、UID 校验的 Provider、启动时配置同步 |
 | `net` | HTTP 与事件 WebSocket，只监听 `127.0.0.1` |
 | `core` | 方法分发、事件、消息与文件标识管理 |
@@ -104,9 +105,20 @@ UIN 转 UID 走资料服务上的 `getUidByUin`。读操作的返回结构由 `S
 ## 常驻与诊断
 
 在线时模块保持 QQ 的服务处于「已启动」状态（见 README 常驻），写入期间自动持 CPU 与 Wi-Fi 锁，
-有客户端连接时可长期持 Wi-Fi 锁。`GET /healthz` 返回在线、监听、配置修订、保活、唤醒锁、SSO、
+有客户端连接时可长期持 Wi-Fi 锁。`GET /healthz` 返回在线、监听、配置修订、保活、心跳、唤醒锁、SSO、
 compat 与名字守卫状态；`keepalive` 报 `adj`（当前优先级，低于冻结阈值 900 就不会被冻）、`wchan`
-（`do_freezer_trap` 即被冻）与 `service`（起服务结果）。
+（`do_freezer_trap` 即被冻）与 `service`（起服务结果）。`heartbeat` 报服务端 WebSocket ping 的
+`pings / pongs / reaped`：`WsConn` 记录最后入站帧，两个心跳周期没回包的半开连接会被关掉。
+
+root 侧的 `qqguard`（`scripts/qqguard.sh`，详见 [`GUARD.md`](GUARD.md)）与注入层解耦：以
+`/system/bin/sh` 运行，只依赖系统与 KernelSU 原生能力，负责进程死亡恢复、freezer 解冻、Doze/
+AppOps/Data Saver 配置与开机状态恢复。它以落盘的 ARMED/PAUSED 区分保活与用户主动停止，重启有
+冷却、每小时预算、指数退避与连续崩溃保护。状态与日志在 `/data/adb/satori-qq/`，模块自带的
+`service.sh` 在 late_start 阶段调 `qqguard boot`。
+
+状态通知的补发：QQ 回到前台会清自家通知，`StatusNotice.update` 每轮用
+`getActiveNotifications()` 检查自己那条是否还在，被清掉就用同样内容补发；
+`/healthz.notice` 的 `reposts` 记录补发次数。
 
 状态通知的点击目标是宿主包的 launcher activity。`PendingIntent` 用 `getLaunchIntentForPackage`
 解析一次后缓存，返回的 Intent 带 `FLAG_ACTIVITY_NEW_TASK`，QQ 在后台时回到原任务而不是新建。

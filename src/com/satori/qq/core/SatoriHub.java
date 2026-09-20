@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.23.16";
+    public static final String APP_VERSION = "0.24.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -52,6 +52,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     // Clients that identified before QQ had an account to name. READY is what hands a client the
     // login it latches onto, so it waits here until selfUin() resolves; see handleIdentify.
     private final ConcurrentHashMap<WsConn, JSONObject> awaitingReady = new ConcurrentHashMap<>();
+    // Server-side heartbeat counters, surfaced in /healthz. Application-level OP_PING answers are
+    // already handled in onWsText; these count the transport-level pings we initiate.
+    private final AtomicLong heartbeatPings = new AtomicLong();
+    private final AtomicLong heartbeatReaped = new AtomicLong();
+    private final AtomicLong heartbeatPongs = new AtomicLong();
     private final AtomicLong eventSn = new AtomicLong();
     private final Object recentEventsLock = new Object();
     private final java.util.ArrayDeque<JSONObject> recentEvents = new java.util.ArrayDeque<>();
@@ -2491,8 +2496,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         QQClient.SendResult r = null;
         for (int i = 0; i < attempts; i++) {
             if (i > 0) {
-                long backoff = (long) cfg.mediaRetryBackoffMs * i;
-                if (System.currentTimeMillis() + backoff >= deadline) {
+                long backoff = RetryPolicy.backoffMs(cfg.mediaRetryBackoffMs, i, cfg.mediaRetryBudgetMs);
+                if (RetryPolicy.budgetSpent(System.currentTimeMillis(), backoff, deadline)) {
                     L.e("media transfer failed (" + r.msg + "); retry budget spent", null);
                     return r;
                 }
@@ -4350,6 +4355,41 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         nameGuardDiag = d.length() == 0 ? "idle" : d.toString().trim();
     }
 
+    /**
+     * Transport heartbeat: ping every attached client and reap the ones that stopped answering.
+     *
+     * <p>Satori clients answer WebSocket pings in the protocol library, so a missing pong is not
+     * client misbehaviour — it is a half-open socket (NAT timeout, radio loss, frozen peer) that
+     * would otherwise sit in {@link #identified} forever and swallow events. Timeout is two
+     * heartbeat periods so a single dropped frame does not drop a healthy client.
+     */
+    private void heartbeatTick(long now, long interval) {
+        long timeout = Math.max(2 * interval, 30_000L);
+        for (WsConn c : identified) {
+            long idle = now - c.lastInboundMs();
+            if (idle > timeout) {
+                heartbeatReaped.incrementAndGet();
+                L.i("heartbeat: dropping client idle " + (idle / 1000) + "s");
+                identified.remove(c);
+                c.close();
+                continue;
+            }
+            // A pong is what we expect; OP_PONG / any data frame counts as liveness too.
+            if (c.lastPingMs() > 0 && c.lastInboundMs() >= c.lastPingMs()) heartbeatPongs.incrementAndGet();
+            c.sendPing();
+            heartbeatPings.incrementAndGet();
+        }
+    }
+
+    private JSONObject heartbeatStats() throws Exception {
+        return new JSONObject()
+                .put("enabled", cfg.heartbeat)
+                .put("interval_ms", Math.max(1000L, cfg.heartbeatMs))
+                .put("pings", heartbeatPings.get())
+                .put("pongs", heartbeatPongs.get())
+                .put("reaped", heartbeatReaped.get());
+    }
+
     private void startStatusMonitor() {
         Thread t = new Thread(() -> {
             boolean previous = qq.isOnline();
@@ -4373,6 +4413,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     try { nameGuardTick(now); } catch (Throwable e) { L.e("nameGuardTick", e); }
                     if (cfg.heartbeat && now >= nextHeartbeat) {
                         nextHeartbeat = now + interval;
+                        heartbeatTick(now, interval);
                     }
                     flushAwaitingReady();
                     // 被踢之后把落盘的登录态修回来（账号标记与自动登录开关）。只在本进程
@@ -4484,6 +4525,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("good", online)
                 .put("online_since_epoch_ms", onlineSinceMs)
                 .put("outbound_guard", outboundGuard.stats())
+                .put("heartbeat", heartbeatStats())
                 .put("keepalive", com.satori.qq.qq.Keepalive.diag())
                 // QQ 自己的环境结论（只读探针）
                 .put("qsec", com.satori.qq.qq.EnvProbe.snapshot())

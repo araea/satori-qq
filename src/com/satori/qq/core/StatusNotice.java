@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.service.notification.StatusBarNotification;
 
 import com.satori.qq.L;
 
@@ -36,10 +37,20 @@ public final class StatusNotice {
     private static final int COLOR_WAIT = 0xFF775A0B;     // readable amber
     private static final int COLOR_DEGRADED = 0xFFBA1A1A; // Material error role
 
+    /**
+     * How soon the same state may be re-posted after the entry vanished.
+     *
+     * <p>QQ 每次回到前台都会把自家通知清一遍（{@code cancelAll()}），常驻条目因此消失；本类
+     * 靠“条目还在不在”把它补回来。下限只是防止系统反复吞掉时把 notify 打成死循环。
+     */
+    private static final long REPOST_MIN_GAP_MS = 3000L;
+
     private final Context ctx;
     private final NotificationManager nm;
     private volatile boolean channelReady;
     private volatile String lastKey = "";
+    private volatile long lastPostAt;
+    private volatile long repostCount;
     // Optional user-toggled wake lock, surfaced as a notification action button (Termux-style).
     private volatile com.satori.qq.qq.WakeLockCtl wake;
     // Tap target, resolved once (see openAppIntent); openAppTried keeps a failed lookup from
@@ -69,7 +80,28 @@ public final class StatusNotice {
         boolean en;
         try { en = nm.areNotificationsEnabled(); } catch (Throwable t) { en = true; }
         return (en ? "enabled" : "disabled") + "/posted=" + (lastKey.isEmpty() ? "no" : "yes")
-                + "/chan=" + channelReady;
+                + "/chan=" + channelReady + "/reposts=" + repostCount;
+    }
+
+    /**
+     * Decide whether this tick should (re)post the entry.
+     *
+     * <p>Pure so the regression test can pin the QQ-foreground case: the content key never changes
+     * there, and only {@code alive=false} (the entry was cleared) may drive a re-post.
+     *
+     * @param changed content differs from what was last posted
+     * @param enabled notifications are enabled for the host package
+     * @param cached  something has been posted before
+     * @param alive   our entry is still in the shade
+     * @param sinceMs milliseconds since the last post
+     * @param minGapMs throttle for identical re-posts
+     */
+    static boolean shouldPost(boolean changed, boolean enabled, boolean cached,
+                              boolean alive, long sinceMs, long minGapMs) {
+        if (changed) return true;
+        if (!enabled || !cached) return false;
+        if (sinceMs < minGapMs) return false;
+        return !alive;
     }
 
     private void ensureChannel() {
@@ -202,30 +234,66 @@ public final class StatusNotice {
         }
     }
 
-    /** Refresh the resident notification. Cheap to call every tick: rebuilds only on a visible change. */
+    /**
+     * Refresh the resident notification.
+     *
+     * <p>Cheap to call every tick: it rebuilds only on a visible change, and otherwise just checks
+     * whether our entry is still in the shade. That check is what fixes "QQ 在前台时常驻通知消失" —
+     * QQ clears its own notifications when its main window comes to the front, and a key-only cache
+     * would never re-post the identical entry.
+     */
     public void update(boolean online, boolean listening, String uin, String nick,
                        int port, int connections, long onlineSinceMs) {
         if (nm == null) return;
         View v = render(online, listening, uin, nick, port, connections, onlineSinceMs);
-        if (v.key.equals(lastKey)) return;
-
-        // The post is dropped silently when QQ lacks POST_NOTIFICATIONS (the user disabled QQ
-        // notifications, or Android 13+ hasn't granted it). Don't cache the key then, so the entry
-        // self-heals the moment notifications are re-enabled instead of waiting for a state change.
         boolean enabled;
         try { enabled = nm.areNotificationsEnabled(); } catch (Throwable t) { enabled = true; }
+        boolean changed = !v.key.equals(lastKey);
+        long now = System.currentTimeMillis();
+        boolean alive = changed || stillPosted();
+        if (!shouldPost(changed, enabled, !lastKey.isEmpty(),
+                alive, now - lastPostAt, REPOST_MIN_GAP_MS)) return;
 
         ensureChannel();
         try {
             nm.notify(NOTIFY_ID, notif(v));
-            if (enabled) lastKey = v.key;
+            lastPostAt = now;
+            if (!changed && enabled) {
+                repostCount++;
+                L.i("notice: re-posted after removal (reposts=" + repostCount + ")");
+            }
+            // Cache even while notifications are disabled: the stillPosted() check re-posts it as
+            // soon as they come back, so self-healing no longer depends on a state change.
+            lastKey = v.key;
         } catch (Throwable t) {
             L.e("notice: notify", t);
         }
     }
 
+    /**
+     * Whether our own entry is still posted. {@link NotificationManager#getActiveNotifications()}
+     * only ever returns the calling app's notifications, so no listener permission is involved.
+     * On failure we assume it is alive — a wrong guess then is a missing entry, not a repost loop.
+     */
+    private boolean stillPosted() {
+        if (nm == null) return true;
+        try {
+            StatusBarNotification[] active = nm.getActiveNotifications();
+            if (active == null) return true;
+            String pkg = ctx == null ? null : ctx.getPackageName();
+            for (StatusBarNotification sbn : active) {
+                if (sbn == null || sbn.getId() != NOTIFY_ID) continue;
+                if (pkg == null || pkg.equals(sbn.getPackageName())) return true;
+            }
+            return false;
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
     public void cancel() {
         lastKey = "";
+        lastPostAt = 0;
         if (nm == null) return;
         try {
             nm.cancel(NOTIFY_ID);

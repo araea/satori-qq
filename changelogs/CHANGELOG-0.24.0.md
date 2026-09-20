@@ -62,6 +62,12 @@ QQ 每次把自己的主窗口带到前台，都会清一遍自家通知（`Noti
 - 登录状态恢复沿用既有路径（`trackLoginChange` 换号回收客户端、READY 等账号就绪再发、
   在线稳定期后再写出站），这版没有改动，只在 `/healthz` 里补齐心跳字段。
 
+### 移除旧看守
+
+`scripts/qq-revive.sh` 与 `scripts/98-qq-revive.sh` 删除。它们每 60 秒查 `/healthz`、MSF 上游
+连接与 `qk_kick.log`，偏重「僵尸会话」判定，耦合 Termux，而且会 force-stop 后重启；两个看守同时
+跑只会互相抢 QQ。从旧版升级时，设备上的旧文件也请一并清掉，见 [`docs/GUARD.md`](../docs/GUARD.md)。
+
 ### 测试
 
 - `tests/StatusNoticeTest`：把「内容没变但条目没了要补发、内容没变且还在就不发、禁用时不补发、

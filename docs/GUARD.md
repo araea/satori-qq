@@ -125,10 +125,19 @@ Android 快捷设置里另有两个磁贴：
 | `/data/adb/modules/satori_qq/service.sh` | KernelSU 开机恢复入口 |
 | `/data/adb/modules/satori_qq/action.sh` | 模块「操作」按钮 = `qqguard toggle` |
 
-## 和旧脚本的关系
+## 旧看守已移除
 
-0.23.x 及更早用的是 [`scripts/qq-revive.sh`](../scripts/qq-revive.sh)：每 60 秒查
-`/healthz`、MSF 上游连接与踢线记录。它偏重「僵尸会话」的判定，逻辑复杂、耦合 Termux 与
-`qk_kick.log`，且会 force-stop 后重启。`qqguard` 改为以「进程死亡 / 冻结」为主、协议层自己管
-心跳与重连，重启预算更保守。**两者不要同时跑**：升级到 0.24.0 后请停掉旧的
-`/data/adb/service.d/98-qq-revive.sh` 并删掉，避免两个看守抢 QQ。
+0.23.x 及更早的 `scripts/qq-revive.sh` 与 `scripts/98-qq-revive.sh` 已在 0.24.0 删除。旧脚本每
+60 秒查 `/healthz`、MSF 上游连接与 `qk_kick.log`，偏重「僵尸会话」的判定，逻辑复杂、耦合
+Termux，而且会 force-stop 后重启。`qqguard` 改为以「进程死亡 / 冻结」为主，协议层自己管心跳与
+重连，重启预算更保守。
+
+从旧版升级时，把设备上的旧看守也清掉，避免两个看守抢 QQ：
+
+```sh
+# 先停掉还活着的旧看守
+[ -f /data/adb/satori-qq/qq-revive.pid ] && kill "$(cat /data/adb/satori-qq/qq-revive.pid)" 2>/dev/null
+rm -f /data/adb/satori-qq/qq-revive.sh /data/adb/satori-qq/qq-revive.log \
+      /data/adb/satori-qq/qq-revive.pid /data/adb/satori-qq/qq-revive.state \
+      /data/adb/satori-qq/qq-revive.flags /data/adb/service.d/98-qq-revive.sh
+```

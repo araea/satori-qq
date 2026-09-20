@@ -18,8 +18,9 @@ import java.io.RandomAccessFile;
  *
  * <p>0.22.x 及更早是用 hook 把 QQ 的 {@code QQDataSyncService} 提成前台服务；0.23.0 去掉 hook
  * 引擎后那条路没了，这里补的是**不 hook 也能做的那一半**：从进程内把它自己的服务重新 start
- * 一遍（同包同进程），并定期复查。真正的兜底在 root 侧 {@code scripts/qq-revive.sh}——万一还是
- * 被冻，它直接写进程自己的 freezer cgroup 解冻，不拉起、不重启、也不打断用户。
+ * 一遍（同包同进程），并定期复查。真正的兜底在 root 侧 {@code scripts/qqguard.sh}（见
+ * {@code docs/GUARD.md}）——万一还是被冻，它直接写进程自己的 freezer cgroup 解冻，不拉起、
+ * 不重启、也不打断用户。
  *
  * <p>Android 12+ 会限制后台应用 startService，被挡时抛 {@code IllegalStateException}；这里不往外
  * 抛，结果记进 {@link #diag()}，healthz 的 {@code keepalive} 字段一眼能看到到底起没起。

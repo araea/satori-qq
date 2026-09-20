@@ -179,7 +179,7 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
   `m.q.qq.com/a/s/<hash>`）。`icon` / `preview` / `tagIcon` 是图，不是落地地址
 
 本端不改写载荷，也不替客户端挑地址：Satori 没有卡片元素，裁剪一次就回不去，而字段优先级由客户端按用途
-定（同机的 ayjx 在 `command::card_target_url` 里按此序取）。
+定（同机的 acumen 在 `command::card_target_url` 里按此序取）。
 
 媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，以及本端的
 `/v1/assets/{id}`。入站图片优先返回无需 Bearer 令牌的本地资源地址，头像使用 QQ 头像 CDN。

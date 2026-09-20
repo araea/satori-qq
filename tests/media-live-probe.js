@@ -3,7 +3,7 @@
 /**
  * 媒体发送的真机探针：走客户端的真实路径（`upload.create` 上传字节，再 `message.create`
  * 发带 `<audio>` / `<file>` 的元素），发完用 `message.list` 读回 QQ 自己的消息记录确认
- * 落地。ayjx 的搭话与音乐/视频房间用的就是这两步，所以这里测通了等于那条路通。
+ * 落地。acumen 的搭话与音乐/视频房间用的就是这两步，所以这里测通了等于那条路通。
  *
  *   node tests/media-live-probe.js voice      # <audio>，默认 /sdcard/Download/voice-probe.mp3
  *   node tests/media-live-probe.js file       # <file> 聊天气泡（同时进群文件）

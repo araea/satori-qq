@@ -181,7 +181,7 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 SATORI_TEST_GROUP=<群号> node tests/ws-feature-sweep.js
 SATORI_TEST_GROUP=<群号> SATORI_DESTRUCTIVE=1 node tests/ws-write-sweep.js
 node tests/ws-health.js              # 健康与自检
-node tests/ws-ayjx-smoke.js          # 客户端视角的冒烟：协议方法、事件与扩展动作
+node tests/ws-acumen-smoke.js        # 客户端视角的冒烟：协议方法、事件与扩展动作
 node tests/ws-poke.js                # 戳一戳：出站 OIDB、入站灰条事件与参数校验
 node tests/media-live-probe.js voice # 语音条与文件能不能真发出去，见脚本头注释
 ```

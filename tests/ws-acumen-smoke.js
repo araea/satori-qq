@@ -1,9 +1,9 @@
 'use strict';
 
 /**
- * ayjx 接口面冒烟：按 ayjx（Rust 端）**实际调用**的动作逐个探一遍。
+ * acumen 接口面冒烟：按 acumen（Rust 端）**实际调用**的动作逐个探一遍。
  *
- * 动作集合取自 ayjx 的 `src/adapters/satori/api.rs` 与
+ * 动作集合取自 acumen 的 `src/adapters/satori/api.rs` 与
  * `src/plugins/oai/chat/session.rs`；改这边的动作表或改名时，先跑这个脚本。
  *
  * 判定口径：
@@ -11,7 +11,7 @@
  * - 会改状态的动作只用**参数校验**来确认「路由到了真实实现」——404 + `API not found`
  *   才算没实现，其余 4xx 都算路由成功。真改状态的回归在 `ws-write-sweep.js`。
  *
- *   node tests/ws-ayjx-smoke.js
+ *   node tests/ws-acumen-smoke.js
  */
 
 const { connect, delay } = require('./satori-client');
@@ -52,10 +52,10 @@ async function main() {
   const selfId = String(client.ready.logins[0].user.id);
   console.log('# group=' + GROUP + ' self=' + selfId);
 
-  // ---- 只读：ayjx 的上下文与身份 ----
+  // ---- 只读：acumen 的上下文与身份 ----
   await check('login.get', async () => {
     // HTTP login.get 回扁平的一个 Login（`self_id` / `user` / `features`）；WS READY 里是
-    // `logins[]`。两种形状 ayjx 都要认，这里两种都查。
+    // `logins[]`。两种形状 acumen 都要认，这里两种都查。
     const o = await client.callOk('login.get', {});
     const flat = o.self_id || o.user?.id;
     if (String(flat) !== selfId) throw new Error('self_id=' + flat);
@@ -103,7 +103,7 @@ async function main() {
     let mid = list?.data?.[0]?.id;
     if (!mid) {
       // 新群里可能一条消息都没有；表态是挂在消息上的，先造一条（测试群，允许发消息）。
-      const sent = await client.callOk('message.create', { channel_id: GROUP, content: 'ayjx-smoke 表态探针' });
+      const sent = await client.callOk('message.create', { channel_id: GROUP, content: 'acumen-smoke 表态探针' });
       const arr = Array.isArray(sent) ? sent : [sent];
       mid = arr[0]?.id;
     }
@@ -113,7 +113,7 @@ async function main() {
     return 'users=' + o.data.length;
   });
 
-  // ---- ayjx 的扩展动作 ----
+  // ---- acumen 的扩展动作 ----
   await check('internal/capabilities', async () => {
     const o = await client.callOk('internal/capabilities', {});
     if (!Array.isArray(o.actions) || o.actions.length === 0) throw new Error('actions 为空');
@@ -129,10 +129,10 @@ async function main() {
   });
 
   // sign 会真的打卡，只在显式开启时跑
-  if (process.env.SATORI_AYJX_SIGN === '1') {
+  if (process.env.SATORI_ACUMEN_SIGN === '1') {
     await check('internal/sign', async () => expectRouted(client, 'internal/sign', { guild_id: GROUP }));
   } else {
-    console.log('skip internal/sign（会真的打卡；SATORI_AYJX_SIGN=1 才跑）');
+    console.log('skip internal/sign（会真的打卡；SATORI_ACUMEN_SIGN=1 才跑）');
   }
 
   // ---- 会改状态：只用参数校验确认路由 ----
@@ -155,15 +155,15 @@ async function main() {
   await check('internal/poke(缺参)', async () => expectRouted(client, 'internal/poke', { guild_id: GROUP }));
   await check('internal/essence(缺参)', async () => expectRouted(client, 'internal/essence', { guild_id: GROUP }));
 
-  // ---- 已知缺口：这些动作 ayjx 还在调，但实现端已经没有了 ----
-  // 只要它报的是「已移除」而不是「API not found」，ayjx 就能把能力标成不可用。
+  // ---- 已知缺口：这些动作 acumen 还在调，但实现端已经没有了 ----
+  // 只要它报的是「已移除」而不是「API not found」，acumen 就能把能力标成不可用。
   await check('internal/like(已移除，文案要能认)', async () => {
     const message = await expectRouted(client, 'internal/like', { user_id: selfId, times: 1 });
     if (/API not found/i.test(message)) throw new Error('报的还是「没这个方法」：' + message);
     return message;
   });
 
-  // message.update 从来没实现过，ayjx 只在单测里用它验「404 不算成功」。
+  // message.update 从来没实现过，acumen 只在单测里用它验「404 不算成功」。
   await check('message.update(从未实现)', async () => {
     const res = await client.call('message.update', {});
     const message = (res.json && res.json.message) || res.text || '';

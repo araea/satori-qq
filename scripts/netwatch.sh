@@ -4,7 +4,7 @@
 #
 #   link   ping 默认网关，走 wlan0 直连，完全绕开 tun0 —— 只反映物理链路
 #   proxy  经 127.0.0.1:7890 请求，任何 HTTP 状态码都算通；timeout 才是 FlClash 出问题
-#   tun    普通出站（QQ 与 ayjx 实际走的路径：tun0 -> clash -> 上游）
+#   tun    普通出站（QQ 与 acumen 实际走的路径：tun0 -> clash -> 上游）
 #   satori 模块 /healthz 的 online/连接数
 #   screen/idle/clash  电源与冻结状态，用来判断是不是系统在关网
 export PATH=/system/bin:$PATH

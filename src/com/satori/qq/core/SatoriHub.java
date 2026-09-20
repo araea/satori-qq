@@ -696,7 +696,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
      * 曾经提供、后来移除的动作。
      *
      * <p>必须和「从来没这个方法」分开报：客户端要靠这个把能力标成不可用，而不是每轮重试
-     * （ayjx 的资料卡点赞就是这种用法——它按回执文案记住「平台不让做」，之后就不再调）。
+     * （acumen 的资料卡点赞就是这种用法——它按回执文案记住「平台不让做」，之后就不再调）。
      * 所以除了 404，响应体里还带 `code=removed_action`。
      */
     private static final class RemovedAction extends RuntimeException {
@@ -1176,7 +1176,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return new JSONObject()
                 .put("version", APP_VERSION)
                 // 只列真正还实现得出来的（移除过的见下面的 removed）：列了却 404 会让客户端
-                // 白试一轮，ayjx 的资料卡点赞就吃过这个亏。
+                // 白试一轮，acumen 的资料卡点赞就吃过这个亏。
                 .put("actions", new JSONArray()
                         .put("poke").put("invite")
                         .put("card").put("special_title").put("title_display")
@@ -2435,7 +2435,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     /**
-     * ayjx (and go-cqhttp-style clients) send merge-forward as {@code send_msg}
+     * acumen (and go-cqhttp-style clients) send merge-forward as {@code send_msg}
      * whose message array is {@code node} segments, not {@code send_*_forward_msg}.
      */
     static boolean looksLikeForward(Object message) {
@@ -2452,7 +2452,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return anyNode;
     }
 
-    /** ayjx {@code node_custom} serializes user_id as a JSON string. */
+    /** acumen {@code node_custom} serializes user_id as a JSON string. */
     private long parseNodeUin(JSONObject d) {
         long uin = d.optLong("uin", d.optLong("user_id", 0));
         if (uin != 0) return uin;

@@ -1,6 +1,6 @@
 'use strict';
 
-// ayjx-shaped merge-forward: send_msg + node[], not send_*_forward_msg.
+// acumen-shaped merge-forward: send_msg + node[], not send_*_forward_msg.
 const fs = require('fs');
 
 const groupId = Number(process.env.SATORI_TEST_GROUP || '280183116');
@@ -76,7 +76,7 @@ socket.addEventListener('open', async () => {
           data: {
             user_id: selfId,
             nickname: nick,
-            content: [{ type: 'text', data: { text: 'ayjx-node-a ' + stamp } }],
+            content: [{ type: 'text', data: { text: 'acumen-node-a ' + stamp } }],
           },
         },
         {
@@ -84,7 +84,7 @@ socket.addEventListener('open', async () => {
           data: {
             user_id: '10000',
             nickname: 'System Bot',
-            content: [{ type: 'text', data: { text: 'ayjx-node-b ' + stamp } }],
+            content: [{ type: 'text', data: { text: 'acumen-node-b ' + stamp } }],
           },
         },
       ],

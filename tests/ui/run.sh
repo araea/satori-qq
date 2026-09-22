@@ -18,6 +18,10 @@ echo "== 安装测试包 =="
 su -c "pm install -r -d '$OUT/DesignTests.apk'" | tail -2
 
 echo "== 运行 =="
+# 先把应用的任务清掉再跑。留着一个已存在的 MainActivity，它的实例状态（onSaveInstanceState 存下的
+# 那份）会被下面 startActivitySync 的同组件 ActivityRecord 继承，"草稿跨重建保留"那条就会读到旧值
+# 而不是本次写进去的草稿——表现为 port=3001 tab=0，看起来像应用丢了草稿，其实是环境没清干净。
+su -c "am force-stop $APP"
 su -c "am instrument -w -r $PKG/.DesignSmoke" | tee "$OUT/instrument.log"
 if grep -q 'FAIL' "$OUT/instrument.log"; then
   echo "设计冒烟未通过，见 $OUT/instrument.log" >&2

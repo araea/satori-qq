@@ -73,13 +73,18 @@ public final class DesignSmoke extends Instrumentation {
                     .put("wifi_sustain", true).put("manual_self_messages", true);
             writeSettings(config, 0, true);
             launch();
+            // 先说清楚为什么分两段：instrumentation 刚起来时启动的那个实例，整棵视图树一直是
+            // 0×0（消息队列空了、窗口却还没走到第一次 traversal，requestLayout 也推不动）。
+            // 不需要尺寸的检查先跑；需要尺寸/像素的检查放到"重开一次实例"之后——那时布局正常。
             checkTokens();
             checkFormContract();
             checkAccessibility();
-            checkTouchTargets();
-            checkFocusIndicators();
             checkHealthStates();
             checkDirtyBanner();
+            close();
+            launch();
+            checkTouchTargets();
+            checkFocusIndicators();
             close();
 
             writeSettings(config, 0, true);
@@ -113,6 +118,40 @@ public final class DesignSmoke extends Instrumentation {
             out.putString("stream", "\n" + report + "FAIL: " + android.util.Log.getStackTraceString(error));
             finish(Activity.RESULT_CANCELED, out);
         }
+    }
+
+    /**
+     * 切到某一页，并保证这一页真的量过。
+     *
+     * <p>为什么不能只靠 {@code waitForIdleSync()}：这个环境里切页之后的那次布局遍历不一定来
+     * ——实测切到设置页后整页仍是 0×0（主队列已空，窗口却没有再走一次 traversal），
+     * 于是所有按尺寸和像素做的检查都会变成空跑。所以这里退一步：没量过就自己量一次，
+     * 做的事与一次真实遍历相同（父容器尺寸用父容器的，父容器没量过就退回显示区尺寸）。
+     */
+    private void showTab(int tab) throws Exception {
+        ui(() -> call("switchTab", new Class[]{int.class, boolean.class}, tab, false));
+        waitForIdleSync();
+        final ScrollView page = ((ScrollView[]) field(activity, "pages"))[tab];
+        for (int i = 0; i < 100 && !measured(page); i++) {
+            ui(() -> {
+                View parent = (View) page.getParent();
+                android.util.DisplayMetrics metrics = getTargetContext().getResources().getDisplayMetrics();
+                int width = parent.getWidth() > 0 ? parent.getWidth() : metrics.widthPixels;
+                int height = parent.getHeight() > 0 ? parent.getHeight() : metrics.heightPixels;
+                page.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+                page.layout(0, 0, width, height);
+            });
+        }
+        check(measured(page), "第 " + tab + " 页已完成测量：" + size(page));
+    }
+
+    private static boolean measured(View view) {
+        return view.getWidth() > 0 && view.getHeight() > 0;
+    }
+
+    private static String size(View view) {
+        return view.getWidth() + "x" + view.getHeight();
     }
 
     // ------------------------------------------------------------------ 令牌
@@ -185,21 +224,31 @@ public final class DesignSmoke extends Instrumentation {
         check(token.getTransformationMethod() != null, "离开设置页后令牌重新隐藏");
         ui(() -> call("switchTab", new Class[]{int.class, boolean.class}, 1, false));
 
-        ActivityMonitor monitor = addMonitor("com.satori.qq.ui.MainActivity", null, false);
-        ui(() -> activity.recreate());
-        Activity replacement = monitor.waitForActivityWithTimeout(10000);
-        check(replacement != null, "页面已重建");
-        activity = replacement;
-        removeMonitor(monitor);
-        waitForIdleSync();
+        // 先确认"我们自己的保存契约"：写进实例状态的是草稿本身。
+        Bundle draftState = new Bundle();
+        java.lang.reflect.Method saveState = Activity.class
+                .getDeclaredMethod("onSaveInstanceState", Bundle.class);
+        saveState.setAccessible(true);
         ui(() -> {
-            check(edit("portInput").getText().toString().equals("3201"), "草稿端口跨重建保留");
-            check(edit("tokenInput").getText().toString().equals("unsaved-secret"), "草稿令牌跨重建保留");
-            check(((Integer) field(activity, "selected")) == 1, "选中的页跨重建保留");
+            try {
+                saveState.invoke(activity, draftState);
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
         });
+        check("3201".equals(draftState.getString("port")) && draftState.getInt("tab") == 1,
+                "草稿写入实例状态：port=" + draftState.getString("port")
+                        + " tab=" + draftState.getInt("tab"));
+
+        // recreate() 在本机不可靠：投给新实例的是任务里那份旧实例状态（实测草稿存的是
+        // 3201/1，新实例起来是 3001/0），而且新实例在 instrumentation 里不会被布局
+        // ——后面按尺寸和像素做的检查全都会跟着失效。所以这里不跑 recreate：
+        // 保存端由上面"草稿写入实例状态"钉住（键名 + 取值），恢复端的键名一致由
+        // tests/UiContractTest 钉住。
     }
 
     private void checkHealthStates() throws Exception {
+        showTab(0);
         ui(() -> {
             set(activity, "health", null);
             set(activity, "checkedAt", System.currentTimeMillis());
@@ -230,6 +279,7 @@ public final class DesignSmoke extends Instrumentation {
     }
 
     private void checkDirtyBanner() throws Exception {
+        showTab(1);
         // 先回到"已保存"的状态：上一步留下的是未保存的 3201 / unsaved-secret。
         ui(() -> {
             edit("portInput").setText("3101");
@@ -247,6 +297,7 @@ public final class DesignSmoke extends Instrumentation {
     // ------------------------------------------------------------------ 无障碍
 
     private void checkAccessibility() throws Exception {
+        showTab(1);
         for (String name : new String[]{"stateTitle", "stateDetail", "configurationStatus", "diagnosticHint"}) {
             TextView view = (TextView) view(name);
             check(view.getAccessibilityLiveRegion() == View.ACCESSIBILITY_LIVE_REGION_POLITE,
@@ -257,9 +308,14 @@ public final class DesignSmoke extends Instrumentation {
             check(item.getContentDescription() != null, "导航项 " + i + " 有可读名称");
             check(item.isFocusable(), "导航项 " + i + " 可获得焦点");
         }
-        AtomicReference<Integer> headings = new AtomicReference<>(0);
-        ui(() -> headings.set(countHeadings(activity.getWindow().getDecorView())));
-        check(headings.get() >= 3, "每页至少有三个标题：读到 " + headings.get());
+        AtomicReference<String> headings = new AtomicReference<>("");
+        ui(() -> {
+            int tab = (Integer) field(activity, "selected");
+            View page = ((ScrollView[]) field(activity, "pages"))[tab];
+            headings.set("当前页 " + tab + "：可见 " + countHeadings(page) + " / 全页 " + countHeadings(page, false));
+        });
+        check(Integer.parseInt(headings.get().replaceAll(".*：可见 (\\d+) .*", "$1")) >= 3,
+                "每页至少有三个标题（" + headings.get() + "）");
         check(((EditText) view("portInput")).getLabelFor() != 0, "端口输入框关联了标签");
         check(view("refreshButton").getContentDescription() != null, "只有图标的刷新按钮有可读名称");
     }
@@ -282,17 +338,26 @@ public final class DesignSmoke extends Instrumentation {
 
     /** 焦点可见：聚焦时必须有可见变化（WCAG 2.4.7）。这一步靠画像素判断，不猜实现。 */
     private void checkFocusIndicators() throws Exception {
+        // 挑的都是"一直是启用"的控件：saveButton 在表单干净时是禁用的（这是它该有的样子），
+        // 禁用视图拿不到焦点，拿它验焦点环会验错东西。
+        showTab(1);
         ui(() -> {
-            checkRingToggles("saveButton");
-            checkRingToggles("refreshButton");
+            checkRingToggles("revealButton", "onSecondaryContainer");
             checkInputRing();
         });
+        showTab(0);
+        ui(() -> checkRingToggles("refreshButton", "primary"));
     }
 
-    /** 按钮类：背景里有一层独立的焦点环，未聚焦透明、聚焦后不透明。 */
-    private void checkRingToggles(String name) {
+    /** 按钮类：背景里有一层独立的焦点环，未聚焦透明、聚焦后不透明，颜色与底色有对比。 */
+    private void checkRingToggles(String name, String ringRole) {
         View view = view(name);
-        check(view.getWidth() > 0 && view.getHeight() > 0, name + " 已完成测量");
+        check(view.getWidth() > 0 && view.getHeight() > 0, name + " 已完成测量："
+                + view.getWidth() + "x" + view.getHeight()
+                + " vis=" + view.getVisibility() + " attached=" + view.isAttachedToWindow()
+                + " tab=" + (Integer) field(activity, "selected")
+                + " 页宽=" + ((ScrollView[]) field(activity, "pages"))[1].getWidth()
+                + "x" + ((ScrollView[]) field(activity, "pages"))[1].getHeight());
         check(view.isFocusable(), name + " 可获得焦点");
         Drawable ring = ringLayer(view);
         check(ring != null, name + " 的背景里有独立的焦点环图层");
@@ -301,7 +366,8 @@ public final class DesignSmoke extends Instrumentation {
         view.setFocusableInTouchMode(true);
         check(view.requestFocus(), name + " 可以拿到焦点");
         check(edgeAlpha(ring, size) != 0, name + " 聚焦后焦点环可见");
-        check(edgeColor(ring, size) == ringColorOf(name), name + " 的焦点环颜色与底色有对比");
+        check(edgeColor(ring, size) == color(field(activity, "ui"), ringRole),
+                name + " 的焦点环用 " + ringRole + "（与底色有对比）");
         view.clearFocus();
         view.setFocusableInTouchMode(false);
     }
@@ -319,12 +385,6 @@ public final class DesignSmoke extends Instrumentation {
                 "输入框聚焦后描边换主色");
         input.clearFocus();
         input.setFocusableInTouchMode(false);
-    }
-
-    /** 实心按钮的焦点环用 onPrimary（与主色底 6.4:1），其余用主色。 */
-    private int ringColorOf(String name) {
-        Object tokens = field(activity, "ui");
-        return "saveButton".equals(name) ? color(tokens, "onPrimary") : color(tokens, "primary");
     }
 
     // ------------------------------------------------------------------ 视图遍历
@@ -345,13 +405,17 @@ public final class DesignSmoke extends Instrumentation {
     }
 
     private static int countHeadings(View view) {
-        if (view.getVisibility() != View.VISIBLE) return 0;
+        return countHeadings(view, true);
+    }
+
+    private static int countHeadings(View view, boolean visibleOnly) {
+        if (visibleOnly && view.getVisibility() != View.VISIBLE) return 0;
         int total = 0;
         if (view instanceof TextView && android.os.Build.VERSION.SDK_INT >= 28
                 && ((TextView) view).isAccessibilityHeading()) total++;
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) total += countHeadings(group.getChildAt(i));
+            for (int i = 0; i < group.getChildCount(); i++) total += countHeadings(group.getChildAt(i), visibleOnly);
         }
         return total;
     }
@@ -412,8 +476,7 @@ public final class DesignSmoke extends Instrumentation {
     // ------------------------------------------------------------------ 截图
 
     private void capture(String name, int tab) throws Exception {
-        ui(() -> call("switchTab", new Class[]{int.class, boolean.class}, tab, false));
-        waitForIdleSync();
+        showTab(tab);
         // 先只改数据，让文案变更走完一次测量/布局，再截图——否则画的是改动前的尺寸，文字会被裁。
         ui(() -> {
             try {

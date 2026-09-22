@@ -34,6 +34,29 @@ HTTP 服务、消息监听与保活只在主进程运行，APK 里不含 native 
 它可能被模块框架重定向。状态页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。
 诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口。
 
+## 管理页界面
+
+界面分三层，依赖单向：**令牌**（`res/values/tokens.xml` 颜色、`res/values/dimens.xml` 间距/形状/字级/
+动效/断点，`ui/Tokens.java` 是唯一读口）→ **组件**（`ui/Widgets.java`）→ **页面**（`ui/MainActivity.java`
+与 `ui/Responsive.java`）。页面里不出现字面色值与像素；`tests/DesignTokenTest` 会拒绝界面代码里的
+`#RRGGBB` 字面量。编译期没有 R 类（`build.sh` 先 javac 再 aapt），令牌按名字查资源，所以每个名字都
+在合约测试里核过存在性。
+
+多个设计体系各有分工，冲突按 `平台原生 > 可用性/无障碍 > 产品一致性 > M3E > Carbon > Miuix` 裁决：
+M3E 给颜色角色、字级、形状刻度与按压表达；HIG 给"一屏一个主操作、破坏性操作先确认且默认焦点在取消、
+即时反馈、尊重减弱动态效果"；Carbon 给响应式断点与栅格、复杂信息用定义列表（诊断页的「运行数据」）；
+Miuix 只精修视觉（更大圆角、靠表面明度分层、默认不画分隔线）。**不跟随系统动态取色**：它无法为任意
+壁纸保证 4.5:1，也会与固定源色的应用图标分叉，而可用性与产品一致性都排在 M3E 之前。
+
+无障碍按 WCAG 2.2 AA 落地：颜色角色两两组合 ≥ 4.5:1、非文字边界 ≥ 3:1（合约测试逐对算，深浅两套）；
+可点控件不小于 48dp；状态文字标成 `polite` live region；可聚焦控件有可见焦点环，输入框用描边换色；
+图标一律装饰性，语义由 contentDescription 承担；字号用 sp，200% 字号 + 320dp 宽下不截断、不横向滚动。
+
+界面改动的验收分两段：`./test.sh` 跑令牌合约（对比度、角色齐整、刻度单调、触达下限）；
+`bash tests/ui/run.sh` 装机跑真机设计冒烟（令牌解析、交互契约、焦点环、可触达面积、状态 live region、
+大字号重排），并把 light / dark / large-text-320dp 各三页的排版写进
+`build/design-tests/design-review/`。真机用例只读写知弦自己的配置文件，跑完还原。
+
 ## HTTP 路由
 
 三条通道各自独立，都在 `core/SatoriHub` 的 `onHttp` 里分派：
@@ -184,6 +207,12 @@ node tests/ws-health.js              # 健康与自检
 node tests/ws-acumen-smoke.js        # 客户端视角的冒烟：协议方法、事件与扩展动作
 node tests/ws-poke.js                # 戳一戳：出站 OIDB、入站灰条事件与参数校验
 node tests/media-live-probe.js voice # 语音条与文件能不能真发出去，见脚本头注释
+```
+
+管理页界面另有一套真机验收（需要已装机与 root，出深浅色与大字号截图）：
+
+```bash
+bash tests/ui/run.sh
 ```
 
 ## 版本与发布

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  知弦 Design Tokens · 颜色（深色）
+
+  与 res/values/tokens.xml 一一对应：同名角色、同样的语义，只换取值。新增角色必须两边都加，
+  tests/DesignTokenTest 会比对两个文件的角色集合完全一致。
+
+  深色不是浅色的反相，是同一套色调规则的另一次取色：容器取 tone 30 附近、前景取 tone 80/90。
+-->
+<resources>
+
+    <color name="md_primary">#D0BCFF</color>
+    <color name="md_on_primary">#381E72</color>
+    <color name="md_primary_container">#4F378B</color>
+    <color name="md_on_primary_container">#EADDFF</color>
+    <color name="md_inverse_primary">#6750A4</color>
+
+    <color name="md_secondary">#CCC2DC</color>
+    <color name="md_on_secondary">#332D41</color>
+    <color name="md_secondary_container">#4A4458</color>
+    <color name="md_on_secondary_container">#E8DEF8</color>
+
+    <color name="md_tertiary">#EFB8C8</color>
+    <color name="md_on_tertiary">#492532</color>
+    <color name="md_tertiary_container">#633B48</color>
+    <color name="md_on_tertiary_container">#FFD8E4</color>
+
+    <color name="md_error">#F2B8B5</color>
+    <color name="md_on_error">#601410</color>
+    <color name="md_error_container">#8C1D18</color>
+    <color name="md_on_error_container">#F9DEDC</color>
+
+    <color name="md_success">#9CD6A5</color>
+    <color name="md_on_success">#00391C</color>
+    <color name="md_success_container">#0B5227</color>
+    <color name="md_on_success_container">#B8F0BF</color>
+
+    <color name="md_warning">#E9C349</color>
+    <color name="md_on_warning">#3F2E00</color>
+    <color name="md_warning_container">#5C4300</color>
+    <color name="md_on_warning_container">#FFDF9E</color>
+
+    <color name="md_surface">#141218</color>
+    <color name="md_surface_container_lowest">#0F0D13</color>
+    <color name="md_surface_container_low">#1D1B20</color>
+    <color name="md_surface_container">#211F26</color>
+    <color name="md_surface_container_high">#2B2930</color>
+    <color name="md_surface_container_highest">#36343B</color>
+    <color name="md_on_surface">#E6E0E9</color>
+    <color name="md_surface_variant">#49454F</color>
+    <color name="md_on_surface_variant">#CAC4D0</color>
+    <color name="md_inverse_surface">#E6E0E9</color>
+    <color name="md_inverse_on_surface">#322F35</color>
+
+    <color name="md_outline">#938F99</color>
+    <color name="md_outline_variant">#49454F</color>
+
+    <color name="md_scrim">#000000</color>
+    <color name="md_shadow">#000000</color>
+</resources>

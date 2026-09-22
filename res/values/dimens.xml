@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  知弦 Design Tokens · 尺度（间距 / 形状 / 字级 / 动效 / 断点）
+
+  深浅色共用一套数值；只有颜色分 values 与 values-night 两份。
+
+  单位约定：
+  - 字级尺寸与行高用 sp，跟随系统字号（WCAG 1.4.4 放大 200% 不丢内容）；
+  - 间距、形状、图标、前后距用 dp；
+  - 字距用 em 的千分之一存成整数（0.25em = md_tracking_body_medium = 250），
+    避免 <item format="float"> 在不同 aapt 版本上的解析差异；
+  - 动效时长用毫秒整数，缓动用四位控制点数组。
+-->
+<resources>
+
+    <!-- 间距：4dp 基准，八档 -->
+    <dimen name="md_space_xs">4dp</dimen>
+    <dimen name="md_space_sm">8dp</dimen>
+    <dimen name="md_space_md">12dp</dimen>
+    <dimen name="md_space_lg">16dp</dimen>
+    <dimen name="md_space_xl">24dp</dimen>
+    <dimen name="md_space_xxl">32dp</dimen>
+    <dimen name="md_space_xxxl">48dp</dimen>
+
+    <!-- 形状：M3E 形状刻度。full 只是个"足够大"的值，按高度取半径时要自己夹到 height/2 -->
+    <dimen name="md_shape_none">0dp</dimen>
+    <dimen name="md_shape_xs">4dp</dimen>
+    <dimen name="md_shape_sm">8dp</dimen>
+    <dimen name="md_shape_md">12dp</dimen>
+    <dimen name="md_shape_lg">16dp</dimen>
+    <dimen name="md_shape_xl">20dp</dimen>
+    <dimen name="md_shape_xxl">28dp</dimen>
+    <dimen name="md_shape_full">1000dp</dimen>
+
+    <!-- 字级：M3 基线十五档，这里用到的十三档 -->
+    <dimen name="md_type_display_small_size">36sp</dimen>
+    <dimen name="md_type_display_small_line">44sp</dimen>
+    <integer name="md_tracking_display_small">0</integer>
+
+    <dimen name="md_type_headline_large_size">32sp</dimen>
+    <dimen name="md_type_headline_large_line">40sp</dimen>
+    <integer name="md_tracking_headline_large">0</integer>
+    <dimen name="md_type_headline_medium_size">28sp</dimen>
+    <dimen name="md_type_headline_medium_line">36sp</dimen>
+    <integer name="md_tracking_headline_medium">0</integer>
+    <dimen name="md_type_headline_small_size">24sp</dimen>
+    <dimen name="md_type_headline_small_line">32sp</dimen>
+    <integer name="md_tracking_headline_small">0</integer>
+
+    <dimen name="md_type_title_large_size">22sp</dimen>
+    <dimen name="md_type_title_large_line">28sp</dimen>
+    <integer name="md_tracking_title_large">0</integer>
+    <dimen name="md_type_title_medium_size">16sp</dimen>
+    <dimen name="md_type_title_medium_line">24sp</dimen>
+    <integer name="md_tracking_title_medium">150</integer>
+    <dimen name="md_type_title_small_size">14sp</dimen>
+    <dimen name="md_type_title_small_line">20sp</dimen>
+    <integer name="md_tracking_title_small">100</integer>
+
+    <dimen name="md_type_body_large_size">16sp</dimen>
+    <dimen name="md_type_body_large_line">24sp</dimen>
+    <integer name="md_tracking_body_large">500</integer>
+    <dimen name="md_type_body_medium_size">14sp</dimen>
+    <dimen name="md_type_body_medium_line">20sp</dimen>
+    <integer name="md_tracking_body_medium">250</integer>
+    <dimen name="md_type_body_small_size">12sp</dimen>
+    <dimen name="md_type_body_small_line">16sp</dimen>
+    <integer name="md_tracking_body_small">400</integer>
+
+    <dimen name="md_type_label_large_size">14sp</dimen>
+    <dimen name="md_type_label_large_line">20sp</dimen>
+    <integer name="md_tracking_label_large">100</integer>
+    <dimen name="md_type_label_medium_size">12sp</dimen>
+    <dimen name="md_type_label_medium_line">16sp</dimen>
+    <integer name="md_tracking_label_medium">500</integer>
+    <dimen name="md_type_label_small_size">11sp</dimen>
+    <dimen name="md_type_label_small_line">16sp</dimen>
+    <integer name="md_tracking_label_small">500</integer>
+
+    <!-- 字距缩放（百分比）。上面那组 md_tracking_* 是 M3 为拉丁文定的一千分之 sp 值；
+         TextView.setLetterSpacing 收的是 em，所以换算时会除以字号——只在拉丁文下才成立。
+         这套界面几乎全是中文，正字距会把汉字拆散、读起来更慢，按「可用性优先于 M3E」的裁决
+         整体缩到 0。将来若要做多语言界面，按语言把它调回 100。 -->
+    <integer name="md_tracking_scale_pct">0</integer>
+
+    <!-- 尺寸：可触达下限、图标、描边、内容宽度上限 -->
+    <dimen name="md_size_touch_target">48dp</dimen>
+    <dimen name="md_size_icon">24dp</dimen>
+    <dimen name="md_size_icon_large">32dp</dimen>
+    <dimen name="md_size_logo">48dp</dimen>
+    <dimen name="md_size_border">1dp</dimen>
+    <dimen name="md_size_focus_ring">2dp</dimen>
+    <dimen name="md_size_field_min_height">56dp</dimen>
+    <dimen name="md_size_button_min_height">52dp</dimen>
+    <dimen name="md_size_nav_item_min_height">64dp</dimen>
+    <dimen name="md_size_switch_track_width">52dp</dimen>
+    <dimen name="md_size_switch_track_height">32dp</dimen>
+    <dimen name="md_size_switch_thumb">24dp</dimen>
+    <!-- Carbon 栅格的收窄上限：手机上永远是内容宽度，宽屏才起约束作用 -->
+    <dimen name="md_size_content_max_compact">640dp</dimen>
+    <dimen name="md_size_content_max_expanded">840dp</dimen>
+    <dimen name="md_size_progress_height">12dp</dimen>
+
+    <!-- 高度：靠表面明度分层，阴影只留给浮层 -->
+    <dimen name="md_elevation_level0">0dp</dimen>
+    <dimen name="md_elevation_level1">1dp</dimen>
+    <dimen name="md_elevation_level2">3dp</dimen>
+    <dimen name="md_elevation_level3">6dp</dimen>
+
+    <!-- 动效：时长（毫秒） -->
+    <integer name="md_motion_short1">50</integer>
+    <integer name="md_motion_short2">100</integer>
+    <integer name="md_motion_short3">150</integer>
+    <integer name="md_motion_short4">200</integer>
+    <integer name="md_motion_medium1">250</integer>
+    <integer name="md_motion_medium2">300</integer>
+    <integer name="md_motion_medium3">350</integer>
+    <integer name="md_motion_medium4">400</integer>
+    <integer name="md_motion_long1">450</integer>
+    <integer name="md_motion_long2">500</integer>
+    <integer name="md_motion_long4">600</integer>
+
+    <!-- 动效：缓动控制点（PathInterpolator 的四位参数） -->
+    <string-array name="md_easing_emphasized">
+        <item>0.2</item><item>0.0</item><item>0.0</item><item>1.0</item>
+    </string-array>
+    <string-array name="md_easing_emphasized_decelerate">
+        <item>0.05</item><item>0.7</item><item>0.1</item><item>1.0</item>
+    </string-array>
+    <string-array name="md_easing_emphasized_accelerate">
+        <item>0.3</item><item>0.0</item><item>0.8</item><item>0.15</item>
+    </string-array>
+    <string-array name="md_easing_standard">
+        <item>0.2</item><item>0.0</item><item>0.0</item><item>1.0</item>
+    </string-array>
+
+    <!-- 动效：M3E 按下回弹的过冲量（无量纲，>1 才有回弹） -->
+    <integer name="md_motion_overshoot_pct">120</integer>
+
+    <!-- 状态层：叠加在同色底上的不透明度百分比 -->
+    <integer name="md_state_pressed_pct">12</integer>
+    <integer name="md_state_focus_pct">12</integer>
+    <integer name="md_state_hover_pct">8</integer>
+    <integer name="md_state_disabled_pct">12</integer>
+    <integer name="md_state_disabled_content_pct">38</integer>
+
+    <!-- 响应式断点（dp）：Carbon 的 compact / medium / expanded -->
+    <integer name="md_bp_medium">600</integer>
+    <integer name="md_bp_expanded">840</integer>
+</resources>

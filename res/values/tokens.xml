@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  知弦 Design Tokens · 颜色（浅色）
+
+  唯一的颜色来源。界面代码只按语义角色取色，不写字面色值；组件规范见 docs/DESIGN.md。
+
+  色板由 Material 3 基线方案（源色 #6750A4）导出，与 artwork/icon.svg 同源——改色板要连
+  图标源稿一起改，否则图标与界面会再次分叉（0.24.0 之前界面用 #5D438B、图标用 #6750A4）。
+
+  success / warning 是 M3 基线没有的角色，按同一套色调规则补：浅色取 tone 40 作前景、
+  tone 90 作容器，深色反过来。所有角色对必须过 WCAG 2.2 AA：
+  文字角色两两组合 ≥ 4.5:1，非文字边界（outline）对 surface ≥ 3:1，由 tests/DesignTokenTest 钉住。
+  合约测试会读这个文件，改值前先看它要求哪些配对。
+-->
+<resources>
+
+    <!-- 主色：品牌与主操作 -->
+    <color name="md_primary">#6750A4</color>
+    <color name="md_on_primary">#FFFFFF</color>
+    <color name="md_primary_container">#EADDFF</color>
+    <color name="md_on_primary_container">#21005D</color>
+    <color name="md_inverse_primary">#D0BCFF</color>
+
+    <!-- 次色：低强调的选中态与次级容器 -->
+    <color name="md_secondary">#625B71</color>
+    <color name="md_on_secondary">#FFFFFF</color>
+    <color name="md_secondary_container">#E8DEF8</color>
+    <color name="md_on_secondary_container">#1D192B</color>
+
+    <!-- 第三色：与主色有别的强调，用于提示与「下一步」 -->
+    <color name="md_tertiary">#7D5260</color>
+    <color name="md_on_tertiary">#FFFFFF</color>
+    <color name="md_tertiary_container">#FFD8E4</color>
+    <color name="md_on_tertiary_container">#31111D</color>
+
+    <!-- 错误：破坏性操作与失败态 -->
+    <color name="md_error">#B3261E</color>
+    <color name="md_on_error">#FFFFFF</color>
+    <color name="md_error_container">#F9DEDC</color>
+    <color name="md_on_error_container">#410E0B</color>
+
+    <!-- 成功：守护保活中、服务就绪 -->
+    <color name="md_success">#1F6B3B</color>
+    <color name="md_on_success">#FFFFFF</color>
+    <color name="md_success_container">#B8F0BF</color>
+    <color name="md_on_success_container">#00210E</color>
+
+    <!-- 警告：等待登录、未生效、有未保存的修改 -->
+    <color name="md_warning">#7A5900</color>
+    <color name="md_on_warning">#FFFFFF</color>
+    <color name="md_warning_container">#FFDF9E</color>
+    <color name="md_on_warning_container">#261A00</color>
+
+    <!-- 表面：从最底到最高五档，靠明度差分层，不靠阴影 -->
+    <color name="md_surface">#FEF7FF</color>
+    <color name="md_surface_container_lowest">#FFFFFF</color>
+    <color name="md_surface_container_low">#F7F2FA</color>
+    <color name="md_surface_container">#F3EDF7</color>
+    <color name="md_surface_container_high">#ECE6F0</color>
+    <color name="md_surface_container_highest">#E6E0E9</color>
+    <color name="md_on_surface">#1D1B20</color>
+    <color name="md_surface_variant">#E7E0EC</color>
+    <color name="md_on_surface_variant">#49454F</color>
+    <color name="md_inverse_surface">#322F35</color>
+    <color name="md_inverse_on_surface">#F5EFF7</color>
+
+    <!-- 轮廓：outline 承担「必须被看见的边界」（输入框描边、焦点环底座），
+         对 surface 有 4.3:1，够 1.4.11 的 3:1；outline_variant 只作装饰性分隔，
+         不承担任何识别性信息，且界面默认不画分隔线（改用语距与表面层次）。 -->
+    <color name="md_outline">#79747E</color>
+    <color name="md_outline_variant">#CAC4D0</color>
+
+    <color name="md_scrim">#000000</color>
+    <color name="md_shadow">#000000</color>
+</resources>

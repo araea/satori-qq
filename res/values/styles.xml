@@ -1,13 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  知弦主题（浅色）。所有取值都指向 Design Tokens，这里不写字面值——
+  res/values/tokens.xml 与 res/values/dimens.xml 是唯一来源。
+
+  深浅两套主题只差「哪一组令牌」与系统栏图标明暗，结构完全一致。
+-->
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#5D438B</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowBackground">#FEF7FF</item>
-        <item name="android:colorBackground">#FEF7FF</item>
-        <item name="android:navigationBarColor">#FEF7FF</item>
-        <item name="android:statusBarColor">#FEF7FF</item>
+        <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+
+        <item name="android:colorAccent">@color/md_primary</item>
+        <item name="android:colorBackground">@color/md_surface</item>
+        <item name="android:windowBackground">@color/md_surface</item>
+        <item name="android:statusBarColor">@color/md_surface</item>
+        <item name="android:navigationBarColor">@color/md_surface</item>
+        <item name="android:navigationBarDividerColor">@color/md_surface</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+
+        <!-- 弹窗与系统组件的默认文字色也走令牌，避免深色下出现黑字压深底 -->
+        <item name="android:textColorPrimary">@color/md_on_surface</item>
+        <item name="android:textColorSecondary">@color/md_on_surface_variant</item>
+        <item name="android:textColorHint">@color/md_on_surface_variant</item>
     </style>
 </resources>

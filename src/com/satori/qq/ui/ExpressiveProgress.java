@@ -9,20 +9,20 @@ import android.view.animation.LinearInterpolator;
 
 /** Indeterminate wavy progress; no animation when hidden or system animations are disabled. */
 final class ExpressiveProgress extends View {
-    private final MaterialStyle ui;
+    private final Tokens ui;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path wave = new Path();
     private ValueAnimator motion;
     private float phase;
 
-    ExpressiveProgress(MaterialStyle ui) {
-        super(ui.activity);
-        this.ui = ui;
-        setMinimumHeight(ui.dp(12));
+    ExpressiveProgress(Tokens tokens) {
+        super(tokens.activity);
+        this.ui = tokens;
+        setMinimumHeight(tokens.dimen("size_progress_height"));
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setStrokeWidth(ui.dp(3));
+        paint.setStrokeWidth(tokens.dp(3));
     }
 
     @Override protected void onDraw(Canvas canvas) {

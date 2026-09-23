@@ -2266,23 +2266,6 @@ public final class QQClient {
         } catch (Throwable ignore) {}
     }
 
-    /** Runtime methods of a QQ type whose name mentions title/rank/show/level/switch. */
-            public java.util.List<String> dumpServiceMethods(String className) {
-        java.util.List<String> out = new ArrayList<>();
-        try {
-            Class<?> c = ref.clsOrNull(className);
-            if (c == null) {
-                out.add("missing:" + className);
-                return out;
-            }
-            for (java.lang.reflect.Method m : c.getDeclaredMethods())
-                out.add(m.getName() + java.util.Arrays.toString(m.getParameterTypes()));
-        } catch (Throwable t) {
-            out.add("error:" + t);
-        }
-        return out;
-    }
-
     public OpResult setHonorAioSwitch(long groupCode, boolean open) {
         return awaitGroup(OPERATE_CB, "modifyGroupDetailInfo", (gs, cb) -> {
             Object info = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupModifyInfo");
@@ -2380,23 +2363,6 @@ public final class QQClient {
         return out;
     }
 
-
-    /** Local DB write so AIO reads cGroupRankUserFlag without waiting for a push. */
-    public java.util.List<String> dumpClassFields(String className) {
-        java.util.List<String> out = new ArrayList<>();
-        try {
-            Class<?> c = ref.clsOrNull(className);
-            if (c == null) {
-                out.add("missing");
-                return out;
-            }
-            for (java.lang.reflect.Field f : c.getDeclaredFields())
-                out.add(f.getName() + ":" + f.getType().getSimpleName());
-        } catch (Throwable t) {
-            out.add("error:" + t);
-        }
-        return out;
-    }
 
     public OpResult setIdentityTitleInfo(long groupCode, boolean show) {
         String reqName = "com.tencent.qqnt.kernel.nativeinterface.SetIdentityTitleInfoReq";
@@ -2538,6 +2504,7 @@ public final class QQClient {
         return out;
     }
 
+    /** Local DB write so AIO reads cGroupRankUserFlag without waiting for a push. */
     public boolean updateLocalRankSwitch(long groupCode, boolean show) {
         try {
             Class<?> apiCls = ref.cls("com.tencent.qqnt.troop.ITroopExtInfoDBApi");

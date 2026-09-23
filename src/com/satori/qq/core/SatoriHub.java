@@ -955,18 +955,21 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 return guarded("internal.special_title", () -> {
                     long g = params.optLong("guild_id", params.optLong("group_id", 0));
                     long u = parseId(params.optString("user_id", ""));
-                    if (params.has("show") && u == 0)
-                        return setGroupTitleDisplay(g, params.optBoolean("show", true));
-                    if (params.has("show")) setGroupTitleDisplay(g, params.optBoolean("show", true));
+                    if (g == 0) throw new ApiError(1400, "missing guild_id");
+                    if (u == 0) throw new ApiError(1400, "missing user_id");
                     setGroupSpecialTitle(g, uidFor(g, u),
                             params.optString("title", params.optString("special_title", "")));
                     return new JSONObject();
                 });
             case "title-display":
             case "title_display":
+                // 带 show/enable 才写；不带就只读当前开关状态，不动设置。
                 return guarded("internal.title_display", () -> {
                     long g = params.optLong("guild_id", params.optLong("group_id", 0));
-                    return setGroupTitleDisplay(g, params.optBoolean("show", params.optBoolean("enable", true)));
+                    if (g == 0) throw new ApiError(1400, "missing guild_id");
+                    if (params.has("show") || params.has("enable"))
+                        return setGroupTitleDisplay(g, params.optBoolean("show", params.optBoolean("enable", true)));
+                    return getGroupTitleDisplay(g);
                 });
             case "honor-display":
             case "honor_display":
@@ -1231,7 +1234,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("invite", "guild_id, user_id")
                         .put("card", "guild_id, user_id?, card")
                         .put("special_title", "guild_id, user_id, title")
-                        .put("title_display", "guild_id, show?")
+                        .put("title_display", "guild_id, show?（省略 show/enable 则只读当前开关状态，不写）")
                         .put("honor_display", "guild_id, show?")
                         .put("sign", "guild_id")
                         .put("essence", "guild_id, message_id, remove?")
@@ -1240,7 +1243,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("get_forward", "id 或 native:<父消息 ID>，可选 channel_id")
                         .put("compat", "force?"))
                 .put("read_actions", new JSONArray()
-                        .put("get_forward").put("reaction_summary")
+                        .put("get_forward").put("reaction_summary").put("title_display")
                         .put("status").put("version").put("capabilities").put("compat"))
                 .put("write_actions", new JSONArray()
                         .put("poke").put("invite").put("card").put("reaction_clear")
@@ -3504,76 +3507,46 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     /**
      * 群管理「成员群头衔」= userShowFlag / cGroupRankUserFlag (1=开).
      * Not 群标识: that is groupFlagExt3 0x2000000 / isTroopHonorOpen.
-     * Server write is OIDB 0x8FC sub 0 (show_flag). Sub 2 only sets one member's title.
+     *
+     * <p>只走反射内核服务通道（`setIdentityTitleInfo` / `setGroupIdentityLevelInfo`），
+     * 外加本地 DB 补写（`updateLocalRankSwitch`）让 AIO 立刻读到，不发原始 OIDB 封包——
+     * 群头衔的显示开关没有像 `0x8FC_2`（设头衔本身）那样核验过的封包形状，瞎发存在把
+     * 群设置写坏的风险，JNI 反射通道错了至多是回调不触发。写完读回
+     * `getMemberExtInfo`/`troopExtRankFlags` 校验，因为写调用本身的回调码不代表真的生效。
      */
     private JSONObject setGroupTitleDisplay(long groupId, boolean show) throws Exception {
         if (groupId == 0) throw new ApiError(1400, "missing group_id");
-        JSONArray paths = new JSONArray();
-        int want = show ? 1 : 0;
         QQClient.MemberExtFlags before = qq.getMemberExtInfo(groupId);
-        Pb.Writer body = Pb.w().varint(1, groupId).varint(2, want).varint(6, want);
-        for (int i = 0; i < before.levelIds.size(); i++) {
-            body.message(4, Pb.w().varint(1, before.levelIds.get(i)[0])
-                    .string(2, before.levelNames.get(i)).toByteArray());
-        }
-        for (int i = 0; i < before.levelIdsNew.size(); i++) {
-            body.message(10, Pb.w().varint(1, before.levelIdsNew.get(i)[0])
-                    .string(2, before.levelNamesNew.get(i)).toByteArray());
-        }
-        byte[] body8fc = body.toByteArray();
-        PacketSvc.Result r0 = qq.packets().sendOidb(0x8FC, 0, body8fc);
-        paths.put("oidb_0x8fc_0:" + (r0.ok() ? "ok" : r0.describe()));
-        PacketSvc.Result r0b = qq.packets().sendOidb(0x8FC, 0, body8fc, false);
-        paths.put("oidb_0x8fc_0_nr:" + (r0b.ok() ? "ok" : r0b.describe()));
-        PacketSvc.Result legacy = qq.packets().sendSso("OidbSvc.0x8fc_0",
-                Pb.oidb(0x8FC, 0, body8fc, false));
-        paths.put("oidb_svc_0x8fc_0:" + (legacy.ok() ? "ok" : legacy.describe()));
-        JSONArray dumps = new JSONArray();
-        for (String n : new String[]{
-                "com.tencent.qqnt.kernel.nativeinterface.SetIdentityTitleInfoReq",
-                "com.tencent.qqnt.kernel.nativeinterface.GIMSetGroupLevelInfoReq",
-                "com.tencent.qqnt.kernel.nativeinterface.GIMSetGroupLevelInfoRsp"}) {
-            JSONArray fs = new JSONArray();
-            for (String f : qq.dumpClassFields(n)) fs.put(f);
-            dumps.put(new JSONObject().put("cls", n).put("f", fs));
-        }
-        try {
-            QQClient.OpResult id = qq.setIdentityTitleInfo(groupId, show);
-            paths.put("setIdentityTitleInfo:" + (id.ok() ? "ok" : id.describe()));
-        } catch (Throwable t) {
-            paths.put("setIdentityTitleInfo:err:" + t);
-        }
-        try {
-            QQClient.OpResult lv = qq.setGroupIdentityLevelInfo(groupId, show);
-            paths.put("setGroupIdentityLevelInfo:" + lv.describe());
-        } catch (Throwable t) {
-            paths.put("setGroupIdentityLevelInfo:err:" + t);
-        }
-        JSONArray cbDump = new JSONArray();
-        for (String m : qq.dumpServiceMethods(
-                "com.tencent.qqnt.kernel.nativeinterface.ISetGroupIdentityLevelInfoCallback"))
-            cbDump.put(m);
-        dumps.put(new JSONObject().put("cls", "ISetGroupIdentityLevelInfoCallback").put("f", cbDump));
-        if (qq.updateLocalRankSwitch(groupId, show)) paths.put("local_rank_switch");
-        QQClient.MemberExtFlags lvl = qq.getGroupMemberLevelInfo(groupId);
-        paths.put("getGroupMemberLevelInfo:" + lvl.code + ":" + lvl.msg);
+        QQClient.OpResult id = qq.setIdentityTitleInfo(groupId, show);
+        QQClient.OpResult level = qq.setGroupIdentityLevelInfo(groupId, show);
+        boolean localUpdated = qq.updateLocalRankSwitch(groupId, show);
         try { Thread.sleep(400); } catch (InterruptedException ignore) {}
+        QQClient.MemberExtFlags after = qq.getMemberExtInfo(groupId);
+        int[] local = qq.troopExtRankFlags(groupId);
+        boolean open = local[0] == 1 || after.titleOpen();
+        return new JSONObject()
+                .put("guild_id", String.valueOf(groupId))
+                .put("wanted", show)
+                .put("title_open", open)
+                .put("before_open", before.titleOpen())
+                .put("user_show_flag", after.userShowFlag)
+                .put("local_rank_flag", local[0])
+                .put("set_identity_title_info", id.describe())
+                .put("set_group_identity_level_info", level.describe())
+                .put("local_rank_switch_updated", localUpdated);
+    }
+
+    /** 只读当前「展示成员群头衔」开关状态，不写；同样只走反射内核服务通道。 */
+    private JSONObject getGroupTitleDisplay(long groupId) throws Exception {
+        if (groupId == 0) throw new ApiError(1400, "missing group_id");
         QQClient.MemberExtFlags ext = qq.getMemberExtInfo(groupId);
         int[] local = qq.troopExtRankFlags(groupId);
         boolean open = local[0] == 1 || ext.titleOpen();
         return new JSONObject()
+                .put("guild_id", String.valueOf(groupId))
                 .put("title_open", open)
                 .put("user_show_flag", ext.userShowFlag)
-                .put("user_show_flag_new", ext.userShowFlagNew)
-                .put("sys_show_flag", ext.sysShowFlag)
-                .put("local_rank_flag", local[0])
-                .put("local_rank_flag_new", local[1])
-                .put("wanted", show)
-                .put("before_flag", before.userShowFlag)
-                .put("level_n", before.levelNames.size())
-                .put("level_new_n", before.levelNamesNew.size())
-                .put("paths", paths)
-                .put("dump", dumps);
+                .put("local_rank_flag", local[0]);
     }
 
     /** 群聊资料中的「群荣誉/群标识」开关; distinct from member title display. */

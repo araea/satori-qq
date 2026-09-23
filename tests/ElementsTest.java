@@ -5,6 +5,12 @@ import org.json.JSONObject;
 
 public final class ElementsTest {
     public static void main(String[] args) throws Exception {
+        for (String kind : new String[]{"json", "mface", "poke"}) {
+            JSONArray legacy = Codec.toSegments("<" + kind + " data=\"x\"/>");
+            JSONArray namespaced = Codec.toSegments("<satori-qq:" + kind + " data=\"x\"/>");
+            eq(legacy.toString(), namespaced.toString(), "namespace preserves payload");
+            check(Codec.fromSegments(namespaced, "").startsWith("<satori-qq:" + kind), "emit qualified QQ element");
+        }
         parseRoundtrip();
         malformedAndEntities();
         atAndQuote();

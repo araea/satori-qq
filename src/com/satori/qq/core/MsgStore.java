@@ -57,6 +57,13 @@ public final class MsgStore {
     private final java.util.ArrayDeque<String> resourceOrder = new java.util.ArrayDeque<>();
     private static final int RESOURCE_CAP = 4000;
 
+    /** Never expose the previous login's message/resource cache after switching accounts. */
+    public synchronized void clear() {
+        byId.clear(); byMsgId.clear(); order.clear();
+        uin2uid.clear(); uid2uin.clear(); roles.clear();
+        resources.clear(); resourceOrder.clear();
+    }
+
     public synchronized int put(Rec r) {
         Integer existing = byMsgId.get(r.msgId);
         if (existing != null && r.msgId != 0) {

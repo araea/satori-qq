@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.27.1";
+    public static final String APP_VERSION = "0.28.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -44,6 +44,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final Object eventEmitLock = new Object();
     // HTTP requests run on separate threads; never share a send condition between callers.
     private final ThreadLocal<MessageFreshness.Condition> sendCondition = new ThreadLocal<>();
+    private final ThreadLocal<Long> outboundAccount = new ThreadLocal<>();
     private HttpServer server;
     private volatile StatusNotice notice;
     private volatile com.satori.qq.qq.WakeLockCtl wakeLock;
@@ -57,7 +58,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private final AtomicLong heartbeatPings = new AtomicLong();
     private final AtomicLong heartbeatReaped = new AtomicLong();
     private final AtomicLong heartbeatPongs = new AtomicLong();
-    private final AtomicLong eventSn = new AtomicLong();
+    private final AtomicLong eventSn = new AtomicLong(System.currentTimeMillis());
+    private final String eventSession = java.util.UUID.randomUUID().toString();
     private final Object recentEventsLock = new Object();
     private final java.util.ArrayDeque<JSONObject> recentEvents = new java.util.ArrayDeque<>();
     private final ConcurrentHashMap<Long, Long> channelMuteDeadlines = new ConcurrentHashMap<>();
@@ -274,7 +276,6 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("guild.role.list")
                 .put("reaction.create")
                 .put("reaction.delete")
-                .put("reaction.clear")
                 .put("reaction.list")
                 .put("user.get")
                 .put("friend.list")
@@ -427,16 +428,21 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             awaitingReady.put(conn, body);
             return;
         }
-        identified.add(conn);
         sendReady(conn, body);
     }
 
     private void sendReady(WsConn conn, JSONObject identifyBody) throws Exception {
-        conn.send(opJson(OP_READY, new JSONObject()
-                .put("logins", new JSONArray().put(loginFull()))
-                .put("proxy_urls", new JSONArray())).toString());
-        if (Protocol.shouldReplay(identifyBody)) replayEvents(conn, identifyBody.optLong("sn", 0));
-        replayPendingRequests(conn);
+        synchronized (eventEmitLock) {
+            if (identified.contains(conn)) return;
+            conn.send(opJson(OP_READY, new JSONObject()
+                    .put("logins", new JSONArray().put(loginFull()))
+                    .put("proxy_urls", new JSONArray())
+                    .put("satori_qq", new JSONObject().put("session_id", eventSession)
+                            .put("sn", eventSn.get()))).toString());
+            if (Protocol.shouldReplay(identifyBody)) replayEvents(conn, identifyBody.optLong("sn", 0));
+            else replayPendingRequests(conn);
+            identified.add(conn);
+        }
     }
 
     @Override public void onWsClose(WsConn conn) {
@@ -745,6 +751,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private interface Work { Object run() throws Exception; }
 
     private Object guarded(String method, Work work) throws Exception {
+        long account = selfUin();
         OutboundGuard.Lease lease = null;
         boolean ok = false;
         boolean kernelNeutral = false;
@@ -760,6 +767,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 throw new ApiError(1500, busy.getMessage());
             }
             ensureOutboundReady();
+            if (account == 0 || account != selfUin()) throw new ApiError(1404, "login changed while waiting");
+            outboundAccount.set(account);
             Object data = work.run();
             ok = true;
             return data;
@@ -770,6 +779,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             if (lease != null) {
                 if (!ok && kernelNeutral) lease.failTransport(); else lease.complete(ok);
             }
+            outboundAccount.remove();
             if (w != null) w.end();
         }
     }
@@ -806,6 +816,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private Object dispatch(String method, JSONObject p) throws Exception {
         if (p == null) p = new JSONObject();
         if ("login.get".equals(method)) return loginFull();
+        if ("reaction.clear".equals(method)) throw new NotImplemented("reaction.clear (use internal/reaction_clear for own reactions)");
         if (!qq.isOnline()) throw new ApiError(1500, "QQ kernel offline or not ready");
         switch (method) {
             case "message.create": return messageCreate(p);
@@ -885,40 +896,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 setEmojiLike(messageId, parseEmoji(emojiRaw), emojiRaw, false);
                 return new JSONObject();
             }
-            case "reaction.clear": {
-                String emojiRaw = p.optString("emoji_id", "");
-                int messageId = requireMessage(p.optString("message_id", ""), p).id;
-                validateMessageChannel(p, messageId);
-                if (!emojiRaw.trim().isEmpty()) {
-                    setEmojiLike(messageId, parseEmoji(emojiRaw), emojiRaw, false);
-                    return new JSONObject();
-                }
-                // QQ has no "drop every reaction on this message" call. The kernel can only
-                // withdraw the ones this login set, so enumerate those and remove each.
-                java.util.List<String> keys = reactionEmojiKeys(messageId);
-                if (keys.isEmpty())
-                    throw new ApiError(1404, "no reaction set by this login on the message");
-                String lastError = "";
-                int cleared = 0;
-                for (String key : keys) {
-                    try {
-                        setEmojiLike(messageId, parseEmoji(key), key, false);
-                        cleared++;
-                    } catch (ApiError e) {
-                        lastError = e.getMessage();
-                    }
-                }
-                if (cleared == 0) throw new ApiError(1500, "reaction clear failed: " + lastError);
-                return new JSONObject().put("cleared", cleared);
-            }
             case "reaction.list": {
                 String emojiRaw = p.optString("emoji_id", "").trim();
                 int messageId = requireMessage(p.optString("message_id", ""), p).id;
                 validateMessageChannel(p, messageId);
-                // 协议里 emoji_id 是可选的，但 QQ 内核的 getMsgEmojiLikesList 一次只认一个表情，
-                // 也没有「列出这条消息上所有表态的人」的调用。不带 emoji_id 时给出本登录号自己
-                // 加过的那些（与 reaction.clear 同源），至少不把合规客户端挡在 400 外面。
-                if (emojiRaw.isEmpty()) return localReactionUsers(messageId);
+                if (emojiRaw.isEmpty()) throw new ApiError(1400, "missing emoji_id");
                 return reactionList(messageId, parseEmoji(emojiRaw), emojiRaw,
                         p.optString("next", ""));
             }
@@ -956,10 +938,16 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         // 邀请、骰子、猜拳），加上合并转发元素唯一的那条解析路径（get_forward），
         // 以及模块自己的运维口。其余一律 404。
         switch (name) {
+            case "reaction_summary":
+                return reactionSummary(params);
+            case "reaction_clear":
+                return guarded("internal.reaction_clear", () -> clearOwnReactions(params));
             case "poke":
                 return guarded("internal.poke", () -> {
-                    sendPoke(params.optLong("guild_id", params.optLong("group_id", 0)),
-                            parseId(params.optString("user_id", "")));
+                    long[] target;
+                    try { target = Protocol.pokeTarget(params); }
+                    catch (IllegalArgumentException e) { throw new ApiError(1400, e.getMessage()); }
+                    sendPoke(target[0], target[1]);
                     return new JSONObject();
                 });
             case "special-title":
@@ -1170,6 +1158,54 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     /** Machine-readable inventory for clients that want QQ-only extensions. */
+    private JSONObject clearOwnReactions(JSONObject p) throws Exception {
+                String emojiRaw = p.optString("emoji_id", "");
+                int messageId = requireMessage(p.optString("message_id", ""), p).id;
+                validateMessageChannel(p, messageId);
+                if (!emojiRaw.trim().isEmpty()) {
+                    setEmojiLike(messageId, parseEmoji(emojiRaw), emojiRaw, false);
+                    return new JSONObject().put("cleared", 1).put("scope", "self");
+                }
+                // QQ has no "drop every reaction on this message" call. The kernel can only
+                // withdraw the ones this login set, so enumerate those and remove each.
+                java.util.List<String> keys = reactionEmojiKeys(messageId);
+                if (keys.isEmpty()) return new JSONObject().put("cleared", 0).put("scope", "self");
+                String lastError = "";
+                int cleared = 0;
+                for (String key : keys) {
+                    try {
+                        setEmojiLike(messageId, parseEmoji(key), key, false);
+                        cleared++;
+                    } catch (ApiError e) {
+                        lastError = e.getMessage();
+                    }
+                }
+                if (!lastError.isEmpty()) throw new ApiError(1500, "reaction clear partially failed; cleared=" + cleared + ": " + lastError);
+                return new JSONObject().put("cleared", cleared).put("scope", "self");
+    }
+
+    /** A local QQNT snapshot, never a fabricated list of reaction authors. */
+    private JSONObject reactionSummary(JSONObject p) throws Exception {
+        MsgStore.Rec r = requireMessage(p.optString("message_id", ""), p);
+        validateMessageChannel(p, r.id);
+        String peer = r.peerUid == null || r.peerUid.isEmpty() ? String.valueOf(r.peerUin) : r.peerUid;
+        Object record = qq.fetchRecord(r.chatType, peer, r.msgId);
+        if (record != null) r.msgRecord = record;
+        record = r.msgRecord == null ? null : Convert.unwrapRecord(r.msgRecord);
+        if (record == null) throw new ApiError(1404, "message record unavailable");
+        java.util.Map<String, Long> counts = reactionSnapshot(record);
+        java.util.List<String> mine = reactionEmojiKeys(r.id);
+        for (String id : mine) if (!counts.containsKey(id)) counts.put(id, 0L);
+        JSONArray data = new JSONArray();
+        for (java.util.Map.Entry<String, Long> entry : counts.entrySet()) {
+            data.put(new JSONObject().put("emoji_id", entry.getKey())
+                    .put("count", entry.getValue()).put("self", mine.contains(entry.getKey())));
+        }
+        return new JSONObject().put("message_id", String.valueOf(r.msgId))
+                .put("data", data).put("source", "kernel_cache")
+                .put("observed_at", System.currentTimeMillis());
+    }
+
     private JSONObject internalCapabilities() throws Exception {
         // 目录与 dispatchInternal 的白名单一一对应。0.17.0 起这里不再列 QQ 的批量查询与
         // 本地会话状态那些内核接口；客户端原来靠它探测能力，现在探测到的就是全部。
@@ -1178,7 +1214,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 // 只列真正还实现得出来的（移除过的见下面的 removed）：列了却 404 会让客户端
                 // 白试一轮，acumen 的资料卡点赞就吃过这个亏。
                 .put("actions", new JSONArray()
-                        .put("poke").put("invite")
+                        .put("poke").put("invite").put("reaction_clear").put("reaction_summary")
                         .put("card").put("special_title").put("title_display")
                         .put("honor_display").put("sign").put("essence")
                         .put("dice").put("rps").put("get_forward")
@@ -1189,7 +1225,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE)
                         .put("face_type", SPECIAL_FACE_TYPE))
                 .put("params", new JSONObject()
-                        .put("poke", "guild_id, user_id")
+                        .put("poke", "channel_id|guild_id?, user_id (private:uin may supply target)")
+                        .put("reaction_clear", "channel_id, message_id, emoji_id?; scope=self")
+                        .put("reaction_summary", "channel_id, message_id; cached counts and self flags")
                         .put("invite", "guild_id, user_id")
                         .put("card", "guild_id, user_id?, card")
                         .put("special_title", "guild_id, user_id, title")
@@ -1202,10 +1240,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("get_forward", "id 或 native:<父消息 ID>，可选 channel_id")
                         .put("compat", "force?"))
                 .put("read_actions", new JSONArray()
-                        .put("get_forward")
+                        .put("get_forward").put("reaction_summary")
                         .put("status").put("version").put("capabilities").put("compat"))
                 .put("write_actions", new JSONArray()
-                        .put("poke").put("invite").put("card")
+                        .put("poke").put("invite").put("card").put("reaction_clear")
                         .put("special_title").put("title_display").put("honor_display")
                         .put("sign").put("essence").put("dice").put("rps")
                         .put("clean_cache").put("restart"))
@@ -2465,6 +2503,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private QQClient.SendResult sendTracked(int chatType, String peer, java.util.ArrayList<Object> els) {
         // Conversion/downloads and retry backoff can take time after leaving the queue.
+        Long account = outboundAccount.get();
+        if (account != null && account != selfUin()) throw new ApiError(1404, "login changed before send");
         messageFreshness.check(sendCondition.get());
         return qq.sendMsg(chatType, peer, els, this::rememberOutboundMsgId);
     }
@@ -3309,8 +3349,16 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             throw new ApiError(1500, "reaction list timeout");
         if (code[0] == -1 && users[0] != null) code[0] = 0;
         JSONArray data = reactionUsersToJson(users[0]);
-        if (data.length() == 0) data = reactionListFromRecord(r, emojiKey);
-        if (code[0] == -1 && data.length() > 0) code[0] = 0;
+        if (code[0] == 0 && cookie.isEmpty()) {
+            JSONArray own = reactionListFromRecord(r, emojiKey);
+            for (int i = 0; i < own.length(); i++) {
+                JSONObject user = own.getJSONObject(i);
+                boolean found = false;
+                for (int j = 0; j < data.length(); j++)
+                    if (user.optString("id").equals(data.getJSONObject(j).optString("id"))) found = true;
+                if (!found) data.put(user);
+            }
+        }
         if (code[0] != 0)
             throw new ApiError(1500, "reaction list failed: code=" + code[0] + " " + message[0]);
         JSONObject out = new JSONObject().put("data", data);
@@ -3373,10 +3421,14 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
      */
     private final ConcurrentHashMap<Integer, Set<String>> myReactions = new ConcurrentHashMap<>();
 
-    private void rememberMyReaction(int messageId, String emojiKey, boolean set) {
+    private void rememberMyReaction(int messageId, String emojiKey, boolean set) throws Exception {
         if (messageId == 0 || emojiKey == null || emojiKey.isEmpty()) return;
-        Set<String> mine = myReactions.computeIfAbsent(messageId,
-                k -> ConcurrentHashMap.newKeySet());
+        Set<String> mine = myReactions.get(messageId);
+        if (mine == null) {
+            mine = ConcurrentHashMap.newKeySet();
+            mine.addAll(reactionEmojiKeys(messageId));
+            myReactions.put(messageId, mine);
+        }
         if (set) mine.add(emojiKey); else mine.remove(emojiKey);
         if (myReactions.size() > 4000) myReactions.clear();
     }
@@ -3917,6 +3969,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
      * kernel's own flag for that, so nothing has to be guessed from the elsewhere-unkeyed counts.
      */
     private java.util.List<String> reactionEmojiKeys(int messageId) throws Exception {
+        Set<String> tracked = myReactions.get(messageId);
+        if (tracked != null) return new java.util.ArrayList<>(tracked);
         java.util.List<String> out = new java.util.ArrayList<>();
         MsgStore.Rec r = store.get(messageId);
         if (r == null) return out;
@@ -3927,16 +3981,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             rec = qq.fetchRecord(r.chatType, peer, r.msgId);
         }
         if (rec == null) return out;
-        Object likes = qq.ref.get(rec, "emojiLikesList");
+        Object likes = qq.ref.get(Convert.unwrapRecord(rec), "emojiLikesList");
         if (!(likes instanceof java.util.List)) return out;
         for (Object like : (java.util.List<?>) likes) {
             String id = Ref.asStr(qq.ref.get(like, "emojiId"));
-            if (id.isEmpty()) continue;
-            if (Ref.asBool(qq.ref.get(like, "isClicked"))) out.add(id);
-        }
-        Set<String> tracked = myReactions.get(messageId);
-        if (tracked != null) {
-            for (String key : tracked) if (!out.contains(key)) out.add(key);
+            if (!id.isEmpty() && Ref.asBool(qq.ref.get(like, "isClicked"))) out.add(id);
         }
         return out;
     }
@@ -3958,10 +4007,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             boolean group = "group".equals(ob.optString("message_type"));
             long peer = group ? ob.optLong("group_id") : ob.optLong("user_id");
             JSONObject body = new JSONObject()
-                    .put("sn", eventSn.incrementAndGet())
+                    .put("sn", 0)
                     .put("type", after > before ? "reaction-added" : "reaction-removed")
                     .put("timestamp", System.currentTimeMillis())
                     .put("login", loginSlim())
+                    .put("_type", "satori-qq/reaction")
+                    .put("_data", new JSONObject().put("before", before).put("count", after)
+                            .put("delta", after - before))
                     .put("emoji", new JSONObject().put("id", emojiId))
                     .put("message", new JSONObject().put("id", Codec.publicMessageId(ob)))
                     .put("channel", Codec.channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, ""));
@@ -4076,7 +4128,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (recentGroupEvents.size() > 1000) recentGroupEvents.clear();
         JSONObject guild = Codec.guild(groupId, name);
         JSONObject guildEvent = new JSONObject()
-                .put("sn", eventSn.incrementAndGet())
+                .put("sn", 0)
                 .put("type", "guild-" + suffix)
                 .put("timestamp", now)
                 .put("login", loginSlim())
@@ -4085,7 +4137,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         JSONObject channel = Codec.channel(QQClient.CT_GROUP, groupId, name)
                 .put("parent_id", String.valueOf(groupId));
         JSONObject channelEvent = new JSONObject()
-                .put("sn", eventSn.incrementAndGet())
+                .put("sn", 0)
                 .put("type", "channel-" + suffix)
                 .put("timestamp", now)
                 .put("login", loginSlim())
@@ -4226,7 +4278,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         synchronized (eventEmitLock) {
             try {
                 attachGroupName(obEvent);
-                long sn = eventSn.incrementAndGet();
+                long sn = 0;
                 JSONObject body = Codec.toSatoriEvent(obEvent, loginSlim(), sn, assetBase());
                 if (body == null) return;
                 emitSatoriEvent(body);
@@ -4238,6 +4290,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     private void emitSatoriEvent(JSONObject body) throws Exception {
         synchronized (eventEmitLock) {
+            body.put("sn", eventSn.incrementAndGet());
             messageFreshness.observe(body);
             rememberEvent(body);
             String payload = opJson(OP_EVENT, body).toString();
@@ -4460,8 +4513,23 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             advertisedUin = uin;
             pendingUin = 0;
             pendingUinTicks = 0;
-            emitLoginUpdated();
-            recycleClients();
+            synchronized (eventEmitLock) {
+                synchronized (recentEventsLock) { recentEvents.clear(); }
+                pendingFriends.clear();
+                pendingGroups.clear();
+                myReactions.clear();
+                reactionCounts.clear();
+                store.clear();
+                messageFreshness.clear();
+                groupNames.clear();
+                seenRequests.clear();
+                seenRecalls.clear();
+                seenMemberChanges.clear();
+                emittedMsgIds.clear();
+                outboundMsgIds.clear();
+                emitLoginUpdated();
+                recycleClients();
+            }
         } catch (Throwable t) {
             L.e("trackLoginChange", t);
         }
@@ -4485,23 +4553,24 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         for (java.util.Map.Entry<WsConn, JSONObject> e : awaitingReady.entrySet()) {
             WsConn conn = e.getKey();
             if (!awaitingReady.remove(conn, e.getValue())) continue;
-            identified.add(conn);
             try { sendReady(conn, e.getValue()); }
             catch (Throwable t) { L.e("deferred READY", t); }
         }
     }
 
     private void emitLoginUpdated() {
-        try {
-            JSONObject body = new JSONObject()
-                    .put("sn", eventSn.incrementAndGet())
-                    .put("type", "login-updated")
-                    .put("timestamp", System.currentTimeMillis())
-                    .put("login", loginFull());
-            String payload = opJson(OP_EVENT, body).toString();
-            for (WsConn c : identified) c.send(payload);
-        } catch (Throwable t) {
-            L.e("login-updated", t);
+        synchronized (eventEmitLock) {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("sn", eventSn.incrementAndGet())
+                        .put("type", "login-updated")
+                        .put("timestamp", System.currentTimeMillis())
+                        .put("login", loginFull());
+                String payload = opJson(OP_EVENT, body).toString();
+                for (WsConn c : identified) c.send(payload);
+            } catch (Throwable t) {
+                L.e("login-updated", t);
+            }
         }
     }
 

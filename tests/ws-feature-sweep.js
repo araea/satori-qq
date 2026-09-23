@@ -269,11 +269,9 @@ async function main() {
   });
 
   // 协议里 emoji_id 可选；QQ 内核一次只认一个表情，模块退化成「本登录号自己加过的那些」。
-  await check('reaction.list(不带 emoji_id)', async () => {
-    if (!messageId) throw new Error('上一步没发出消息');
-    const o = await client.callOk('reaction.list', { channel_id: GROUP, message_id: messageId });
-    if (!Array.isArray(o?.data)) throw new Error('data 不是数组: ' + JSON.stringify(o).slice(0, 120));
-    return 'users=' + o.data.length;
+  await check('reaction.list(不带 emoji_id) -> 400', async () => {
+    if (!messageId) throw new Error('没有测试消息');
+    return client.callExpect('reaction.list', { channel_id: GROUP, message_id: messageId }, 400);
   });
 
   await check('reaction.delete', async () => {

@@ -16,6 +16,30 @@ public final class Protocol {
                 && shouldReplay(identifyBody.has("sn"), identifyBody.isNull("sn"));
     }
 
+    /** Resolve a poke destination without letting conflicting fields redirect an action. */
+    public static long[] pokeTarget(JSONObject p) {
+        String channel = p.optString("channel_id", "");
+        long group = p.optLong("guild_id", p.optLong("group_id", 0));
+        long user = p.optLong("user_id", 0);
+        try {
+            if (channel.startsWith("private:")) {
+                long peer = Long.parseLong(channel.substring(8));
+                if (group != 0 || (user != 0 && user != peer))
+                    throw new IllegalArgumentException("conflicting poke destination");
+                user = peer;
+            } else if (!channel.isEmpty()) {
+                long peer = Long.parseLong(channel);
+                if (peer <= 0 || (group != 0 && group != peer))
+                    throw new IllegalArgumentException("conflicting poke destination");
+                group = peer;
+            }
+            if (user <= 0 || group < 0) throw new IllegalArgumentException("missing user_id or invalid guild_id");
+            return new long[]{group, user};
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("invalid channel_id");
+        }
+    }
+
     /** Non-login events carry only the compact Login reference required by Satori v1. */
     public static JSONObject eventLogin(JSONObject login) throws Exception {
         if (login == null) return new JSONObject();

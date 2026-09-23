@@ -33,7 +33,7 @@ public final class OutboundGuard {
                 "guild.approve", "guild.member.approve",
                 "internal.poke", "internal.like", "internal.special_title", "internal.title_display",
                 "internal.honor_display", "internal.card", "internal.sign", "internal.essence",
-                "internal.dice", "internal.rps",
+                "internal.dice", "internal.rps", "internal.reaction_clear",
                 "internal.invite");
         MUTATIONS = Collections.unmodifiableSet(actions);
     }

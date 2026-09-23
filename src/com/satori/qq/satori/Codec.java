@@ -184,6 +184,7 @@ public final class Codec {
     private static void appendSeg(JSONArray segs, Elements.El el) {
         try {
             String t = el.type;
+            if (t.startsWith("satori-qq:")) t = t.substring("satori-qq:".length());
             JSONObject d = new JSONObject();
             switch (t) {
                 case "text":
@@ -400,14 +401,14 @@ public final class Codec {
                 case "file":
                     return resource("file", d, assetBase);
                 case "json":
-                    return Elements.of("json", "data", d.optString("data", d.optString("content", "")));
+                    return Elements.of("satori-qq:json", "data", d.optString("data", d.optString("content", "")));
                 case "mface": {
-                    Elements.El el = Elements.empty("mface");
+                    Elements.El el = Elements.empty("satori-qq:mface");
                     copySnake(d, el);
                     return el;
                 }
                 case "poke": {
-                    Elements.El el = Elements.empty("poke");
+                    Elements.El el = Elements.empty("satori-qq:poke");
                     copySnake(d, el);
                     return el;
                 }

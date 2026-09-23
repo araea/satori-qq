@@ -5,7 +5,7 @@
  *
  * 覆盖：`channel.update` / `channel.mute` / `user.channel.create` /
  * `guild.member.mute` / `guild.member.role.set|unset|list` / `guild.member.kick` /
- * `reaction.clear` / `friend.delete` / `friend.approve` / `guild.approve` /
+ * `internal/reaction_clear` / `friend.delete` / `friend.approve` / `guild.approve` /
  * `guild.member.approve` / `upload.create`。
  *
  * 原则：
@@ -156,7 +156,7 @@ async function main() {
 
   // ---- 表态：清单个 + 清全部 ----
   let scratch = null;
-  await check('reaction.clear (准备消息与两个表态)', async () => {
+  await check('internal/reaction_clear (准备消息与两个表态)', async () => {
     const sent = await client.callOk('message.create', { channel_id: GROUP, content: 'write-sweep ' + Date.now() });
     const one = Array.isArray(sent) ? sent[0] : sent;
     scratch = String(one.id);
@@ -178,9 +178,9 @@ async function main() {
     return false;
   };
 
-  await check('reaction.clear (按 emoji_id)', async () => {
+  await check('internal/reaction_clear (按 emoji_id)', async () => {
     if (!scratch) throw new Error('上一步没造出消息');
-    await client.callOk('reaction.clear', { channel_id: GROUP, message_id: scratch, emoji_id: '4' });
+    await client.callOk('internal/reaction_clear', { channel_id: GROUP, message_id: scratch, emoji_id: '4' });
     if (!await awaitReactionGone('4')) {
       const left = await client.callOk('reaction.list', { channel_id: GROUP, message_id: scratch, emoji_id: '4' });
       throw new Error('清完并等 12 秒后 emoji 4 还有 ' + (left?.data || []).length + ' 个');
@@ -188,9 +188,9 @@ async function main() {
     return 'emoji4 已清空';
   });
 
-  await check('reaction.clear (不带 emoji_id，清全部)', async () => {
+  await check('internal/reaction_clear (不带 emoji_id，清全部)', async () => {
     if (!scratch) throw new Error('上一步没造出消息');
-    await client.callOk('reaction.clear', { channel_id: GROUP, message_id: scratch });
+    await client.callOk('internal/reaction_clear', { channel_id: GROUP, message_id: scratch });
     return 'ok';
   });
 

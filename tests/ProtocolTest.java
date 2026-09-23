@@ -18,6 +18,15 @@ public final class ProtocolTest {
         check(!Protocol.eventLogin(0, "red", new JSONObject()).has("self_id"),
                 "empty user, no self_id");
 
+        long[] group = Protocol.pokeTarget(new JSONObject().put("channel_id", "123").put("user_id", "42"));
+        check(group[0] == 123 && group[1] == 42, "channel-scoped group poke");
+        long[] friend = Protocol.pokeTarget(new JSONObject().put("channel_id", "private:42"));
+        check(friend[0] == 0 && friend[1] == 42, "private channel selects peer");
+        for (String raw : new String[]{"{\"channel_id\":\"private:42\",\"user_id\":\"43\"}",
+                "{\"channel_id\":\"123\",\"guild_id\":456,\"user_id\":42}", "{}"}) {
+            try { Protocol.pokeTarget(new JSONObject(raw)); throw new AssertionError("bad target accepted"); }
+            catch (IllegalArgumentException expected) {}
+        }
         System.out.println("ProtocolTest OK");
     }
 

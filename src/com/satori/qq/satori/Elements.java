@@ -115,7 +115,7 @@ public final class Elements {
     }
 
     private static final Pattern TAG = Pattern.compile(
-            "(?<comment><!--[\\s\\S]*?-->)|<(?<closing>/?)(?<name>[a-z][a-z0-9-]*)(?<extra>[^>]*?)\\s*(?<self>/?)>");
+            "(?<comment><!--[\\s\\S]*?-->)|<(?<closing>/?)(?<name>[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)(?<extra>[^>]*?)\\s*(?<self>/?)>");
     private static final Pattern ATTR = Pattern.compile(
             "([^\\s=]+)(?:=\"(?<v1>[^\"]*)\"|='(?<v2>[^']*)')?");
 

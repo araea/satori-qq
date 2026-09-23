@@ -145,7 +145,7 @@ async function main() {
   await check('message.delete(缺参)', async () => expectRouted(client, 'message.delete', {}));
   await check('reaction.create(缺参)', async () => expectRouted(client, 'reaction.create', {}));
   await check('reaction.delete(缺参)', async () => expectRouted(client, 'reaction.delete', {}));
-  await check('reaction.clear(缺参)', async () => expectRouted(client, 'reaction.clear', {}));
+  await check('reaction.clear(不支持清所有人)', async () => client.callExpect('reaction.clear', {}, 404));
   await check('channel.update(缺参)', async () => expectRouted(client, 'channel.update', { channel_id: GROUP }));
   await check('channel.mute(缺参)', async () => expectRouted(client, 'channel.mute', { channel_id: GROUP }));
   await check('guild.member.mute(缺参)', async () => expectRouted(client, 'guild.member.mute', { guild_id: GROUP }));

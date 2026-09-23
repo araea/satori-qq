@@ -50,13 +50,13 @@ QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调�
 | `friend.approve` | 受限 | 处理好友申请，`message_id` 为申请 flag |
 | `guild.approve` / `guild.member.approve` | 受限 | 处理群邀请或加群申请 |
 | `reaction.create` / `delete` / `list` | 支持 | `emoji_id` 为表情 ID，只能操作自己的表态 |
-| `reaction.clear` | 支持 | 不带 `emoji_id` 时清除该消息上自己加过的全部表态 |
+| `reaction.clear` | 不支持 | 标准语义是清除所有用户的表态，QQ JNI 无此能力；清自己的用 `internal/reaction_clear` |
 | `upload.create` | 支持 | 上传多个文件，返回 `internal:red/{uin}/_tmp/{id}` |
 | `message.update` / `channel.create` / `channel.delete` | 不支持 | 返回 404 |
 | `guild.role.create` / `update` / `delete` 及其余表态管理 | 不支持 | 返回 404 |
 
 QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传其他 `user_id` 时返回 400，
-`reaction.clear` 也只清除自己的那部分。
+`reaction.list` 必须提供 `emoji_id`；只在第一页合并自己的表态，明确的内核错误不会伪装成空列表。
 
 `message.create` 的 `forward_mode` 可设为 `auto`、`native` 或 `fake`，`auto` 优先使用 QQ 原生合并转发。
 `channel.update.data.avatar` 接受本地路径、`file:`、`http(s):`、`data:` 与 `internal:`。全员禁言的自动
@@ -95,7 +95,8 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
-| 互动 | `poke` / `invite` | 戳一戳、邀请入群 |
+| 互动 | `poke` / `invite` | 戳一戳、邀请入群；poke 支持 `channel_id`（群号或 `private:QQ号`） |
+| 表态 | `reaction_summary` / `reaction_clear` | 消息的回应计数与自己是否回应；仅清除自己的回应 |
 | 群成员 | `special_title` / `card` | 设置群头衔或群名片 |
 | 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关 |
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息 |
@@ -113,7 +114,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 0.16.0 之前在这里记过一批「内核入口接受调用但不回调」的条目（群详情、群统计、成员等级、收藏表情、
 群文件搜索、在线设备、地区枚举…）。那些入口对应的动作已在 0.17.0 整批撤掉，不再有可用性问题。
 
-`get_forward` 与 `capabilities` 之外的内核调用都只发生在上面那张表的动作里。
+`reaction_summary` 通过 JNI 消息服务读取本地消息快照，不批量查询用户；返回的计数可能晚于刚完成的动作。
 
 ## 事件
 
@@ -244,11 +245,37 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
   [`ARCHITECTURE.md`](ARCHITECTURE.md#群资料写入)
 - **`reaction-removed` 而不是 `reaction-deleted`**：协议包写的是 `reaction-deleted`，但框架给插件的
   事件表（`@satorijs/core` 的 `Events`）与官方 QQ 适配器用 `reaction-added`/`reaction-removed`，两套
-  名字在框架里**不是别名**，按「插件实际会监听哪个」选了后者。对接严格照协议包写的客户端时需再补发一份
-  `reaction-deleted`
+  名字在框架里**不是别名**，按「插件实际会监听哪个」选了后者。对接严格照协议包写的客户端时应在客户端兼容 `reaction-deleted` 别名，不同时广播两份相同事件
 - **`login-updated`**：不在协议包的 `EventName` 里，但官方客户端的 WS 分支显式处理它（还有
   `login-added`/`login-removed`），换号时靠它通知客户端重连
-- **列表分页**：`List.next` 一律不返回（一次给完），官方客户端的迭代器因此只取一页
+- **列表分页**：不带 `next`/`limit` 一次给完；指定分页后按 `next` 继续读取
 - **`channel.get` 多回一个 `avatar`**：协议里 `Channel` 没有这个字段，客户端会原样忽略
 - **错误码**：令牌不对回 401（官方回 403）、未知 `Satori-User-ID` 回 404（官方回 403）；客户端两种都
   当失败处理，没有实际差别
+
+
+## 0.28.0 与 Acumen 的协作约定
+
+以 [Satori 事件规范](https://satori.chat/zh-CN/protocol/events.html)、
+[表态规范](https://satori.chat/zh-CN/resources/reaction.html) 和
+[扩展规范](https://satori.chat/zh-CN/advanced/internal.html) 为准：
+
+- READY、历史回放和实时事件在同一把投递锁内串行完成。所有广播事件在投递时统一分配 sn；
+  多条 JNI 回调不会令客户端先看到较大的 sn 再看到较小的 sn。重复 IDENTIFY 不重新回放。
+- 恢复连接不重复投递待审批申请；登录事件不进历史缓冲。换号清除回放与表态缓存。
+- READY 附加 `satori_qq.session_id` 和 `satori_qq.sn`，供 Acumen 识别模块进程重启。
+  sn 从当前毫秒时间起算；缓冲仍为当前进程最近 4096 条，重启不恢复丢失的历史。
+- `reaction.clear` 从 features 移除并返回 404。原来“只清自己”的非标准行为迁移到
+  `POST /v1/internal/reaction_clear`，参数 `channel_id, message_id, emoji_id?`；返回
+  `{cleared, scope:"self"}`。无自己表态时返回 0；部分失败明确报错，不报完全成功。
+- `POST /v1/internal/reaction_summary` 参数 `channel_id, message_id`；返回
+  `{message_id, data:[{emoji_id,count,self}], source:"kernel_cache", observed_at}`。
+  count 来自 QQ 本地缓存；self 优先使用本模块已确认的动作。两者更新时间可能不同。
+- 表态事件的 `_type=satori-qq/reaction`、`_data={before,count,delta}` 解释数量变化；没有
+  可靠操作者时不填写 user，不能把消息作者认作回应者。
+- QQ 专有元素输出 `satori-qq:json`、`satori-qq:mface`、`satori-qq:poke`，输入仍接受旧的裸名称。
+  骰子、猜拳继续使用标准 `<emoji>`。HTTP poke 是头像戳一戳，消息里的 poke 是表情元素。
+- 排队中的写入及媒体转换后的发送会复核登录账号；旧账号请求不能自动改为新账号执行。
+
+功能未增加 ART hook、Java hook 框架或第三方 native 依赖。真实 QQ 权限、回应缓存时延、
+服务端频率限制仍以回执为准；超时是结果未知，客户端不能盲目重发动作。

@@ -8,6 +8,8 @@ public final class MessageFreshness {
     private static final int CAPACITY = 4096;
     private final LinkedHashMap<String, String> latest = new LinkedHashMap<>();
 
+    public synchronized void clear() { latest.clear(); }
+
     public synchronized void observe(JSONObject event) {
         if (!"message-created".equals(event.optString("type"))) return;
         JSONObject channel = event.optJSONObject("channel");

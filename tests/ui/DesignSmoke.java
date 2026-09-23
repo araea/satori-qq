@@ -39,7 +39,7 @@ public final class DesignSmoke extends Instrumentation {
 
     private boolean dark;
     private float fontScale = 1;
-    private int density;
+    private int density, widthDp;
     private Activity activity;
     private File settingsFile;
     private byte[] original;
@@ -58,6 +58,7 @@ public final class DesignSmoke extends Instrumentation {
         config.uiMode = dark ? Configuration.UI_MODE_NIGHT_YES : Configuration.UI_MODE_NIGHT_NO;
         config.fontScale = fontScale;
         if (density > 0) config.densityDpi = density;
+        if (widthDp > 0) config.screenWidthDp = widthDp;
         created.applyOverrideConfiguration(config);
         return created;
     }
@@ -81,6 +82,7 @@ public final class DesignSmoke extends Instrumentation {
             checkAccessibility();
             checkHealthStates();
             checkDirtyBanner();
+            checkPollingControl();
             close();
             launch();
             checkTouchTargets();
@@ -97,18 +99,25 @@ public final class DesignSmoke extends Instrumentation {
             close();
             dark = false;
             fontScale = 2;
+            widthDp = 320;
             density = Math.round(getTargetContext().getResources().getDisplayMetrics().widthPixels / 320f * 160);
             launch();
             for (int tab = 0; tab < 3; tab++) {
-                final int selected = tab;
-                ui(() -> call("switchTab", new Class[]{int.class, boolean.class}, selected, false));
-                waitForIdleSync();
+                showTab(tab);
                 java.util.List<String> clipped = new java.util.ArrayList<>();
                 ui(() -> bounds(activity.getWindow().getDecorView(), clipped));
                 check(clipped.isEmpty(), "大字号 + 320dp 下第 " + (tab + 1) + " 页文字完整"
                         + (clipped.isEmpty() ? "" : "（被截断：" + clipped.subList(0, Math.min(3, clipped.size())) + "）"));
                 capture("large-" + tab, tab);
             }
+            checkLargeDialog();
+            close();
+            fontScale = 1;
+            widthDp = 900;
+            density = Math.round(getTargetContext().getResources().getDisplayMetrics().widthPixels / 900f * 160);
+            launch();
+            checkRailAndDock();
+            for (int tab = 0; tab < 3; tab++) capture("wide-" + tab, tab);
             close();
             restore();
             out.putString("stream", "\n" + report + "PASS: 知弦界面\n");
@@ -316,7 +325,7 @@ public final class DesignSmoke extends Instrumentation {
         });
         check(Integer.parseInt(headings.get().replaceAll(".*：可见 (\\d+) .*", "$1")) >= 3,
                 "每页至少有三个标题（" + headings.get() + "）");
-        check(((EditText) view("portInput")).getLabelFor() != 0, "端口输入框关联了标签");
+        check(hasLabel(activity.getWindow().getDecorView(), view("portInput").getId()), "端口输入框关联了标签");
         check(view("refreshButton").getContentDescription() != null, "只有图标的刷新按钮有可读名称");
     }
 
@@ -326,9 +335,8 @@ public final class DesignSmoke extends Instrumentation {
                 * getTargetContext().getResources().getDisplayMetrics().density);
         AtomicReference<String> small = new AtomicReference<>();
         for (int tab = 0; tab < 3; tab++) {
-            final int selected = tab;
+            showTab(tab);
             ui(() -> {
-                call("switchTab", new Class[]{int.class, boolean.class}, selected, false);
                 findSmall(activity.getWindow().getDecorView(), dp, small);
             });
             waitForIdleSync();
@@ -346,12 +354,26 @@ public final class DesignSmoke extends Instrumentation {
             checkInputRing();
         });
         showTab(0);
-        ui(() -> checkRingToggles("refreshButton", "primary"));
+        ui(() -> {
+            checkRingToggles("refreshButton", "primary");
+            View[] nav = (View[]) field(activity, "navigation");
+            for (int i = 0; i < nav.length; i++) checkRingToggles(nav[i], "navigation " + i, "primary");
+        });
+        showTab(1);
+        ui(() -> {
+            View[] toggles = (View[]) field(activity, "toggles");
+            for (int i = 0; i < toggles.length; i++) checkRingToggles(toggles[i], "switch " + i, "primary");
+            check((edit("tokenInput").getInputType() & android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD) != 0,
+                    "令牌使用密码输入语义");
+        });
     }
 
     /** 按钮类：背景里有一层独立的焦点环，未聚焦透明、聚焦后不透明，颜色与底色有对比。 */
     private void checkRingToggles(String name, String ringRole) {
-        View view = view(name);
+        checkRingToggles(view(name), name, ringRole);
+    }
+
+    private void checkRingToggles(View view, String name, String ringRole) {
         check(view.getWidth() > 0 && view.getHeight() > 0, name + " 已完成测量："
                 + view.getWidth() + "x" + view.getHeight()
                 + " vis=" + view.getVisibility() + " attached=" + view.isAttachedToWindow()
@@ -402,6 +424,15 @@ public final class DesignSmoke extends Instrumentation {
             ViewGroup group = (ViewGroup) view;
             for (int i = 0; i < group.getChildCount(); i++) findSmall(group.getChildAt(i), minimum, found);
         }
+    }
+
+    private static boolean hasLabel(View view, int targetId) {
+        if (view.getLabelFor() == targetId) return true;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) if (hasLabel(group.getChildAt(i), targetId)) return true;
+        }
+        return false;
     }
 
     private static int countHeadings(View view) {
@@ -473,6 +504,67 @@ public final class DesignSmoke extends Instrumentation {
         }
     }
 
+    private void checkPollingControl() throws Exception {
+        showTab(0);
+        await("探测结束", () -> !((Boolean) field(activity, "probing")));
+        ui(() -> {
+            view("pollingButton").performClick();
+            check(!((Boolean) field(activity, "autoRefresh")), "可以暂停自动刷新");
+            android.os.Handler handler = (android.os.Handler) field(activity, "main");
+            check(!handler.hasCallbacks((Runnable) field(activity, "poll")), "暂停后移除刷新任务");
+            view("pollingButton").performClick();
+            check((Boolean) field(activity, "autoRefresh"), "可以恢复自动刷新");
+        });
+    }
+
+    private void checkLargeDialog() throws Exception {
+        AtomicReference<android.app.Dialog> shown = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean accepted = new java.util.concurrent.atomic.AtomicBoolean();
+        ui(() -> {
+            try {
+                Object widgets = field(activity, "widgets");
+                Method confirm = widgets.getClass().getDeclaredMethod("confirm", String.class, String.class,
+                        String.class, boolean.class, Runnable.class);
+                confirm.setAccessible(true);
+                shown.set((android.app.Dialog) confirm.invoke(widgets, "停止保活并关闭 QQ？",
+                        "停止后不会自动拉起。需要恢复时，请重新开启守护。", "确认关闭", true,
+                        (Runnable) () -> accepted.set(true)));
+            } catch (Exception error) { throw new RuntimeException(error); }
+        });
+        waitForIdleSync();
+        ui(() -> {
+            android.app.Dialog dialog = shown.get();
+            View decor = dialog.getWindow().getDecorView();
+            if (decor.getWidth() == 0) {
+                decor.measure(View.MeasureSpec.makeMeasureSpec(dialog.getWindow().getAttributes().width, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(activity.getResources().getDisplayMetrics().heightPixels, View.MeasureSpec.AT_MOST));
+                decor.layout(0, 0, decor.getMeasuredWidth(), decor.getMeasuredHeight());
+            }
+            java.util.List<String> clipped = new java.util.ArrayList<>();
+            bounds(decor, clipped);
+            check(clipped.isEmpty(), "200% 字号确认弹窗文字完整：" + clipped);
+            check(dialog.getCurrentFocus() instanceof TextView
+                    && "取消".contentEquals(((TextView) dialog.getCurrentFocus()).getText()), "危险确认默认聚焦取消");
+            dialog.cancel();
+            check(!accepted.get(), "取消弹窗不会执行危险操作");
+        });
+    }
+
+    private void checkRailAndDock() throws Exception {
+        showTab(1);
+        ui(() -> {
+            View nav = (View) ((View[]) field(activity, "navigation"))[0].getParent();
+            check(((android.widget.LinearLayout) nav).getOrientation() == android.widget.LinearLayout.VERTICAL,
+                    "900dp 使用侧边导航");
+            View dock = view("saveDock");
+            ScrollView page = ((ScrollView[]) field(activity, "pages"))[1];
+            check(dock.getParent() == page.getParent().getParent(), "保存区独立于滚动内容");
+            check(dock.getVisibility() == View.VISIBLE, "设置页显示保存区");
+            call("switchTab", new Class[]{int.class, boolean.class}, 0, false);
+            check(dock.getVisibility() == View.GONE, "状态页隐藏保存区");
+        });
+    }
+
     // ------------------------------------------------------------------ 截图
 
     private void capture(String name, int tab) throws Exception {
@@ -502,18 +594,35 @@ public final class DesignSmoke extends Instrumentation {
             try {
                 ScrollView scroll = ((ScrollView[]) field(activity, "pages"))[tab];
                 View content = scroll.getChildAt(0);
-                ViewGroup root = (ViewGroup) scroll.getParent().getParent();
-                View nav = root.getChildAt(1);
+                View nav = (View) ((View[]) field(activity, "navigation"))[0].getParent();
+                View dock = view("saveDock");
+                boolean rail = ((android.widget.LinearLayout) nav).getOrientation() == android.widget.LinearLayout.VERTICAL;
+                boolean pinned = dock.getParent() == scroll.getParent().getParent() && dock.getVisibility() == View.VISIBLE;
+                int dockHeight = pinned ? dock.getHeight() : 0;
                 check(content.getWidth() > 0 && content.getHeight() > 0, "已测量 " + name);
-                float scale = 600f / content.getWidth();
-                Bitmap bitmap = Bitmap.createBitmap(600,
-                        Math.round((content.getHeight() + nav.getHeight()) * scale), Bitmap.Config.ARGB_8888);
+                if (tab == 0) {
+                    int limit = Math.round(16 * activity.getResources().getDisplayMetrics().density);
+                    check(view("progress").getHeight() <= limit, "波形高度受限 " + name);
+                }
+                int totalWidth = content.getWidth() + (rail ? nav.getWidth() : 0);
+                int totalHeight = content.getHeight() + dockHeight + (rail ? 0 : nav.getHeight());
+                float scale = (rail ? 1200f : 600f) / totalWidth;
+                Bitmap bitmap = Bitmap.createBitmap(Math.round(totalWidth * scale),
+                        Math.round(totalHeight * scale), Bitmap.Config.ARGB_8888);
                 Canvas canvas = new Canvas(bitmap);
                 canvas.scale(scale, scale);
                 canvas.drawColor(color(field(activity, "ui"), "surface"));
+                if (rail) {
+                    nav.draw(canvas);
+                    canvas.translate(nav.getWidth(), 0);
+                }
                 content.draw(canvas);
                 canvas.translate(0, content.getHeight());
-                nav.draw(canvas);
+                if (pinned) {
+                    dock.draw(canvas);
+                    canvas.translate(0, dockHeight);
+                }
+                if (!rail) nav.draw(canvas);
                 File dir = new File(getTargetContext().getFilesDir(), "design-review");
                 dir.mkdirs();
                 try (FileOutputStream output = new FileOutputStream(new File(dir, name + ".png"))) {

@@ -110,6 +110,8 @@ QQ 被冻住或杀掉就掉线，三层保护：
 
 ## 文档
 
+- [`docs/DESIGN.md`](docs/DESIGN.md)：设计体系、Design Tokens、组件契约与无障碍验证范围
+
 - [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)：协议方法、事件与消息元素
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：内部结构、构建与测试、QQ 升级检查项
 

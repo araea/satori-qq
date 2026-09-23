@@ -10,7 +10,7 @@ OUT="$ROOT/build/design-tests"
 SHOTS="$OUT/design-review"
 PKG=com.satori.qq.test
 APP=com.satori.qq
-NAMES="light-0 light-1 light-2 dark-0 dark-1 dark-2 large-0 large-1 large-2"
+NAMES="light-0 light-1 light-2 dark-0 dark-1 dark-2 large-0 large-1 large-2 wide-0 wide-1 wide-2"
 
 bash "$ROOT/tests/ui/build.sh"
 
@@ -23,7 +23,7 @@ echo "== 运行 =="
 # 而不是本次写进去的草稿——表现为 port=3001 tab=0，看起来像应用丢了草稿，其实是环境没清干净。
 su -c "am force-stop $APP"
 su -c "am instrument -w -r $PKG/.DesignSmoke" | tee "$OUT/instrument.log"
-if grep -q 'FAIL' "$OUT/instrument.log"; then
+if ! grep -q 'PASS: 知弦界面' "$OUT/instrument.log"; then
   echo "设计冒烟未通过，见 $OUT/instrument.log" >&2
   exit 1
 fi

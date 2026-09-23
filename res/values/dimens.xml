@@ -101,6 +101,9 @@
     <dimen name="md_size_content_max_expanded">840dp</dimen>
     <dimen name="md_size_progress_height">12dp</dimen>
 
+    <dimen name="md_size_nav_rail">96dp</dimen>
+    <dimen name="md_size_dialog_max">560dp</dimen>
+
     <!-- 高度：靠表面明度分层，阴影只留给浮层 -->
     <dimen name="md_elevation_level0">0dp</dimen>
     <dimen name="md_elevation_level1">1dp</dimen>
@@ -144,7 +147,7 @@
     <integer name="md_state_disabled_pct">12</integer>
     <integer name="md_state_disabled_content_pct">38</integer>
 
-    <!-- 响应式断点（dp）：Carbon 的 compact / medium / expanded -->
+    <!-- 响应式断点（dp）：Android 的 compact / medium / expanded -->
     <integer name="md_bp_medium">600</integer>
     <integer name="md_bp_expanded">840</integer>
 </resources>

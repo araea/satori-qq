@@ -45,7 +45,7 @@ final class Glyph extends View {
     static void paint(Canvas canvas, int kind, int color, float width, float height) {
         if (width <= 0 || height <= 0) return;
         float size = Math.min(width, height);
-        float stroke = size / 24f * 1.8f;
+        float stroke = 1.8f; // Canvas 已按 24 单位缩放，描边不能再乘密度。
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         paint.setColor(color);
         paint.setStyle(Paint.Style.STROKE);

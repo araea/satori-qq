@@ -67,11 +67,15 @@ public final class MainActivity extends Activity {
     private final Glyph[] navIcons = new Glyph[3];
     private int selected;
     private boolean resumed, probing, saving, revealing;
+    private boolean autoRefresh = true;
+    private Button pollingButton;
     private JSONObject health;
     private JSONObject loadedConfig;
     private long checkedAt;
     private int currentPort = 3001;
-    private LinearLayout hero;
+    private LinearLayout hero, saveDock;
+    private Button heroAction;
+    private final TextView[] connectionStages = new TextView[3];
     private TextView heroLabel, stateTitle, stateDetail, clients, uptime, endpoint, updated;
     private TextView configurationStatus, configurationNote;
     private LinearLayout configurationCard;
@@ -101,16 +105,27 @@ public final class MainActivity extends Activity {
         setTitle(getApplicationInfo().loadLabel(getPackageManager()));
         store = new ControlStore(this);
         pendingReport = state == null ? null : state.getString("report");
+        autoRefresh = state == null || state.getBoolean("autoRefresh", true);
 
         LinearLayout root = widgets.column();
         root.setBackgroundColor(ui.surface);
         FrameLayout body = new FrameLayout(this);
-        root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
+        LinearLayout workspace = widgets.column();
+        workspace.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         pages[0] = page(home());
         pages[1] = page(settings(state));
         pages[2] = page(diagnostics());
         for (ScrollView page : pages) body.addView(page, new FrameLayout.LayoutParams(-1, -1));
-        root.addView(navigationBar(), new LinearLayout.LayoutParams(-1, -2));
+        if (layout.pinSave()) workspace.addView(saveDock, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout nav = navigationBar();
+        if (layout.useRail()) {
+            root.setOrientation(LinearLayout.HORIZONTAL);
+            root.addView(nav, new LinearLayout.LayoutParams(ui.dimen("size_nav_rail"), -1));
+            root.addView(workspace, new LinearLayout.LayoutParams(0, -1, 1));
+        } else {
+            root.addView(workspace, new LinearLayout.LayoutParams(-1, 0, 1));
+            root.addView(nav, new LinearLayout.LayoutParams(-1, -2));
+        }
         ui.padSystemBars(root);
         setContentView(root);
 
@@ -132,15 +147,18 @@ public final class MainActivity extends Activity {
      * 三项都是"整块可点"的按钮角色，读屏按按钮读，选中态由 selected 状态给出（WCAG 4.1.2）。
      */
     private LinearLayout navigationBar() {
-        LinearLayout bar = widgets.row();
+        LinearLayout bar = layout.useRail() ? widgets.column() : widgets.row();
+        if (layout.useRail()) bar.setGravity(Gravity.CENTER_HORIZONTAL);
         int pad = ui.dp(layout.gutterDp() / 2);
-        bar.setPadding(pad, ui.dp(8), pad, ui.dp(8));
+        bar.setPadding(layout.useRail() ? ui.dp(8) : pad, ui.dp(12),
+                layout.useRail() ? ui.dp(8) : pad, ui.dp(12));
         bar.setBackgroundColor(ui.surfaceContainer);
         for (int i = 0; i < 3; i++) {
             final int tab = i;
             LinearLayout item = widgets.column();
             item.setGravity(Gravity.CENTER);
             item.setMinimumHeight(ui.dimen("size_nav_item_min_height"));
+            widgets.paint(item, ui.shape(android.graphics.Color.TRANSPARENT, 20), 20, 20, ui.primary, ui.primary);
             widgets.asButton(item, new String[]{"状态", "设置", "诊断"}[i]);
             item.setOnClickListener(v -> switchTab(tab, true));
 
@@ -157,7 +175,8 @@ public final class MainActivity extends Activity {
             label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             item.addView(label, widgets.stack(4));
 
-            bar.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
+            bar.addView(item, layout.useRail() ? widgets.stack(i == 0 ? 12 : 16)
+                    : new LinearLayout.LayoutParams(0, -2, 1));
             navigation[i] = item;
             navIndicators[i] = indicator;
             navLabels[i] = label;
@@ -170,12 +189,15 @@ public final class MainActivity extends Activity {
         int next = Math.max(0, Math.min(2, index));
         boolean changed = next != selected;
         selected = next;
+        if (saveDock != null && layout.pinSave()) saveDock.setVisibility(next == 1 ? View.VISIBLE : View.GONE);
+        setTitle(new String[]{"知弦 · 状态", "知弦 · 连接设置", "知弦 · 连接诊断"}[next]);
         if (selected != 1) {
             hideKeyboard();
             reveal(false);
         }
         for (int i = 0; i < pages.length; i++) {
             boolean active = i == selected;
+            pages[i].animate().cancel();
             pages[i].setVisibility(active ? View.VISIBLE : View.GONE);
             navigation[i].setSelected(active);
             navIndicators[i].setBackground(ui.shape(active ? ui.secondaryContainer : android.graphics.Color.TRANSPARENT, 16));
@@ -196,7 +218,7 @@ public final class MainActivity extends Activity {
 
     private LinearLayout home() {
         LinearLayout content = content();
-        content.addView(header("知弦", "SATORI FOR QQ · " + appVersion()), widgets.stack(0));
+        content.addView(header("知弦", "连接消息，让服务常在"), widgets.stack(0));
 
         hero = widgets.card(Widgets.TONE_HIGH, 28, 24);
         heroLabel = widgets.text("本机服务", Tokens.LABEL_MEDIUM, ui.onSurfaceVariant);
@@ -206,7 +228,13 @@ public final class MainActivity extends Activity {
         stateDetail = widgets.body("正在读取 QQ 中的模块状态…", ui.onSurfaceVariant);
         hero.addView(widgets.live(stateDetail), widgets.stack(8));
         progress = new ExpressiveProgress(ui);
-        hero.addView(progress, widgets.stack(16));
+        hero.addView(progress, widgets.stack(12));
+        heroAction = widgets.button("打开 QQ", Widgets.FILLED);
+        heroAction.setOnClickListener(v -> {
+            if (health != null && health.optBoolean("online")) switchTab(2, true);
+            else openQQ();
+        });
+        hero.addView(heroAction, widgets.stack(8));
         content.addView(hero, widgets.stack(24));
 
         LinearLayout metricRow = layout.canPairCards() ? widgets.row() : widgets.column();
@@ -228,10 +256,20 @@ public final class MainActivity extends Activity {
         }
         content.addView(metricRow, widgets.stack(12));
 
+        LinearLayout stages = widgets.card(Widgets.TONE_NEUTRAL, 20, 20);
+        stages.addView(widgets.heading("连接链路", Tokens.TITLE_MEDIUM, ui.onSurface), widgets.stack(0));
+        for (int i = 0; i < connectionStages.length; i++) {
+            connectionStages[i] = widgets.body("", ui.onSurfaceVariant);
+            stages.addView(connectionStages[i], widgets.stack(8));
+        }
+        content.addView(stages, widgets.stack(12));
+
         LinearLayout connection = widgets.card(Widgets.TONE_NEUTRAL, 20, 20);
         connection.addView(widgets.heading("连接地址", Tokens.TITLE_LARGE, ui.onSurface), widgets.stack(0));
         endpoint = widgets.text("", Tokens.TITLE_MEDIUM, ui.primary);
         endpoint.setTextIsSelectable(true);
+        endpoint.setMinimumHeight(ui.dimen("size_touch_target"));
+        endpoint.setGravity(Gravity.CENTER_VERTICAL);
         connection.addView(endpoint, widgets.stack(8));
         connection.addView(widgets.body("仅供这台设备上的 Satori 客户端使用。", ui.onSurfaceVariant), widgets.stack(6));
         Button copy = widgets.button("复制连接地址", Widgets.TONAL);
@@ -239,18 +277,16 @@ public final class MainActivity extends Activity {
             haptic(v);
             copy("连接地址", endpoint.getText().toString(), false);
         });
-        connection.addView(copy, widgets.stack(16));
+        Button openQQ = widgets.button("打开 QQ", Widgets.OUTLINED);
+        openQQ.setOnClickListener(v -> openQQ());
+        widgets.actionRow(connection, Arrays.asList(copy, openQQ), 16);
         content.addView(connection, widgets.stack(12));
-
-        Button open = widgets.button("打开 QQ", Widgets.FILLED);
-        open.setOnClickListener(v -> openQQ());
-        content.addView(open, widgets.stack(20));
 
         LinearLayout guard = widgets.card(Widgets.TONE_NEUTRAL, 28, 24);
         guard.addView(widgets.heading("常驻守护", Tokens.TITLE_LARGE, ui.onSurface), widgets.stack(0));
         guardState = widgets.body("正在读取守护状态…", ui.onSurfaceVariant);
         guard.addView(widgets.live(guardState), widgets.stack(8));
-        Button guardOn = widgets.button("开启守护", Widgets.FILLED);
+        Button guardOn = widgets.button("开启守护", Widgets.TONAL);
         guardOn.setOnClickListener(v -> guardAction("start"));
         Button guardOff = widgets.button("暂停守护", Widgets.TONAL);
         guardOff.setOnClickListener(v -> guardAction("stop"));
@@ -263,14 +299,22 @@ public final class MainActivity extends Activity {
                     "确认关闭", true, () -> guardAction("kill"));
         });
         guard.addView(guardKill, widgets.stack(8));
-        guard.addView(widgets.body("开启后 7×24 保活 QQ，进程不在就按预算拉起，被冻住只解冻不强杀。\n"
-                + "守护需要 Root（KernelSU / ReSukiSU）。首次使用会在 root 管理器里请求授权；"
-                + "也可在快捷设置里用「知弦守护」磁贴控制。", ui.onSurfaceVariant), widgets.stack(12));
+        guard.addView(widgets.body("需要 Root 与知弦模块。开启后自动检查进程并尝试恢复；暂停不会关闭 QQ。"
+                + "也可通过快捷设置中的「知弦守护」控制。", ui.onSurfaceVariant), widgets.stack(12));
         content.addView(guard, widgets.stack(16));
 
         updated = widgets.text("", Tokens.LABEL_MEDIUM, ui.onSurfaceVariant);
         updated.setGravity(Gravity.CENTER);
         content.addView(updated, widgets.stack(24));
+        pollingButton = widgets.button(autoRefresh ? "暂停自动刷新" : "恢复自动刷新", Widgets.TEXT);
+        pollingButton.setOnClickListener(v -> {
+            autoRefresh = !autoRefresh;
+            pollingButton.setText(autoRefresh ? "暂停自动刷新" : "恢复自动刷新");
+            main.removeCallbacks(poll);
+            if (autoRefresh) refresh();
+            updateState();
+        });
+        content.addView(pollingButton, widgets.stack(4));
         TextView serviceHint = widgets.text("管理页关闭后，服务仍随 QQ 运行。", Tokens.BODY_SMALL, ui.onSurfaceVariant);
         serviceHint.setGravity(Gravity.CENTER);
         content.addView(serviceHint, widgets.stack(6));
@@ -313,6 +357,12 @@ public final class MainActivity extends Activity {
         stateTitle.setText(title);
         stateDetail.setTextColor(sub);
         stateDetail.setText(detail);
+        heroAction.setText(online ? "查看连接诊断" : "打开 QQ");
+        String unknown = checkedAt == 0 ? "检查中" : "未连接";
+        connectionStages[0].setText("01  QQ 账号 · " + (reachable ? (online ? "已登录" : "等待登录") : unknown));
+        connectionStages[1].setText("02  本机服务 · " + (reachable ? (listening ? "已就绪" : "待恢复") : unknown));
+        connectionStages[2].setText("03  Satori 客户端 · " + (reachable
+                ? (health.optInt("connections") > 0 ? health.optInt("connections") + " 个已接入" : "等待接入") : "待服务连接"));
     }
 
     // ------------------------------------------------------------------ 设置页
@@ -383,13 +433,30 @@ public final class MainActivity extends Activity {
         widgets.addColumnWise(behavior, preferenceBlocks, layout.preferenceColumns(), 20, 20);
         content.addView(behavior, widgets.stack(16));
 
-        dirtyCard = widgets.card(Widgets.TONE_WARNING, 20, 20);
-        dirtyLabel = widgets.text("", Tokens.TITLE_MEDIUM, ui.onWarningContainer);
+        saveDock = widgets.column();
+        saveDock.setBackgroundColor(ui.surfaceContainerLow);
+        if (layout.pinSave()) saveDock.setPadding(ui.dp(24), ui.dp(12), ui.dp(24), ui.dp(12));
+        dirtyCard = widgets.column();
+        dirtyLabel = widgets.live(widgets.text("", Tokens.LABEL_LARGE, ui.onSurface));
         dirtyCard.addView(dirtyLabel, widgets.stack(0));
-        content.addView(dirtyCard, widgets.stack(20));
+        saveDock.addView(dirtyCard, widgets.stack(0));
         saveButton = widgets.button("保存设置", Widgets.FILLED);
         saveButton.setOnClickListener(v -> save(false));
-        content.addView(saveButton, widgets.stack(10));
+        saveDock.addView(saveButton, widgets.stack(8));
+        if (!layout.pinSave()) content.addView(saveDock, widgets.stack(20));
+        Button discard = widgets.button("撤销未保存的修改", Widgets.TEXT);
+        discard.setOnClickListener(v -> {
+            if (!dirty() || saving) return;
+            widgets.confirm("撤销这次修改？", "恢复为上次保存的设置。", "撤销修改", true, () -> {
+                JSONObject saved = loadedConfig;
+                loadedConfig = null;
+                loadForm(saved);
+                portField.error(null);
+                tokenField.error(null);
+                reveal(false);
+            });
+        });
+        content.addView(discard, widgets.stack(12));
         content.addView(widgets.body("保存后，下次启动 QQ 时生效。需要立即应用时，请在 QQ 应用信息页停止 QQ，"
                 + "再重新打开；客户端会短暂断开。", ui.onSurfaceVariant), widgets.stack(12));
 
@@ -535,7 +602,7 @@ public final class MainActivity extends Activity {
                 progress.setVisibility(View.INVISIBLE);
                 setRefreshing(false);
                 updateState();
-                if (resumed) main.postDelayed(poll, 5000);
+                if (resumed && autoRefresh) main.postDelayed(poll, 5000);
             });
         });
     }
@@ -553,7 +620,7 @@ public final class MainActivity extends Activity {
         uptime.setText(!online || since == 0 ? "—" : duration(System.currentTimeMillis() - since));
         updated.setText(checkedAt == 0 ? "检查中…"
                 : "最近检查 " + new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date(checkedAt))
-                        + " · 前台每 5 秒更新");
+                        + (autoRefresh ? " · 前台每 5 秒更新" : " · 自动刷新已暂停"));
 
         long applied = reachable ? health.optLong("config_revision", -1) : -1;
         boolean providerBlocked = reachable && health.optString("config_status").startsWith("provider-unavailable");
@@ -637,7 +704,7 @@ public final class MainActivity extends Activity {
         boolean changed = dirty();
         saveButton.setEnabled(!saving && changed);
         saveButton.setText(saving ? "正在保存…" : (changed ? "保存设置" : "已保存"));
-        dirtyLabel.setText(changed ? "有未保存的修改" : "与已保存设置一致");
+        dirtyLabel.setText(changed ? "有未保存的修改 · 保存后重启 QQ 生效" : "与已保存设置一致");
         dirtyCard.setVisibility(changed ? View.VISIBLE : View.GONE);
     }
 
@@ -728,7 +795,7 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
-        refresh();
+        if (autoRefresh || checkedAt == 0) refresh();
         refreshGuard();
     }
 
@@ -803,6 +870,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle out) {
         out.putInt("tab", selected);
+        out.putBoolean("autoRefresh", autoRefresh);
         out.putString("port", portInput.getText().toString());
         out.putString("token", tokenInput.getText().toString());
         for (int i = 0; i < toggles.length; i++) out.putBoolean("toggle" + i, toggles[i].isChecked());

@@ -25,6 +25,12 @@ final class ExpressiveProgress extends View {
         paint.setStrokeWidth(tokens.dp(3));
     }
 
+    @Override protected void onMeasure(int widthSpec, int heightSpec) {
+        // 装饰性波形没有内容高度；View 默认测量会在宽屏 ScrollView 中吃满剩余高度。
+        setMeasuredDimension(resolveSize(getSuggestedMinimumWidth(), widthSpec),
+                resolveSize(ui.dimen("size_progress_height"), heightSpec));
+    }
+
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         float middle = getHeight() / 2f;

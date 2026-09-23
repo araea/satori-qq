@@ -23,6 +23,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.Switch;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.List;
@@ -266,7 +267,7 @@ final class Widgets {
         view.setPadding(t.dp(16), t.dp(8), t.dp(12), t.dp(8));
         view.setSwitchPadding(t.dp(16));
         view.setSaveEnabled(false);
-        view.setBackground(t.shape(t.surfaceContainerLow, 20));
+        paint(view, t.shape(t.surfaceContainerLow, 20), 20, 20, t.primary, t.primary);
         GradientDrawable track = t.shape(t.surfaceContainerHighest, 16, t.outline, 2);
         track.setSize(t.dimen("size_switch_track_width"), t.dimen("size_switch_track_height"));
         view.setTrackDrawable(track);
@@ -289,6 +290,13 @@ final class Widgets {
         labelView.setLabelFor(input.getId());
         input.setSaveEnabled(false);
         input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | (secret
+                ? InputType.TYPE_TEXT_VARIATION_PASSWORD : InputType.TYPE_TEXT_VARIATION_NORMAL));
+        if (secret) {
+            input.setTransformationMethod(PasswordTransformationMethod.getInstance());
+            input.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+            input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        }
         input.setTextColor(t.onSurface);
         t.type(input, Tokens.BODY_LARGE);
         input.setHintTextColor(t.onSurfaceVariant);
@@ -348,34 +356,35 @@ final class Widgets {
      * 确认弹窗。破坏性操作用错误色按钮，并且默认焦点在「取消」上——
      * 破坏性动作不能是"顺手一点"就触发的那个（HIG）。
      */
-    void confirm(String title, String message, String confirmLabel, boolean destructive, Runnable onConfirm) {
+    Dialog confirm(String title, String message, String confirmLabel, boolean destructive, Runnable onConfirm) {
         Dialog dialog = new Dialog(t.activity);
         LinearLayout content = column();
         content.setPadding(t.dp(24), t.dp(24), t.dp(24), t.dp(12));
         content.setBackground(t.shape(t.surfaceContainerHigh, 28));
         content.addView(heading(title, Tokens.HEADLINE_SMALL, t.onSurface), stack(0));
         content.addView(body(message, t.onSurfaceVariant), stack(12));
-        LinearLayout actions = row();
-        actions.setGravity(Gravity.END);
         Button cancel = button("取消", TEXT);
         Button accept = button(confirmLabel, destructive ? DANGER : FILLED);
-        actions.addView(cancel, new LinearLayout.LayoutParams(-2, -2));
-        LinearLayout.LayoutParams acceptParams = new LinearLayout.LayoutParams(-2, -2);
-        acceptParams.leftMargin = t.dp(8);
-        actions.addView(accept, acceptParams);
-        content.addView(actions, stack(24));
-        dialog.setContentView(content);
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(t.shape(Color.TRANSPARENT, 28));
-            dialog.getWindow().setDimAmount(0.4f);
-        }
+        actionRow(content, java.util.Arrays.asList(cancel, accept), 24);
+        ScrollView scroll = new ScrollView(t.activity);
+        scroll.addView(content);
+        dialog.setContentView(scroll);
         cancel.setOnClickListener(v -> dialog.dismiss());
         accept.setOnClickListener(v -> {
             dialog.dismiss();
             onConfirm.run();
         });
         dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(t.shape(Color.TRANSPARENT, 28));
+            dialog.getWindow().setDimAmount(0.4f);
+            int width = Math.min(t.dimen("size_dialog_max"),
+                    t.activity.getResources().getDisplayMetrics().widthPixels - t.dp(32));
+            dialog.getWindow().setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+        cancel.setFocusableInTouchMode(true);
         cancel.requestFocus();
+        return dialog;
     }
 
     /** 供调用方在数据更新时填充的一行。 */
@@ -413,6 +422,9 @@ final class Widgets {
             failed = message != null;
             if (failed) {
                 input.setError(message);
+                input.requestFocus();
+                input.post(() -> input.requestRectangleOnScreen(
+                        new android.graphics.Rect(0, 0, input.getWidth(), input.getHeight()), false));
                 helper.setText(message);
                 helper.setTextColor(t.error);
             } else {

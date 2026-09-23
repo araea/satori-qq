@@ -721,6 +721,17 @@ public final class Convert {
                         raw.append("[转发消息]");
                         break;
                     }
+                    case 12: { // QQ wallet (红包/转账); display only, never expose payment credentials
+                        Object wallet = ref.get(e, "walletElement");
+                        if (wallet == null) break;
+                        Object sender = ref.get(wallet, "sender");
+                        Object receiver = ref.get(wallet, "receiver");
+                        String label = walletLabel(safeStr(wallet, "name"),
+                                safeStr(sender, "title"), safeStr(receiver, "title"));
+                        seg(segs, "text", "text", label);
+                        raw.append(label);
+                        break;
+                    }
                     case 11: { // market face
                         Object mf = ref.get(e, "marketFaceElement");
                         JSONObject d = new JSONObject();
@@ -1005,6 +1016,15 @@ public final class Convert {
         if (url == null || url.isEmpty()) return "";
         if (url.startsWith("http://") || url.startsWith("https://")) return url;
         return url.startsWith("/") ? "https://gchat.qpic.cn" + url : url;
+    }
+
+    /** Only a passive marker: wallet messages also include transfers and credentials/URLs.
+     * Never forward billNo, authkey, jumpUrl or the raw wallet object to Satori clients. */
+    static String walletLabel(String name, String senderTitle, String receiverTitle) {
+        return ((name != null && name.contains("红包"))
+                || (senderTitle != null && senderTitle.contains("红包"))
+                || (receiverTitle != null && receiverTitle.contains("红包")))
+                ? "[红包]" : "[QQ钱包消息]";
     }
 
     /** resid inside a com.tencent.multimsg ark JSON, or null if this is some other card. */

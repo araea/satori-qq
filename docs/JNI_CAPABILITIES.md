@@ -50,6 +50,13 @@
 | 已读标记 | `setMsgRead` `setSpecificMsgReadAndReport` `setAllC2CAndGroupMsgRead` | 静态。0.29.0 已接 `mark_read`/`mark_read_seq`/`mark_all_read`（0.17.0 撤下的 `mark_read` 由此回归） |
 | 图片 OCR | `IKernelSearchService.doOcrOnPicMsg` `searchOcrData` `getOcrDataByAIO` | 静态。0.29.0 已接 `image_ocr`/`ocr_data`/`ocr_by_aio`（参数语义未核，原样透传）。桌面端的 OCR 走 `NodeMiscService`，Android 走这条路 |
 
+QQ 9.3.65 的 `MsgElement.walletElement` / `WalletElement` / `WalletAio` 在 dex 中可见：
+可通过现有 JNI 入站消息回调**被动看到**钱包消息。只投递 `[红包]`（展示标题含「红包」）
+或 `[QQ钱包消息]` 文本标记；绝不输出 `authkey`、`billNo`、跳转 URL 或钱包对象。
+这是静态核验的展示能力，不是领取回执；发红包与领取红包涉及钱包业务流程、身份校验与
+服务端支付确认；目前没有已核验的纯内核收发路径，不能把 `WalletElement`
+当作发送参数绕过这些流程。未拿到真红包样本验证前，不做资金收发动作或自动领取。
+
 0.17.0 撤下的 `voice_to_text` 未记落点，重开前需先核内核入口。
 
 ### 群

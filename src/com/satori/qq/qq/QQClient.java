@@ -383,6 +383,14 @@ public final class QQClient {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getRecentContactService"); } catch (Throwable t) { return null; }
     }
+    public Object getSearchService() {
+        Object s = session; if (s == null) return null;
+        try { return ref.call(s, "getSearchService"); } catch (Throwable t) { return null; }
+    }
+    public Object getCollectionService() {
+        Object s = session; if (s == null) return null;
+        try { return ref.call(s, "getCollectionService"); } catch (Throwable t) { return null; }
+    }
 
     private synchronized void tryRegisterListener() {
         Object targetSession = session;

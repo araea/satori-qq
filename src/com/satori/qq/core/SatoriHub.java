@@ -711,13 +711,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }
     }
 
-    /** 0.17.0 收掉的 QQ 内核查询与本地会话状态接口。 */
+    /**
+     * 0.17.0 收掉的 QQ 内核查询与本地会话状态接口。
+     *
+     * <p>其中 `group_remark` `group_shut_up_list` `user_detail` `mark_read` 已经在 0.29.0
+     * 以扩展动作的形式回来（`ExtraSvc` 的注册表），所以从这份名单里去掉——名单只列
+     * **当前**仍然没有的动作，两者不能同时成立。
+     */
     private static final java.util.Set<String> REMOVED_0_17 = new java.util.HashSet<>(java.util.Arrays.asList(
             "group_overview", "group_extra", "member_info", "group_member_search", "recent_contacts",
-            "contact_search", "friend_relation", "group_remark", "profile_self", "group_honor",
-            "group_shut_up_list", "group_active", "group_anniversary", "group_detail",
-            "group_statistic", "user_detail", "voice_to_text", "message_context", "message_search",
-            "group_file", "get_resource", "mark_read", "session_top", "group_msg_mask",
+            "contact_search", "friend_relation", "profile_self", "group_honor",
+            "group_active", "group_anniversary", "group_detail",
+            "group_statistic", "voice_to_text", "message_context", "message_search",
+            "group_file", "get_resource", "session_top", "group_msg_mask",
             "qzone.publish", "offline"));
 
     /** 0.23.0 收掉的：这些在旧实现里靠通用 Java hook 才成立。 */
@@ -952,6 +958,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 });
             case "special-title":
             case "special_title":
+            case "set-group-special-title":
+            case "set_group_special_title":
                 return guarded("internal.special_title", () -> {
                     long g = params.optLong("guild_id", params.optLong("group_id", 0));
                     long u = parseId(params.optString("user_id", ""));
@@ -1039,10 +1047,47 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "version":
                 return versionInfo();
             default:
+                Object extension = dispatchExtension(name, params);
+                if (extension != null) return extension;
                 String gone = removedSince(name);
                 if (gone != null) throw new RemovedAction("internal/" + name, gone, removedWhy(name, gone));
                 throw new NotImplemented("internal/" + name);
         }
+    }
+
+    /**
+     * 扩展动作来自 {@link ExtraSvc} 的注册表（0.29.0 起）。写动作走 {@code guarded}，
+     * 与其余出站动作共用限频与熔断；读动作直接执行。
+     */
+    private Object dispatchExtension(String name, JSONObject p) throws Exception {
+        final ExtraSvc.Spec spec = ExtraSvc.find(name);
+        if (spec == null) return null;
+        if (spec.write) return guarded("internal." + spec.name, () -> runExtension(spec, p));
+        return runExtension(spec, p);
+    }
+
+    /**
+     * 内核回调的读把 code/msg 与 payload 一起回给客户端；同步读直接回自己的 JSON。
+     * 写动作只在成功时返回，失败一律抛 {@link ApiError}，交给调用方看文案。
+     */
+    private Object runExtension(ExtraSvc.Spec spec, JSONObject p) throws Exception {
+        Object r = spec.fn.run(qq.extra(), p);
+        if (r instanceof ExtraSvc.Result) {
+            ExtraSvc.Result kr = (ExtraSvc.Result) r;
+            JSONObject o = new JSONObject()
+                    .put("ok", kr.ok()).put("code", kr.code).put("msg", kr.msg);
+            if (kr.timedOut) o.put("timeout", true);
+            if (kr.payload != null) o.put("data", toJson(kr.payload));
+            if (spec.write && !kr.ok()) throw new ApiError(1500, spec.name + ": " + kr.describe());
+            return o;
+        }
+        if (r instanceof JSONObject) {
+            JSONObject o = (JSONObject) r;
+            if (spec.write && !o.optBoolean("ok", true))
+                throw new ApiError(1500, spec.name + ": " + o.optString("msg", "failed"));
+            return o;
+        }
+        return new JSONObject().put("ok", true).put("result", toJson(r));
     }
 
     /** Accept both direct internal/name URLs and the official adapter's login-scoped proxy URL. */
@@ -1210,46 +1255,55 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private JSONObject internalCapabilities() throws Exception {
-        // 目录与 dispatchInternal 的白名单一一对应。0.17.0 起这里不再列 QQ 的批量查询与
-        // 本地会话状态那些内核接口；客户端原来靠它探测能力，现在探测到的就是全部。
+        final JSONArray actions = new JSONArray()
+                .put("poke").put("invite").put("reaction_clear").put("reaction_summary")
+                .put("card").put("special_title").put("title_display")
+                .put("honor_display").put("sign").put("essence")
+                .put("dice").put("rps").put("get_forward")
+                .put("capabilities").put("compat")
+                .put("status").put("version")
+                .put("clean_cache").put("restart");
+        final JSONObject params = new JSONObject()
+                .put("poke", "channel_id|guild_id?, user_id (private:uin may supply target)")
+                .put("reaction_clear", "channel_id, message_id, emoji_id?; scope=self")
+                .put("reaction_summary", "channel_id, message_id; cached counts and self flags")
+                .put("invite", "guild_id, user_id")
+                .put("card", "guild_id, user_id?, card")
+                .put("special_title", "guild_id, user_id, title；别名 set_group_special_title")
+                .put("title_display", "guild_id, show?（省略 show/enable 则只读当前开关状态，不写）")
+                .put("honor_display", "guild_id, show?")
+                .put("sign", "guild_id")
+                .put("essence", "guild_id, message_id, remove?")
+                .put("dice", "channel_id|guild_id")
+                .put("rps", "channel_id|guild_id")
+                .put("get_forward", "id 或 native:<父消息 ID>，可选 channel_id")
+                .put("compat", "force?");
+        final JSONArray reads = new JSONArray()
+                .put("get_forward").put("reaction_summary").put("title_display")
+                .put("status").put("version").put("capabilities").put("compat");
+        final JSONArray writes = new JSONArray()
+                .put("poke").put("invite").put("card").put("reaction_clear")
+                .put("special_title").put("title_display").put("honor_display")
+                .put("sign").put("essence").put("dice").put("rps")
+                .put("clean_cache").put("restart");
+        // 0.29.0 起的扩展动作来自 ExtraSvc 的注册表，目录由它生成，不手抄第二份。
+        for (ExtraSvc.Spec spec : ExtraSvc.actions()) {
+            actions.put(spec.name);
+            params.put(spec.name, spec.params);
+            (spec.write ? writes : reads).put(spec.name);
+            for (String a : spec.alias) params.put(a, "别名，等价于 " + spec.name);
+        }
+        // 只列真正还实现得出来的（移除过的见下面的 removed）：列了却 404 会让客户端
+        // 白试一轮，acumen 的资料卡点赞就吃过这个亏。
         return new JSONObject()
                 .put("version", APP_VERSION)
-                // 只列真正还实现得出来的（移除过的见下面的 removed）：列了却 404 会让客户端
-                // 白试一轮，acumen 的资料卡点赞就吃过这个亏。
-                .put("actions", new JSONArray()
-                        .put("poke").put("invite").put("reaction_clear").put("reaction_summary")
-                        .put("card").put("special_title").put("title_display")
-                        .put("honor_display").put("sign").put("essence")
-                        .put("dice").put("rps").put("get_forward")
-                        .put("capabilities").put("compat")
-                        .put("status").put("version")
-                        .put("clean_cache").put("restart"))
+                .put("actions", actions)
                 .put("special_faces", new JSONObject()
                         .put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE)
                         .put("face_type", SPECIAL_FACE_TYPE))
-                .put("params", new JSONObject()
-                        .put("poke", "channel_id|guild_id?, user_id (private:uin may supply target)")
-                        .put("reaction_clear", "channel_id, message_id, emoji_id?; scope=self")
-                        .put("reaction_summary", "channel_id, message_id; cached counts and self flags")
-                        .put("invite", "guild_id, user_id")
-                        .put("card", "guild_id, user_id?, card")
-                        .put("special_title", "guild_id, user_id, title")
-                        .put("title_display", "guild_id, show?（省略 show/enable 则只读当前开关状态，不写）")
-                        .put("honor_display", "guild_id, show?")
-                        .put("sign", "guild_id")
-                        .put("essence", "guild_id, message_id, remove?")
-                        .put("dice", "channel_id|guild_id")
-                        .put("rps", "channel_id|guild_id")
-                        .put("get_forward", "id 或 native:<父消息 ID>，可选 channel_id")
-                        .put("compat", "force?"))
-                .put("read_actions", new JSONArray()
-                        .put("get_forward").put("reaction_summary").put("title_display")
-                        .put("status").put("version").put("capabilities").put("compat"))
-                .put("write_actions", new JSONArray()
-                        .put("poke").put("invite").put("card").put("reaction_clear")
-                        .put("special_title").put("title_display").put("honor_display")
-                        .put("sign").put("essence").put("dice").put("rps")
-                        .put("clean_cache").put("restart"))
+                .put("params", params)
+                .put("read_actions", reads)
+                .put("write_actions", writes)
                 // 曾经有过、现在没有的动作。客户端按这个把能力标成不可用，不必逐轮试。
                 .put("removed", removedActionsJson());
     }

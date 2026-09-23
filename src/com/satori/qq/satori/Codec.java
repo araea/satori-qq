@@ -241,10 +241,15 @@ public final class Codec {
                     break;
                 }
                 case "img":
-                case "image":
+                case "image": {
                     putSrc(d, el, "file");
+                    int subType = parseInt(first(el.attr("subType"), el.attr("sub-type"), el.attr("sub_type")));
+                    if (subType != 0) d.put("sub_type", subType);
+                    String summary = el.attr("summary");
+                    if (!summary.isEmpty()) d.put("summary", summary);
                     segs.put(seg("image", d));
                     break;
+                }
                 case "audio":
                 case "record":
                     putSrc(d, el, "file");
@@ -443,6 +448,11 @@ public final class Codec {
         if (d.has("height")) el.attrs.put("height", d.opt("height"));
         if (d.has("duration")) el.attrs.put("duration", d.opt("duration"));
         if (d.has("poster")) el.attrs.put("poster", d.opt("poster"));
+        // QQ picture flavour: sub-type 1 = sticker. Round-trips so a client can resend
+        // a stolen sticker as a sticker, not as a photo.
+        if (d.optInt("sub_type", 0) != 0) el.attrs.put("subType", d.optInt("sub_type"));
+        String summary = d.optString("summary", "");
+        if (!summary.isEmpty()) el.attrs.put("summary", summary);
         return el;
     }
 
@@ -699,6 +709,10 @@ public final class Codec {
 
     private static JSONObject seg(String type, JSONObject data) throws Exception {
         return new JSONObject().put("type", type).put("data", data);
+    }
+
+    private static int parseInt(String s) {
+        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return 0; }
     }
 
     private static String first(String... xs) {

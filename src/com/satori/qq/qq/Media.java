@@ -281,9 +281,20 @@ public final class Media {
      * real JPEG, never the original file.
      */
     public static Object buildPicElement(Ref ref, Object msgService, File file) {
+        return buildPicElement(ref, msgService, file, 0, "");
+    }
+
+    /** {@code subType} 1 sends the picture the way QQ sends a saved sticker (small, no
+     *  photo frame, 「[动画表情]」 in the chat list); 0 is an ordinary picture. */
+    public static Object buildPicElement(Ref ref, Object msgService, File file,
+                                         int subType, String summary) {
         try {
             File sendable = prepareSendableImage(file);
             Object elem = buildNtPicElement(ref, msgService, sendable);
+            if (elem != null && subType != 0) {
+                ref.set(elem, "picSubType", Integer.valueOf(subType));
+                ref.set(elem, "summary", stickerSummary(subType, summary));
+            }
             if (!validPicElement(ref, elem)) return null;
             return elem;
         } catch (Throwable t) {
@@ -293,6 +304,13 @@ public final class Media {
     }
 
 
+
+    /** What the chat list shows for a sticker-style picture. QQ's own stickers say
+     *  「[动画表情]」; an empty summary shows as 「[图片]」 there. */
+    static String stickerSummary(int subType, String summary) {
+        if (subType == 0) return summary == null ? "" : summary;
+        return summary == null || summary.isEmpty() ? "[动画表情]" : summary;
+    }
 
     /**
      * NT copy of original (downloadType=1) plus a real JPEG 720 thumb (downloadType=2).

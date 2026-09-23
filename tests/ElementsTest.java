@@ -10,6 +10,7 @@ public final class ElementsTest {
         atAndQuote();
         standardFallbacks();
         specialFaces();
+        stickerPictures();
         forwardNodes();
         channelIds();
         eventMapping();
@@ -86,6 +87,26 @@ public final class ElementsTest {
         JSONArray here = Codec.toSegments("<at type=\"here\"/>");
         eq("@在线成员", here.getJSONObject(0).getJSONObject("data").getString("text"),
                 "unsupported here mention falls back to text");
+    }
+
+    /** QQ sticker pictures (picSubType 1) keep that flag both ways, so a client can tell
+     *  a sticker from a screenshot and resend a stolen one as a sticker. */
+    private static void stickerPictures() throws Exception {
+        JSONArray inbound = new JSONArray().put(new JSONObject().put("type", "image")
+                .put("data", new JSONObject().put("file", "abc.image")
+                        .put("sub_type", 1).put("summary", "[动画表情]")));
+        String xml = Codec.fromSegments(inbound, "http://127.0.0.1:3001/v1/assets/");
+        check(xml.contains("sub-type=\"1\""), "sticker flag serialized: " + xml);
+        check(xml.contains("summary=\"[动画表情]\""), "sticker summary serialized: " + xml);
+        JSONObject back = Codec.toSegments(xml).getJSONObject(0).getJSONObject("data");
+        eq(1, back.optInt("sub_type"), "sticker flag parsed back");
+        eq("[动画表情]", back.optString("summary"), "sticker summary parsed back");
+        JSONObject plain = Codec.toSegments("<img src=\"https://a/b.png\"/>")
+                .getJSONObject(0).getJSONObject("data");
+        check(!plain.has("sub_type") && !plain.has("summary"), "ordinary picture stays plain");
+        String plainXml = Codec.fromSegments(new JSONArray().put(new JSONObject().put("type", "image")
+                .put("data", new JSONObject().put("file", "x.image"))), "");
+        check(!plainXml.contains("sub-type"), "no flag on ordinary picture: " + plainXml);
     }
 
     private static void forwardNodes() throws Exception {

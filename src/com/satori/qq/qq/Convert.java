@@ -276,7 +276,8 @@ public final class Convert {
         if (f == null) throw new IllegalStateException("image send failed: unresolved " + clipSpec(file, url));
         Object msgService = qq.getMsgService();
         if (msgService == null) throw new IllegalStateException("image send failed: no msgService");
-        Object elem = Media.buildPicElement(ref, msgService, f);
+        Object elem = Media.buildPicElement(ref, msgService, f,
+                d.optInt("sub_type", 0), d.optString("summary", ""));
         if (elem != null) out.add(elem);
         else throw new IllegalStateException("image send failed: buildPicElement " + f.getName());
     }
@@ -573,6 +574,10 @@ public final class Convert {
                         String file = md5.isEmpty() ? safeStr(p, "fileName") : (md5 + ".image");
                         String name = safeStr(p, "fileName");
                         long size = Ref.asLong(ref.get(p, "fileSize"));
+                        // picSubType 1 is a saved/custom sticker (「动画表情」); without it a
+                        // sticker and a screenshot arrive as the same bare <img>.
+                        int picSubType = ref.asInt(ref.get(p, "picSubType"));
+                        String summary = safeStr(p, "summary");
                         file = store.putResource("image", file, path, url, name, size);
                         attachResource(file, e, p, chatType, peerUid, msgId);
                         JSONObject d = new JSONObject();
@@ -581,6 +586,8 @@ public final class Convert {
                             if (!url.isEmpty()) d.put("url", url);
                             if (!path.isEmpty()) d.put("path", path);
                             if (size > 0) d.put("file_size", size);
+                            if (picSubType != 0) d.put("sub_type", picSubType);
+                            if (!summary.isEmpty()) d.put("summary", summary);
                         } catch (Exception ignore) {}
                         segObj(segs, "image", d);
                         raw.append("[CQ:image,file=").append(file).append("]");

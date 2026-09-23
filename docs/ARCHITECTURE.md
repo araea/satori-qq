@@ -64,7 +64,7 @@ QQ 进程从不加载它们。
 | 路径 | 鉴权 | 用途 |
 | --- | --- | --- |
 | `POST /v1/{resource}.{method}` | 需要（配了 token 时） | Satori 标准方法 |
-| `POST /v1/internal/{name}` | 需要 | 模块自身的 QQ 扩展简写，`name` 可用 `.` / `_` / `-` 分隔，也接受 camelCase。0.17.0 起只剩出站动作、合并转发解析与运维口，其余一律 404 |
+| `POST /v1/internal/{name}` | 需要 | 模块自身的 QQ 扩展简写，`name` 可用 `.` / `_` / `-` 分隔，也接受 camelCase。0.17.0 起只剩出站动作、合并转发解析与运维口；0.29.0 起 `dispatchInternal` 白名单没命中时转去 `ExtraSvc` 的动作注册表查表执行（见下），仍未命中的一律 404 |
 | `POST /v1/internal/{platform}/{selfId}/_api/{name}` | 需要 | `@satorijs/adapter-satori` 的 `bot.internal.*` 走法，参数按 `JsonForm` 编码，`Satori-Pagination: true` 时回 `{data, …}` |
 | `GET /v1/internal/{platform}/{selfId}/_tmp/{id}` | 免 | `upload.create` 返回的 `internal:` 资源回落地址 |
 | `GET /v1/assets/{id}` | 免 | 无令牌可达的本地图片资源（Koishi 渲染 `<img>` 用） |
@@ -81,6 +81,12 @@ QQ 进程从不加载它们。
 不回调的入口一律不进模块，否则调用方要等满 15 秒超时。新增动作前先核三件事：类名在不在
 QQ 的 dex 类索引里、参数结构体的字段名（对单个类做反编译核对）、入口会不会回调
 （现场探测）。`packet` 只在协议需要直接发包时使用，不与内核服务混用。
+
+0.29.0 起 `ExtraSvc` 另外维护一份动作注册表（`ExtraSvc.Spec`）：名字、别名、是否写、参数说明、
+调用体各登记一次，`SatoriHub.dispatchExtension` 按名字查表执行，写动作复用 `guarded` 的限频与
+熔断，`internalCapabilities` 的目录、参数、读写分类也从这份表生成，不再手抄第二份。这套机制本身
+不改变上一段的调用规则——一样要主 Looper 投递、一样按回调形状而不是方法名匹配、一样不回调就不接——
+只是把「登记一个动作」和「登记文档」合并成一步。
 
 ## 消息链路
 

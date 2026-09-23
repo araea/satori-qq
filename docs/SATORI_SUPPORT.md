@@ -90,21 +90,44 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 
 0.17.0 起只剩「会真的产生一次出站动作」的动作与合并转发的解析路径：原先那批按号问 QQ 要资料的
 内核接口（群详情、群统计、成员搜索、收藏表情、未读、群文件、QQ 空间…）整批撤掉，它们是最不像真人
-客户端的一类请求。0.23.0 又去掉 `like`（点赞走 WUP，本实现只走 JNI）。移除过的动作一律 404，
+客户端的一类请求。0.23.0 又去掉 `like`（点赞走 WUP，本实现只走 JNI）。0.29.0 起这批按号查资料的
+内核接口经 `ExtraSvc` 的动作注册表重新接回一部分（见下方「扩展动作注册表」一节），产品口径没变，
+只是当年撤下时还没有这套统一登记、限频与熔断都接得上的机制。仍然移除、没有回来的动作一律 404，
 `capabilities` 的 `removed` 段写明版本与原因。
 
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
 | 互动 | `poke` / `invite` | 戳一戳、邀请入群；poke 支持 `channel_id`（群号或 `private:QQ号`） |
 | 表态 | `reaction_summary` / `reaction_clear` | 消息的回应计数与自己是否回应；仅清除自己的回应 |
-| 群成员 | `special_title` / `card` | 设置群头衔或群名片 |
-| 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关 |
+| 群成员 | `special_title` / `card` | 设置群头衔或群名片；`special_title` 只设头衔，不带显示开关参数 |
+| 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关；不带 `show`/`enable` 时只读当前状态，不写 |
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳（超级表情） |
 | 消息读取 | `get_forward` | 读取合并转发。`id` 是转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取 |
 | 能力查询 | `capabilities` / `help` / `compat` | 扩展动作与参数清单；内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
 | 状态查询 | `status` / `version` | 健康状态或版本 |
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程、清理临时文件 |
+
+### 扩展动作注册表（0.29.0 起）
+
+上表是长期维护、逐条手写文档的核心动作；`ExtraSvc` 另有一份代码里登记的注册表，`capabilities`
+的目录、参数说明、读写分类都从它生成，这里只按域列出方法名，完整参数以 `capabilities`/`help`
+的返回为准：
+
+| 域 | 方法（部分带别名，见 `capabilities`） |
+| --- | --- |
+| 消息 | `typing`、`mark_read`、`mark_read_seq`、`mark_all_read`、`message_abstract`、`click_inline_keyboard`、`reedit_recall`、`image_ocr`、`ocr_data`、`ocr_by_aio` |
+| 群管理 | `group_shut_up_list`、`group_join_link`、`group_essence_list`、`group_essence_latest`、`group_essence_cached`、`group_remark`、`group_quit`、`group_join`、`group_join_info`、`group_join_noverify`、`group_bulletin_publish`、`group_bulletin_delete`、`group_bulletin_upload_pic`、`group_bulletin_get`、`group_ext_list`、`group_member_level`、`group_identity_list`、`group_member_card`、`group_profile_card` |
+| 群文件 | `group_file_count`、`group_file_folder_create`、`group_file_folder_delete`、`group_file_folder_rename`、`group_file_delete`、`group_file_rename`、`group_file_move`、`group_file_trans` |
+| 头衔/身份原语 | `identity_title_info`、`identity_level_info`——`setIdentityTitleInfo`/`setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
+| 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add` |
+| 其它 | `online_file_list`、`online_file_refuse`、`temp_chat_info` |
+
+`group_remark`、`group_shut_up_list`、`user_detail`、`mark_read` 是 0.17.0 撤下后以扩展动作的
+形式回归。这批动作均走反射内核服务这一条 JNI 通道，不发新的原始封包；批量查询与管理类的具体
+参数结构体字段名随 QQ 版本变化的风险比核心动作更高，调用前建议先用 `capabilities` 核对，是否
+接进日常调用按「客户端真的会调」取舍（见 [`JNI_CAPABILITIES.md`](JNI_CAPABILITIES.md) 的
+「搭话场景的取舍」一节）。
 
 完整参数用 `capabilities` 或 `help` 查询，返回里的 `params` 字段逐条列出参数。扩展动作返回的内核原始
 数据由反射导出，QQ 增删字段时跟着变而不是静默丢字段。

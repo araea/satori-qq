@@ -28,7 +28,8 @@
 
 ## 已经用上
 
-[`SATORI_SUPPORT.md`](SATORI_SUPPORT.md) 列了当前暴露的 31 个标准方法与 19 个扩展动作，这里不重复。
+[`SATORI_SUPPORT.md`](SATORI_SUPPORT.md) 列了当前暴露的 31 个标准方法、19 个核心扩展动作，以及
+0.29.0 起 `ExtraSvc` 注册表新增的约 50 个扩展动作，这里不重复。
 
 ## 可达、未上线
 
@@ -38,16 +39,16 @@
 
 | 功能 | 落点 | 证据 |
 | --- | --- | --- |
-| 点击行内键盘按钮 | `IKernelMsgService.clickInlineKeyboardButton` | 静态。入站 elementType 17 现在只投递按钮标签 |
-| 输入状态（正在输入） | `IKernelMsgService.sendShowInputStatusReq` | 静态 |
-| 收藏表情增删改查 | `fetchFavEmojiList` `addFavEmoji` `deleteFavEmoji` `modifyFavEmojiDesc` | 静态，属 0.17.0 撤下的那批内核查询 |
-| 消息摘要与关键词搜索 | `getMsgAbstract` `queryMsgsAndAbstractsWithFilter`；`IKernelSearchService.searchMsgWithKeywords` | 静态，0.17.0 撤下过 `message_search` |
-| 重新编辑撤回的消息 | `IKernelMsgService.reeditRecallMsg` | 静态 |
+| 点击行内键盘按钮 | `IKernelMsgService.clickInlineKeyboardButton` | 静态。0.29.0 已接 `click_inline_keyboard`。入站 elementType 17 现在只投递按钮标签 |
+| 输入状态（正在输入） | `IKernelMsgService.sendShowInputStatusReq` | 静态。0.29.0 已接 `typing` |
+| 收藏表情增删改查 | `fetchFavEmojiList` `addFavEmoji` `deleteFavEmoji` `modifyFavEmojiDesc` | 静态，属 0.17.0 撤下的那批内核查询，未接回 |
+| 消息摘要与关键词搜索 | `getMsgAbstract` `queryMsgsAndAbstractsWithFilter`；`IKernelSearchService.searchMsgWithKeywords` | 静态。0.29.0 已接 `message_abstract`（仅 `getMsgAbstract` 一条），`queryMsgsAndAbstractsWithFilter`/`searchMsgWithKeywords`（0.17.0 撤下的 `message_search`）仍未接 |
+| 重新编辑撤回的消息 | `IKernelMsgService.reeditRecallMsg` | 静态。0.29.0 已接 `reedit_recall` |
 | 带评论的转发 | `forwardMsgWithComment` `multiForwardMsgWithComment` | 静态。本端已用普通转发 |
-| 在线文件（在线文件夹） | `getOnlineFileMsgs` `getAllOnlineFileMsgs` `refuseReceiveOnlineFileMsg` | 静态 |
-| 群临时会话 | `prepareTempChat` `getTempChatInfo` | 静态 |
-| 已读标记 | `setMsgRead` `setSpecificMsgReadAndReport` `setAllC2CAndGroupMsgRead` | 静态，0.17.0 撤下过 `mark_read` |
-| 图片 OCR | `IKernelSearchService.doOcrOnPicMsg` `searchOcrData` `getOcrDataByAIO` | 静态。桌面端的 OCR 走 `NodeMiscService`，Android 走这条路 |
+| 在线文件（在线文件夹） | `getOnlineFileMsgs` `getAllOnlineFileMsgs` `refuseReceiveOnlineFileMsg` | 静态。0.29.0 已接 `online_file_list`（仅 `getOnlineFileMsgs`）/`online_file_refuse` |
+| 群临时会话 | `prepareTempChat` `getTempChatInfo` | 静态。0.29.0 已接 `temp_chat_info`（仅 `getTempChatInfo`，`prepareTempChat` 未接） |
+| 已读标记 | `setMsgRead` `setSpecificMsgReadAndReport` `setAllC2CAndGroupMsgRead` | 静态。0.29.0 已接 `mark_read`/`mark_read_seq`/`mark_all_read`（0.17.0 撤下的 `mark_read` 由此回归） |
+| 图片 OCR | `IKernelSearchService.doOcrOnPicMsg` `searchOcrData` `getOcrDataByAIO` | 静态。0.29.0 已接 `image_ocr`/`ocr_data`/`ocr_by_aio`（参数语义未核，原样透传）。桌面端的 OCR 走 `NodeMiscService`，Android 走这条路 |
 
 0.17.0 撤下的 `voice_to_text` 未记落点，重开前需先核内核入口。
 
@@ -55,19 +56,19 @@
 
 | 功能 | 落点 | 证据 |
 | --- | --- | --- |
-| 群公告收发 | `publishGroupBulletin` `deleteGroupBulletin` `getGroupBulletinList` `uploadGroupBulletinPic` | 静态，写入口要 pskey |
-| 群精华读取 | `fetchGroupEssenceList` `getGroupLatestEssenceList` `queryCachedEssenceMsg` | 静态。本端已用写侧的 `essence` |
-| 群禁言名单 | `getGroupShutUpMemberList` | 静态，0.17.0 撤下过 `group_shut_up_list` |
-| 群邀请链接 | `getJoinGroupLink` | 静态 |
-| 群扩展信息 | `getGroupExtList` `getGroupExt0xEF0Info` `modifyGroupExtInfoV2` | 静态，0.17.0 撤下过 `group_extra` |
-| 退群 | `quitGroup` `quitGroupV2` | 静态 |
-| 群备注 | `modifyGroupRemark` | 静态，0.17.0 撤下过 `group_remark` |
+| 群公告收发 | `publishGroupBulletin` `deleteGroupBulletin` `getGroupBulletinList` `uploadGroupBulletinPic` | 静态。0.29.0 已接 `group_bulletin_publish`/`group_bulletin_delete`/`group_bulletin_get`/`group_bulletin_upload_pic`，写入口要 pskey |
+| 群精华读取 | `fetchGroupEssenceList` `getGroupLatestEssenceList` `queryCachedEssenceMsg` | 静态。0.29.0 已接 `group_essence_list`/`group_essence_latest`/`group_essence_cached`。本端已用写侧的 `essence` |
+| 群禁言名单 | `getGroupShutUpMemberList` | 静态。0.29.0 已接 `group_shut_up_list`（0.17.0 撤下后回归） |
+| 群邀请链接 | `getJoinGroupLink` | 静态。0.29.0 已接 `group_join_link` |
+| 群扩展信息 | `getGroupExtList` `getGroupExt0xEF0Info` `modifyGroupExtInfoV2` | 静态。0.29.0 已接只读的 `group_ext_list`（0.17.0 撤下过 `group_extra`），写侧 `modifyGroupExtInfoV2` 未接 |
+| 退群 | `quitGroup` `quitGroupV2` | 静态。0.29.0 已接 `group_quit` |
+| 群备注 | `modifyGroupRemark` | 静态。0.29.0 已接 `group_remark`（0.17.0 撤下后回归） |
 | 转让群 | `transferGroup` `getTransferableGroupList` | 静态 |
-| 加入群 | `joinGroup` `reqToJoinGroup` `getGroupInfoForJoinGroup` `getJoinGroupNoVerifyFlag` | 静态 |
+| 加入群 | `joinGroup` `reqToJoinGroup` `getGroupInfoForJoinGroup` `getJoinGroupNoVerifyFlag` | 静态。0.29.0 已接 `group_join`/`group_join_info`/`group_join_noverify` |
 | 群打卡 | `IKernelGroupSchoolService.checkInGroupSchoolTask` `getGroupSchoolTaskCheckInInfo` `publishGroupSchoolTask` | 静态。本端 `sign` 走 OIDB `0xEB7_1` |
-| 群成员等级与身份 | `getGroupMemberLevelInfo` `getIdentityList` | 静态。本端已用 `setIdentityTitleInfo` / `setGroupIdentityLevelInfo` |
-| 群成员名片与扩展 | `getGroupMemberCardInfo` `getGroupProfileCardInfo` | 静态。本端已用 `getMemberExtInfo` |
-| 群文件写 | `IKernelRichMediaService.createGroupFolder` `deleteGroupFile` `deleteGroupFolder` `renameGroupFile` `renameGroupFolder` `moveGroupFile` `transGroupFile` `searchGroupFile` `batchGetGroupFileCount` | 静态。OIDB `0x6D6` / `0x6D7` / `0x6D8` 在 [`reference/PACKETS.md`](../reference/PACKETS.md) 有留档，0.17.0 撤下过 `group_file` |
+| 群成员等级与身份 | `getGroupMemberLevelInfo` `getIdentityList` | 静态读侧。0.29.0 已接 `group_member_level`/`group_identity_list`。写侧本端已用 `setIdentityTitleInfo` / `setGroupIdentityLevelInfo`（`title_display` 内部调用，另有单次调用原语 `identity_title_info`/`identity_level_info`） |
+| 群成员名片与扩展 | `getGroupMemberCardInfo` `getGroupProfileCardInfo` | 静态。0.29.0 已接 `group_member_card`/`group_profile_card`。本端已用 `getMemberExtInfo` |
+| 群文件写 | `IKernelRichMediaService.createGroupFolder` `deleteGroupFile` `deleteGroupFolder` `renameGroupFile` `renameGroupFolder` `moveGroupFile` `transGroupFile` `searchGroupFile` `batchGetGroupFileCount` | 静态。0.29.0 已接 `group_file_count`/`group_file_folder_create`/`group_file_folder_delete`/`group_file_folder_rename`/`group_file_delete`/`group_file_rename`/`group_file_move`/`group_file_trans`（`searchGroupFile` 未接）。OIDB `0x6D6` / `0x6D7` / `0x6D8` 在 [`reference/PACKETS.md`](../reference/PACKETS.md) 有留档，0.17.0 撤下过 `group_file` |
 | 群相册 | `IKernelAlbumService.getQunFeeds` `doQunLike` `doQunComment` `deleteQunFeed` `quoteToQzone` | 静态 |
 | 群作业与组队 | `getGroupHomeworkDetailInfo` `getTeamUpDetail` `getGroupGameStatDetail` | 静态 |
 
@@ -75,14 +76,14 @@
 
 | 功能 | 落点 | 证据 |
 | --- | --- | --- |
-| 长昵称 | `IKernelProfileService.setLongNick` | 静态 |
+| 长昵称 | `IKernelProfileService.setLongNick` | 静态。0.29.0 已接 `long_nick` |
 | 昵称、头像、性别、生日 | `setNickName` `setHeader` `setGander` `setBirthday` | 静态 |
 | 自身状态与签名 | `getSelfStatus` `getStatus` `getStatusInfo` `startStatusPolling` | 静态 |
-| 用户详细资料 | `getUserDetailInfo` `getUserDetailInfoByUin` `getUserSimpleInfo` `getCoreAndBaseInfo` | 静态，0.17.0 撤下过 `user_detail` |
-| 好友备注 | `IKernelBuddyService.setBuddyRemark` `getBuddyRemark` | 静态，0.17.0 撤下过 `friend_relation` |
-| 好友分组 | `addCategory` `delCategory` `renameCategory` `setBuddyCategory` `setBatchBuddyCategory` `resortCategory` | 静态 |
+| 用户详细资料 | `getUserDetailInfo` `getUserDetailInfoByUin` `getUserSimpleInfo` `getCoreAndBaseInfo` | 静态。0.29.0 已接 `user_detail`/`user_detail_by_uin`/`user_simple_info`（0.17.0 撤下的 `user_detail` 由此回归；`getCoreAndBaseInfo` 未接） |
+| 好友备注 | `IKernelBuddyService.setBuddyRemark` `getBuddyRemark` | 静态。0.29.0 已接 `friend_remark_get`/`friend_remark_set`，是 0.17.0 撤下的 `friend_relation`（更大范围的好友关系批量查询）里独立出来的这一小块，不算整体回归 |
+| 好友分组 | `addCategory` `delCategory` `renameCategory` `setBuddyCategory` `setBatchBuddyCategory` `resortCategory` | 静态。0.29.0 已接 `friend_category_add`/`friend_category_delete`/`friend_category_rename`/`friend_category_set`/`friend_category_set_batch`（`resortCategory` 未接） |
 | 可疑好友申请 | `getDoubtBuddyReq` `approvalDoubtBuddyReq` `delDoubtBuddyReq` | 静态 |
-| 主动加好友 | `reqToAddFriends` | 静态 |
+| 主动加好友 | `reqToAddFriends` | 静态。0.29.0 已接 `friend_add` |
 | 加好友黑名单 | `getAddFriendBlockedList` `clearAddFriendBlockedList` | 静态 |
 | 特别关心 | `SpecialCareSetting` 结构体 | 静态 |
 

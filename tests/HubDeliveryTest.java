@@ -74,9 +74,21 @@ public final class HubDeliveryTest {
         for (int i=1; i<history.size(); i++) check(history.get(i).getJSONObject("body").getLong("sn") == all.get(i+100).getJSONObject("body").getLong("sn"), "original replay sequence");
         hub.onWsText(resumed, "{\"op\":3}");
         check(packets(replay).size() == 101, "repeated identify cannot replay again");
+        // Pending requests have a connection-local event but consume the same global sn.
+        // A broadcast immediately after it must be newer; otherwise the client's
+        // monotonic cursor would discard that broadcast.
+        JSONObject pending = com.satori.qq.core.Notices.friendRequest(10001, 10, 20002, "hi", "123");
+        call(hub, "sendSatori", new Class[]{WsConn.class, JSONObject.class}, resumed, pending);
+        call(hub, "emitSatoriEvent", new Class[]{JSONObject.class},
+                new JSONObject().put("sn", 0).put("type", "internal"));
+        List<JSONObject> afterPending = packets(replay);
+        check(afterPending.size() == 103, "pending request and broadcast delivered");
+        check(afterPending.get(102).getJSONObject("body").getLong("sn") >
+                afterPending.get(101).getJSONObject("body").getLong("sn"), "pending request precedes broadcast");
         call(hub, "emitLoginUpdated", new Class[]{});
         ByteArrayOutputStream noLoginReplay = new ByteArrayOutputStream();
-        hub.onWsText(connection(noLoginReplay), new JSONObject().put("op",3).put("body",new JSONObject().put("sn",sn)).toString());
+        hub.onWsText(connection(noLoginReplay), new JSONObject().put("op",3).put("body",new JSONObject().put("sn",
+                afterPending.get(102).getJSONObject("body").getLong("sn"))).toString());
         check(packets(noLoginReplay).size() == 1, "login events never replay");
         try {
             call(hub, "dispatch", new Class[]{String.class, JSONObject.class}, "reaction.clear", new JSONObject());

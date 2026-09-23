@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.29.0";
+    public static final String APP_VERSION = "0.29.1";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -4283,11 +4283,17 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private void sendSatori(WsConn conn, JSONObject obEvent) {
-        try {
-            JSONObject body = Codec.toSatoriEvent(obEvent, loginSlim(), eventSn.incrementAndGet(), assetBase());
-            if (body == null) return;
-            conn.send(opJson(OP_EVENT, body).toString());
-        } catch (Throwable ignore) {}
+        // Pending requests are connection-local (not replayable), but their sequence numbers
+        // share the same clock as broadcast events. Allocate only after conversion and under
+        // the delivery lock, otherwise a concurrent broadcast can arrive with a smaller sn.
+        synchronized (eventEmitLock) {
+            try {
+                JSONObject body = Codec.toSatoriEvent(obEvent, loginSlim(), 0, assetBase());
+                if (body == null) return;
+                body.put("sn", eventSn.incrementAndGet());
+                conn.send(opJson(OP_EVENT, body).toString());
+            } catch (Throwable t) { L.e("pending request delivery", t); }
+        }
     }
 
     private void rememberGroup(long groupId, String name) {

@@ -194,17 +194,16 @@ NapCat 在桌面 QQNT 上实现约 160 个动作，通道与本文四条同源�
 
 给号主自己的机器人（同类用法见 acumen 的 `oai` 与 `ambient`）做「更像真人」的补强，上面这些能力值得用的很少。
 
-功能面已经够用。acumen 现在调用 `poke` `card` `dice` `rps` `essence` `sign` `reaction_clear` `reaction_summary` `invite`，加上标准方法与事件，覆盖了它的全部调用面。缺口在「像人」这一层。
+功能面已经够用。acumen 的 ambient 已有真实调用路径：发言前按配置可选调用 `typing`，并可通过 `mark_read` 标记当前群已读；互动仍走 `poke`、`reaction_summary`、标准回应，以及现有 `card`、`dice`、`rps`、`essence`、`sign` 等动作。群内素材复用已有消息元素与上传路径，不需要 QQ 收藏表情库接口。
 
-这一层值得用的：
-
-| 能力 | 落点 | 用法 |
+| ambient 相关能力 | 落点 | 现状与取舍 |
 | --- | --- | --- |
-| 输入状态 | `IKernelMsgService.sendShowInputStatusReq` | 出话前先发一次，客户端显示「正在输入」 |
-| 自身在线状态 | `IKernelProfileService.setStatus` `getSelfStatus` | 作息感：离开、忙碌、睡觉中 |
-| 自定义在线状态 | `CustomOnlineStatusManager` | 带图标与文案的状态 |
-| 已读 | `IKernelMsgService.setMsgRead` | 真人点开消息 |
-| 收藏表情 | `IKernelMsgService.fetchFavEmojiList` `addFavEmoji` | 用自己存的表情包 |
+| 输入状态 | `IKernelMsgService.sendShowInputStatusReq` → `typing` | 已注册并由 acumen 可选调用；默认关闭，发言前 best-effort 调用，不改变消息发送结果。QQ 客户端显示与过期行为仍须目标版本真机确认 |
+| 标记当前群已读 | `IKernelMsgService.setMsgRead` → `mark_read` | 已注册，可由 ambient 的 `mark_read` 动作显式使用；不自动「全部已读」 |
+| 发送表情包 | 消息元素、媒体上传 | 已有能力；ambient 素材走自身表情包存储与常规发送，不需要 `fetchFavEmojiList` / `addFavEmoji` |
+| 作息在线状态 | `IKernelProfileService.setStatus` / `CustomOnlineStatusManager` | 接口可达，但 ambient 没有明确的状态变更需求；不自动模拟作息或修改账号在线状态 |
+
+因此本端对 ambient 有用的 JNI 面已由 `typing` 与 `mark_read` 覆盖；`mark_read_seq` 和 `mark_all_read` 保留为显式扩展，不由 ambient 自动触发。消息搜索、群成员批查、OCR 等接口不构成搭话所需能力，不建议为此增加调用面。
 
 其余不推荐，分三类。
 

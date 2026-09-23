@@ -189,6 +189,40 @@ NapCat 在桌面 QQNT 上实现约 160 个动作，通道与本文四条同源�
 - 频道：Android 会话上只有 `getGuildMsgService`，没有 `getGuildService`。
 - NapCat 的 `WebApi` 层（群打卡列表、空间、部分群管理）是带 cookies 的 HTTP 调用，不是内核通道。它需要先取 clientkey / pskey，取不到就不可用。
 
+## 搭话场景的取舍
+
+给号主自己的机器人（同类用法见 acumen 的 `oai` 与 `ambient`）做「更像真人」的补强，上面这些能力值得用的很少。
+
+功能面已经够用。acumen 现在调用 `poke` `card` `dice` `rps` `essence` `sign` `reaction_clear` `reaction_summary` `invite`，加上标准方法与事件，覆盖了它的全部调用面。缺口在「像人」这一层。
+
+这一层值得用的：
+
+| 能力 | 落点 | 用法 |
+| --- | --- | --- |
+| 输入状态 | `IKernelMsgService.sendShowInputStatusReq` | 出话前先发一次，客户端显示「正在输入」 |
+| 自身在线状态 | `IKernelProfileService.setStatus` `getSelfStatus` | 作息感：离开、忙碌、睡觉中 |
+| 自定义在线状态 | `CustomOnlineStatusManager` | 带图标与文案的状态 |
+| 已读 | `IKernelMsgService.setMsgRead` | 真人点开消息 |
+| 收藏表情 | `IKernelMsgService.fetchFavEmojiList` `addFavEmoji` | 用自己存的表情包 |
+
+其余不推荐，分三类。
+
+- 工具型：群公告、群文件、群相册、群作业、收藏夹、闪传、文件助手、精准清缓存、设置项读写。这些是人在操作客户端时才会用的入口，与搭话无关。
+- 批量查询型：群列表、成员列表、成员搜索、用户详细资料、群统计、群荣誉、消息搜索。真人不会按号把群和成员拉一遍。0.17.0 撤下的正是这一批。
+- 管理型：转让群、退群、禁言名单、群链接、审批。多数还要群内身份，动作本身也显眼。
+
+### 全部做成内部接口可行吗
+
+技术上可行：接口在 dex 里，接回调用即可。不推荐，理由三条。
+
+**与目标相反。** 让人设像真人的能力，恰好是模仿正常客户端行为的那几项，即输入状态、在线状态、已读。批量查询型不是「更完整」，是「更像脚本」。全部实现会把这两类放进同一个能力面。
+
+**风控面。** 0.17.0 撤下这批不是能力问题，是这个号在 QQ 服务端眼里像什么的问题。号主与机器人共用同一个 QQ 号，代价由号主承担。
+
+**验证面。** 每个动作在 QQ 升级后都要重新核（类名、字段名、回调）。`compat` 的静态检查覆盖不到「入口还会不会回调」，只有 `observed` 能，而没人调的动作不会进 `observed`。没人调的动作只剩成本。
+
+协议实现暴露多少，按「客户端真的会调」定，不按「内核里有什么」定。客户端判能力看 `capabilities`。
+
 ## 会话服务入口
 
 `IQQNTWrapperSession` 上的 54 个 `get*()` 入口，自本机 QQ 9.3.65 反编译。

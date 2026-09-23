@@ -16,6 +16,7 @@ public final class SatoriListTest {
         pagedSlicesAndTokens();
         tokenWalksToTheEnd();
         blankTokenStartsAtZero();
+        invalidTokensFailInsteadOfRestarting();
         muteAcceptsBothShapes();
         System.out.println("SatoriListTest OK");
     }
@@ -41,6 +42,18 @@ public final class SatoriListTest {
     private static void blankTokenStartsAtZero() throws Exception {
         JSONObject out = SatoriHub.pagedList(rows(5), new JSONObject().put("limit", 3), 200);
         eq(0, out.getJSONArray("data").optJSONObject(0).optInt("i"), "slice starts at zero");
+    }
+
+    private static void invalidTokensFailInsteadOfRestarting() throws Exception {
+        for (String token : new String[] {"oops", "-1", "1.5", "9223372036854775808"}) {
+            try {
+                SatoriHub.pagedList(rows(5), new JSONObject().put("next", token), 200);
+                throw new AssertionError("invalid cursor accepted: " + token);
+            } catch (RuntimeException expected) {
+                if (!expected.getMessage().contains("invalid next token"))
+                    throw new AssertionError("unexpected cursor error: " + expected);
+            }
+        }
     }
 
     private static void muteAcceptsBothShapes() throws Exception {

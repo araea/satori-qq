@@ -22,7 +22,7 @@
 - `POST /v1/meta` 取元信息；`GET /v1/proxy/{url}` 代理本机资源
 - 分页：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、
   `friend.list` 返回 `{data, next?}`；不带 `next`/`limit` 时一次给完，带时按偏移分页，`next` 是下一次的
-  偏移量。`message.list` 双向分页，见下表
+  偏移量；非法令牌返回 400，不会悄悄从头重放。`message.list` 双向分页，见下表
 - `platform` 为 `red`，`adapter` 为 `satori-qq`；群频道的 `channel.id` 与 `guild.id` 均为群号、
   `channel.type=0`，私聊频道为 `private:{uin}`、`channel.type=1`
 - 消息 ID 用 QQ NT `msgId` 字符串，历史游标用 `message_seq`；`<quote>` 与 `[CQ:reply]` 的 `id` 可直接

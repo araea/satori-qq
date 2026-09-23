@@ -1792,8 +1792,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (limit <= 0) limit = defaultLimit;
         long offset = 0;
         if (!token.isEmpty()) {
-            offset = parseLongQuiet(token);
-            if (offset < 0) throw new ApiError(1400, "invalid next token: " + token);
+            // A malformed cursor must fail rather than quietly restart at page zero: clients
+            // following `next` would otherwise repeat rows (or loop forever).
+            if (!token.matches("[0-9]+")) throw new ApiError(1400, "invalid next token: " + token);
+            try { offset = Long.parseLong(token); }
+            catch (NumberFormatException e) { throw new ApiError(1400, "invalid next token: " + token); }
         }
         JSONArray slice = new JSONArray();
         for (long i = offset; i < data.length() && slice.length() < limit; i++)

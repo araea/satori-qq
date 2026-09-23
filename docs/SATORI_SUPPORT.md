@@ -159,13 +159,12 @@ QQ 内核的 `elementType` 与本端收到的元素一一对应（2026-09-16 在
 | 8 | 灰条（撤回、打卡、成员变动、戳一戳…） | 通知事件 |
 | 10 | `ArkElement`（小程序卡、分享卡、音乐卡，合并转发的原生卡也在这一类） | `json`；`com.tencent.multimsg` 转 `<message forward>` |
 | 13 / 16 | 长消息 / 合并转发 | `<message forward>` |
-| 14 | `MarkdownElement` | **未适配，整条丢弃** |
-| 17 | `InlineKeyboardElement` | **未适配，整条丢弃** |
+| 14 | `MarkdownElement` | 正文以文本投递，保留 Markdown 标记 |
+| 17 | `InlineKeyboardElement` | 按钮标签以只读文本投递，不暴露回调数据 |
 
-14 与 17 是 QQ 官方机器人与 AI 助手发的那种「markdown 卡片 + 按钮」，一条消息里成对出现。现在只在
-logcat 落一行 `unparsed elementType=`，消息本身不进事件流。要确认某个类型里装的是什么，把
-`Convert.parseElements` 的 default 分支换成打印 `String.valueOf(e)`——`MsgElement.toString()` 会把
-非空的子元素一起打出来。
+14 与 17 是 QQ 官方机器人与 AI 助手发的「Markdown 卡片 + 按钮」。正文及按钮标签现在作为
+`text` 元素进入事件流；按钮只供阅读，本端没有点击 QQ 官方机器人的回调能力。
+字段结构依据 QQ NT `MsgElement` 类型；这一路径的单元测试已通过，仍待收到真实的官方机器人卡片做现场复核。
 
 ### 卡片载荷
 

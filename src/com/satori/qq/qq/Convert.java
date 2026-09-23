@@ -725,6 +725,27 @@ public final class Convert {
                         raw.append("[商城表情]");
                         break;
                     }
+                    case 14: { // QQ official bot markdown card
+                        String content = RichText.markdown(ref, e);
+                        if (!content.isEmpty()) {
+                            seg(segs, "text", "text", content);
+                            raw.append(content);
+                        }
+                        break;
+                    }
+                    case 17: { // read-only inline keyboard labels
+                        String labels = RichText.keyboard(ref, e);
+                        if (!labels.isEmpty()) {
+                            if (raw.length() > 0 && raw.charAt(raw.length() - 1) != '\n') {
+                                seg(segs, "text", "text", "\n");
+                                raw.append('\n');
+                            }
+                            String text = "按钮: " + labels;
+                            seg(segs, "text", "text", text);
+                            raw.append(text);
+                        }
+                        break;
+                    }
                     default:
                         L.e("unparsed elementType=" + et, null);
                         break;

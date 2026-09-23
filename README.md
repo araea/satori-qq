@@ -20,7 +20,7 @@ QQ 会检测运行环境：一旦发现 LSPosed 注入或 hook 引擎（LSPlant/
 2. 把 `SatoriQQ-module.zip` 作为 Magisk / KernelSU 模块刷入，或解包后放到
    `/data/adb/modules/satori_qq/`（`module.prop`、`zn_modules.txt`、`zygisk/arm64-v8a.so`）
 3. 重启手机（Zygisk 模块只在启动时注册）
-4. 打开「知弦」，在状态页确认 QQ、本机服务与客户端已连上
+4. 打开「知弦」，在首页的「连接链路」确认 QQ 账号、本机服务与客户端都已就绪
 
 ## 连接
 
@@ -39,8 +39,8 @@ plugins:
 
 ## 配置
 
-管理页可改端口、令牌、状态通知、唤醒锁、Wi-Fi 保持与手动消息投递，保存后在 QQ 下次启动时生效，并覆盖
-文件同名项；「使用文件配置」解除覆盖。其余项只认文件。
+知弦的「连接设置」可改端口、令牌、状态通知、唤醒锁、Wi-Fi 保持与手动消息投递，保存后在 QQ 下次启动时生效
+（有 Root 时可直接点「重新启动 QQ」），并覆盖文件同名项；「改用文件配置」解除覆盖。其余项只认文件。
 
 文件按顺序读取，取第一份有效配置（完整示例见 [`satori-qq.sample.json`](satori-qq.sample.json)）：
 

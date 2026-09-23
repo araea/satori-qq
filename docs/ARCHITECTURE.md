@@ -8,7 +8,7 @@
 | --- | --- |
 | `Main` | 只在 QQ 主进程启动 Satori 服务，其他进程不加载模块代码 |
 | `Cfg` / `L` | 文件配置与日志，详细日志默认关闭 |
-| `ui` | 知弦管理页与两个快捷设置磁贴，在应用自身进程运行，前台只读探测状态 |
+| `ui` | 知弦管理界面与两个快捷设置磁贴，在应用自身进程运行，前台只读探测状态 |
 | `guard` | App → root `qqguard` 的调用桥：只拼写死的 `su -c` 命令，不接收任何界面/网络输入 |
 | `control` | 私有设置、UID 校验的 Provider、启动时配置同步 |
 | `net` | HTTP 与事件 WebSocket，只监听 `127.0.0.1` |
@@ -31,31 +31,31 @@ HTTP 服务、消息监听与保活只在主进程运行，APK 里不含 native 
 `/healthz.config_revision` 是此进程读到的配置修订号，用来区分已保存与已生效。
 
 运行快照写进 `noBackupFilesDir/zhixian-control.json`，用 AtomicFile 原子更新；不用 SharedPreferences，
-它可能被模块框架重定向。状态页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。
+它可能被模块框架重定向。首页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。
 诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口。
 
-## 管理页界面
+## 管理界面
 
-界面分三层，依赖单向：**令牌**（`res/values/tokens.xml` 颜色、`res/values/dimens.xml` 间距/形状/字级/
-动效/断点，`ui/Tokens.java` 是唯一读口）→ **组件**（`ui/Widgets.java`）→ **页面**（`ui/MainActivity.java`
-与 `ui/Responsive.java`）。页面里不出现字面色值与像素；`tests/DesignTokenTest` 会拒绝界面代码里的
-`#RRGGBB` 字面量。编译期没有 R 类（`build.sh` 先 javac 再 aapt），令牌按名字查资源，所以每个名字都
-在合约测试里核过存在性。
+界面分三层，依赖单向：**令牌**（`res/values/tokens.xml` 颜色、`res/values/dimens.xml` 其余尺度）→
+**组件**（`ui/Tokens` 唯一读口，`Btn` `Item` `Field` `Notice` `Dialogs` `Snackbar` `TopBar` `Toggle`
+`LoadingIndicator`，形状 `Shape`、图标 `Icon`、弹簧 `Spring`、响应式 `Layout`）→ **页面**（`HomePage`、
+`SettingsPage`，由 `MainActivity` 组织导航、数据与系统集成）。`ui/Status` 是纯函数的状态推导，只依赖
+org.json，JVM 上可测。设计取舍、令牌取值与组件契约见 [`DESIGN.md`](DESIGN.md)。
 
-多个设计体系各有分工，冲突按 `平台原生 > 可用性/无障碍 > 产品一致性 > M3E > Carbon > Miuix` 裁决：
-M3E 给颜色角色、字级、形状刻度与按压表达；HIG 给"一屏一个主操作、破坏性操作先确认且默认焦点在取消、
-即时反馈、尊重减弱动态效果"；Carbon 给响应式断点与栅格、复杂信息用定义列表（诊断页的「运行数据」）；
-Miuix 只精修视觉（更大圆角、靠表面明度分层、默认不画分隔线）。**不跟随系统动态取色**：它无法为任意
-壁纸保证 4.5:1，也会与固定源色的应用图标分叉，而可用性与产品一致性都排在 M3E 之前。
+`build.sh` 先用 aapt 生成 `R.java` 再 javac：令牌经 `R` 引用，名字拼错在编译期失败。视图不解析 XML 布局，
+直接构造；设置页首次进入时才建。关键视图的稳定 id 在 `res/values/ids.xml`，真机验收按 id 查找。
 
-无障碍按 WCAG 2.2 AA 落地：颜色角色两两组合 ≥ 4.5:1、非文字边界 ≥ 3:1（合约测试逐对算，深浅两套）；
-可点控件不小于 48dp；状态文字标成 `polite` live region；可聚焦控件有可见焦点环，输入框用描边换色；
-图标一律装饰性，语义由 contentDescription 承担；字号用 sp，200% 字号 + 320dp 宽下不截断、不横向滚动。
+线程：设置文件读写与 `/healthz` 探测走一条工作线程，`su` 走另一条（最长 20 秒超时，不能堵住保存与刷新），
+主线程不做 I/O。只在前台轮询；root 状态只在回到前台与操作后读取。
 
-界面改动的验收分两段：`./test.sh` 跑令牌合约（对比度、角色齐整、刻度单调、触达下限）；
-`bash tests/ui/run.sh` 装机跑真机设计冒烟（令牌解析、交互契约、焦点环、可触达面积、状态 live region、
-大字号重排），并把 light / dark / large-text-320dp 各三页的排版写进
-`build/design-tests/design-review/`。真机用例只读写知弦自己的配置文件，跑完还原。
+「重新启动 QQ」（`GuardCommand.relaunchQQ`）不能直接 `am force-stop`：看守把系统的强行停止当作用户意愿，
+会自己转入 PAUSED。所以它先记下模式、保活中就先暂停，关掉 QQ 并用 `monkey` 重新打开，再恢复保活。
+
+APK 里的 dex 包含全部代码；注入 QQ 的那份（内嵌进 `libsatori.so`）去掉了 `ui/`、`guard/` 与 `R`，
+QQ 进程从不加载它们。
+
+验收分两段：`./test.sh` 跑令牌合约、状态推导与界面契约；`bash tests/ui/run.sh` 装机跑真机验收并把深浅色、
+大字号、宽屏的长页截图写进 `build/design-tests/design-review/`。真机用例只读写知弦自己的设置文件，跑完还原。
 
 ## HTTP 路由
 
@@ -180,7 +180,7 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'
 字段名，以及哪些入口开始或停止回调（看 `internal/compat` 的 `observed`）。
 
 ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接有限重试后回退原文件配置，并通过 `config_status`
-暴露不含敏感信息的原因；管理页给出系统设置里的路径（应用 → 关联启动）。引导线程在 QQ 主线程初始化
+暴露不含敏感信息的原因；设置页给出系统设置里的路径（应用 → 关联启动）。引导线程在 QQ 主线程初始化
 任务之后启动，不阻塞 Application 创建。
 
 ## 构建与测试
@@ -195,7 +195,7 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 ```
 
 产物为 `build/SatoriQQ.apk` 与 `build/SatoriQQ-module.zip`。模块不含第三方原生依赖：`native/satori.cpp`
-用 Termux 的 clang 编译，dex 用 `.incbin` 内嵌进 `.so`，NEEDED 只有 `liblog/libdl/libm/libc`。
+用 Termux 的 clang 编译，不含界面代码的 dex 用 `.incbin` 内嵌进 `.so`，NEEDED 只有 `liblog/libdl/libm/libc`。
 
 `test.sh` 跑 JVM 单测（含 `Reflect` 反射层的语义测试）。真机巡检脚本要求 QQ 已上线，且显式给测试群；
 破坏性用例（改群名、全员禁言）再加 `SATORI_DESTRUCTIVE=1`：
@@ -209,7 +209,7 @@ node tests/ws-poke.js                # 戳一戳：出站 OIDB、入站灰条事
 node tests/media-live-probe.js voice # 语音条与文件能不能真发出去，见脚本头注释
 ```
 
-管理页界面另有一套真机验收（需要已装机与 root，出深浅色与大字号截图）：
+管理界面另有一套真机验收（需要已装机与 root，出深浅色、大字号与宽屏截图）：
 
 ```bash
 bash tests/ui/run.sh

@@ -48,7 +48,7 @@ Android 快捷设置里另有两个磁贴：
 - **知弦守护**：单击切换 ON/OFF。关闭默认只暂停保护，**不关 QQ**。
 - **停止保活并关闭 QQ**：先暂停 watchdog，再强停 QQ。
 
-磁贴与管理页首页的「常驻守护」卡片都通过 `su -c` 调用 root 侧的 `qqguard status --json`，
+磁贴与知弦首页的「常驻守护」分组都通过 `su -c` 调用 root 侧的 `qqguard status --json`，
 显示的是看守的真实状态。
 
 ## 状态模型

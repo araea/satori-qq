@@ -1,102 +1,96 @@
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.xml.parsers.DocumentBuilderFactory;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 
 /**
- * 管理页的跨文件契约：实例状态的键、以及真机用例要用反射摸的那些名字。
+ * 管理界面的跨文件契约：实例状态的键、稳定视图 id，以及真机用例依赖的少数几个名字。
  *
- * <p>为什么值得单独钉：这两个契约都在**编译期看不出来**的地方。
+ * <p>这些都在编译期看不出来的地方：
  * <ul>
- *   <li>{@code onSaveInstanceState} 写的键与 {@code onCreate} 读的键分散在同一个文件的两头，
- *       改一处漏一处不会编译失败，表现是"重建后草稿没了"；</li>
- *   <li>真机设计冒烟（{@code tests/ui/DesignSmoke.java}）靠反射按名字取字段与方法，
- *       重命名 {@code MainActivity} 的字段或方法不会让 {@code ./test.sh} 变红，
- *       只会在装机跑 {@code tests/ui/run.sh} 时报一个难读的 NoSuchFieldException。
- *       这里把那份名单固定下来，改名时两边一起改。</li>
+ *   <li>实例状态写在 {@code onSaveInstanceState} / {@code SettingsPage.saveState}，读在
+ *       {@code onCreate} / {@code restoreState}，改一处漏一处的表现是"旋转后草稿没了"；</li>
+ *   <li>真机验收（{@code tests/ui/DesignSmoke.java}）按 {@code res/values/ids.xml} 里的 id 找视图，
+ *       id 被删或改名只会在装机时才炸；</li>
+ *   <li>注入测试数据用到的字段与方法按名字反射，这里把名单固定下来，改名时两边一起改。</li>
  * </ul>
  */
 public final class UiContractTest {
-
-    /** 真机用例反射摸的主页字段。改名要同时改 tests/ui/DesignSmoke.java。 */
-    private static final String[] FIELDS_INSPECTED_BY_DEVICE_TEST = {
-            "ui", "layout", "pages", "navigation", "navLabels", "navIcons", "selected",
-            "resumed", "probing", "saving", "revealing", "health", "checkedAt",
-            "hero", "stateTitle", "stateDetail", "clients", "uptime", "endpoint", "updated",
-            "configurationStatus", "configurationCard", "versionStatus", "diagnostics",
-            "diagnosticHint", "diagnosticRows", "dirtyLabel", "dirtyCard", "sourceLabel",
-            "guardState", "refreshButton", "saveButton", "revealButton", "reportButton",
-            "shareButton", "portInput", "tokenInput", "toggles", "progress",
-    };
-
-    /** 真机用例反射调用的私有方法：名字 + 形参个数。 */
-    private static final String[][] METHODS_CALLED_BY_DEVICE_TEST = {
-            {"switchTab", "2"}, {"save", "1"}, {"reveal", "1"}, {"updateState", "0"},
-    };
+    private static final String[] ACTIVITY_FIELDS = {"model", "home", "settings", "snackbar", "page", "resumed", "main", "poll", "guardAt", "twoPane"};
+    private static final String[][] ACTIVITY_METHODS = {{"renderAll", "0"}, {"showPage", "2"}, {"ensureSettings", "0"}};
+    private static final String[] MODEL_FIELDS = {"health", "checked", "probing", "guard", "guardBusy", "port"};
 
     public static void main(String[] args) throws Exception {
-        String source = read(new File(repoRoot(), "src/com/satori/qq/ui/MainActivity.java"));
+        File root = repoRoot();
+        File ui = new File(root, "src/com/satori/qq/ui");
+        String activity = read(new File(ui, "MainActivity.java"));
+        String settings = read(new File(ui, "SettingsPage.java"));
+        String home = read(new File(ui, "HomePage.java"));
+        String smoke = read(new File(root, "tests/ui/DesignSmoke.java"));
 
-        // 1. 实例状态的键必须两头都在：写的每个键都要被读回来，读的每个键都要被写出去。
-        Set<String> written = keys(source, "out\\.put(?:String|Int|Boolean|Long|Bundle)\\s*\\(\\s*\"([A-Za-z0-9_]+)\"");
-        Set<String> read = new TreeSet<>();
-        Matcher reader = Pattern.compile("state\\.(?:get|opt)(?:String|Int|Boolean|Long)\\s*\\(\\s*\"([A-Za-z0-9_]+)\"")
-                .matcher(source);
-        while (reader.find()) read.add(reader.group(1));
-        // 两个页签之外的滚动位置是按 pages 长度循环写/读的，键名是拼出来的
-        // （"scroll" + i），字面量正则抓不到，两边一起放进来。
-        written.add("scroll:");
-        read.add("scroll:");
-        check(!written.isEmpty(), "没解析到 onSaveInstanceState 写入的键，先看正则是否还匹配");
-        Set<String> writtenOnly = new TreeSet<>(written);
-        writtenOnly.removeAll(read);
-        Set<String> readOnly = new TreeSet<>(read);
+        // 1. 实例状态：写出去的键都要读回来，读的键都要有人写。
+        String both = activity + settings;
+        Set<String> written = keys(both, "out\\.put(?:String|Int|Boolean|Long|BooleanArray)\\s*\\(\\s*\"([a-z_]+)\"");
+        Set<String> readBack = keys(both, "state\\.(?:get(?:String|Int|Boolean|Long|BooleanArray)|containsKey)\\s*\\(\\s*\"([a-z_]+)\"");
+        check(!written.isEmpty(), "没解析到写入实例状态的键，先看正则是否还匹配");
+        Set<String> writeOnly = new TreeSet<>(written);
+        writeOnly.removeAll(readBack);
+        Set<String> readOnly = new TreeSet<>(readBack);
         readOnly.removeAll(written);
-        check(writtenOnly.isEmpty() && readOnly.isEmpty(),
-                "实例状态的键对不上：只写不读 " + writtenOnly + "，只读不写 " + readOnly);
+        check(writeOnly.isEmpty() && readOnly.isEmpty(), "实例状态的键对不上：只写不读 " + writeOnly + "，只读不写 " + readOnly);
 
-        // 2. 真机用例按名字摸的字段都要在。
-        Set<String> declared = declaredFields(source);
-        for (String name : FIELDS_INSPECTED_BY_DEVICE_TEST) {
-            check(declared.contains(name),
-                    "真机用例要读字段 " + name + "，MainActivity 里没有——改名时两边一起改");
+        // 2. 稳定 id：ids.xml 里的每个都被界面用上，界面与真机用例用到的每个都在 ids.xml 里。
+        Set<String> declared = new TreeSet<>();
+        NodeList items = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+                .parse(new File(root, "res/values/ids.xml")).getElementsByTagName("item");
+        for (int i = 0; i < items.getLength(); i++) declared.add(((Element) items.item(i)).getAttribute("name"));
+        Set<String> used = new TreeSet<>();
+        File[] sources = ui.listFiles();
+        if (sources != null) {
+            for (File source : sources) {
+                if (source.getName().endsWith(".java")) used.addAll(keys(read(source), "R\\.id\\.([a-z_]+)"));
+            }
         }
+        Set<String> undeclared = new TreeSet<>(used);
+        undeclared.removeAll(declared);
+        check(undeclared.isEmpty(), "界面用了 ids.xml 里没有的 id：" + undeclared);
+        Set<String> stale = new TreeSet<>(declared);
+        stale.removeAll(used);
+        check(stale.isEmpty(), "ids.xml 里有没人用的 id：" + stale);
+        Set<String> probed = keys(smoke, "id\\(\"([a-z_]+)\"\\)");
+        check(!probed.isEmpty(), "没解析到真机用例查找的 id");
+        Set<String> missing = new TreeSet<>(probed);
+        missing.removeAll(declared);
+        check(missing.isEmpty(), "真机用例要找的 id 不存在：" + missing);
 
-        // 3. 真机用例反射调用的方法都要在，且形参个数一致。
-        for (String[] method : METHODS_CALLED_BY_DEVICE_TEST) {
-            check(declaresMethod(source, method[0], Integer.parseInt(method[1])),
-                    "真机用例要调 " + method[0] + "(" + method[1] + " 个参数)，签名对不上");
+        // 3. 真机用例反射摸的名字。
+        for (String field : ACTIVITY_FIELDS) {
+            check(Pattern.compile("private [A-Za-z.<>\\[\\]]+[^;(]*\\b" + field + "\\b[^;(]*;").matcher(activity).find()
+                            || Pattern.compile("private final [A-Za-z.<>]+ " + field + " =").matcher(activity).find(),
+                    "MainActivity 缺字段 " + field + "（tests/ui/DesignSmoke 按名字读）");
+        }
+        for (String[] method : ACTIVITY_METHODS) {
+            check(declaresMethod(activity, method[0], Integer.parseInt(method[1])),
+                    "MainActivity 缺方法 " + method[0] + "(" + method[1] + " 个参数)");
+        }
+        for (String field : MODEL_FIELDS) {
+            check(Pattern.compile("\\n\\s+[A-Za-z.]+ " + field + "\\b[^;]*;").matcher(home).find(),
+                    "HomePage.Model 缺字段 " + field);
         }
 
         System.out.println("UiContractTest passed (" + written.size() + " 个实例状态键，"
-                + FIELDS_INSPECTED_BY_DEVICE_TEST.length + " 个字段，"
-                + METHODS_CALLED_BY_DEVICE_TEST.length + " 个方法)");
-    }
-
-    /** 只取形如 {@code private TextView stateTitle, stateDetail;} / {@code private int selected;} 的声明。 */
-    private static Set<String> declaredFields(String source) {
-        Set<String> names = new LinkedHashSet<>();
-        Matcher matcher = Pattern.compile(
-                "^\\s*(?:private|protected|public)\\s+(?:final\\s+)?[A-Za-z0-9_$.<>\\[\\], ]+?\\s+"
-                        + "([A-Za-z0-9_$]+(?:\\s*,\\s*[A-Za-z0-9_$]+)*)\\s*(?:=[^;]*)?;",
-                Pattern.MULTILINE).matcher(source);
-        while (matcher.find()) {
-            for (String name : matcher.group(1).split(",")) {
-                names.add(name.trim());
-            }
-        }
-        return names;
+                + declared.size() + " 个稳定 id，" + probed.size() + " 个被真机用例使用)");
     }
 
     private static boolean declaresMethod(String source, String name, int parameters) {
-        Matcher matcher = Pattern.compile("(?:private|protected|public|static|final|\\s)+"
-                + Pattern.quote(name) + "\\s*\\(([^)]*)\\)").matcher(source);
+        Matcher matcher = Pattern.compile("(?:private|protected|public|static|final|\\s)+[A-Za-z<>\\[\\]]+\\s+"
+                + Pattern.quote(name) + "\\s*\\(([^)]*)\\)\\s*\\{").matcher(source);
         while (matcher.find()) {
             String arguments = matcher.group(1).trim();
             int count = arguments.isEmpty() ? 0 : arguments.split(",").length;
@@ -122,10 +116,8 @@ public final class UiContractTest {
     }
 
     private static File repoRoot() {
-        List<File> candidates = new ArrayList<>();
         for (File directory = new File(System.getProperty("user.dir")); directory != null;
              directory = directory.getParentFile()) {
-            candidates.add(directory);
             if (new File(directory, "AndroidManifest.xml").isFile()) return directory;
         }
         throw new IllegalStateException("run from the satori-qq tree");

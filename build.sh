@@ -22,9 +22,14 @@ APK_UNSIGNED=$OUT/satori-qq.unsigned.apk
 APK=$OUT/SatoriQQ.apk
 MODULE=$OUT/module
 
+echo "== 0. aapt R.java =="
+# 资源令牌经生成的 R 类引用：名字拼错在编译期失败，而不是在真机上按名字查不到。
+rm -rf $OUT/gen && mkdir -p $OUT/gen
+$AAPT package -f -m -J $OUT/gen -M $R/AndroidManifest.xml -I $FRAMEWORK -S $R/res
+
 echo "== 1. javac =="
 rm -rf $OUT/classes && mkdir -p $OUT/classes
-find $R/src -name '*.java' > $OUT/sources.txt
+find $R/src $OUT/gen -name '*.java' > $OUT/sources.txt
 javac -classpath $ANDROID_JAR:$R/libs/json.jar -source 8 -target 8 -encoding UTF-8 \
   -nowarn -d $OUT/classes @$OUT/sources.txt
 echo "   compiled $(find $OUT/classes -name '*.class' | wc -l) classes"
@@ -35,6 +40,14 @@ find $OUT/classes -name '*.class' > $OUT/classlist.txt
 java -cp $R8 com.android.tools.r8.D8 --release --min-api 26 \
   --lib $ANDROID_JAR --output $OUT/dex @$OUT/classlist.txt
 echo "   dex: $(ls -la $OUT/dex/classes.dex | awk '{print $5}') bytes"
+# 注入 QQ 的那份 dex 不带管理界面（ui/）、root 桥（guard/）与资源 R：QQ 进程从不加载它们，
+# 带进去只会白占 QQ 的内存与 .so 体积。
+rm -rf $OUT/module-dex && mkdir -p $OUT/module-dex
+grep -v -e '/com/satori/qq/ui/' -e '/com/satori/qq/guard/' -e '/com/satori/qq/R\.class$' -e '/com/satori/qq/R\$' \
+  $OUT/classlist.txt > $OUT/module-classlist.txt
+java -cp $R8 com.android.tools.r8.D8 --release --min-api 26 \
+  --lib $ANDROID_JAR --output $OUT/module-dex @$OUT/module-classlist.txt
+echo "   module dex: $(ls -la $OUT/module-dex/classes.dex | awk '{print $5}') bytes"
 
 echo "== 2c. libsatori.so（纯 JNI 层，无第三方依赖） =="
 # dex 内嵌进 .so 的 rodata：注入后进程已在应用沙箱里，读不了 /data/adb/modules 下的文件。
@@ -42,7 +55,7 @@ cat > $OUT/dex_blob.S <<EOF
 	.section .rodata
 	.global satori_dex_start
 satori_dex_start:
-	.incbin "$OUT/dex/classes.dex"
+	.incbin "$OUT/module-dex/classes.dex"
 	.global satori_dex_end
 satori_dex_end:
 EOF

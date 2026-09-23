@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# 真机跑知弦管理页的设计冒烟：交互契约、令牌解析、可触达面积、焦点环、状态 live region，
-# 以及深浅色/大字号下的实际排版截图。
+# 真机跑知弦管理界面的验收：交互契约、无障碍语义、可触达面积、焦点环、重排，
+# 以及深浅色、大字号、宽屏下的长页截图。
 #
 # 前置：已安装 com.satori.qq（跑一次 build.sh + 装机），本机有 root（su）。
 # 不碰 QQ 服务：测试只读写知弦自己的配置文件，跑完还原。
@@ -10,7 +10,7 @@ OUT="$ROOT/build/design-tests"
 SHOTS="$OUT/design-review"
 PKG=com.satori.qq.test
 APP=com.satori.qq
-NAMES="light-0 light-1 light-2 dark-0 dark-1 dark-2 large-0 large-1 large-2 wide-0 wide-1 wide-2"
+NAMES="light-home light-settings dark-home dark-home-offline dark-settings large-home large-settings wide"
 
 bash "$ROOT/tests/ui/build.sh"
 

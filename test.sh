@@ -22,9 +22,15 @@ if [ ! -f "$JSON_JAR" ]; then
   echo "missing $JSON_JAR — see the download line at the top of this script" >&2
   exit 1
 fi
+echo "== 0. aapt R.java =="
+AAPT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools/aapt
+rm -rf "$OUT/test-gen" && mkdir -p "$OUT/test-gen"
+"$AAPT" package -f -m -J "$OUT/test-gen" -M "$R/AndroidManifest.xml" \
+  -I /system/framework/framework-res.apk -S "$R/res"
+
 echo "== 1. javac =="
 rm -rf "$CLASSES" && mkdir -p "$CLASSES"
-find "$R/src" "$R/tests" -name '*.java' > "$OUT/test-sources.txt"
+find "$R/src" "$R/tests" "$OUT/test-gen" -name '*.java' -not -path "$R/tests/ui/*" > "$OUT/test-sources.txt"
 javac -classpath "$JSON_JAR:$ANDROID_JAR" -encoding UTF-8 -nowarn \
   -d "$CLASSES" @"$OUT/test-sources.txt"
 echo "   compiled $(find "$CLASSES" -name '*.class' | wc -l) classes"

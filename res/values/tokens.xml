@@ -70,6 +70,9 @@
     <color name="md_outline">#79747E</color>
     <color name="md_outline_variant">#CAC4D0</color>
 
+    <!-- 状态层：on_surface 10%，供系统控件（文本选择手柄、默认波纹）使用 -->
+    <color name="md_state_layer">#1A1D1B20</color>
+
     <color name="md_scrim">#000000</color>
     <color name="md_shadow">#000000</color>
 </resources>

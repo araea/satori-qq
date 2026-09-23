@@ -1,26 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  知弦主题（深色）。结构与浅色主题逐项对应，只换令牌与系统栏图标明暗。
--->
+<!-- 知弦主题（深色）。与浅色主题逐项对应，只换父主题与系统栏图标明暗。 -->
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
-        <item name="android:fontFamily">sans</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
-
-        <item name="android:colorAccent">@color/md_primary</item>
-        <item name="android:colorBackground">@color/md_surface</item>
-        <item name="android:windowBackground">@color/md_surface</item>
-        <item name="android:statusBarColor">@color/md_surface</item>
-        <item name="android:navigationBarColor">@color/md_surface</item>
-        <item name="android:navigationBarDividerColor">@color/md_surface</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
-        <item name="android:enforceNavigationBarContrast">false</item>
 
+        <item name="android:colorAccent">@color/md_primary</item>
+        <item name="android:colorControlActivated">@color/md_primary</item>
+        <item name="android:colorControlHighlight">@color/md_state_layer</item>
+        <item name="android:colorBackground">@color/md_surface</item>
+        <item name="android:windowBackground">@color/md_surface</item>
         <item name="android:textColorPrimary">@color/md_on_surface</item>
         <item name="android:textColorSecondary">@color/md_on_surface_variant</item>
         <item name="android:textColorHint">@color/md_on_surface_variant</item>
+        <item name="android:textColorHighlight">@color/md_primary_container</item>
     </style>
 </resources>

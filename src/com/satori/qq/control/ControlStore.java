@@ -35,14 +35,22 @@ public final class ControlStore {
     public String overrides() { JSONObject value = snapshot().optJSONObject("overrides"); return value == null ? "" : value.toString(); }
     public long revision() { return snapshot().optLong("revision", 0); }
     public JSONObject runtime() { JSONObject value = snapshot().optJSONObject("runtime"); return value == null ? new JSONObject() : value; }
-    public JSONObject editable() {
+    public JSONObject editable() { return editable(snapshot()); }
+    /** 页面可编辑的那份设置：管理页保存过的优先，其次是 QQ 回报的运行配置，最后是默认值。 */
+    public static JSONObject editable(JSONObject all) {
         try {
-            JSONObject all = snapshot(); JSONObject overrides = all.optJSONObject("overrides");
+            JSONObject overrides = all.optJSONObject("overrides");
             if (overrides != null) return overrides;
             JSONObject runtime = all.optJSONObject("runtime");
             JSONObject config = runtime == null ? null : runtime.optJSONObject("config");
             return config == null ? ManagedConfig.snapshot(new Cfg()) : config;
         } catch (Exception error) { throw new IllegalStateException("配置读取失败", error); }
+    }
+    /** 运行中的服务实际监听的端口（QQ 回报的运行配置），没有回报时用默认端口。 */
+    public static int runtimePort(JSONObject all) {
+        JSONObject runtime = all.optJSONObject("runtime");
+        JSONObject config = runtime == null ? null : runtime.optJSONObject("config");
+        return config == null ? 3001 : config.optInt("port", 3001);
     }
     public void save(JSONObject value) throws Exception {
         JSONObject clean = ManagedConfig.validate(value);

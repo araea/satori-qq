@@ -1,41 +1,46 @@
 package com.satori.qq.test;
 
 import android.app.Activity;
+import android.app.Dialog;
 import android.app.Instrumentation;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
-import android.graphics.drawable.Drawable;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.LayerDrawable;
-import android.graphics.drawable.RippleDrawable;
-import android.net.Uri;
 import android.os.Bundle;
+import android.text.Layout;
+import android.text.method.PasswordTransformationMethod;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.json.JSONObject;
 
 /**
- * 知弦管理页的真机验收：交互契约、设计体系与无障碍。从不发消息、不重启 QQ。
+ * 知弦管理界面的真机验收：交互契约、无障碍语义与实际排版。从不发消息、不重启 QQ，
+ * 只读写知弦自己的设置文件，跑完还原。
  *
- * <p>这里验的是"JVM 上验不了"的部分：令牌在运行期按名字解析得出来、可触达面积真的够大、
- * 焦点指示真的装上了、放大字号与 320dp 下文字不被截断、状态消息真的标成了 live region，
- * 以及深浅色与大字号下的实际排版（存成截图供人工复核）。
+ * <p>验 JVM 上验不了的部分：可触达面积真的 ≥ 48dp；键盘焦点真的画出了焦点环；读屏角色与状态；
+ * 状态文字是 live region；放大到 200% 字号、320dp 宽时文字不被截断；900dp 宽时两栏并列；
+ * 表单校验、保存、草稿保留、令牌隐私与危险操作确认。深浅色、大字号、宽屏的长页截图留给人工复核。
  *
- * <p>跑法见 {@code tests/ui/run.sh}；构建见 {@code tests/ui/build.sh}。
+ * <p>视图按 {@code res/values/ids.xml} 的稳定 id 查找；注入测试数据时按名字反射的那几个字段与方法
+ * 由 {@code tests/UiContractTest} 在 JVM 上钉住。
  */
 public final class DesignSmoke extends Instrumentation {
-    /** 与 res/values/dimens.xml 的 md_size_touch_target 对齐；这里写死是因为测试包不共享资源。 */
-    private static final int TOUCH_TARGET_DP = 48;
+    private static final String APP = "com.satori.qq";
+    private static final int TOUCH_DP = 48;
 
     private boolean dark;
     private float fontScale = 1;
@@ -69,560 +74,430 @@ public final class DesignSmoke extends Instrumentation {
             settingsFile = new File(getTargetContext().getNoBackupFilesDir(), "zhixian-control.json");
             hadOriginal = settingsFile.exists();
             original = hadOriginal ? java.nio.file.Files.readAllBytes(settingsFile.toPath()) : new byte[0];
-            JSONObject config = new JSONObject().put("port", 3001).put("token", "")
-                    .put("status_notification", true).put("wake_lock_auto", true)
-                    .put("wifi_sustain", true).put("manual_self_messages", true);
-            writeSettings(config, 0, true);
+            writeSettings();
+
             launch();
-            // 先说清楚为什么分两段：instrumentation 刚起来时启动的那个实例，整棵视图树一直是
-            // 0×0（消息队列空了、窗口却还没走到第一次 traversal，requestLayout 也推不动）。
-            // 不需要尺寸的检查先跑；需要尺寸/像素的检查放到"重开一次实例"之后——那时布局正常。
-            checkTokens();
-            checkFormContract();
+            fixture("ready");
+            checkHomeStates();
             checkAccessibility();
-            checkHealthStates();
-            checkDirtyBanner();
-            checkPollingControl();
-            close();
-            launch();
             checkTouchTargets();
-            checkFocusIndicators();
+            checkFocusRings();
+            checkDangerConfirm();
+            checkSettingsForm();
+            checkDraftAndLeave();
+            checkTokenPrivacy();
+            capture("light-home", false);
+            capture("light-settings", true);
             close();
 
-            writeSettings(config, 0, true);
-            launch();
-            for (int tab = 0; tab < 3; tab++) capture("light-" + tab, tab);
-            close();
+            writeSettings();
             dark = true;
             launch();
-            for (int tab = 0; tab < 3; tab++) capture("dark-" + tab, tab);
+            fixture("ready");
+            capture("dark-home", false);
+            fixture("unreachable");
+            capture("dark-home-offline", false);
+            capture("dark-settings", true);
             close();
+
             dark = false;
             fontScale = 2;
             widthDp = 320;
             density = Math.round(getTargetContext().getResources().getDisplayMetrics().widthPixels / 320f * 160);
             launch();
-            for (int tab = 0; tab < 3; tab++) {
-                showTab(tab);
-                java.util.List<String> clipped = new java.util.ArrayList<>();
-                ui(() -> bounds(activity.getWindow().getDecorView(), clipped));
-                check(clipped.isEmpty(), "大字号 + 320dp 下第 " + (tab + 1) + " 页文字完整"
-                        + (clipped.isEmpty() ? "" : "（被截断：" + clipped.subList(0, Math.min(3, clipped.size())) + "）"));
-                capture("large-" + tab, tab);
-            }
+            fixture("unreachable");
+            checkReflow("大字号 + 320dp 首页（未连接）", false);
+            fixture("ready");
+            checkReflow("大字号 + 320dp 首页", false);
+            capture("large-home", false);
+            checkReflow("大字号 + 320dp 设置", true);
+            capture("large-settings", true);
             checkLargeDialog();
             close();
+
             fontScale = 1;
             widthDp = 900;
             density = Math.round(getTargetContext().getResources().getDisplayMetrics().widthPixels / 900f * 160);
             launch();
-            checkRailAndDock();
-            for (int tab = 0; tab < 3; tab++) capture("wide-" + tab, tab);
+            fixture("ready");
+            checkTwoPane();
+            capture("wide", false);
             close();
+
             restore();
             out.putString("stream", "\n" + report + "PASS: 知弦界面\n");
             finish(Activity.RESULT_OK, out);
         } catch (Throwable error) {
-            try { if (activity != null) close(); restore(); } catch (Throwable ignored) {}
+            try { if (activity != null) close(); } catch (Throwable ignored) {}
+            try { restore(); } catch (Throwable ignored) {}
             out.putString("stream", "\n" + report + "FAIL: " + android.util.Log.getStackTraceString(error));
             finish(Activity.RESULT_CANCELED, out);
         }
     }
 
-    /**
-     * 切到某一页，并保证这一页真的量过。
-     *
-     * <p>为什么不能只靠 {@code waitForIdleSync()}：这个环境里切页之后的那次布局遍历不一定来
-     * ——实测切到设置页后整页仍是 0×0（主队列已空，窗口却没有再走一次 traversal），
-     * 于是所有按尺寸和像素做的检查都会变成空跑。所以这里退一步：没量过就自己量一次，
-     * 做的事与一次真实遍历相同（父容器尺寸用父容器的，父容器没量过就退回显示区尺寸）。
-     */
-    private void showTab(int tab) throws Exception {
-        ui(() -> call("switchTab", new Class[]{int.class, boolean.class}, tab, false));
-        waitForIdleSync();
-        final ScrollView page = ((ScrollView[]) field(activity, "pages"))[tab];
-        for (int i = 0; i < 100 && !measured(page); i++) {
-            ui(() -> {
-                View parent = (View) page.getParent();
-                android.util.DisplayMetrics metrics = getTargetContext().getResources().getDisplayMetrics();
-                int width = parent.getWidth() > 0 ? parent.getWidth() : metrics.widthPixels;
-                int height = parent.getHeight() > 0 ? parent.getHeight() : metrics.heightPixels;
-                page.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
-                page.layout(0, 0, width, height);
-            });
-        }
-        check(measured(page), "第 " + tab + " 页已完成测量：" + size(page));
-    }
+    // ------------------------------------------------------------------ 测试数据
 
-    private static boolean measured(View view) {
-        return view.getWidth() > 0 && view.getHeight() > 0;
-    }
-
-    private static String size(View view) {
-        return view.getWidth() + "x" + view.getHeight();
-    }
-
-    // ------------------------------------------------------------------ 令牌
-
-    /**
-     * 令牌在运行期解析出来了没有、解析出来的是不是那套过了对比度的值。
-     * 界面按名字查资源（编译期没有 R 类），名字拼错只会在真机上炸，所以这条是必要守门。
-     */
-    private void checkTokens() throws Exception {
-        Object tokens = field(activity, "ui");
-        int ink = color(tokens, "onSurface");
-        int surface = color(tokens, "surface");
-        int muted = color(tokens, "onSurfaceVariant");
-        int container = color(tokens, "surfaceContainer");
-        int primary = color(tokens, "primary");
-        int onPrimary = color(tokens, "onPrimary");
-        check(contrast(ink, surface) >= 4.5, "正文/表面对比度 " + round(contrast(ink, surface)));
-        check(contrast(muted, surface) >= 4.5, "次要文字/表面对比度 " + round(contrast(muted, surface)));
-        check(contrast(muted, container) >= 4.5, "次要文字/容器对比度 " + round(contrast(muted, container)));
-        check(contrast(onPrimary, primary) >= 4.5, "实心按钮文字对比度 " + round(contrast(onPrimary, primary)));
-        for (String tone : new String[]{"success", "warning", "error", "primary"}) {
-            int fill = color(tokens, tone + "Container");
-            int text = color(tokens, "on" + Character.toUpperCase(tone.charAt(0)) + tone.substring(1) + "Container");
-            check(contrast(text, fill) >= 4.5, tone + " 状态条对比度 " + round(contrast(text, fill)));
-        }
-        check(color(tokens, "outline") != 0, "outline 令牌解析成功");
-    }
-
-    // ------------------------------------------------------------------ 交互契约
-
-    private void checkFormContract() throws Exception {
-        ui(() -> check(!view("saveButton").isEnabled(), "干净表单下保存按钮不可用"));
-        EditText port = (EditText) view("portInput");
-        EditText token = (EditText) view("tokenInput");
-        ui(() -> {
-            port.setText("999");
-            call("save", new Class[]{boolean.class}, false);
-        });
-        check(port.getError() != null, "非法端口就地报错");
-        ui(() -> {
-            port.setText("3101");
-            token.setText("test-secret");
-            call("save", new Class[]{boolean.class}, false);
-        });
-        await("保存设置落盘", () -> !((Boolean) field(activity, "saving")));
-        JSONObject saved = new JSONObject(new String(
-                java.nio.file.Files.readAllBytes(settingsFile.toPath()), "UTF-8")).getJSONObject("overrides");
-        check(saved.getInt("port") == 3101 && saved.getString("token").equals("test-secret"), "设置已落盘");
-
-        Bundle bridge = getTargetContext().getContentResolver()
-                .call(Uri.parse("content://com.satori.qq.control"), "bootstrap", null, null);
-        check(bridge != null && bridge.getLong("revision") == 1, "宿主可读到修订号");
-        ClassLoader loader = getTargetContext().getClassLoader();
-        Class<?> cfgClass = loader.loadClass("com.satori.qq.Cfg");
-        Object cfg = cfgClass.newInstance();
-        Class<?> bridgeClass = loader.loadClass("com.satori.qq.control.ControlBridge");
-        long applied = (Long) bridgeClass.getMethod("bootstrap", android.content.Context.class, cfgClass, String.class)
-                .invoke(null, getTargetContext(), cfg, "0.25.0");
-        check(applied == 1 && cfgClass.getField("port").getInt(cfg) == 3101, "bootstrap 应用端口");
-        check(cfgClass.getField("token").get(cfg).equals("test-secret"), "bootstrap 应用令牌");
-
-        ui(() -> {
-            port.setText("3201");
-            token.setText("unsaved-secret");
-            call("reveal", new Class[]{boolean.class}, true);
-        });
-        check((activity.getWindow().getAttributes().flags
-                & android.view.WindowManager.LayoutParams.FLAG_SECURE) != 0, "显示令牌时禁止截屏");
-        ui(() -> call("switchTab", new Class[]{int.class, boolean.class}, 2, false));
-        check(token.getTransformationMethod() != null, "离开设置页后令牌重新隐藏");
-        ui(() -> call("switchTab", new Class[]{int.class, boolean.class}, 1, false));
-
-        // 先确认"我们自己的保存契约"：写进实例状态的是草稿本身。
-        Bundle draftState = new Bundle();
-        java.lang.reflect.Method saveState = Activity.class
-                .getDeclaredMethod("onSaveInstanceState", Bundle.class);
-        saveState.setAccessible(true);
+    /** 注入一份确定的状态并冻结轮询，截图与断言不受真实服务波动影响。 */
+    private void fixture(String kind) throws Exception {
+        await("首次探测结束", () -> (Boolean) field(field(activity, "model"), "checked"));
+        await("守护状态读出", () -> field(field(activity, "model"), "guard") != null);
         ui(() -> {
             try {
-                saveState.invoke(activity, draftState);
+                set(activity, "resumed", false);
+                ((android.os.Handler) field(activity, "main")).removeCallbacks((Runnable) field(activity, "poll"));
+                set(activity, "guardAt", System.currentTimeMillis());
+                Object model = field(activity, "model");
+                JSONObject health = null;
+                if (!"unreachable".equals(kind)) {
+                    health = new JSONObject().put("name", "satori-qq").put("version", version())
+                            .put("online", !"logged-out".equals(kind)).put("listening", true)
+                            .put("connections", "ready".equals(kind) ? 1 : 0).put("qq_version", "9.3.65")
+                            .put("config_revision", 0).put("config_status", "applied")
+                            .put("online_since_epoch_ms", System.currentTimeMillis() - 7_380_000)
+                            .put("notice", "enabled/posted=yes")
+                            .put("compat", new JSONObject().put("passed", 204).put("total", 204))
+                            .put("sso", new JSONObject().put("failures", 0).put("session_errors", 0));
+                }
+                set(model, "health", health);
+                set(model, "checked", true);
+                set(model, "probing", false);
+                set(model, "port", 3001);
+                set(model, "guard", guardResult());
+                call(activity, "renderAll");
             } catch (Exception error) {
                 throw new RuntimeException(error);
             }
         });
-        check("3201".equals(draftState.getString("port")) && draftState.getInt("tab") == 1,
-                "草稿写入实例状态：port=" + draftState.getString("port")
-                        + " tab=" + draftState.getInt("tab"));
-
-        // recreate() 在本机不可靠：投给新实例的是任务里那份旧实例状态（实测草稿存的是
-        // 3201/1，新实例起来是 3001/0），而且新实例在 instrumentation 里不会被布局
-        // ——后面按尺寸和像素做的检查全都会跟着失效。所以这里不跑 recreate：
-        // 保存端由上面"草稿写入实例状态"钉住（键名 + 取值），恢复端的键名一致由
-        // tests/UiContractTest 钉住。
+        waitForIdleSync();
     }
 
-    private void checkHealthStates() throws Exception {
-        showTab(0);
-        ui(() -> {
-            set(activity, "health", null);
-            set(activity, "checkedAt", System.currentTimeMillis());
-            call("updateState", new Class[0]);
-        });
-        check(text("stateTitle").equals("尚未连接"), "探测失败清掉在线状态：" + text("stateTitle"));
-        check(toneOf("hero").equals("md_error_container"), "未连接时状态面板用错误色");
-
-        final JSONObject online = new JSONObject()
-                .put("name", "satori-qq").put("version", version()).put("online", true).put("listening", true)
-                .put("connections", 1).put("qq_version", "9.3.65").put("config_revision", 1)
-                .put("online_since_epoch_ms", System.currentTimeMillis() - 7_200_000)
-                .put("notice", "enabled/posted=yes")
-                .put("compat", new JSONObject().put("passed", 204).put("total", 204))
-                .put("sso", new JSONObject().put("failures", 0).put("session_errors", 0));
-        ui(() -> {
-            set(activity, "health", online);
-            set(activity, "checkedAt", System.currentTimeMillis());
-            call("updateState", new Class[0]);
-            view("progress").setVisibility(View.INVISIBLE);
-        });
-        check(text("stateTitle").equals("连接就绪"), "在线时状态为连接就绪：" + text("stateTitle"));
-        check(toneOf("hero").equals("md_success_container"), "在线时状态面板用成功色");
-        check(row("diagnosticRows", 1).equals("204 / 204"), "诊断页内核接口用读到的值：" + row("diagnosticRows", 1));
-        check(row("diagnosticRows", 0).equals("9.3.65"), "诊断页 QQ 版本用读到的值：" + row("diagnosticRows", 0));
-        check(text("configurationStatus").equals("已保存的设置已生效"), "配置状态按修订号判定");
-        check(((TextView) view("diagnostics")).getVisibility() != View.VISIBLE, "在线时隐藏离线提示");
+    private Object guardResult() throws Exception {
+        Class<?> type = activity.getClassLoader().loadClass("com.satori.qq.guard.GuardCommand$Result");
+        Constructor<?> constructor = type.getDeclaredConstructor(boolean.class, JSONObject.class, String.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(true, new JSONObject().put("mode", "ARMED").put("running", true)
+                .put("restarts_1h", 0).put("consec_fail", 0), null);
     }
 
-    private void checkDirtyBanner() throws Exception {
-        showTab(1);
-        // 先回到"已保存"的状态：上一步留下的是未保存的 3201 / unsaved-secret。
-        ui(() -> {
-            edit("portInput").setText("3101");
-            edit("tokenInput").setText("test-secret");
-        });
-        check(view("dirtyCard").getVisibility() != View.VISIBLE, "与已保存一致时不显示修改提示");
-        check(!view("saveButton").isEnabled(), "无修改时保存按钮不可用");
-        ui(() -> edit("tokenInput").setText("dirty-check"));
-        check(view("dirtyCard").getVisibility() == View.VISIBLE, "有未保存修改时出现提示");
-        check(view("saveButton").isEnabled(), "有修改时保存按钮可用");
-        ui(() -> edit("tokenInput").setText("test-secret"));
-        check(view("dirtyCard").getVisibility() != View.VISIBLE, "改动还原后提示消失");
-    }
+    // ------------------------------------------------------------------ 首页
 
-    // ------------------------------------------------------------------ 无障碍
+    private void checkHomeStates() throws Exception {
+        String[][] cases = {
+                {"unreachable", "未连接", "VISIBLE"},
+                {"logged-out", "等待登录", "VISIBLE"},
+                {"ready", "连接就绪", "GONE"},
+        };
+        for (String[] c : cases) {
+            fixture(c[0]);
+            ui(() -> {
+                TextView title = (TextView) id("hero_title");
+                check(c[1].contentEquals(title.getText()), "状态「" + c[0] + "」标题为 " + c[1] + "（实际 " + title.getText() + "）");
+                View action = id("hero_action");
+                check((action.getVisibility() == View.VISIBLE) == "VISIBLE".equals(c[2]),
+                        "状态「" + c[0] + "」" + ("VISIBLE".equals(c[2]) ? "提供" : "不提供") + "打开 QQ");
+            });
+        }
+        fixture("ready");
+    }
 
     private void checkAccessibility() throws Exception {
-        showTab(1);
-        for (String name : new String[]{"stateTitle", "stateDetail", "configurationStatus", "diagnosticHint"}) {
-            TextView view = (TextView) view(name);
-            check(view.getAccessibilityLiveRegion() == View.ACCESSIBILITY_LIVE_REGION_POLITE,
-                    name + " 是状态消息，必须标成 polite live region");
-        }
-        for (int i = 0; i < 3; i++) {
-            View item = ((View[]) field(activity, "navigation"))[i];
-            check(item.getContentDescription() != null, "导航项 " + i + " 有可读名称");
-            check(item.isFocusable(), "导航项 " + i + " 可获得焦点");
-        }
-        AtomicReference<String> headings = new AtomicReference<>("");
         ui(() -> {
-            int tab = (Integer) field(activity, "selected");
-            View page = ((ScrollView[]) field(activity, "pages"))[tab];
-            headings.set("当前页 " + tab + "：可见 " + countHeadings(page) + " / 全页 " + countHeadings(page, false));
+            check(id("hero_title").getAccessibilityLiveRegion() == View.ACCESSIBILITY_LIVE_REGION_POLITE,
+                    "状态标题是 polite live region");
+            check(id("hero_detail").getAccessibilityLiveRegion() == View.ACCESSIBILITY_LIVE_REGION_POLITE,
+                    "状态说明是 polite live region");
+            View guard = id("guard_switch");
+            AccessibilityNodeInfo node = guard.createAccessibilityNodeInfo();
+            check("android.widget.Switch".contentEquals(node.getClassName()), "守护开关读作开关（" + node.getClassName() + "）");
+            check(node.isCheckable() && node.isChecked(), "守护开关可勾选且状态为已开启");
+            check(guard.isClickable() && guard.isFocusable(), "整行可点、可聚焦");
+            AccessibilityNodeInfo kill = id("guard_kill").createAccessibilityNodeInfo();
+            check("android.widget.Button".contentEquals(kill.getClassName()), "危险操作读作按钮");
+            for (String name : new String[]{"refresh", "open_settings"}) {
+                CharSequence label = id(name).getContentDescription();
+                check(label != null && label.length() > 0, name + " 图标按钮有名称");
+            }
+            check(((TextView) findText(activity.getWindow().getDecorView(), "知弦")).isAccessibilityHeading(),
+                    "页面大标题是读屏标题");
         });
-        check(Integer.parseInt(headings.get().replaceAll(".*：可见 (\\d+) .*", "$1")) >= 3,
-                "每页至少有三个标题（" + headings.get() + "）");
-        check(hasLabel(activity.getWindow().getDecorView(), view("portInput").getId()), "端口输入框关联了标签");
-        check(view("refreshButton").getContentDescription() != null, "只有图标的刷新按钮有可读名称");
     }
 
-    /** 可触达面积：WCAG 2.5.8 与 Android 平台都要求足够大，这里按 48dp 卡。 */
     private void checkTouchTargets() throws Exception {
-        final int dp = Math.round(TOUCH_TARGET_DP
-                * getTargetContext().getResources().getDisplayMetrics().density);
-        AtomicReference<String> small = new AtomicReference<>();
-        for (int tab = 0; tab < 3; tab++) {
-            showTab(tab);
-            ui(() -> {
-                findSmall(activity.getWindow().getDecorView(), dp, small);
-            });
-            waitForIdleSync();
-            check(small.get() == null, "第 " + (tab + 1) + " 页可点控件都不小于 48dp" + (small.get() == null ? "" : "（" + small.get() + "）"));
+        for (boolean settings : new boolean[]{false, true}) {
+            showPage(settings);
+            List<String> small = new ArrayList<>();
+            int min = Math.round(TOUCH_DP * activity.getResources().getDisplayMetrics().density) - 1;
+            ui(() -> findSmall(activity.getWindow().getDecorView(), min, small));
+            check(small.isEmpty(), (settings ? "设置页" : "首页") + "可操作控件都不小于 48dp" + (small.isEmpty() ? "" : "：" + small));
+        }
+        showPage(false);
+    }
+
+    private void findSmall(View view, int min, List<String> small) {
+        if (view.getVisibility() != View.VISIBLE) return;
+        if ((view.isClickable() || view.isFocusable()) && view.isEnabled() && !(view instanceof ScrollView)
+                && view.getWidth() > 0 && (view.getWidth() < min || view.getHeight() < min)) {
+            small.add(view.getClass().getSimpleName() + ":" + label(view) + " " + view.getWidth() + "x" + view.getHeight());
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) findSmall(group.getChildAt(i), min, small);
         }
     }
 
-    /** 焦点可见：聚焦时必须有可见变化（WCAG 2.4.7）。这一步靠画像素判断，不猜实现。 */
-    private void checkFocusIndicators() throws Exception {
-        // 挑的都是"一直是启用"的控件：saveButton 在表单干净时是禁用的（这是它该有的样子），
-        // 禁用视图拿不到焦点，拿它验焦点环会验错东西。
-        showTab(1);
+    /** 键盘焦点可见（WCAG 2.4.7）：聚焦前后，控件内缘的像素必须变成焦点环颜色。 */
+    private void checkFocusRings() throws Exception {
+        showPage(false);
         ui(() -> {
-            checkRingToggles("revealButton", "onSecondaryContainer");
-            checkInputRing();
+            ring(id("guard_relaunch"), 0, "列表项");
+            ring(id("refresh"), Math.round(4 * activity.getResources().getDisplayMetrics().density), "图标按钮");
         });
-        showTab(0);
+        showPage(true);
         ui(() -> {
-            checkRingToggles("refreshButton", "primary");
-            View[] nav = (View[]) field(activity, "navigation");
-            for (int i = 0; i < nav.length; i++) checkRingToggles(nav[i], "navigation " + i, "primary");
+            EditText port = (EditText) id("port");
+            int before = pixel(port, port.getWidth() / 2, 0);
+            port.requestFocus();
+            int after = pixel(port, port.getWidth() / 2, 0);
+            check(before != after, "输入框聚焦后描边变化（" + hex(before) + " → " + hex(after) + "）");
+            port.clearFocus();
         });
-        showTab(1);
-        ui(() -> {
-            View[] toggles = (View[]) field(activity, "toggles");
-            for (int i = 0; i < toggles.length; i++) checkRingToggles(toggles[i], "switch " + i, "primary");
-            check((edit("tokenInput").getInputType() & android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD) != 0,
-                    "令牌使用密码输入语义");
-        });
+        showPage(false);
     }
 
-    /** 按钮类：背景里有一层独立的焦点环，未聚焦透明、聚焦后不透明，颜色与底色有对比。 */
-    private void checkRingToggles(String name, String ringRole) {
-        checkRingToggles(view(name), name, ringRole);
-    }
-
-    private void checkRingToggles(View view, String name, String ringRole) {
-        check(view.getWidth() > 0 && view.getHeight() > 0, name + " 已完成测量："
-                + view.getWidth() + "x" + view.getHeight()
-                + " vis=" + view.getVisibility() + " attached=" + view.isAttachedToWindow()
-                + " tab=" + (Integer) field(activity, "selected")
-                + " 页宽=" + ((ScrollView[]) field(activity, "pages"))[1].getWidth()
-                + "x" + ((ScrollView[]) field(activity, "pages"))[1].getHeight());
-        check(view.isFocusable(), name + " 可获得焦点");
-        Drawable ring = ringLayer(view);
-        check(ring != null, name + " 的背景里有独立的焦点环图层");
-        int size = Math.max(view.getHeight(), 8);
-        check(edgeAlpha(ring, size) == 0, name + " 未聚焦时焦点环不可见");
+    private void ring(View view, int inset, String name) {
+        int y = inset + Math.round(activity.getResources().getDisplayMetrics().density);
+        // 由测试启动的窗口处在非触摸模式：清掉焦点后系统会把焦点交给第一个可聚焦控件，
+        // 所以先把焦点放到别处，再取"未聚焦"的像素。
+        View decoy = id("guard_switch") == view ? id("guard_kill") : id("guard_switch");
+        decoy.setFocusableInTouchMode(true);
+        decoy.requestFocus();
+        check(!view.isFocused(), name + " 起始未聚焦");
+        int before = pixel(view, view.getWidth() / 2, y);
+        decoy.setFocusableInTouchMode(false);
+        // 测试进程改不了系统的触摸模式；临时允许触摸模式下聚焦，效果与方向键/外接键盘聚焦相同。
+        check(view.isFocusable(), name + " 可以获得键盘焦点");
         view.setFocusableInTouchMode(true);
         check(view.requestFocus(), name + " 可以拿到焦点");
-        check(edgeAlpha(ring, size) != 0, name + " 聚焦后焦点环可见");
-        check(edgeColor(ring, size) == color(field(activity, "ui"), ringRole),
-                name + " 的焦点环用 " + ringRole + "（与底色有对比）");
+        int after = pixel(view, view.getWidth() / 2, y);
+        check(before != after, name + " 聚焦后出现焦点环（" + hex(before) + " → " + hex(after) + "）");
         view.clearFocus();
         view.setFocusableInTouchMode(false);
     }
 
-    /** 输入框：靠描边换色表达焦点，未聚焦是 outline、聚焦是主色。 */
-    private void checkInputRing() {
-        EditText input = (EditText) view("portInput");
-        check(input.getHeight() > 0, "输入框已完成测量");
-        int size = input.getHeight();
-        check(edgeColor(input.getBackground(), size) == color(field(activity, "ui"), "outline"),
-                "输入框未聚焦时描边用 outline");
-        input.setFocusableInTouchMode(true);
-        check(input.requestFocus(), "输入框可以拿到焦点");
-        check(edgeColor(input.getBackground(), size) == color(field(activity, "ui"), "primary"),
-                "输入框聚焦后描边换主色");
-        input.clearFocus();
-        input.setFocusableInTouchMode(false);
-    }
-
-    // ------------------------------------------------------------------ 视图遍历
-
-    private static void findSmall(View view, int minimum, AtomicReference<String> found) {
-        if (found.get() != null || view.getVisibility() != View.VISIBLE) return;
-        if (view.getWidth() == 0 && view.getHeight() == 0) return;
-        if (view.isClickable() && (view.getWidth() < minimum || view.getHeight() < minimum)) {
-            found.set(view.getClass().getSimpleName() + " "
-                    + view.getWidth() + "x" + view.getHeight() + "px"
-                    + (view.getContentDescription() == null ? "" : " (" + view.getContentDescription() + ")"));
-            return;
-        }
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) findSmall(group.getChildAt(i), minimum, found);
-        }
-    }
-
-    private static boolean hasLabel(View view, int targetId) {
-        if (view.getLabelFor() == targetId) return true;
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) if (hasLabel(group.getChildAt(i), targetId)) return true;
-        }
-        return false;
-    }
-
-    private static int countHeadings(View view) {
-        return countHeadings(view, true);
-    }
-
-    private static int countHeadings(View view, boolean visibleOnly) {
-        if (visibleOnly && view.getVisibility() != View.VISIBLE) return 0;
-        int total = 0;
-        if (view instanceof TextView && android.os.Build.VERSION.SDK_INT >= 28
-                && ((TextView) view).isAccessibilityHeading()) total++;
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) total += countHeadings(group.getChildAt(i), visibleOnly);
-        }
-        return total;
-    }
-
-    /**
-     * 画一层 drawable，读回左边中点的像素。用来量"焦点环有没有真的画出来"——
-     * GradientDrawable 不公开描边宽度与描边色，读私有的 mGradientState 又随版本变，
-     * 直接量像素是最稳的判据。
-     */
-    private static int edgeColor(Drawable drawable, int size) {
-        if (drawable == null || size <= 2) return 0;
-        android.graphics.Rect original = new android.graphics.Rect(drawable.getBounds());
-        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bitmap);
-        drawable.setBounds(0, 0, size, size);
-        drawable.draw(canvas);
-        int pixel = bitmap.getPixel(1, size / 2);
-        drawable.setBounds(original);
+    private static int pixel(View view, int x, int y) {
+        Bitmap bitmap = Bitmap.createBitmap(view.getWidth(), view.getHeight(), Bitmap.Config.ARGB_8888);
+        view.draw(new Canvas(bitmap));
+        int value = bitmap.getPixel(Math.max(0, Math.min(x, bitmap.getWidth() - 1)), Math.max(0, Math.min(y, bitmap.getHeight() - 1)));
         bitmap.recycle();
-        return pixel;
+        return value;
     }
 
-    private static int edgeAlpha(Drawable drawable, int size) {
-        return android.graphics.Color.alpha(edgeColor(drawable, size));
+    /** 危险操作：先确认，默认焦点在「取消」，取消不执行。 */
+    private void checkDangerConfirm() throws Exception {
+        showPage(false);
+        AtomicReference<Dialog> dialog = new AtomicReference<>();
+        ui(() -> id("guard_kill").performClick());
+        waitForIdleSync();
+        ui(() -> {
+            Dialog shown = topDialog();
+            check(shown != null && shown.isShowing(), "停止保活先弹出确认");
+            dialog.set(shown);
+            View focus = shown.getCurrentFocus();
+            check(focus instanceof TextView && "取消".contentEquals(((TextView) focus).getText()), "确认弹窗默认聚焦取消");
+            shown.cancel();
+            Object model = field(activity, "model");
+            check(field(model, "guardBusy") == null, "取消后没有执行任何 root 操作");
+        });
     }
 
-    /** 焦点环是背景里独立的一层（Ripple → 内容层 → [底色, 焦点环]）。 */
-    private static Drawable ringLayer(View view) {
-        Drawable background = view.getBackground();
-        if (background instanceof RippleDrawable) background = ((RippleDrawable) background).getDrawable(0);
-        if (background instanceof LayerDrawable) {
-            LayerDrawable layers = (LayerDrawable) background;
-            if (layers.getNumberOfLayers() >= 2) return layers.getDrawable(layers.getNumberOfLayers() - 1);
+    // ------------------------------------------------------------------ 设置
+
+    private void checkSettingsForm() throws Exception {
+        showPage(true);
+        ui(() -> {
+            check(id("save_bar").getVisibility() == View.GONE, "没有改动时不显示保存栏");
+            EditText port = (EditText) id("port");
+            port.setText("80");
+            check(id("save_bar").getVisibility() == View.VISIBLE, "改动后出现保存栏");
+            id("save").performClick();
+            check(port.getError() != null && port.hasFocus(), "端口越界：就地报错并获得焦点");
+            port.setText("3002");
+            id("save").performClick();
+        });
+        await("保存完成", () -> id("save_bar").getVisibility() == View.GONE);
+        JSONObject saved = new JSONObject(new String(java.nio.file.Files.readAllBytes(settingsFile.toPath()), "UTF-8"));
+        check(saved.getJSONObject("overrides").getInt("port") == 3002, "保存写入设置文件");
+        check(saved.getLong("revision") == 1, "保存递增修订号");
+        ui(() -> check(id("snackbar").getVisibility() == View.VISIBLE, "保存后给出结果提示"));
+        ui(() -> {
+            ((EditText) id("port")).setText("3001");
+            id("save").performClick();
+        });
+        await("恢复端口", () -> id("save_bar").getVisibility() == View.GONE);
+    }
+
+    private void checkDraftAndLeave() throws Exception {
+        showPage(true);
+        AtomicReference<Bundle> state = new AtomicReference<>();
+        ui(() -> {
+            ((EditText) id("port")).setText("4000");
+            Bundle bundle = new Bundle();
+            callActivityOnSaveInstanceState(activity, bundle);
+            state.set(bundle);
+        });
+        check("4000".equals(state.get().getString("draft_port")), "未保存的草稿进入实例状态");
+        check(state.get().getInt("page") == 1, "当前页进入实例状态");
+        ui(() -> activity.onBackPressed());
+        waitForIdleSync();
+        ui(() -> {
+            Dialog shown = topDialog();
+            check(shown != null && shown.isShowing(), "有未保存的修改时返回先确认");
+            shown.cancel();
+            check(id("settings").getVisibility() == View.VISIBLE, "取消后留在设置页");
+            check("4000".contentEquals(((EditText) id("port")).getText()), "取消后草稿还在");
+            ((EditText) id("port")).setText("3001");
+            check(id("save_bar").getVisibility() == View.GONE, "改回原值后保存栏消失");
+            activity.onBackPressed();
+            check(id("home").getVisibility() == View.VISIBLE, "没有改动时返回首页");
+        });
+    }
+
+    private void checkTokenPrivacy() throws Exception {
+        showPage(true);
+        ui(() -> {
+            EditText token = (EditText) id("token");
+            check(token.getTransformationMethod() instanceof PasswordTransformationMethod, "令牌默认隐藏");
+            id("token_reveal").performClick();
+            check(token.getTransformationMethod() == null, "可以显示令牌");
+            check((activity.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) != 0,
+                    "显示令牌期间禁止截屏");
+            call(activity, "showPage", new Class[]{int.class, boolean.class}, 0, false);
+            check(token.getTransformationMethod() instanceof PasswordTransformationMethod, "离开设置页重新隐藏令牌");
+            check((activity.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) == 0,
+                    "隐藏后恢复截屏");
+        });
+    }
+
+    // ------------------------------------------------------------------ 重排
+
+    private void checkReflow(String name, boolean settings) throws Exception {
+        showPage(settings);
+        List<String> clipped = new ArrayList<>();
+        ui(() -> clip(activity.getWindow().getDecorView(), clipped));
+        check(clipped.isEmpty(), name + "：文字完整" + (clipped.isEmpty() ? "" : "（被截断：" + clipped.subList(0, Math.min(3, clipped.size())) + "）"));
+        List<String> small = new ArrayList<>();
+        int min = Math.round(TOUCH_DP * activity.getResources().getDisplayMetrics().density) - 1;
+        ui(() -> findSmall(activity.getWindow().getDecorView(), min, small));
+        check(small.isEmpty(), name + "：控件仍不小于 48dp" + (small.isEmpty() ? "" : "：" + small));
+        if (settings) {
+            ui(() -> {
+                ((EditText) id("port")).setText("3003");
+                View bar = id("save_bar");
+                check(bar.getParent() != id("settings"), name + "：保存区进入滚动内容，不常驻底部");
+                ((EditText) id("port")).setText("3001");
+            });
         }
-        return null;
     }
 
-    /**
-     * 放大字号下不许截断：每个 TextView 的绘制高度不能超过它拿到的高度。
-     * 这是 WCAG 1.4.4（放大 200%）与 1.4.12（行距）在真机上唯一可靠的判据。
-     */
-    private void bounds(View view, java.util.List<String> clipped) {
+    private void clip(View view, List<String> clipped) {
         if (view.getVisibility() != View.VISIBLE) return;
-        if (view instanceof TextView && !(view instanceof EditText)) {
+        if (view instanceof TextView && !(view instanceof EditText)
+                && view.getImportantForAccessibility() != View.IMPORTANT_FOR_ACCESSIBILITY_NO) {
             TextView text = (TextView) view;
-            if (text.getLayout() != null
-                    && text.getLayout().getHeight()
-                    > text.getHeight() - text.getCompoundPaddingTop() - text.getCompoundPaddingBottom()) {
-                clipped.add(text.getText().toString());
+            Layout layout = text.getLayout();
+            if (layout != null) {
+                boolean tall = layout.getHeight() > text.getHeight() - text.getCompoundPaddingTop() - text.getCompoundPaddingBottom() + 1;
+                boolean ellipsized = false;
+                for (int i = 0; i < layout.getLineCount(); i++) if (layout.getEllipsisCount(i) > 0) ellipsized = true;
+                if (tall || ellipsized) clipped.add(text.getText().toString());
             }
         }
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) bounds(group.getChildAt(i), clipped);
+            for (int i = 0; i < group.getChildCount(); i++) clip(group.getChildAt(i), clipped);
         }
-    }
-
-    private void checkPollingControl() throws Exception {
-        showTab(0);
-        await("探测结束", () -> !((Boolean) field(activity, "probing")));
-        ui(() -> {
-            view("pollingButton").performClick();
-            check(!((Boolean) field(activity, "autoRefresh")), "可以暂停自动刷新");
-            android.os.Handler handler = (android.os.Handler) field(activity, "main");
-            check(!handler.hasCallbacks((Runnable) field(activity, "poll")), "暂停后移除刷新任务");
-            view("pollingButton").performClick();
-            check((Boolean) field(activity, "autoRefresh"), "可以恢复自动刷新");
-        });
     }
 
     private void checkLargeDialog() throws Exception {
-        AtomicReference<android.app.Dialog> shown = new AtomicReference<>();
-        java.util.concurrent.atomic.AtomicBoolean accepted = new java.util.concurrent.atomic.AtomicBoolean();
-        ui(() -> {
-            try {
-                Object widgets = field(activity, "widgets");
-                Method confirm = widgets.getClass().getDeclaredMethod("confirm", String.class, String.class,
-                        String.class, boolean.class, Runnable.class);
-                confirm.setAccessible(true);
-                shown.set((android.app.Dialog) confirm.invoke(widgets, "停止保活并关闭 QQ？",
-                        "停止后不会自动拉起。需要恢复时，请重新开启守护。", "确认关闭", true,
-                        (Runnable) () -> accepted.set(true)));
-            } catch (Exception error) { throw new RuntimeException(error); }
-        });
+        showPage(false);
+        ui(() -> id("guard_relaunch").performClick());
         waitForIdleSync();
         ui(() -> {
-            android.app.Dialog dialog = shown.get();
+            Dialog dialog = topDialog();
+            check(dialog != null && dialog.isShowing(), "大字号下确认弹窗出现");
             View decor = dialog.getWindow().getDecorView();
-            if (decor.getWidth() == 0) {
-                decor.measure(View.MeasureSpec.makeMeasureSpec(dialog.getWindow().getAttributes().width, View.MeasureSpec.EXACTLY),
-                        View.MeasureSpec.makeMeasureSpec(activity.getResources().getDisplayMetrics().heightPixels, View.MeasureSpec.AT_MOST));
-                decor.layout(0, 0, decor.getMeasuredWidth(), decor.getMeasuredHeight());
-            }
-            java.util.List<String> clipped = new java.util.ArrayList<>();
-            bounds(decor, clipped);
+            List<String> clipped = new ArrayList<>();
+            clip(decor, clipped);
             check(clipped.isEmpty(), "200% 字号确认弹窗文字完整：" + clipped);
-            check(dialog.getCurrentFocus() instanceof TextView
-                    && "取消".contentEquals(((TextView) dialog.getCurrentFocus()).getText()), "危险确认默认聚焦取消");
+            View focus = dialog.getCurrentFocus();
+            check(focus instanceof TextView && "取消".contentEquals(((TextView) focus).getText()), "大字号弹窗默认聚焦取消");
             dialog.cancel();
-            check(!accepted.get(), "取消弹窗不会执行危险操作");
+            check(field(field(activity, "model"), "guardBusy") == null, "取消重启不执行");
         });
     }
 
-    private void checkRailAndDock() throws Exception {
-        showTab(1);
+    private void checkTwoPane() throws Exception {
         ui(() -> {
-            View nav = (View) ((View[]) field(activity, "navigation"))[0].getParent();
-            check(((android.widget.LinearLayout) nav).getOrientation() == android.widget.LinearLayout.VERTICAL,
-                    "900dp 使用侧边导航");
-            View dock = view("saveDock");
-            ScrollView page = ((ScrollView[]) field(activity, "pages"))[1];
-            check(dock.getParent() == page.getParent().getParent(), "保存区独立于滚动内容");
-            check(dock.getVisibility() == View.VISIBLE, "设置页显示保存区");
-            call("switchTab", new Class[]{int.class, boolean.class}, 0, false);
-            check(dock.getVisibility() == View.GONE, "状态页隐藏保存区");
+            View home = id("home");
+            View settings = id("settings");
+            check(home.getVisibility() == View.VISIBLE && settings.getVisibility() == View.VISIBLE, "900dp：两栏同时显示");
+            int[] a = new int[2], b = new int[2];
+            home.getLocationInWindow(a);
+            settings.getLocationInWindow(b);
+            check(b[0] >= a[0] + home.getWidth() - 1, "900dp：设置在右栏");
+            check(id("save_bar").getVisibility() == View.GONE, "900dp：打开时表单与已保存设置一致，没有假草稿");
+            check("3001".contentEquals(((EditText) id("port")).getText()), "900dp：表单载入已保存的端口");
+            check(activity.findViewById(activity.getResources().getIdentifier("open_settings", "id", APP)) == null,
+                    "双栏时不再提供进入设置的按钮");
         });
     }
 
     // ------------------------------------------------------------------ 截图
 
-    private void capture(String name, int tab) throws Exception {
-        showTab(tab);
-        // 先只改数据，让文案变更走完一次测量/布局，再截图——否则画的是改动前的尺寸，文字会被裁。
+    /** 把当前页的整条长页画进一张图：顶栏 + 滚动内容全部 + 保存栏（若可见）。 */
+    private void capture(String name, boolean settings) throws Exception {
+        showPage(settings);
+        // 截的是"刚打开"的样子：滚回顶端（顶栏回到未抬升态），焦点交给页面根，不画键盘焦点环。
         ui(() -> {
-            try {
-                JSONObject fixture = new JSONObject().put("name", "satori-qq").put("version", version())
-                        .put("online", true).put("listening", true).put("connections", 1)
-                        .put("qq_version", "9.3.65").put("config_revision", 0)
-                        .put("online_since_epoch_ms", System.currentTimeMillis() - 7_200_000)
-                        .put("notice", "enabled/posted=yes").put("keepalive", "fgs=on")
-                        .put("compat", new JSONObject().put("passed", 204).put("total", 204))
-                        .put("sso", new JSONObject().put("failures", 0).put("session_errors", 0));
-                set(activity, "health", fixture);
-                set(activity, "checkedAt", System.currentTimeMillis());
-                call("updateState", new Class[0]);
-                view("progress").setVisibility(View.INVISIBLE);
-            } catch (Exception error) {
-                throw new RuntimeException(error);
+            for (String page : new String[]{"home", "settings"}) {
+                View root = activity.findViewById(activity.getResources().getIdentifier(page, "id", APP));
+                if (root == null) continue;
+                ViewGroup column = (ViewGroup) root;
+                for (int i = 0; i < column.getChildCount(); i++) {
+                    if (column.getChildAt(i) instanceof ScrollView) ((ScrollView) column.getChildAt(i)).scrollTo(0, 0);
+                }
             }
+            View frame = ((ViewGroup) activity.findViewById(android.R.id.content)).getChildAt(0);
+            frame.setFocusableInTouchMode(true);
+            frame.requestFocus();
         });
         waitForIdleSync();
-        // 看守状态是另一条线程问 root 要的，等它落定了再画，截图里才是真实状态。
-        await("守护状态读出", () -> !((TextView) view("guardState")).getText().toString().startsWith("正在读取"));
         ui(() -> {
             try {
-                ScrollView scroll = ((ScrollView[]) field(activity, "pages"))[tab];
-                View content = scroll.getChildAt(0);
-                View nav = (View) ((View[]) field(activity, "navigation"))[0].getParent();
-                View dock = view("saveDock");
-                boolean rail = ((android.widget.LinearLayout) nav).getOrientation() == android.widget.LinearLayout.VERTICAL;
-                boolean pinned = dock.getParent() == scroll.getParent().getParent() && dock.getVisibility() == View.VISIBLE;
-                int dockHeight = pinned ? dock.getHeight() : 0;
-                check(content.getWidth() > 0 && content.getHeight() > 0, "已测量 " + name);
-                if (tab == 0) {
-                    int limit = Math.round(16 * activity.getResources().getDisplayMetrics().density);
-                    check(view("progress").getHeight() <= limit, "波形高度受限 " + name);
+                View pages = id("home").getParent() instanceof android.widget.LinearLayout
+                        ? (View) id("home").getParent() : null;
+                List<View> columns = new ArrayList<>();
+                if (pages != null) {
+                    columns.add(id("home"));
+                    columns.add(id("settings"));
+                } else {
+                    columns.add(id(settings ? "settings" : "home"));
                 }
-                int totalWidth = content.getWidth() + (rail ? nav.getWidth() : 0);
-                int totalHeight = content.getHeight() + dockHeight + (rail ? 0 : nav.getHeight());
-                float scale = (rail ? 1200f : 600f) / totalWidth;
-                Bitmap bitmap = Bitmap.createBitmap(Math.round(totalWidth * scale),
-                        Math.round(totalHeight * scale), Bitmap.Config.ARGB_8888);
+                int width = 0, height = 0;
+                for (View column : columns) {
+                    width += column.getWidth();
+                    height = Math.max(height, longHeight((ViewGroup) column));
+                }
+                float scale = (pages != null ? 1400f : 720f) / Math.max(1, width);
+                Bitmap bitmap = Bitmap.createBitmap(Math.round(width * scale), Math.round(height * scale), Bitmap.Config.ARGB_8888);
                 Canvas canvas = new Canvas(bitmap);
                 canvas.scale(scale, scale);
-                canvas.drawColor(color(field(activity, "ui"), "surface"));
-                if (rail) {
-                    nav.draw(canvas);
-                    canvas.translate(nav.getWidth(), 0);
+                View frame = ((ViewGroup) activity.findViewById(android.R.id.content)).getChildAt(0);
+                canvas.drawColor(((android.graphics.drawable.ColorDrawable) frame.getBackground()).getColor());
+                for (View column : columns) {
+                    drawLong(canvas, (ViewGroup) column);
+                    canvas.translate(column.getWidth(), 0);
                 }
-                content.draw(canvas);
-                canvas.translate(0, content.getHeight());
-                if (pinned) {
-                    dock.draw(canvas);
-                    canvas.translate(0, dockHeight);
-                }
-                if (!rail) nav.draw(canvas);
                 File dir = new File(getTargetContext().getFilesDir(), "design-review");
                 dir.mkdirs();
                 try (FileOutputStream output = new FileOutputStream(new File(dir, name + ".png"))) {
@@ -633,13 +508,131 @@ public final class DesignSmoke extends Instrumentation {
                 throw new RuntimeException(error);
             }
         });
+        report.append("shot ").append(name).append('\n');
+    }
+
+    private static int longHeight(ViewGroup column) {
+        int height = 0;
+        for (int i = 0; i < column.getChildCount(); i++) {
+            View child = column.getChildAt(i);
+            if (child.getVisibility() != View.VISIBLE) continue;
+            height += child instanceof ScrollView ? ((ScrollView) child).getChildAt(0).getHeight()
+                    + child.getPaddingBottom() : child.getHeight();
+        }
+        return height;
+    }
+
+    private static void drawLong(Canvas canvas, ViewGroup column) {
+        int save = canvas.save();
+        if (column.getBackground() != null) {
+            android.graphics.drawable.Drawable background = column.getBackground();
+            android.graphics.Rect bounds = new android.graphics.Rect(background.getBounds());
+            background.setBounds(0, 0, column.getWidth(), longHeight(column));
+            background.draw(canvas);
+            background.setBounds(bounds);
+        }
+        for (int i = 0; i < column.getChildCount(); i++) {
+            View child = column.getChildAt(i);
+            if (child.getVisibility() != View.VISIBLE) continue;
+            if (child instanceof ScrollView) {
+                View content = ((ScrollView) child).getChildAt(0);
+                content.draw(canvas);
+                canvas.translate(0, content.getHeight() + child.getPaddingBottom());
+            } else {
+                child.draw(canvas);
+                canvas.translate(0, child.getHeight());
+            }
+        }
+        canvas.restoreToCount(save);
     }
 
     // ------------------------------------------------------------------ 辅助
 
+    /**
+     * 切页，并确保这一页真的量过。锁屏或窗口还没遍历时视图树可能是 0×0，
+     * 这时手动做一次与真实遍历等价的测量与布局，否则按尺寸与像素的检查会变成空跑。
+     */
+    private void showPage(boolean settings) throws Exception {
+        ui(() -> {
+            if (settings) call(activity, "ensureSettings");
+            Object twoPane = field(activity, "twoPane");
+            if (!(Boolean) twoPane) call(activity, "showPage", new Class[]{int.class, boolean.class}, settings ? 1 : 0, false);
+        });
+        waitForIdleSync();
+        ui(() -> {
+            View decor = activity.getWindow().getDecorView();
+            View page = id(settings ? "settings" : "home");
+            if (page.getWidth() == 0 || page.getHeight() == 0) {
+                android.util.DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
+                decor.measure(View.MeasureSpec.makeMeasureSpec(metrics.widthPixels, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(metrics.heightPixels, View.MeasureSpec.EXACTLY));
+                decor.layout(0, 0, metrics.widthPixels, metrics.heightPixels);
+            }
+            check(page.getWidth() > 0 && page.getHeight() > 0, (settings ? "设置页" : "首页") + "已完成测量");
+        });
+    }
+
+    private View id(String name) {
+        int value = activity.getResources().getIdentifier(name, "id", APP);
+        if (value == 0) throw new AssertionError("ids.xml 里没有 " + name);
+        View view = activity.findViewById(value);
+        if (view == null) throw new AssertionError("界面上找不到 id/" + name);
+        return view;
+    }
+
+    private static View findText(View view, String text) {
+        if (view instanceof TextView && text.contentEquals(((TextView) view).getText())
+                && view.getImportantForAccessibility() != View.IMPORTANT_FOR_ACCESSIBILITY_NO) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findText(group.getChildAt(i), text);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    /** 当前显示的对话框：窗口管理器里最上面那个属于本应用的 Dialog 窗口。 */
+    private Dialog topDialog() {
+        try {
+            Class<?> global = Class.forName("android.view.WindowManagerGlobal");
+            Object instance = global.getMethod("getInstance").invoke(null);
+            Field views = global.getDeclaredField("mRoots");
+            views.setAccessible(true);
+            List<?> roots = (List<?>) views.get(instance);
+            for (int i = roots.size() - 1; i >= 0; i--) {
+                Object root = roots.get(i);
+                Method getView = root.getClass().getDeclaredMethod("getView");
+                View decor = (View) getView.invoke(root);
+                if (decor == null) continue;
+                Object window = findWindow(decor);
+                if (window instanceof android.view.Window && ((android.view.Window) window).getCallback() instanceof Dialog) {
+                    return (Dialog) ((android.view.Window) window).getCallback();
+                }
+            }
+        } catch (Exception error) {
+            throw new RuntimeException(error);
+        }
+        return null;
+    }
+
+    private static Object findWindow(View decor) {
+        for (Class<?> type = decor.getClass(); type != null; type = type.getSuperclass()) {
+            try {
+                Field window = type.getDeclaredField("mWindow");
+                window.setAccessible(true);
+                return window.get(decor);
+            } catch (NoSuchFieldException ignored) {
+            } catch (Exception error) {
+                return null;
+            }
+        }
+        return null;
+    }
+
     private void launch() {
-        activity = startActivitySync(new Intent()
-                .setClassName(getTargetContext(), "com.satori.qq.ui.MainActivity")
+        activity = startActivitySync(new Intent().setClassName(getTargetContext(), APP + ".ui.MainActivity")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
         waitForIdleSync();
     }
@@ -650,64 +643,34 @@ public final class DesignSmoke extends Instrumentation {
         activity = null;
     }
 
-    private void writeSettings(JSONObject overrides, long revision, boolean overridesPresent) throws Exception {
-        JSONObject all = new JSONObject().put("revision", revision);
-        if (overridesPresent) all.put("overrides", overrides);
+    private void writeSettings() throws Exception {
+        JSONObject config = new JSONObject().put("port", 3001).put("token", "")
+                .put("status_notification", true).put("wake_lock_auto", true)
+                .put("wifi_sustain", true).put("manual_self_messages", true);
+        JSONObject all = new JSONObject().put("revision", 0).put("overrides", config);
         java.nio.file.Files.write(settingsFile.toPath(), all.toString().getBytes("UTF-8"));
     }
 
-    private void restore() {
+    private void restore() throws Exception {
         if (settingsFile == null) return;
-        try {
-            if (hadOriginal) java.nio.file.Files.write(settingsFile.toPath(), original);
-            else java.nio.file.Files.deleteIfExists(settingsFile.toPath());
-            check(true, "原始设置已还原");
-        } catch (Exception error) {
-            throw new RuntimeException(error);
-        }
+        if (hadOriginal) java.nio.file.Files.write(settingsFile.toPath(), original);
+        else java.nio.file.Files.deleteIfExists(settingsFile.toPath());
+        report.append("ok 原始设置已还原\n");
     }
 
     private String version() throws Exception {
-        return getTargetContext().getPackageManager()
-                .getPackageInfo("com.satori.qq", 0).versionName;
+        return getTargetContext().getPackageManager().getPackageInfo(APP, 0).versionName;
     }
 
-    private String row(String fieldName, int index) {
-        Object[] rows = (Object[]) field(activity, fieldName);
-        return (String) ((TextView) field(rows[index], "value")).getText();
+    private static String label(View view) {
+        CharSequence description = view.getContentDescription();
+        if (description != null) return description.toString();
+        if (view instanceof TextView) return ((TextView) view).getText().toString();
+        return view.getId() == View.NO_ID ? "?" : Integer.toHexString(view.getId());
     }
 
-    /** 读一个容器卡片的底色，用来断言语义色真的换了（而不是只有文字变）。 */
-    private String toneOf(String fieldName) {
-        View view = view(fieldName);
-        Drawable background = view.getBackground();
-        int fill = background instanceof GradientDrawable
-                ? ((GradientDrawable) background).getColor().getDefaultColor() : 0;
-        for (String role : new String[]{"successContainer", "warningContainer", "errorContainer",
-                "primaryContainer", "surfaceContainerHigh"}) {
-            if (color(field(activity, "ui"), role) == fill) return name(role);
-        }
-        return "unknown:" + Integer.toHexString(fill);
-    }
-
-    private static String name(String role) {
-        return "md_" + role.replaceAll("([A-Z])", "_$1").toLowerCase(java.util.Locale.ROOT);
-    }
-
-    private String text(String fieldName) {
-        return ((TextView) view(fieldName)).getText().toString();
-    }
-
-    private static int color(Object tokens, String name) {
-        return (Integer) field(tokens, name);
-    }
-
-    private View view(String name) {
-        return (View) field(activity, name);
-    }
-
-    private EditText edit(String name) {
-        return (EditText) view(name);
+    private static String hex(int color) {
+        return String.format("#%08X", color);
     }
 
     private void check(boolean ok, String label) {
@@ -740,45 +703,34 @@ public final class DesignSmoke extends Instrumentation {
         }
     }
 
-    private void call(String name, Class<?>[] types, Object... args) {
+    private static void call(Object target, String name) {
+        call(target, name, new Class[0]);
+    }
+
+    private static void call(Object target, String name, Class<?>[] types, Object... args) {
         try {
-            Method method = activity.getClass().getDeclaredMethod(name, types);
+            Method method = target.getClass().getDeclaredMethod(name, types);
             method.setAccessible(true);
-            method.invoke(activity, args);
+            method.invoke(target, args);
         } catch (Exception error) {
             throw new RuntimeException(error);
         }
     }
 
-    private static double contrast(int foreground, int background) {
-        double a = luminance(foreground);
-        double b = luminance(background);
-        return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-    }
-
-    private static double luminance(int color) {
-        double[] weights = {0.2126, 0.7152, 0.0722};
-        double value = 0;
-        for (int i = 0; i < 3; i++) {
-            double channel = ((color >> (16 - i * 8)) & 255) / 255.0;
-            value += weights[i] * (channel <= 0.04045 ? channel / 12.92
-                    : Math.pow((channel + 0.055) / 1.055, 2.4));
-        }
-        return value;
-    }
-
-    private static String round(double value) {
-        return String.format(java.util.Locale.ROOT, "%.2f", value);
-    }
-
     private interface Condition {
-        boolean done();
+        boolean done() throws Exception;
     }
 
     private void await(String label, Condition condition) throws Exception {
-        for (int i = 0; i < 400; i++) {
+        for (int i = 0; i < 600; i++) {
             AtomicReference<Boolean> result = new AtomicReference<>(false);
-            ui(() -> result.set(condition.done()));
+            ui(() -> {
+                try {
+                    result.set(condition.done());
+                } catch (Exception error) {
+                    throw new RuntimeException(error);
+                }
+            });
             if (result.get()) return;
             Thread.sleep(50);
         }

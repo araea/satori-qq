@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 关键视图的稳定 id：真机验收（tests/ui）按 id 找视图，不靠反射字段名。 -->
+<resources>
+    <item type="id" name="home" />
+    <item type="id" name="settings" />
+    <item type="id" name="hero" />
+    <item type="id" name="hero_title" />
+    <item type="id" name="hero_detail" />
+    <item type="id" name="hero_action" />
+    <item type="id" name="loading" />
+    <item type="id" name="endpoint" />
+    <item type="id" name="guard_switch" />
+    <item type="id" name="guard_kill" />
+    <item type="id" name="guard_relaunch" />
+    <item type="id" name="diagnostics" />
+    <item type="id" name="open_settings" />
+    <item type="id" name="refresh" />
+    <item type="id" name="config_notice" />
+    <item type="id" name="port" />
+    <item type="id" name="token" />
+    <item type="id" name="token_reveal" />
+    <item type="id" name="save_bar" />
+    <item type="id" name="save" />
+    <item type="id" name="discard" />
+    <item type="id" name="use_file" />
+    <item type="id" name="snackbar" />
+    <item type="id" name="navigate_up" />
+</resources>

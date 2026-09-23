@@ -55,16 +55,40 @@ public final class GuardCommand {
     /** {@code apply} 只重配系统项，不动 ARMED/PAUSED。 */
     public static Result apply() { return run("apply"); }
 
+    /**
+     * 重新启动 QQ，让刚保存的设置生效，并保持看守原来的模式。
+     *
+     * <p>不能直接 force-stop：看守把系统里的「强行停止」当成用户意愿，会自己转入 PAUSED，
+     * 保活就被悄悄关掉了。所以先记下模式，保活中就先暂停、关 QQ、重新打开，再恢复保活。
+     * 只需要 root；没装看守也能用（跳过暂停与恢复）。
+     */
+    public static Result relaunchQQ() {
+        StringBuilder script = new StringBuilder("G=; for p in");
+        for (String p : PATHS) script.append(" '").append(p).append('\'');
+        script.append("; do [ -x \"$p\" ] && G=\"$p\" && break; done; ");
+        script.append("A=; if [ -n \"$G\" ] && \"$G\" status --json | grep -q '\"mode\":\"ARMED\"'; then ");
+        script.append("A=1; \"$G\" stop >/dev/null 2>&1; fi; ");
+        script.append("am force-stop ").append(QQ).append("; sleep 1; ");
+        script.append("monkey -p ").append(QQ).append(" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1; ");
+        script.append("[ -n \"$A\" ] && \"$G\" start >/dev/null 2>&1; exit 0");
+        return exec(script.toString());
+    }
+
+    private static final String QQ = "com.tencent.mobileqq";
+
     private static Result run(String args) {
         StringBuilder script = new StringBuilder();
         script.append("for p in");
         for (String p : PATHS) script.append(" '").append(p).append('\'');
         script.append("; do [ -x \"$p\" ] && exec \"$p\" ").append(args).append("; done; ");
         script.append("echo ").append(MISSING).append(" >&2; exit 127");
+        return exec(script.toString());
+    }
 
+    private static Result exec(String script) {
         Process process = null;
         try {
-            process = new ProcessBuilder(su(), "-c", script.toString()).start();
+            process = new ProcessBuilder(su(), "-c", script).start();
             boolean done = process.waitFor(TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
             String out = read(process.getInputStream());
             String err = read(process.getErrorStream());

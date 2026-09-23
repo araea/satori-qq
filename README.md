@@ -115,6 +115,8 @@ QQ 被冻住或杀掉就掉线，三层保护：
 - [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)：协议方法、事件与消息元素
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：内部结构、构建与测试、QQ 升级检查项
 
+- [`docs/JNI_CAPABILITIES.md`](docs/JNI_CAPABILITIES.md)：纯 JNI 层的功能边界，可达与不可行清单
+
 ## 许可
 
 本项目可按 [Apache-2.0](LICENSE-APACHE) 或 [MIT](LICENSE-MIT) 许可证使用。

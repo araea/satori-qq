@@ -121,6 +121,9 @@ QQ 的 dex 类索引里、参数结构体的字段名（对单个类做反编译
 UIN 转 UID 走资料服务上的 `getUidByUin`。读操作的返回结构由 `SatoriHub.toJson` 反射导出，QQ 增删
 字段时跟着变，不会静默丢字段。
 
+会话上共有 54 个 `get*()` 入口，模块只用上面 7 个。完整入口表、各服务的方法面，以及本层的功能边界
+（可达、受限、不可行）见 [`JNI_CAPABILITIES.md`](JNI_CAPABILITIES.md)。
+
 私聊 `Contact` 使用 UID，群聊使用群号。可选字段必须通过 `Ref.getOrNull` 探测。QQ 9.3.60 已移除
 `MsgRecord.senderRoleType` 与 `RevokeElement.senderUid`；群成员角色来自 `getAllMemberList` 缓存，
 不用 `MsgRecord.roleType` 或 `roleId`。

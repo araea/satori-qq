@@ -22,6 +22,13 @@ QQ 会检测运行环境：一旦发现 LSPosed 注入或 hook 引擎（LSPlant/
 3. 重启手机（Zygisk 模块只在启动时注册）
 4. 打开「知弦」，在首页的「连接链路」确认 QQ 账号、本机服务与客户端都已就绪
 
+## Zygisk API 兼容性
+
+当前模块使用 Zygisk API v4，仅在注入回调中读取 `AppSpecializeArgs::nice_name`；
+[上游公开的 v5 头文件](https://github.com/topjohnwu/zygisk-module-sample/blob/master/module/jni/zygisk.hpp)
+相对 v4 增加了可选的 `mount_sysprop_overrides` 参数，本模块不需要它。已在 Zygisk Next 1.5.0
+上核对现有 v4 模块的部署与运行，因此暂不升级 API 版本，避免无收益的兼容性风险。
+
 ## 连接
 
 ```yaml

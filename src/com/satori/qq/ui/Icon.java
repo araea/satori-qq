@@ -50,12 +50,7 @@ final class Icon extends Drawable {
         Path p;
         RectF r = new RectF();
 
-        p = STROKES[REFRESH];
-        r.set(5, 5, 19, 19);
-        p.addArc(r, -30, 300);
-        p.moveTo(8, 3.5f);
-        p.lineTo(12, 5);
-        p.lineTo(8, 8.5f);
+        // REFRESH 在 Ui.iconButton 使用官方 Material Icons Round 矢量资源，不再手画。
 
         p = STROKES[SETTINGS];
         for (int k = 0; k < 8; k++) {

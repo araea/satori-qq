@@ -1,6 +1,7 @@
 package com.satori.qq.ui;
 
 import android.content.res.ColorStateList;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
@@ -10,6 +11,7 @@ import android.view.View;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import com.satori.qq.R;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -149,7 +151,10 @@ final class Ui {
      */
     ImageButton iconButton(int kind, String description, int color) {
         ImageButton view = new ImageButton(t.context);
-        Icon icon = new Icon(t, kind, color);
+        // 刷新图标用官方开源的 Material Icons Round 矢量稿，其余图标沿用知弦图标网格。
+        Drawable icon = kind == Icon.REFRESH ? t.context.getDrawable(R.drawable.ic_refresh).mutate()
+                : new Icon(t, kind, color);
+        if (kind == Icon.REFRESH) icon.setTint(color);
         view.setImageDrawable(icon);
         view.setScaleType(android.widget.ImageView.ScaleType.CENTER);
         int inset = (t.touchTarget - t.iconButton) / 2;

@@ -7,6 +7,8 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Rect;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.text.Layout;
 import android.text.method.PasswordTransformationMethod;
@@ -15,6 +17,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.File;
@@ -80,6 +83,7 @@ public final class DesignSmoke extends Instrumentation {
             fixture("ready");
             checkHomeStates();
             checkAccessibility();
+            checkRefreshGlyph();
             checkTouchTargets();
             checkFocusRings();
             checkDangerConfirm();
@@ -219,6 +223,31 @@ public final class DesignSmoke extends Instrumentation {
             }
             check(((TextView) findText(activity.getWindow().getDecorView(), "知弦")).isAccessibilityHeading(),
                     "页面大标题是读屏标题");
+        });
+    }
+
+    /** 官方 24 单位刷新图形居中，箭头完整、中心留白；避免再次出现错位的手绘稿。 */
+    private void checkRefreshGlyph() throws Exception {
+        ui(() -> {
+            Drawable icon = ((ImageButton) id("refresh")).getDrawable();
+            Bitmap bitmap = Bitmap.createBitmap(240, 240, Bitmap.Config.ARGB_8888);
+            Rect original = new Rect(icon.getBounds());
+            icon.setBounds(0, 0, 240, 240);
+            icon.draw(new Canvas(bitmap));
+            icon.setBounds(original);
+            int left = 240, right = 0, top = 240, bottom = 0;
+            for (int y = 0; y < 240; y++) for (int x = 0; x < 240; x++) {
+                if ((bitmap.getPixel(x, y) >>> 24) < 128) continue;
+                left = Math.min(left, x);
+                right = Math.max(right, x);
+                top = Math.min(top, y);
+                bottom = Math.max(bottom, y);
+            }
+            check(Math.abs(left + right - 239) <= 10 && Math.abs(top + bottom - 239) <= 10,
+                    "刷新图形光学中心对齐 24dp 网格");
+            check((bitmap.getPixel(190, 100) >>> 24) > 128 && (bitmap.getPixel(50, 120) >>> 24) > 128
+                            && (bitmap.getPixel(120, 120) >>> 24) == 0,
+                    "刷新图形右上箭头完整，中央留白");
         });
     }
 

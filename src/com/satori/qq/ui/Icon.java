@@ -53,9 +53,9 @@ final class Icon extends Drawable {
         p = STROKES[REFRESH];
         r.set(5, 5, 19, 19);
         p.addArc(r, -30, 300);
-        p.moveTo(19.4f, 4.6f);
-        p.lineTo(18, 8.5f);
-        p.lineTo(13.4f, 6.2f);
+        p.moveTo(8, 3.5f);
+        p.lineTo(12, 5);
+        p.lineTo(8, 8.5f);
 
         p = STROKES[SETTINGS];
         for (int k = 0; k < 8; k++) {

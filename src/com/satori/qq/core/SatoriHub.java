@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.29.4";
+    public static final String APP_VERSION = "0.29.5";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -1023,6 +1023,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             case "rock-paper-scissors":
             case "rock_paper_scissors":
                 return guarded("internal.rps", () -> sendSpecialFace(params, Codec.RPS_FACE, "rps"));
+            case "chat_screenshot":
+                return chatScreenshot(params);
             case "get-forward":
             case "get_forward":
                 // 合并转发在入站只有 `<message forward id="…"/>` 一个元素，没有正文，
@@ -1259,7 +1261,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("poke").put("invite").put("reaction_clear").put("reaction_summary")
                 .put("card").put("special_title").put("title_display")
                 .put("honor_display").put("sign").put("essence")
-                .put("dice").put("rps").put("get_forward")
+                .put("dice").put("rps").put("get_forward").put("chat_screenshot")
                 .put("capabilities").put("compat")
                 .put("status").put("version")
                 .put("clean_cache").put("restart");
@@ -1277,9 +1279,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("dice", "channel_id|guild_id")
                 .put("rps", "channel_id|guild_id")
                 .put("get_forward", "id 或 native:<父消息 ID>，可选 channel_id")
+                .put("chat_screenshot", "channel_id, start_message_id, end_message_id（含端点，最多 40 条；返回 PNG internal: 资源）")
                 .put("compat", "force?");
         final JSONArray reads = new JSONArray()
-                .put("get_forward").put("reaction_summary").put("title_display")
+                .put("get_forward").put("reaction_summary").put("title_display").put("chat_screenshot")
                 .put("status").put("version").put("capabilities").put("compat");
         final JSONArray writes = new JSONArray()
                 .put("poke").put("invite").put("card").put("reaction_clear")
@@ -1509,6 +1512,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                     if (!t.isEmpty()) msg.put("content", t);
                 }
                 if (row.time > 0) msg.put("created_at", row.time * 1000L);
+                // QQ NT history cursor, also used by the bounded screenshot range reader.
+                msg.put("message_seq", row.seq);
                 data.put(msg);
                 if (row.seq > 0) { minSeq = Math.min(minSeq, row.seq); maxSeq = Math.max(maxSeq, row.seq); }
         }
@@ -1523,6 +1528,50 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             }
         }
         return out;
+    }
+
+    /** An off-screen history rendering, not a pixel capture of QQ's conversation activity. */
+    private JSONObject chatScreenshot(JSONObject p) throws Exception {
+        String channel = p.optString("channel_id", "");
+        if (Codec.channelPeer(channel) <= 0) throw new ApiError(1400, "missing or invalid channel_id");
+        String startId = p.optString("start_message_id", "");
+        String endId = p.optString("end_message_id", "");
+        if (parseLongQuiet(startId) <= 0 || parseLongQuiet(endId) <= 0)
+            throw new ApiError(1400, "start_message_id and end_message_id must be QQ message IDs");
+        MsgStore.Rec start = requireMessage(startId, p);
+        MsgStore.Rec end = requireMessage(endId, p);
+        validateMessageChannel(p, start.id);
+        validateMessageChannel(p, end.id);
+        if (start.msgId != parseLongQuiet(startId) || end.msgId != parseLongQuiet(endId))
+            throw new ApiError(1400, "range endpoints must be QQ message IDs, not sequence cursors");
+        long first = start.msgSeq, last = end.msgSeq;
+        if (first <= 1 || last <= 0 || first > last || (first == last && !startId.equals(endId)))
+            throw new ApiError(1400, "range endpoints have missing or reversed message sequences");
+        ShotRange range = new ShotRange(startId, endId);
+        long cursor = first - 1;
+        for (int page = 0; page < 8 && !range.finished(); page++) {
+            JSONObject history = satoriMsgList(new JSONObject().put("channel_id", channel)
+                    .put("direction", "after").put("order", "asc")
+                    .put("next", String.valueOf(cursor)).put("limit", 50));
+            JSONArray rows = history.optJSONArray("data");
+            try { range.add(rows); }
+            catch (IllegalArgumentException e) { throw new ApiError(1400, e.getMessage()); }
+            if (range.finished()) break;
+            long next = parseLongQuiet(history.optString("next", "0"));
+            if (next <= cursor || next >= last)
+                throw new ApiError(1404, "end message not present in contiguous history pages");
+            cursor = next;
+        }
+        if (!range.finished()) throw new ApiError(1404, "range incomplete in history pages");
+        byte[] png;
+        try { png = ChatShot.render(range.messages(), selfUin(), channel); }
+        catch (IllegalArgumentException e) { throw new ApiError(1400, e.getMessage()); }
+        java.io.File file = Media.storeUpload(png, "chat.png", "image/png");
+        String id = store.putResource("image", "", file.getAbsolutePath(), "", "chat.png", file.length());
+        return new JSONObject().put("file", "internal:" + PLATFORM + "/" + selfUin() + "/_tmp/" + id)
+                .put("url", assetBase() + id).put("mime", "image/png")
+                .put("count", range.messages().size()).put("width", 720)
+                .put("height_limit", 8192).put("rendering", "text_and_placeholders");
     }
 
     private JSONObject getMsgHistory(boolean group, long peer, long cursor, int count,

@@ -2,6 +2,8 @@
 
 列出 QQ 9.3.65（NT）已核验的接口、事件与消息元素。
 
+0.29.5：增加 `internal/chat_screenshot`，按 QQ 历史消息 ID 选择含首尾的范围，在进程内离屏生成 PNG（不是 QQ 聊天页的像素级截图）。
+
 0.29.1：恢复会话时，待审批申请的连接本地投递与广播事件统一在投递锁内分配序列号。
 连接本地申请不会进入历史缓冲，序列号允许有空洞，但单连接收到的事件不会倒序。
 `typing` 与 `mark_read` 是实验性 JNI 扩展（已注册，内核回调仍须现场验证），
@@ -108,10 +110,22 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关；不带 `show`/`enable` 时只读当前状态，不写 |
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳（超级表情） |
-| 消息读取 | `get_forward` | 读取合并转发。`id` 是转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取 |
+| 消息读取 | `get_forward` / `chat_screenshot` | `chat_screenshot` 的范围渲染见下；`get_forward` 读取合并转发。`id` 是转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取 |
 | 能力查询 | `capabilities` / `help` / `compat` | 扩展动作与参数清单；内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
 | 状态查询 | `status` / `version` | 健康状态或版本 |
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程、清理临时文件 |
+
+### 范围截图（离屏渲染）
+
+`POST /v1/internal/chat_screenshot`（或登录域 `_api/chat_screenshot`），JSON 例如
+`{"channel_id":"123456","start_message_id":"QQ消息ID","end_message_id":"QQ消息ID"}`。
+首尾必须是**同一频道**可从 QQ 本地历史查到的 NT 消息 ID，按 `message_seq` 正序，最多 40 条且含两端。
+返回 `file`（`internal:red/{selfId}/_tmp/{id}`）、`url`（本机 `/v1/assets/{id}`）、`mime=image/png`、`count`。
+由 QQ 内核历史读记录，经 Android `Canvas` 在 QQ 进程内渲染文字气泡；图片、语音、视频、文件只画类型占位，
+没有 QQ 客户端聊天页的皮肤、头像、媒体像素或跨屏截取，也不调用 MediaProjection / 截屏权限。
+如果内核历史漏掉起止消息、游标不前进、超过数量或画布超过 8192px，会失败而不是返回截断图。
+图片在 QQ 的本地临时缓存中；资源 URL 仅本机监听、**不带鉴权**（与其他 `_tmp`/assets 相同），
+任何能访问本机端口并拿到不透明 ID 的程序可读取。不要把 URL 公开转发；过期文件可用 `clean_cache` 清理。
 
 ### 扩展动作注册表（0.29.0 起）
 

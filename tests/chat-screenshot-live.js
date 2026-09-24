@@ -13,8 +13,9 @@ async function post(path, body) {
   return data;
 }
 (async () => {
-  const history = await post('/v1/message.list', { channel_id: group, limit: 1 });
-  const id = history.data?.[0]?.id;
+  // The QQ kernel can return an empty page for count=1 even when history exists.
+  const history = await post('/v1/message.list', { channel_id: group, limit: 20 });
+  const id = history.data?.at(-1)?.id;
   if (!id) throw new Error('no history message in this group');
   const result = await post('/v1/internal/chat_screenshot', {
     channel_id: group, start_message_id: id, end_message_id: id,

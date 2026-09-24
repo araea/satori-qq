@@ -19,27 +19,13 @@ QQ 会检测运行环境：一旦发现 LSPosed 注入或 hook 引擎（LSPlant/
 1. 安装 `SatoriQQ.apk`（管理界面与设置接口）
 2. 把 `SatoriQQ-module.zip` 作为 Magisk / KernelSU 模块刷入，或解包后放到
    `/data/adb/modules/satori_qq/`（`module.prop`、`zn_modules.txt`、`zygisk/arm64-v8a.so`）
-3. 首次安装后重启手机，让 Zygisk Next 注册模块
+3. 安装或更新模块后重启手机，让 Zygisk Next 加载新版本（只重启 QQ 不够）
 4. 打开「知弦」，在首页的「连接链路」确认 QQ 账号、本机服务与客户端都已就绪
 
-### 开发时免重启部署
-
-已安装并启动 Zygisk Next 与 `satori_qq` 后，修改 Java 或 native 代码可以不重启手机：
-
-```sh
-./build.sh
-./test.sh
-./scripts/deploy-hot.sh
-```
-
-脚本直接把 `build/libsatori.so` 原子替换到已安装模块，运行 `znctl znmod reload satori_qq`，
-然后强停并重新打开 QQ；注入用 dex 内嵌在 `.so` 中，因此 Java 改动也必须重新构建 `.so`。
-脚本会在重启 QQ 期间暂时暂停已开启的 `qqguard`，之后恢复。连接会短暂断开；若 QQ 无法
-自动恢复登录，应手动检查 QQ 和 `/healthz`。相同的 `.so` 会跳过部署，不打断 QQ。
-
-这是开发调试流程，**不是**刷入 zip 到 `modules_update`；新模块首次安装、更新 Zygisk Next
-本身，以及依赖开机执行的脚本或配置变更仍需按正常安装流程重启手机。管理 APK 的改动还需单独安装
-`build/SatoriQQ.apk`；热部署脚本只更新 QQ 内的注入代码。
+模块升级必须重启手机：在当前设备的 Zygisk Next 1.5.0 上，替换 `.so`、执行
+`znctl znmod reload satori_qq` 并重启 QQ 后，`/healthz.version` 仍为旧版、
+新接口仍返回 404；整机重启后才读到 0.29.5 且接口可用。因此不提供热部署脚本，
+也不要用 QQ 进程重启代替设备重启。管理 APK 的改动还需单独安装 `build/SatoriQQ.apk`。
 
 ## Zygisk API 兼容性
 

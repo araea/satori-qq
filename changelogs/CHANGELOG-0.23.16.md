@@ -128,7 +128,7 @@
 `@satorijs/adapter-satori@1.5.1` 与官方服务端实现逐条核过：传输、网关 opcode、认证、对象形状、
 上传回执、事件名都对齐；结论与刻意不同的地方（缺的 6 个方法、`reaction-removed` 与协议包里
 `reaction-deleted` 的取舍、`login-updated`、列表不分页、401/403）写进了
-[docs/SATORI_SUPPORT.md](docs/SATORI_SUPPORT.md) 的「与官方协议的对照」。
+[docs/SATORI_SUPPORT.md](../docs/SATORI_SUPPORT.md) 的「与官方协议的对照」。
 
 ### 群名「变空」的真正原因：增量更新把已知的名字覆盖掉了
 

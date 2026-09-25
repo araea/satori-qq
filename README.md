@@ -1,40 +1,27 @@
 # 知弦 · Satori QQ
 
-在 Android QQ 进程内提供 Satori v1 服务（HTTP + WebSocket），监听 `127.0.0.1:3001`，供 Koishi
-`adapter-satori` 等客户端连接。已核验 QQ 9.3.65（NT）。
+知弦在 Android QQ 进程内提供 Satori v1 HTTP 与 WebSocket 服务，供本机 Koishi 等客户端连接。当前核验环境为 QQ 9.3.65（NT）。
 
 ## 运行条件
 
-- Android 8.0 及以上
-- QQ `com.tencent.mobileqq`
-- Zygisk Next（模块由它注入，不需要 LSPosed 或任何 Xposed 框架）
+- Android 8.0 或更高版本
+- QQ：`com.tencent.mobileqq`
+- Zygisk Next，用于注入模块；不需要 LSPosed 或 Xposed 框架
 
-QQ 会检测运行环境：一旦发现 LSPosed 注入或 hook 引擎（LSPlant/Dobby）的痕迹，就把设备与运行环境判为
-异常。后果不只是人脸验证被禁，登录身份也会失效、被服务端踢下线，需要反复重新登录。本模块因此由 Zygisk
-注入，进程内没有框架、也不带 ART hook 引擎——引导、内核会话与 SSO 回包都走 JNI，一条 ArtMethod 都
-不改写。
+QQ 会检查运行环境。检测到 LSPosed 等注入框架或 hook 引擎时，可能触发登录风控、账号掉线或反复验证。知弦使用 Zygisk 注入，不包含 ART hook 引擎；消息与会话通道通过 JNI 实现。
 
 ## 安装
 
-1. 安装 `SatoriQQ.apk`（管理界面与设置接口）
-2. 把 `SatoriQQ-module.zip` 作为 Magisk / KernelSU 模块刷入，或解包后放到
-   `/data/adb/modules/satori_qq/`（`module.prop`、`zn_modules.txt`、`zygisk/arm64-v8a.so`）
-3. 安装或更新模块后重启手机，让 Zygisk Next 加载新版本（只重启 QQ 不够）
-4. 打开「知弦」，在首页的「连接链路」确认 QQ 账号、本机服务与客户端都已就绪
+1. 安装管理应用 `SatoriQQ.apk`。
+2. 将 `SatoriQQ-module.zip` 刷入 Magisk / KernelSU，或解压到 `/data/adb/modules/satori_qq/`。
+3. 安装或更新模块后重启设备。重启 QQ 或热重载不能替代整机重启。
+4. 打开「知弦」，在首页确认 QQ 账号、服务和客户端的连接状态。
 
-模块升级必须重启手机：在当前设备的 Zygisk Next 1.5.0 上，替换 `.so`、执行
-`znctl znmod reload satori_qq` 并重启 QQ 后，`/healthz.version` 仍为旧版、
-新接口仍返回 404；整机重启后才读到 0.29.5 且接口可用。因此不提供热部署脚本，
-也不要用 QQ 进程重启代替设备重启。管理 APK 的改动还需单独安装 `build/SatoriQQ.apk`。
+模块基于 Zygisk API v4，已在 Zygisk Next 1.5.0 验证。管理应用的改动需单独安装 `build/SatoriQQ.apk`。
 
-## Zygisk API 兼容性
+## 连接 Koishi
 
-当前模块使用 Zygisk API v4，仅在注入回调中读取 `AppSpecializeArgs::nice_name`；
-[上游公开的 v5 头文件](https://github.com/topjohnwu/zygisk-module-sample/blob/master/module/jni/zygisk.hpp)
-相对 v4 增加了可选的 `mount_sysprop_overrides` 参数，本模块不需要它。已在 Zygisk Next 1.5.0
-上核对现有 v4 模块的部署与运行，因此暂不升级 API 版本，避免无收益的兼容性风险。
-
-## 连接
+以下示例使用 `adapter-satori`：
 
 ```yaml
 plugins:
@@ -47,14 +34,11 @@ plugins:
     token: ''
 ```
 
-`selfUrl` 与 `server.port` 保持一致。默认不校验令牌；设置 `token` 后客户端必须使用相同值。
+`selfUrl` 与 `server.port` 必须一致。知弦默认不校验令牌；配置 `token` 后，客户端必须使用相同值。默认服务只监听 `127.0.0.1:3001`。
 
 ## 配置
 
-知弦的「连接设置」可改端口、令牌、状态通知、唤醒锁、Wi-Fi 保持与手动消息投递，保存后在 QQ 下次启动时生效
-（有 Root 时可直接点「重新启动 QQ」），并覆盖文件同名项；「改用文件配置」解除覆盖。其余项只认文件。
-
-文件按顺序读取，取第一份有效配置（完整示例见 [`satori-qq.sample.json`](satori-qq.sample.json)）：
+优先在知弦的「连接设置」中配置端口、令牌、状态通知和唤醒锁。其他设置读取首个有效配置文件：
 
 ```text
 /sdcard/Android/data/com.tencent.mobileqq/files/satori-qq.json
@@ -63,80 +47,51 @@ plugins:
 /storage/emulated/0/satori-qq.json
 ```
 
-| 设置 | 默认值 | 说明 |
+完整示例见 [`satori-qq.sample.json`](satori-qq.sample.json)。常用字段：
+
+| 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `port` | `3001` | 本地服务端口 |
-| `token` | 空 | HTTP 与 WebSocket 鉴权令牌 |
-| `status_notification` | `true` | 显示运行状态通知，点击切换到 QQ |
+| `port` | `3001` | 本机服务端口 |
+| `token` | 空 | HTTP 与 WebSocket 鉴权；留空表示不鉴权 |
+| `status_notification` | `true` | 显示运行状态通知 |
 | `request_battery_exemption` | `true` | 首次在线时申请电池优化豁免 |
-| `wake_lock_control` / `wake_lock_auto` | `true` | 唤醒锁；`auto` 为启动即持有，否则等通知栏按钮 |
+| `wake_lock_control` / `wake_lock_auto` | `true` | 启用唤醒锁；`auto` 控制是否自动持有 |
 | `wifi_sustain` | `true` | 有客户端连接时保持 Wi-Fi 锁 |
-| `kernel_foreground` | `true` | 有已鉴权客户端连接时，每 5 秒维持 QQ 内核前台调度，避免后台延迟收消息；不打开 QQ 页面或点亮屏幕 |
-| `manual_self_messages` / `manual_self_user_id` | `true` / 空 | QQ 里手打的消息也作为事件投递，作者用独立身份，默认 `qq-client:{selfUin}` |
-| `forward_mode` | `auto` | 合并转发：`auto` / `native` / `fake` |
+| `kernel_foreground` | `true` | 有已鉴权客户端连接时，每 5 秒维持 QQ 内核前台调度；不打开 QQ 页面或点亮屏幕 |
+| `manual_self_messages` | `true` | 将 QQ 手动发送的消息也作为事件投递 |
+| `forward_mode` | `auto` | 合并转发格式：`auto`、`native` 或 `fake` |
 | `media_retry_attempts` | `2` | 富媒体上传失败后的额外尝试次数 |
 | `verbose_logs` | `false` | 输出调试日志 |
 
-限频与排队的开关见示例文件。改配置后重启 QQ。
+应用内「连接设置」会覆盖文件中的同名字段；选择「改用文件配置」可取消覆盖。修改配置后重启 QQ。
 
-## 常驻
+## 保持在线
 
-QQ 被冻住或杀掉就掉线，三层保护：
+QQ 被系统冻结或结束时，Satori 服务会断开。知弦包含进程内 Keepalive；需要设备级恢复时，可用 root 看守 `qqguard` 检测进程、解冻 QQ 并按预算重启。安装、命令与策略见[常驻守护](docs/GUARD.md)。
 
-1. **root 看守 `qqguard`**（[`scripts/qqguard.sh`](scripts/qqguard.sh)，详见
-   [`docs/GUARD.md`](docs/GUARD.md)）：基于 KernelSU / ReSukiSU 的原生能力，以 root 独立运行，
-   不依赖 Termux、LSPosed 或 Zygisk。默认每 30 秒判一次：进程不在就按预算拉起，被冻住只写 freezer
-   cgroup 解冻（有冷却），`/healthz` 挂死或掉登录才在「最近在线过」的前提下触发自动登录。
-   开机由模块自带的 `service.sh` 调 `qqguard boot` 恢复上次的 ARMED / PAUSED 状态。
-   常用控制：`qqguard start`（开启）/ `stop`（暂停，不关 QQ）/ `restart` / `status`；
-   `qqguard kill` 是「停止保活并关闭 QQ」。快捷设置里也有「知弦守护」与「停止保活并关闭 QQ」两个磁贴。
-2. **模块**（`Keepalive`）：会话就绪后每 10 分钟重新启动 QQ 自己的服务，让进程保持在前台服务优先级，
-   并持 CPU 唤醒锁。状态见 `/healthz.keepalive`。
-3. **系统**：`qqguard start` 会应用电池优化（Doze）白名单、必要 AppOps（`RUN_IN_BACKGROUND` /
-   `RUN_ANY_IN_BACKGROUND` 等）、App Standby Bucket 与 Data Saver 白名单；ColorOS
-   「睡眠待机优化」见排障。需要关掉整机 Doze 时另见 [`scripts/99-no-doze.sh`](scripts/99-no-doze.sh)。
-
-看守的完整参数（检测间隔、重启预算、退避、解冻冷却等）见
-[`scripts/guard.conf.sample`](scripts/guard.conf.sample)，拷成 `/data/adb/satori-qq/guard.conf` 即可。
-不用模块 zip 时，把 [`scripts/98-qqguard.sh`](scripts/98-qqguard.sh) 放进 `/data/adb/service.d/` 也能开机恢复。
-
-`wifi_sustain` 持的是 `WifiLock`，只在 Wi-Fi 下有效；蜂窝下靠前两层，另需确认系统没限制 QQ 的
-「后台数据」。
+`wifi_sustain` 只在 Wi-Fi 下生效。蜂窝网络需允许 QQ 使用后台数据；ColorOS 等系统还可能需要关闭深度睡眠或睡眠待机优化。保持在线会增加耗电。
 
 ## 排障
 
-- 强停或划掉 QQ 会停止服务。看守默认尊重系统里的「强行停止」（`stopped=true`），会自动转入
-  PAUSED 而不是跟你抢；想重新保活就 `qqguard start` 或点「知弦守护」磁贴。
-- 状态通知在 QQ 前台时消失过：0.24.0 起每轮会检查条目是否还在，被 QQ 自己清掉后自动补发；
-  看 `/healthz.notice` 的 `reposts`。
-- 锁屏后文字能发而图片、合并转发失败，可能是 QQ 内核后台调度，也可能是网络问题。
+- 强行停止 QQ 后，看守会尊重系统的停止状态并暂停；重新启动保活请运行 `qqguard start`。
+- 锁屏后文字可发但图片或合并转发失败，要分别检查 QQ 内核后台调度与系统网络限制。
   0.29.6 起媒体发送期间调用 QQ 自己的 `switchToFront()`；已连接的 bot 同样维持内核调度，
   以便 ambient 等依赖实时入站事件的插件正常判断。看 `/healthz.kernel_foreground` 与
-  `/v1/internal/compat` 的 `observed`，接口存在不等于长时间锁屏行为已验证。
-  媒体最多等待 45 秒确认，文字最多 20 秒；同时接收发送回调和消息状态更新。
-  超时返回 `send outcome unknown`，不会再假报成功或自动重发，原消息仍有可能稍后送达。
-  `/healthz.send` 显示当前等待数与最近结果。
-  文字走既有长连接，富媒体要新建连接持续传输。必要时关闭
-  系统的「睡眠待机优化」或「深度睡眠」，ColorOS 的开关未必写回配置，确认
-  `deep_sleep_is_disable_net_allowed` 与 `deepsleep_network_switch` 已归零。
-- 整机流量经 VPN 或 TUN 转发时，只加电池优化白名单不够：Doze 进入 `IDLE` 后经 TUN 的流量全部中断，
-  `dumpsys deviceidle disable` 可立即恢复。Doze 没有 UI 开关，用
-  [`scripts/99-no-doze.sh`](scripts/99-no-doze.sh) 开机关闭，代价是待机功耗上升。
-- 分不清断在哪一层时用 [`scripts/netwatch.sh`](scripts/netwatch.sh)，每 60 秒记录物理链路、本地代理、
-  经 TUN 出站、模块状态与电源状态。
-- 模块自报在线、消息却一条收不到，多半是被服务端踢线，由 QQ 自己处理。
-- 设置读不到：ColorOS 会拦关联启动，在**系统设置 → 应用 → 关联启动**里允许知弦，再重启 QQ。QQ 会
-  退回文件或默认配置，页面有提示。
+  `POST /v1/internal/compat` 的 `observed`，接口存在不等于长时间锁屏行为已验证。
+- 媒体最多等待 45 秒确认，文字最多 20 秒；发送回调或消息状态更新均可确认。
+  超时返回 `send outcome unknown`，不会假报成功或自动重发，原消息仍可能稍后送达。
+  `/healthz.send` 显示当前等待数与最近结果，详见 [0.29.6 变更说明](changelogs/CHANGELOG-0.29.6.md)。
+- 知弦读不到应用内设置时，在系统设置中允许知弦的关联启动，再重启 QQ。
+- 区分 QQ 断线、模块故障和客户端连接问题，可查看 `/healthz`；网络诊断脚本见 `scripts/netwatch.sh`。
 
 ## 文档
 
-- [`docs/DESIGN.md`](docs/DESIGN.md)：设计体系、Design Tokens、组件契约与无障碍验证范围
+- [Satori v1 方法、事件和消息元素](docs/SATORI_SUPPORT.md)
+- [架构、构建与测试](docs/ARCHITECTURE.md)
+- [常驻守护 qqguard](docs/GUARD.md)
+- [JNI 能力范围](docs/JNI_CAPABILITIES.md)
+- [OIDB 与封包参考](reference/PACKETS.md)
 
-- [`docs/SATORI_SUPPORT.md`](docs/SATORI_SUPPORT.md)：协议方法、事件与消息元素
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：内部结构、构建与测试、QQ 升级检查项
+## 许可证
 
-- [`docs/JNI_CAPABILITIES.md`](docs/JNI_CAPABILITIES.md)：纯 JNI 层的功能边界，可达与不可行清单
-
-## 许可
-
-本项目可按 [Apache-2.0](LICENSE-APACHE) 或 [MIT](LICENSE-MIT) 许可证使用。
+可按 [Apache-2.0](LICENSE-APACHE) 或 [MIT](LICENSE-MIT) 使用。

@@ -66,6 +66,40 @@ public final class QQClient {
     private volatile Listener listener;
     private volatile String selfUin = "";
     private volatile String selfNick = "";
+    private final java.util.concurrent.ConcurrentHashMap<Long, SendReceipt> pendingSends =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile String lastSend = "none";
+    public String sendDiag() { return "pending=" + pendingSends.size() + " last=" + lastSend; }
+    private volatile MediaForeground residentForeground;
+    private Object foregroundSession;
+    private long foregroundRefreshNs;
+
+    /** A connected bot needs incoming events even while QQ's Activity is stopped. */
+    public synchronized void sustainKernel(boolean serving) {
+        Object current = session;
+        // Keep the resident lease until the last in-flight send leaves; the next monitor tick
+        // will restore background even when that last send was plain text.
+        if (!serving && current == foregroundSession && !pendingSends.isEmpty()) return;
+        if (residentForeground != null && (!serving || current != foregroundSession)) {
+            MediaForeground old = residentForeground;
+            residentForeground = null;
+            old.close();
+            foregroundSession = null;
+        }
+        if (!serving || current == null) return;
+        if (residentForeground == null) {
+            foregroundSession = current;
+            residentForeground = new MediaForeground(ref, current);
+            foregroundRefreshNs = 0;
+        }
+        long now = System.nanoTime();
+        if (now - foregroundRefreshNs >= TimeUnit.SECONDS.toNanos(5)) {
+            residentForeground.refresh();
+            foregroundRefreshNs = now;
+        }
+    }
+
+    public String kernelForegroundDiag() { return residentForeground == null ? "idle" : "requested"; }
     private final boolean mainProcess;
     private final java.util.concurrent.ConcurrentHashMap<String, MediaDownload> mediaDownloads =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -423,6 +457,12 @@ public final class QQClient {
                     return def(m);
                 }
                 Listener l = listener;
+                if (args != null && args.length > 0) {
+                    if (("onMsgInfoListUpdate".equals(name) || "onMsgInfoListAdd".equals(name)
+                            || "onRecvMsg".equals(name)) && args[0] instanceof List) {
+                        for (Object record : (List<?>) args[0]) confirmSend(record);
+                    } else if ("onAddSendMsg".equals(name)) confirmSend(args[0]);
+                }
                 if (l == null) return def(m);
                 switch (name) {
                     case "onRecvMsg":
@@ -804,22 +844,39 @@ public final class QQClient {
      */
     public SendResult sendMsg(int chatType, String peerUid, ArrayList<?> elements,
                               SendTracker tracker) {
+        return sendMsg(chatType, peerUid, elements, tracker, 45000);
+    }
+
+    private void confirmSend(Object record) {
+        if (record == null) return;
+        SendReceipt pending = pendingSends.get(ref.getLong(record, "msgId"));
+        Object status = ref.getOrNull(record, "sendStatus");
+        if (pending != null && status instanceof Number) pending.record(((Number) status).intValue());
+    }
+
+    public SendResult sendMsg(int chatType, String peerUid, ArrayList<?> elements,
+                              SendTracker tracker, long timeoutMs) {
         SendResult r = new SendResult();
         Object msgService = getMsgService();
         if (msgService == null) { r.msg = "kernel session not ready"; return r; }
+        boolean media = false;
+        for (Object element : elements) {
+            int type = (int) ref.getLong(element, "elementType");
+            if (type == 2 || type == 3 || type == 4 || type == 5) media = true;
+        }
+        MediaForeground foreground = media ? new MediaForeground(ref, session,
+                () -> residentForeground != null) : null;
+        boolean submitted = false;
         try {
             long msgId = Ref.asLong(ref.call(msgService, "generateMsgUniqueId", chatType, System.currentTimeMillis()));
             r.msgId = msgId;
             if (tracker != null && msgId != 0) tracker.onGenerated(msgId);
             Object contact = ref.neu(CONTACT, chatType, peerUid, "");
-            final CountDownLatch latch = new CountDownLatch(1);
-            final AtomicInteger code = new AtomicInteger(-1);
-            final String[] wording = new String[]{""};
+            final SendReceipt receipt = new SendReceipt();
+            pendingSends.put(msgId, receipt);
             Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(IOPERATE_CB)}, (proxy, m, args) -> {
                 if (m.getName().equals("onResult") && args != null && args.length >= 1) {
-                    code.set(Ref.asInt(args[0]));
-                    if (args.length >= 2) wording[0] = Ref.asStr(args[1]);
-                    latch.countDown();
+                    receipt.callback(Ref.asInt(args[0]), args.length >= 2 ? Ref.asStr(args[1]) : "");
                 }
                 return null;
             });
@@ -838,17 +895,30 @@ public final class QQClient {
                 L.e("sendMsg pre dump", t0);
             }
             HashMap<Integer, Object> attrs = buildSendMsgAttrs(chatType, peerUid);
+            if (foreground != null) foreground.refresh();
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
+                    Math.max(1, Math.min(timeoutMs, media ? 45000 : 20000)));
+            submitted = true;
             ref.call(msgService, "sendMsg", msgId, contact, elements, attrs, cb);
-            if (latch.await(20, TimeUnit.SECONDS)) {
-                r.code = code.get();
-                r.msg = wording[0];
-            } else {
-                r.code = 0; // assume sent if no callback (fire-and-forget fallback)
-                r.msg = "no callback (assumed sent)";
+            while (true) {
+                long left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                if (receipt.await(Math.min(5000, Math.max(0, left))) || left <= 0) break;
+                // QQ's screen/lifecycle notification can race with our submission.
+                if (foreground != null) foreground.refresh();
             }
+            receipt.copyTo(r);
+            if (r.code == -2) r.msg += "; message_id=" + msgId;
+            lastSend = "id=" + msgId + " code=" + r.code + (media ? " media" : " text");
+            Compat.observe("send.confirmation", r.code == 0 ? "ok" : r.code == -2 ? "timeout" : "failed");
         } catch (Throwable t) {
             L.e("sendMsg", t);
-            r.msg = String.valueOf(t);
+            r.code = submitted ? -2 : -1;
+            r.msg = submitted ? "send outcome unknown; do not retry; message_id=" + r.msgId + ": " + t
+                    : "send preparation failed: " + t;
+            if (t instanceof InterruptedException) Thread.currentThread().interrupt();
+        } finally {
+            pendingSends.remove(r.msgId);
+            if (foreground != null) foreground.close();
         }
         return r;
     }

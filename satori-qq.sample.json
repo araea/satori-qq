@@ -9,6 +9,7 @@
   "wake_lock_control": true,
   "wake_lock_auto": true,
   "wifi_sustain": true,
+  "kernel_foreground": true,
   "verbose_logs": false,
   "outbound_min_interval_ms": 1000,
   "outbound_queue_timeout_ms": 30000,

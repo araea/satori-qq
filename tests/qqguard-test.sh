@@ -89,6 +89,27 @@ if can_restart; then check "allows restart" ok ok; else check "allows restart" o
 printf '%s\n' "$(( $(now) - 10 ))" "$(( $(now) - 20 ))" "$(( $(now) - 700 ))" > "$RESTARTS"
 check "crash window count" 2 "$(restarts_in_window)"
 
+# Fast thaw is independent of HTTP probing, and still respects PAUSED and cooldown.
+CGROUP_APPS="$TMP/cgroup"
+mkdir -p "$CGROUP_APPS/uid_123/pid_456"
+qq_uid() { printf '123'; }
+printf 1 > "$CGROUP_APPS/uid_123/cgroup.freeze"
+printf 1 > "$CGROUP_APPS/uid_123/pid_456/cgroup.freeze"
+last_thaw=0
+set_mode PAUSED test
+fast_thaw
+check "paused does not thaw" 1 "$(cat "$CGROUP_APPS/uid_123/cgroup.freeze")"
+set_mode ARMED test
+fast_thaw
+check "uid thawed" 0 "$(cat "$CGROUP_APPS/uid_123/cgroup.freeze")"
+check "pid thawed" 0 "$(cat "$CGROUP_APPS/uid_123/pid_456/cgroup.freeze")"
+printf 1 > "$CGROUP_APPS/uid_123/pid_456/cgroup.freeze"
+fast_thaw
+check "thaw cooldown respected" 1 "$(cat "$CGROUP_APPS/uid_123/pid_456/cgroup.freeze")"
+last_thaw=$(( $(now) - THAW_COOLDOWN - 1 ))
+fast_thaw
+check "refreeze recovered" 0 "$(cat "$CGROUP_APPS/uid_123/pid_456/cgroup.freeze")"
+
 if [ "$fails" -ne 0 ]; then
     echo "qqguard-test: $fails failed"
     exit 1

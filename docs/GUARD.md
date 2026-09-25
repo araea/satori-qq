@@ -72,16 +72,19 @@ Android 快捷设置里另有两个磁贴：
 2. 主进程不在 → 崩遗或被回收。宽限期内继续等；设备没网先不动；`CRASH_WINDOW` 内重启达到
    `CRASH_LIMIT` 次则转 PAUSED 等人工；否则按预算拉起。
 3. 进程在但被冻住（`uid_*/cgroup.freeze=1`、`pid_*/cgroup.freeze=1` 或
-   `wchan=do_freezer_trap`）→ 写 freezer cgroup 解冻，同一冷却期（默认 60s）内只写一次。
+   `wchan=do_freezer_trap`）→ 写 freezer cgroup 解冻，同一冷却期（默认 5s）内只写一次。
    **不因为冻结就强杀重启。**
 4. 进程在、没冻，但 `/healthz` 连续 `UNRESPONSIVE_LIMIT` 轮无响应 → 判定挂死，按预算强拉起。
 5. 进程在、服务在，但 `/healthz.online=false` 连续 `OFFLINE_LIMIT` 轮，且
    `LAST_ONLINE` 在 `OFFLINE_RESTART_WINDOW` 内（即「刚刚还在线」）→ 按预算拉起，触发自动登录。
    从没在线过（开机等扫码）不会触发，避免反复重启。
 
-被冻住只解冻不重启，是因为 ColorOS 这类 ROM 的冻结是振荡的：解冻后很快会再冻住，解冻次数多并
-不代表 QQ 坏了。真正的根治在注入层（让 QQ 自己的服务保持已启动，进程停在 SERVICE_ADJ）与系统
-配置（白名单、AppOps、Data Saver）；冻结解冻只是兜底。
+两次完整检查之间，每 5 秒只读 QQ 的 freezer 文件，发现冻结就按冷却解冻；完整检查前也先解冻，
+避免先白等 HTTP 超时。重启预算和离线判据仍按原来的完整检查节奏运行。
+
+被冻住只解冻不重启，是因为 ColorOS 的冻结可能反复发生，服务已启动、唤醒锁已持有也不保证
+免于厂商冻结。原来的 60 秒解冻冷却会超过 acumen ambient 默认 25 秒的发言时效。
+这层恢复不等同于 QQ 内核的前后台切换，也不能解决物理网络或模型服务不可用。
 
 ## 重启刹车
 

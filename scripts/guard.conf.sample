@@ -32,8 +32,9 @@ QQGUARD_RECOVER_WAIT=60
 # /healthz 连续无响应多少轮才判定挂死、按预算强拉起。
 QQGUARD_UNRESPONSIVE_LIMIT=6
 
-# 同一个冷却期内最多解冻一次（秒）。被冻只解冻，不因为冻结就强杀重启。
-QQGUARD_THAW_COOLDOWN=60
+# 每 5 秒另查一次 QQ 的 freezer 文件；不会加快上面的健康检查与重启预算。
+# 同一个冷却期内最多解冻一次（秒）。设成 60 会令短时搭话在恢复前过期。
+QQGUARD_THAW_COOLDOWN=5
 
 # /healthz 报 offline 连续多少轮才尝试自动登录，以及「最近在线」的有效期（秒）。
 QQGUARD_OFFLINE_LIMIT=10

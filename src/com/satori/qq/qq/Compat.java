@@ -214,6 +214,15 @@ public final class Compat {
         }
         JSONObject services = new JSONObject().put("ok", ok).put("total", SERVICES.length);
 
+        int lifecycleOk = 0;
+        for (String method : new String[]{"switchToFront", "switchToBackGround"}) {
+            if (session != null && hasMethod(session, method, 0)) lifecycleOk++;
+            else missing.put(new JSONObject().put("kind", "session").put("name", method));
+        }
+        Class<?> foreground = ref.clsOrNull("mqq.app.Foreground");
+        if (foreground != null && hasMethod(foreground, "isCurrentProcessForeground", 0)) lifecycleOk++;
+        else missing.put(new JSONObject().put("kind", "lifecycle").put("name", "isCurrentProcessForeground"));
+
         ok = 0;
         for (String[] entry : STRUCT_FIELDS) {
             Class<?> cls = ref.clsOrNull(NS + entry[0]);
@@ -262,17 +271,18 @@ public final class Compat {
         JSONObject callbacks = new JSONObject().put("ok", ok).put("total", CALLBACKS.length);
 
 
-        int total = TYPES.length + SERVICES.length + STRUCT_FIELDS.length + CALLBACKS.length;
+        int total = TYPES.length + SERVICES.length + STRUCT_FIELDS.length + CALLBACKS.length + 3;
         out.put("qq_version", qqVersion == null ? "" : qqVersion);
         out.put("checked_epoch_ms", System.currentTimeMillis());
         out.put("ok", missing.length() == 0);
         out.put("passed", types.optInt("ok") + services.optInt("ok") + structs.optInt("ok")
-                + callbacks.optInt("ok"));
+                + callbacks.optInt("ok") + lifecycleOk);
         out.put("total", total);
         out.put("types", types);
         out.put("services", services);
         out.put("structs", structs);
         out.put("callbacks", callbacks);
+        out.put("lifecycle", new JSONObject().put("ok", lifecycleOk).put("total", 3));
         out.put("missing", missing);
         return out;
     }

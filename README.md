@@ -71,6 +71,7 @@ plugins:
 | `request_battery_exemption` | `true` | 首次在线时申请电池优化豁免 |
 | `wake_lock_control` / `wake_lock_auto` | `true` | 唤醒锁；`auto` 为启动即持有，否则等通知栏按钮 |
 | `wifi_sustain` | `true` | 有客户端连接时保持 Wi-Fi 锁 |
+| `kernel_foreground` | `true` | 有已鉴权客户端连接时，每 5 秒维持 QQ 内核前台调度，避免后台延迟收消息；不打开 QQ 页面或点亮屏幕 |
 | `manual_self_messages` / `manual_self_user_id` | `true` / 空 | QQ 里手打的消息也作为事件投递，作者用独立身份，默认 `qq-client:{selfUin}` |
 | `forward_mode` | `auto` | 合并转发：`auto` / `native` / `fake` |
 | `media_retry_attempts` | `2` | 富媒体上传失败后的额外尝试次数 |
@@ -108,7 +109,14 @@ QQ 被冻住或杀掉就掉线，三层保护：
   PAUSED 而不是跟你抢；想重新保活就 `qqguard start` 或点「知弦守护」磁贴。
 - 状态通知在 QQ 前台时消失过：0.24.0 起每轮会检查条目是否还在，被 QQ 自己清掉后自动补发；
   看 `/healthz.notice` 的 `reposts`。
-- 锁屏后文字能发而图片、合并转发失败，是网络问题：文字走既有长连接，富媒体要新建连接持续传输。关闭
+- 锁屏后文字能发而图片、合并转发失败，可能是 QQ 内核后台调度，也可能是网络问题。
+  0.29.6 起媒体发送期间调用 QQ 自己的 `switchToFront()`；已连接的 bot 同样维持内核调度，
+  以便 ambient 等依赖实时入站事件的插件正常判断。看 `/healthz.kernel_foreground` 与
+  `/v1/internal/compat` 的 `observed`，接口存在不等于长时间锁屏行为已验证。
+  媒体最多等待 45 秒确认，文字最多 20 秒；同时接收发送回调和消息状态更新。
+  超时返回 `send outcome unknown`，不会再假报成功或自动重发，原消息仍有可能稍后送达。
+  `/healthz.send` 显示当前等待数与最近结果。
+  文字走既有长连接，富媒体要新建连接持续传输。必要时关闭
   系统的「睡眠待机优化」或「深度睡眠」，ColorOS 的开关未必写回配置，确认
   `deep_sleep_is_disable_net_allowed` 与 `deepsleep_network_switch` 已归零。
 - 整机流量经 VPN 或 TUN 转发时，只加电池优化白名单不够：Doze 进入 `IDLE` 后经 TUN 的流量全部中断，

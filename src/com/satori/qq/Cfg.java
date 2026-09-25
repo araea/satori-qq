@@ -24,6 +24,8 @@ public final class Cfg {
     /** Hold a high-performance Wi-Fi lock while a Satori client is attached, so screen-off power
      *  save cannot park the radio under an outbound upload or delay inbound events. */
     public volatile boolean wifiSustain = true;
+    /** Keep QQ's internal event/transfer scheduler active while an authenticated bot is attached. */
+    public volatile boolean kernelForeground = true;
     public volatile boolean verboseLogs = false; // verbose logcat/Xposed logs are observable; opt in for debugging
     public volatile int outboundMinIntervalMs = 1000; // serialize writes and avoid bursty QQ operations
     public volatile int outboundQueueTimeoutMs = 30000;
@@ -76,6 +78,7 @@ public final class Cfg {
                 c.wakeLockControl = o.optBoolean("wake_lock_control", c.wakeLockControl);
                 c.wakeLockAuto = o.optBoolean("wake_lock_auto", c.wakeLockAuto);
                 c.wifiSustain = o.optBoolean("wifi_sustain", c.wifiSustain);
+                c.kernelForeground = o.optBoolean("kernel_foreground", c.kernelForeground);
                 c.verboseLogs = o.optBoolean("verbose_logs", c.verboseLogs);
                 c.outboundMinIntervalMs = bounded(o.optInt("outbound_min_interval_ms", c.outboundMinIntervalMs), 0, 60000);
                 c.outboundQueueTimeoutMs = bounded(o.optInt("outbound_queue_timeout_ms", c.outboundQueueTimeoutMs), 1000, 120000);

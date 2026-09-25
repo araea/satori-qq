@@ -58,7 +58,7 @@ STABLE_WINDOW=${QQGUARD_STABLE_WINDOW:-600}
 GRACE=${QQGUARD_GRACE:-180}
 RECOVER_WAIT=${QQGUARD_RECOVER_WAIT:-60}
 UNRESPONSIVE_LIMIT=${QQGUARD_UNRESPONSIVE_LIMIT:-6}
-THAW_COOLDOWN=${QQGUARD_THAW_COOLDOWN:-60}
+THAW_COOLDOWN=${QQGUARD_THAW_COOLDOWN:-5}
 OFFLINE_LIMIT=${QQGUARD_OFFLINE_LIMIT:-10}
 OFFLINE_RESTART_WINDOW=${QQGUARD_OFFLINE_RESTART_WINDOW:-1800}
 RESPECT_FORCE_STOP=${QQGUARD_RESPECT_FORCE_STOP:-1}
@@ -94,6 +94,7 @@ nap() {  # 小睡分片，期间能及时看到 PAUSED
     while [ "$left" -gt 0 ]; do
         [ "$(cur_mode)" = "ARMED" ] || return 1
         "$SLEEP" "$step" 2>/dev/null || return 1
+        fast_thaw
         left=$((left - step))
         [ "$left" -lt "$step" ] && [ "$left" -gt 0 ] && step=$left
     done
@@ -219,6 +220,19 @@ thaw_qq() {  # thaw_qq <uid> <为什么>
     fi
     [ "$n" -eq 0 ] && log "thaw: 一个 freezer cgroup 都没写成（uid=${uid:-?}，路径 $CGROUP_APPS）"
     return 0
+}
+
+# Heavy health/login checks retain their 30s cadence and restart budgets. Between them,
+# only inspect QQ's cgroup files every 5s: a 60s thaw cooldown exceeds ambient freshness.
+fast_thaw() {
+    local uid
+    [ "$(cur_mode)" = "ARMED" ] || return 0
+    [ $(( $(now) - ${last_thaw:-0} )) -ge "$THAW_COOLDOWN" ] || return 0
+    uid=$(qq_uid)
+    if qq_frozen "" "$uid"; then
+        last_thaw=$(now)
+        thaw_qq "$uid" "fast cgroup check"
+    fi
 }
 
 # ---- /healthz 探针 --------------------------------------------------------
@@ -430,9 +444,8 @@ tick() {
     pid=$(printf '%s\n' "$pids" | head -1)
     uid=$(qq_uid)
 
-    # 2) 先探一次 /healthz。被冻住时它可能不响应，但冻着也可能还答得上（ColorOS 按 uid 冻，
-    #    实际是振荡的），所以先记在线时间，再决定要不要解冻——否则一直冻着就永远不更新
-    #    LAST_ONLINE，「掉线自动登录」那条判据会误伤。
+    # 2) Don't spend the HTTP timeout waiting on a process we already know is frozen.
+    fast_thaw
     hz=$(healthz)
     online=$(field "$hz" online)
     [ "$online" = "true" ] && state_set LAST_ONLINE "$(now)"

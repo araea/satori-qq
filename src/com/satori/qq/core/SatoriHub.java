@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.29.5";
+    public static final String APP_VERSION = "0.29.6";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -326,6 +326,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         // 抗冻状态：adj 低于本机 freezer 阈值（900）就不会被冻，
                         // service 是「让 QQ 自己的服务保持已启动」那一步的结果。
                         .put("keepalive", com.satori.qq.qq.Keepalive.diag())
+                        .put("send", qq.sendDiag())
+                        .put("kernel_foreground", qq.kernelForegroundDiag())
                         .put("name_guard", nameGuardDiag())
                         // 模块自己发的 SSO 请求失败了几条。`session_errors` 涨了说明有请求
                         // 撞上 QQ 认「票据失效」的那组错误码——即「接口层把会话打废」，
@@ -2611,11 +2613,16 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private QQClient.SendResult sendTracked(int chatType, String peer, java.util.ArrayList<Object> els) {
+        return sendTracked(chatType, peer, els, 45000);
+    }
+
+    private QQClient.SendResult sendTracked(int chatType, String peer, java.util.ArrayList<Object> els,
+                                            long timeoutMs) {
         // Conversion/downloads and retry backoff can take time after leaving the queue.
         Long account = outboundAccount.get();
         if (account != null && account != selfUin()) throw new ApiError(1404, "login changed before send");
         messageFreshness.check(sendCondition.get());
-        return qq.sendMsg(chatType, peer, els, this::rememberOutboundMsgId);
+        return qq.sendMsg(chatType, peer, els, this::rememberOutboundMsgId, timeoutMs);
     }
 
     /**
@@ -2641,12 +2648,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             throws Exception {
         int attempts = 1 + (hasMediaSegment(message) ? Math.max(0, cfg.mediaRetryAttempts) : 0);
         // Clients wait on one HTTP call, so the retries have to fit inside their timeout budget.
-        long deadline = System.currentTimeMillis() + cfg.mediaRetryBudgetMs;
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                cfg.mediaRetryBudgetMs > 0 ? cfg.mediaRetryBudgetMs : 45000);
         QQClient.SendResult r = null;
         for (int i = 0; i < attempts; i++) {
             if (i > 0) {
                 long backoff = RetryPolicy.backoffMs(cfg.mediaRetryBackoffMs, i, cfg.mediaRetryBudgetMs);
-                if (RetryPolicy.budgetSpent(System.currentTimeMillis(), backoff, deadline)) {
+                if (System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(backoff) >= deadline) {
                     L.e("media transfer failed (" + r.msg + "); retry budget spent", null);
                     return r;
                 }
@@ -2655,7 +2663,8 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             }
             java.util.ArrayList<Object> els = conv.toElements(message, chatType);
             if (skipEmpty && (els == null || els.isEmpty())) return null;
-            r = sendTracked(chatType, peer, els);
+            r = sendTracked(chatType, peer, els, Math.max(1,
+                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())));
             if (r.code == 0 || !isMediaTransferFailure(r)) return r;
         }
         return r;
@@ -2663,7 +2672,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
 
     /** QQ's wording for an upload that never left the device; the send failed before dispatch. */
     private static boolean isMediaTransferFailure(QQClient.SendResult r) {
-        if (r == null || r.code == 0 || r.msg == null) return false;
+        if (r == null || r.code == 0 || r.code == -2 || r.msg == null) return false;
         String m = r.msg.toLowerCase(java.util.Locale.ROOT);
         return m.contains("rich media") || m.contains("media transfer") || m.contains("upload")
                 || m.contains("富媒体");
@@ -4538,6 +4547,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 try {
                     Thread.sleep(1000);
                     boolean online = qq.isOnline();
+                    qq.sustainKernel(cfg.kernelForeground && online && !identified.isEmpty());
                     long now = System.currentTimeMillis();
                     if (online != previous) {
                         onlineSinceMs = online ? now : 0;

@@ -9,7 +9,7 @@
 #   - the last messages the bot's own self-chat received (scaffolding check)
 #   - whether the card content can be read back via get_forward
 set -u
-GROUP=${1:-280183116}
+GROUP=${1:-1126269891}
 TOKEN=satori-qq-token
 BASE=http://127.0.0.1:3001/v1
 SELF=$(curl -s -m 5 -X POST $BASE/login.get -H "Authorization: Bearer $TOKEN" \

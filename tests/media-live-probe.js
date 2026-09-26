@@ -13,7 +13,7 @@
  *   node tests/media-live-probe.js timing     # 只发一条，分开报上传与发送各花多久
  *   node tests/media-live-probe.js list       # 只读最近几条
  *
- * 环境变量：`SATORI_TEST_GROUP`（默认 280183116）、`MP3`、`TIMES`。
+ * 环境变量：`SATORI_TEST_GROUP`（默认 1126269891）、`MP3`、`TIMES`。
  * 会在群里留下消息（`<audio>` / `<file>` / 群文件），不自动撤回——判「有没有落地」靠的就是
  * 它们还在，验完自己撤。转码是偶发失败的，`voicerepeat` 就是用来量这件事的。
  */
@@ -22,7 +22,7 @@ const fs = require('fs');
 const http = require('http');
 const { connect, delay } = require('./satori-client');
 
-const GROUP = String(process.env.SATORI_TEST_GROUP || '280183116');
+const GROUP = String(process.env.SATORI_TEST_GROUP || '1126269891');
 const HOST = '127.0.0.1';
 const PORT = 3001;
 const MODE = process.argv[2] || 'voice';

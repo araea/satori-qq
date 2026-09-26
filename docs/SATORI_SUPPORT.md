@@ -2,10 +2,6 @@
 
 列出 QQ 9.3.65（NT）已核验的接口、事件与消息元素。
 
-0.29.5：增加 `internal/chat_screenshot`，按 QQ 历史消息 ID 选择含首尾的范围，在进程内离屏生成 PNG（不是 QQ 聊天页的像素级截图）。
-
-0.29.1：恢复会话时，待审批申请的连接本地投递与广播事件统一在投递锁内分配序列号。
-连接本地申请不会进入历史缓冲，序列号允许有空洞，但单连接收到的事件不会倒序。
 `typing` 与 `mark_read` 是实验性 JNI 扩展（已注册，内核回调仍须现场验证），
 不属于标准 Satori；客户端应按需启用并以回执为准，超时不可推断为成功或失败。
 
@@ -296,7 +292,7 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
   当失败处理，没有实际差别
 
 
-## 0.28.0 与 Acumen 的协作约定
+## 与 Acumen 的协作约定
 
 以 [Satori 事件规范](https://satori.chat/zh-CN/protocol/events.html)、
 [表态规范](https://satori.chat/zh-CN/resources/reaction.html) 和

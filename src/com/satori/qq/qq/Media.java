@@ -291,10 +291,7 @@ public final class Media {
         try {
             File sendable = prepareSendableImage(file);
             Object elem = buildNtPicElement(ref, msgService, sendable);
-            if (elem != null && subType != 0) {
-                ref.set(elem, "picSubType", Integer.valueOf(subType));
-                ref.set(elem, "summary", stickerSummary(subType, summary));
-            }
+            markSticker(ref, elem, subType, summary);
             if (!validPicElement(ref, elem)) return null;
             return elem;
         } catch (Throwable t) {
@@ -304,6 +301,17 @@ public final class Media {
     }
 
 
+
+    /** Flag a built picture as a sticker. The flag and the chat-list summary live on the
+     *  inner {@code PicElement}; {@code MsgElement} has no such fields, and writing them
+     *  there threw NoSuchFieldError, so every sticker-style send failed (0.27.1–0.29.6). */
+    public static void markSticker(Ref ref, Object elem, int subType, String summary) {
+        if (elem == null || subType == 0) return;
+        Object pic = ref.get(elem, "picElement");
+        if (pic == null) return;
+        ref.set(pic, "picSubType", Integer.valueOf(subType));
+        ref.set(pic, "summary", stickerSummary(subType, summary));
+    }
 
     /** What the chat list shows for a sticker-style picture. QQ's own stickers say
      *  「[动画表情]」; an empty summary shows as 「[图片]」 there. */

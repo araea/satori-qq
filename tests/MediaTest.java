@@ -7,6 +7,7 @@ public final class MediaTest {
         gif();
         webpNotWav();
         wav();
+        stickerFlagLandsOnThePicture();
         System.out.println("MediaTest OK");
     }
 
@@ -37,6 +38,29 @@ public final class MediaTest {
         d[0] = 'R'; d[1] = 'I'; d[2] = 'F'; d[3] = 'F';
         d[8] = 'W'; d[9] = 'A'; d[10] = 'V'; d[11] = 'E';
         eq(".wav", Media.guessExt(d), "wav magic");
+    }
+
+    /** Shapes of QQ's nativeinterface classes: the sticker fields exist only on the picture. */
+    public static final class FakePic {
+        public Integer picSubType = 0;
+        public String summary = "";
+    }
+
+    public static final class FakeMsgElement {
+        public int elementType = 2;
+        public Object picElement = new FakePic();
+    }
+
+    private static void stickerFlagLandsOnThePicture() {
+        com.satori.qq.qq.Ref ref = new com.satori.qq.qq.Ref(MediaTest.class.getClassLoader());
+        FakeMsgElement elem = new FakeMsgElement();
+        Media.markSticker(ref, elem, 1, "");
+        FakePic pic = (FakePic) elem.picElement;
+        eq("1", String.valueOf(pic.picSubType), "sticker flag on PicElement");
+        eq("[动画表情]", pic.summary, "sticker summary on PicElement");
+        FakeMsgElement plain = new FakeMsgElement();
+        Media.markSticker(ref, plain, 0, "");
+        eq("0", String.valueOf(((FakePic) plain.picElement).picSubType), "ordinary picture untouched");
     }
 
     private static void eq(String expect, String got, String name) {

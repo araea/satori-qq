@@ -49,11 +49,14 @@ public final class Protocol {
 
     public static JSONObject eventLogin(long sn, String platform, JSONObject user) throws Exception {
         JSONObject out = new JSONObject().put("sn", sn).put("platform", platform == null ? "" : platform);
-        if (user != null) {
+        // An account QQ has not resolved yet is reported as no user at all, not as id "0".
+        // Clients latch onto this id to route every event to a login; a placeholder "0" is
+        // not the id they identified with, so they drop the event instead of accepting it.
+        String id = user == null ? "" : user.optString("id", "");
+        if (!id.isEmpty() && !"0".equals(id)) {
             out.put("user", user);
             // `selfId` is deprecated in favour of `login.user.id`, but clients still read it.
-            String id = user.optString("id", "");
-            if (!id.isEmpty()) out.put("self_id", id);
+            out.put("self_id", id);
         }
         return out;
     }

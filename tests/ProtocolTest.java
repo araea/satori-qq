@@ -17,6 +17,11 @@ public final class ProtocolTest {
         check(!Protocol.eventLogin(0, "red", null).has("self_id"), "no user, no self_id");
         check(!Protocol.eventLogin(0, "red", new JSONObject()).has("self_id"),
                 "empty user, no self_id");
+        // QQ 还没认出账号时，不能把占位 "0" 当成 self_id 发出去：客户端按 id 认登录，
+        // "0" 对不上它 IDENTIFY 的账号，整条事件会被丢掉。
+        JSONObject unresolved = Protocol.eventLogin(0, "red", new JSONObject().put("id", "0"));
+        check(!unresolved.has("self_id"), "unresolved account, no self_id");
+        check(!unresolved.has("user"), "unresolved account, no user");
 
         long[] group = Protocol.pokeTarget(new JSONObject().put("channel_id", "123").put("user_id", "42"));
         check(group[0] == 123 && group[1] == 42, "channel-scoped group poke");

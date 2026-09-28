@@ -1,6 +1,6 @@
 # 架构
 
-记录维护模块所需的结构、QQ 接口与升级检查项。按 QQ 9.3.65（NT，versionCode 16240）核验。
+维护模块所需的结构、QQ 接口与升级检查项。按 QQ 9.3.65（NT，versionCode 16240）核验。
 
 ## 进程与组件
 
@@ -9,7 +9,7 @@
 | `Main` | 只在 QQ 主进程启动 Satori 服务，其他进程不加载模块代码 |
 | `Cfg` / `L` | 文件配置与日志，详细日志默认关闭 |
 | `ui` | 知弦管理界面与两个快捷设置磁贴，在应用自身进程运行，前台只读探测状态 |
-| `guard` | App → root `qqguard` 的调用桥：只拼写死的 `su -c` 命令，不接收任何界面/网络输入 |
+| `guard` | App → root `qqguard` 的调用桥：只拼写死的 `su -c` 命令，不接收任何界面 / 网络输入 |
 | `control` | 私有设置、UID 校验的 Provider、启动时配置同步 |
 | `net` | HTTP 与事件 WebSocket，只监听 `127.0.0.1` |
 | `core` | 方法分发、事件、消息与文件标识管理 |
@@ -23,9 +23,9 @@ HTTP 服务、消息监听与保活只在主进程运行，APK 里不含 native 
 
 `ui.MainActivity` 与 `control.ControlProvider` 在应用自身进程。Provider 只允许模块自身 UID 与当前安装的 `com.tencent.mobileqq` UID 调用（其余调用方含 shell 抛 `SecurityException`），只支持读配置与运行快照，不接受文件路径、命令或 HTTP 写设置。
 
-`Main` 尽早安装 QQ hooks。`SatoriHub.start()` 在独立工作线程等 Application 基础 Context attach（至多 10 秒），Provider 短暂不可用时再重试至多 1.2 秒；从 Provider 读到的端口、令牌与四个运行偏好应用后才绑定 HTTP 端口，其余高级配置不被覆盖，Provider 不可用时保留原文件或默认行为。`/healthz.config_revision` 是此进程读到的配置修订号，用来区分已保存与已生效。
+`Main` 尽早安装 QQ hooks。`SatoriHub.start()` 在独立工作线程等 Application 基础 Context attach（至多 10 秒），Provider 短暂不可用时再重试至多 1.2 秒；从 Provider 读到端口、令牌与四个运行偏好并应用后才绑定 HTTP 端口，其余高级配置不被覆盖；Provider 不可用时保留原文件或默认行为。`/healthz.config_revision` 是本进程读到的配置修订号，用来区分已保存与已生效。
 
-运行快照写进 `noBackupFilesDir/zhixian-control.json`，用 AtomicFile 原子更新；不用 SharedPreferences，它可能被模块框架重定向。首页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口。
+运行快照写进 `noBackupFilesDir/zhixian-control.json`，用 AtomicFile 原子更新；不用 SharedPreferences（可能被模块框架重定向）。首页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口。
 
 ## 管理界面
 
@@ -57,9 +57,11 @@ APK 里的 dex 包含全部代码；注入 QQ 的那份（内嵌进 `libsatori.s
 
 免鉴权的三条只服务本机登录自己，且只认模块签发的不透明 id；请求指向别的 platform 或 selfId 一律 404。
 
-`qq/ExtraSvc` 承载扩展动作的内核服务调用：个人资料、群设置、好友关系、最近联系人、富媒体与机器人。这些服务主线程亲和，从 HTTP 工作线程直接调用会立即返回而回调永不触发，所以 `ExtraSvc` 把调用投递到主 Looper，再由工作线程等回调。回调按 `(int code, String msg, <payload>...)` 的形状匹配，不按方法名：`IOperateCallback` 的签名是 `onResult(int, String)`，不带结果，需要返回结构的读取要用各自的回调接口，例如 `IGroupMemberHonorCallback`、`IKernelRecentGetContactCallback`，第三个参数才是 payload。不回调的入口一律不进模块，否则调用方要等满 15 秒超时。新增动作前先核三件事：类名在不在 QQ 的 dex 类索引里、参数结构体的字段名（对单个类做反编译核对）、入口会不会回调（现场探测）。`packet` 只在协议需要直接发包时使用，不与内核服务混用。
+`qq/ExtraSvc` 承载扩展动作的内核服务调用：个人资料、群设置、好友关系、最近联系人、富媒体与机器人。这些服务主线程亲和，从 HTTP 工作线程直接调用会立即返回而回调永不触发，所以 `ExtraSvc` 把调用投递到主 Looper，再由工作线程等回调。回调按 `(int code, String msg, <payload>...)` 的形状匹配，不按方法名：`IOperateCallback` 的签名是 `onResult(int, String)`，不带结果，需要返回结构的读取要用各自的回调接口，例如 `IGroupMemberHonorCallback`、`IKernelRecentGetContactCallback`，第三个参数才是 payload。不回调的入口一律不进模块，否则调用方要等满 15 秒超时。
 
-`ExtraSvc` 维护一份动作注册表（`ExtraSvc.Spec`）：名字、别名、是否写、参数说明、调用体各登记一次，`SatoriHub.dispatchExtension` 按名字查表执行，写动作复用 `guarded` 的限频与熔断，`internalCapabilities` 的目录、参数、读写分类也从这份表生成。这套机制同样要求主 Looper 投递、按回调形状而不是方法名匹配、不回调就不接。
+新增动作前先核三件事：类名在不在 QQ 的 dex 类索引里、参数结构体的字段名（对单个类做反编译核对）、入口会不会回调（现场探测）。`packet` 只在协议需要直接发包时使用，不与内核服务混用。
+
+`ExtraSvc` 维护一份动作注册表（`ExtraSvc.Spec`）：名字、别名、是否写、参数说明、调用体各登记一次，`SatoriHub.dispatchExtension` 按名字查表执行，写动作复用 `guarded` 的限频与熔断，`internalCapabilities` 的目录、参数、读写分类也从这份表生成。同样要求主 Looper 投递、按回调形状而不是方法名匹配、不回调就不接。
 
 ## 消息链路
 
@@ -99,19 +101,20 @@ UIN 转 UID 走资料服务上的 `getUidByUin`。读操作的返回结构由 `S
 
 ## 常驻与诊断
 
-在线时模块保持 QQ 的服务处于「已启动」状态（见 README 常驻），写入期间自动持 CPU 与 Wi-Fi 锁，有客户端连接时可长期持 Wi-Fi 锁。`GET /healthz` 返回在线、监听、配置修订、保活、心跳、唤醒锁、SSO、compat 与名字守卫状态；`keepalive` 报 `adj`（当前优先级，低于冻结阈值 900 就不会被冻）、`wchan`（`do_freezer_trap` 即被冻）与 `service`（起服务结果）。`heartbeat` 报服务端 WebSocket ping 的 `pings / pongs / reaped`：`WsConn` 记录最后入站帧，两个心跳周期没回包的半开连接会被关掉。
+在线时模块保持 QQ 的服务处于「已启动」状态，写入期间自动持 CPU 与 Wi-Fi 锁，有客户端连接时可长期持 Wi-Fi 锁。`GET /healthz` 返回在线、监听、配置修订、保活、心跳、唤醒锁、SSO、compat 与名字守卫状态：
 
-root 侧的 `qqguard`（`scripts/qqguard.sh`，详见 [`GUARD.md`](GUARD.md)）与注入层解耦：以 `/system/bin/sh` 运行，只依赖系统与 KernelSU 原生能力，负责进程死亡恢复、freezer 解冻、Doze/AppOps/Data Saver 配置与开机状态恢复。它以落盘的 ARMED/PAUSED 区分保活与用户主动停止，重启有冷却、每小时预算、指数退避与连续崩溃保护。状态与日志在 `/data/adb/satori-qq/`，模块自带的 `service.sh` 在 late_start 阶段调 `qqguard boot`。
+- `keepalive` 报 `adj`（当前优先级，低于冻结阈值 900 就不会被冻）、`wchan`（`do_freezer_trap` 即被冻）与 `service`（起服务结果）
+- `heartbeat` 报服务端 WebSocket ping 的 `pings / pongs / reaped`：`WsConn` 记录最后入站帧，两个心跳周期没回包的半开连接会被关掉
 
-状态通知的补发：QQ 回到前台会清自家通知，`StatusNotice.update` 每轮用 `getActiveNotifications()` 检查自己那条是否还在，被清掉就用同样内容补发；`/healthz.notice` 的 `reposts` 记录补发次数。
+root 侧的 `qqguard`（`scripts/qqguard.sh`，详见 [`GUARD.md`](GUARD.md)）与注入层解耦：以 `/system/bin/sh` 运行，只依赖系统与 KernelSU 原生能力，负责进程死亡恢复、freezer 解冻、Doze / AppOps / Data Saver 配置与开机状态恢复。它以落盘的 ARMED / PAUSED 区分保活与用户主动停止，重启有冷却、每小时预算、指数退避与连续崩溃保护。状态与日志在 `/data/adb/satori-qq/`，模块自带的 `service.sh` 在 late_start 阶段调 `qqguard boot`。
 
-状态通知的点击目标是宿主包的 launcher activity。`PendingIntent` 用 `getLaunchIntentForPackage` 解析一次后缓存，返回的 Intent 带 `FLAG_ACTIVITY_NEW_TASK`，QQ 在后台时回到原任务而不是新建。
+状态通知的补发：QQ 回到前台会清自家通知，`StatusNotice.update` 每轮用 `getActiveNotifications()` 检查自己那条是否还在，被清掉就用同样内容补发；`/healthz.notice` 的 `reposts` 记录补发次数。点击目标是宿主包的 launcher activity，`PendingIntent` 用 `getLaunchIntentForPackage` 解析一次后缓存，返回的 Intent 带 `FLAG_ACTIVITY_NEW_TASK`，QQ 在后台时回到原任务而不是新建。
 
 ColorOS 会把通知小图标换成**发通知那个应用**的 launcher 图标。`OplusNotificationFixHelper.fixSmallIcon` 把原图标挪到 `oplus_small_icon` 附加项、写 `oplus_smallicon_use_app_icon=true`，再取 `getApplicationInfoAsUser(pkg).icon`（系统应用、平台签名、营销通知与 OPLUS 自家包名跳过）；SystemUI 的 `OplusNotificationSmallIconUtil.useAppIconForSmallIcon` 只读那个布尔项。模块在 QQ 进程里发通知，`pkg` 与 `opPkg` 都是 QQ，且 `android.appInfo` 会被 system_server 覆写、伪造 `opPkg` 过不了 uid 校验，所以常驻通知只能显示 QQ 图标；要显示模块自己的图标，只能由 `com.satori.qq` 自己的进程发。
 
 ## QQ 升级检查
 
-升级 QQ 后先跑一次自检，再逐项核：
+升级 QQ 后先跑一次自检：
 
 ```sh
 curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'

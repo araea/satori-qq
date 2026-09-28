@@ -41,7 +41,7 @@ su -c 'qqguard log 50'    # 最近 50 行日志
 
 Android 快捷设置里另有两个磁贴：
 
-- **知弦守护**：单击切换 ON/OFF。关闭默认只暂停保护，**不关 QQ**。
+- **知弦守护**：单击切换 ON / OFF。关闭默认只暂停保护，**不关 QQ**。
 - **停止保活并关闭 QQ**：先暂停 watchdog，再强停 QQ。
 
 磁贴与知弦首页的「常驻守护」分组都通过 `su -c` 调用 root 侧的 `qqguard status --json`，显示的是看守的真实状态。
@@ -62,7 +62,7 @@ Android 快捷设置里另有两个磁贴：
 每 `INTERVAL` 秒（默认 30）一轮：
 
 1. `stopped=true` → 尊重用户，转 PAUSED。
-2. 主进程不在 → 崩遗或被回收。宽限期内继续等；设备没网先不动；`CRASH_WINDOW` 内重启达到 `CRASH_LIMIT` 次则转 PAUSED 等人工；否则按预算拉起。
+2. 主进程不在 → 崩溃或被回收。宽限期内继续等；设备没网先不动；`CRASH_WINDOW` 内重启达到 `CRASH_LIMIT` 次则转 PAUSED 等人工；否则按预算拉起。
 3. 进程在但被冻住（`uid_*/cgroup.freeze=1`、`pid_*/cgroup.freeze=1` 或 `wchan=do_freezer_trap`）→ 写 freezer cgroup 解冻，同一冷却期（默认 5s）内只写一次。**不因为冻结就强杀重启。**
 4. 进程在、没冻，但 `/healthz` 连续 `UNRESPONSIVE_LIMIT` 轮无响应 → 判定挂死，按预算强拉起。
 5. 进程在、服务在，但 `/healthz.online=false` 连续 `OFFLINE_LIMIT` 轮，且 `LAST_ONLINE` 在 `OFFLINE_RESTART_WINDOW` 内（即「刚刚还在线」）→ 按预算拉起，触发自动登录。从没在线过（开机等扫码）不会触发，避免反复重启。

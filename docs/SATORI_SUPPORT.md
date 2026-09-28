@@ -6,12 +6,12 @@
 
 ## 连接约定
 
-- HTTP：`POST /v1/{resource}.{method}`，JSON body，`upload.create` 用 multipart。`Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时按未指定处理，只有明确指向别的平台（非 `red`）或别的账号才回 404。
-- 事件：`GET /v1/events` 升级 WebSocket，须在 10 秒内发 `IDENTIFY`，服务端回 `READY` 与 `EVENT`。省略 `sn` 建新会话，`sn=0` 回放缓冲区内 `sn>0` 的事件。账号未知时不发 `READY`，可知（每秒轮询）后补发，不把占位账号发给客户端。
+- **HTTP**：`POST /v1/{resource}.{method}`，JSON body，`upload.create` 用 multipart。`Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时按未指定处理，只有明确指向别的平台（非 `red`）或别的账号才回 404。
+- **事件**：`GET /v1/events` 升级 WebSocket，须在 10 秒内发 `IDENTIFY`，服务端回 `READY` 与 `EVENT`。省略 `sn` 建新会话，`sn=0` 回放缓冲区内 `sn>0` 的事件。账号未知时不发 `READY`，可知（每秒轮询）后补发，不把占位账号发给客户端。
 - `READY` 里的登录账号就是之后每个请求要带回来的 `Satori-User-ID`。
-- 官方客户端的登录域内路由：动作 `POST /v1/internal/{platform}/{selfId}/_api/{name}`（`bot.internal.*`，参数按 `JsonForm` 编码，带 `Satori-Pagination: true` 时回 `{data, …}`）、资源 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`（`upload.create` 返回的 `internal:` 回落地址，免令牌）。两者只服务本机登录自身，其他登录 404；`POST /v1/internal/{name}` 是模块自己的简写。
+- **官方客户端的登录域内路由**：动作 `POST /v1/internal/{platform}/{selfId}/_api/{name}`（`bot.internal.*`，参数按 `JsonForm` 编码，带 `Satori-Pagination: true` 时回 `{data, …}`）、资源 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`（`upload.create` 返回的 `internal:` 回落地址，免令牌）。两者只服务本机登录自身，其他登录 404；`POST /v1/internal/{name}` 是模块自己的简写。
 - `POST /v1/meta` 取元信息；`GET /v1/proxy/{url}` 代理本机资源。
-- 分页：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next?}`；不带 `next`/`limit` 时一次给完，带时按偏移分页，`next` 是下一次的偏移量；非法令牌返回 400，不会悄悄从头重放。`message.list` 双向分页，见下表。
+- **分页**：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next?}`；不带 `next` / `limit` 时一次给完，带时按偏移分页，`next` 是下一次的偏移量；非法令牌返回 400，不会悄悄从头重放。`message.list` 双向分页，见下表。
 - `platform` 为 `red`，`adapter` 为 `satori-qq`；群频道的 `channel.id` 与 `guild.id` 均为群号、`channel.type=0`，私聊频道为 `private:{uin}`、`channel.type=1`。
 - 消息 ID 用 QQ NT `msgId` 字符串，历史游标用 `message_seq`；`<quote>` 与 `[CQ:reply]` 的 `id` 可直接用于 `message.get` 与 `message.delete`。
 
@@ -79,7 +79,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 互动 | `poke` / `invite` | 戳一戳、邀请入群；poke 支持 `channel_id`（群号或 `private:QQ号`） |
 | 表态 | `reaction_summary` / `reaction_clear` | 消息的回应计数与自己是否回应；仅清除自己的回应 |
 | 群成员 | `special_title` / `card` | 设置群头衔或群名片；`special_title` 只设头衔，不带显示开关参数 |
-| 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关；不带 `show`/`enable` 时只读当前状态，不写 |
+| 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关；不带 `show` / `enable` 时只读当前状态，不写 |
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳（超级表情） |
 | 消息读取 | `get_forward` / `chat_screenshot` | `chat_screenshot` 的范围渲染见下；`get_forward` 读取合并转发。`id` 是转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取 |
@@ -89,26 +89,26 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 
 ### 范围截图（离屏渲染）
 
-`POST /v1/internal/chat_screenshot`（或登录域 `_api/chat_screenshot`），JSON 例如 `{"channel_id":"123456","start_message_id":"QQ消息ID","end_message_id":"QQ消息ID"}`。首尾必须是**同一频道**可从 QQ 本地历史查到的 NT 消息 ID，按 `message_seq` 正序，最多 40 条且含两端。返回 `file`（`internal:red/{selfId}/_tmp/{id}`）、`url`（本机 `/v1/assets/{id}`）、`mime=image/png`、`count`。由 QQ 内核历史读记录，经 Android `Canvas` 在 QQ 进程内渲染文字气泡；图片、语音、视频、文件只画类型占位，没有 QQ 客户端聊天页的皮肤、头像、媒体像素或跨屏截取，也不调用 MediaProjection / 截屏权限。如果内核历史漏掉起止消息、游标不前进、超过数量或画布超过 8192px，会失败而不是返回截断图。图片在 QQ 的本地临时缓存中；资源 URL 仅本机监听、**不带鉴权**（与其他 `_tmp`/assets 相同），任何能访问本机端口并拿到不透明 ID 的程序可读取。不要把 URL 公开转发；过期文件可用 `clean_cache` 清理。
+`POST /v1/internal/chat_screenshot`（或登录域 `_api/chat_screenshot`），JSON 例如 `{"channel_id":"123456","start_message_id":"QQ消息ID","end_message_id":"QQ消息ID"}`。首尾必须是**同一频道**可从 QQ 本地历史查到的 NT 消息 ID，按 `message_seq` 正序，最多 40 条且含两端。返回 `file`（`internal:red/{selfId}/_tmp/{id}`）、`url`（本机 `/v1/assets/{id}`）、`mime=image/png`、`count`。
+
+由 QQ 内核历史读记录，经 Android `Canvas` 在 QQ 进程内渲染文字气泡；图片、语音、视频、文件只画类型占位，没有 QQ 客户端聊天页的皮肤、头像、媒体像素或跨屏截取，也不调用 MediaProjection / 截屏权限。如果内核历史漏掉起止消息、游标不前进、超过数量或画布超过 8192px，会失败而不是返回截断图。图片在 QQ 的本地临时缓存中；资源 URL 仅本机监听、**不带鉴权**（与其他 `_tmp` / assets 相同），任何能访问本机端口并拿到不透明 ID 的程序可读取。不要把 URL 公开转发；过期文件可用 `clean_cache` 清理。
 
 ### 扩展动作注册表
 
-上表是长期维护、逐条手写文档的核心动作；`ExtraSvc` 另有一份代码里登记的注册表，`capabilities` 的目录、参数说明、读写分类都从它生成，这里只按域列出方法名，完整参数以 `capabilities`/`help` 的返回为准：
+上表是长期维护、逐条手写文档的核心动作；`ExtraSvc` 另有一份代码里登记的注册表，`capabilities` 的目录、参数说明、读写分类都从它生成。这里只按域列出方法名，完整参数以 `capabilities` / `help` 的返回为准：
 
 | 域 | 方法（部分带别名，见 `capabilities`） |
 | --- | --- |
 | 消息 | `typing`、`mark_read`、`mark_read_seq`、`mark_all_read`、`message_abstract`、`click_inline_keyboard`、`reedit_recall`、`image_ocr`、`ocr_data`、`ocr_by_aio` |
 | 群管理 | `group_shut_up_list`、`group_join_link`、`group_essence_list`、`group_essence_latest`、`group_essence_cached`、`group_remark`、`group_quit`、`group_join`、`group_join_info`、`group_join_noverify`、`group_bulletin_publish`、`group_bulletin_delete`、`group_bulletin_upload_pic`、`group_bulletin_get`、`group_ext_list`、`group_member_level`、`group_identity_list`、`group_member_card`、`group_profile_card` |
 | 群文件 | `group_file_count`、`group_file_folder_create`、`group_file_folder_delete`、`group_file_folder_rename`、`group_file_delete`、`group_file_rename`、`group_file_move`、`group_file_trans` |
-| 头衔/身份原语 | `identity_title_info`、`identity_level_info`：`setIdentityTitleInfo`/`setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
+| 头衔 / 身份原语 | `identity_title_info`、`identity_level_info`：`setIdentityTitleInfo` / `setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
 | 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add` |
 | 其它 | `online_file_list`、`online_file_refuse`、`temp_chat_info` |
 
 `group_remark`、`group_shut_up_list`、`user_detail`、`mark_read` 走反射内核服务这一条 JNI 通道，不发新的原始封包；批量查询与管理类的具体参数结构体字段名随 QQ 版本变化的风险比核心动作更高，调用前建议先用 `capabilities` 核对，是否接进日常调用按「客户端真的会调」取舍（见 [`JNI_CAPABILITIES.md`](JNI_CAPABILITIES.md) 的「搭话场景的取舍」一节）。
 
 完整参数用 `capabilities` 或 `help` 查询，返回里的 `params` 字段逐条列出参数。扩展动作返回的内核原始数据由反射导出，QQ 增删字段时跟着变而不是静默丢字段。
-
-### 内核可用性
 
 `reaction_summary` 通过 JNI 消息服务读取本地消息快照，不批量查询用户；返回的计数可能晚于刚完成的动作。
 
@@ -154,7 +154,7 @@ QQ 内核的 `elementType` 与本端收到的元素一一对应（9.3.60.40970 �
 | 14 | `MarkdownElement` | 正文以文本投递，保留 Markdown 标记 |
 | 17 | `InlineKeyboardElement` | 按钮标签以只读文本投递，不暴露回调数据 |
 
-图片的 `picSubType` 带在 `img` 的 `sub-type` 上（0.27.1 起）：1 是收藏/自定义表情，群里斗图多半是这种；普通图片不带这个属性。`summary`（QQ 给的「[动画表情]」这类会话列表摘要）同理。发送时 `<img sub-type="1">` 会按表情的样子发出（小图、无相框，会话列表显示「[动画表情]」），客户端把收到的表情再发一遍就还是表情，而不是一张大图。
+图片的 `picSubType` 带在 `img` 的 `sub-type` 上（0.27.1 起）：1 是收藏 / 自定义表情，群里斗图多半是这种；普通图片不带这个属性。`summary`（QQ 给的「[动画表情]」这类会话列表摘要）同理。发送时 `<img sub-type="1">` 会按表情的样子发出（小图、无相框，会话列表显示「[动画表情]」），客户端把收到的表情再发一遍就还是表情，而不是一张大图。
 
 14 与 17 是 QQ 官方机器人与 AI 助手发的「Markdown 卡片 + 按钮」。正文及按钮标签现在作为 `text` 元素进入事件流；按钮只供阅读，本端没有点击 QQ 官方机器人的回调能力。字段结构依据 QQ NT `MsgElement` 类型；这一路径的单元测试已通过，仍待收到真实的官方机器人卡片做现场复核。
 
@@ -189,7 +189,7 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 
 ## 与官方协议的对照
 
-逐条核对过。对照物：`@satorijs/protocol@1.7.0`（协议类型定义就是规范本体）、`@satorijs/core@4.6.0`（客户端框架）、`@satorijs/adapter-satori@1.5.1`（官方客户端）与 `@satorijs/server` 里那份 satori 服务端实现。
+对照物：`@satorijs/protocol@1.7.0`（协议类型定义就是规范本体）、`@satorijs/core@4.6.0`（客户端框架）、`@satorijs/adapter-satori@1.5.1`（官方客户端）与 `@satorijs/server` 里那份 satori 服务端实现。
 
 对齐的（对着实现核过，不是照文档猜的）：
 
@@ -202,15 +202,15 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 | 方法 | 官方 37 个里实现 31 个，`features` 只列实现得了的（客户端据此判断能力） |
 | 上传 | `upload.create` 是 multipart，回 `{<字段名>: <引用>}`，引用形如 `internal:<platform>/<selfId>/_tmp/<id>`，客户端按该路径取回，与官方服务端一致 |
 | 事件名 | `message-created`（官方客户端显式认这个，`message` 只是框架里的别名）、`guild-member-added/updated/removed`、`guild-request`、`guild-member-request`、`friend-request` |
-| 非标准事件 | 纯自定义走 `type=internal` + `_type`/`_data`；标准事件加细节走 `type=guild-member-updated` + `_type=satori-qq/mute`。前者被框架的 `dispatch` 直接派发成 `_type` 事件，后者被 `setInternal` 记成内部数据：两种约定都按框架的实现走 |
+| 非标准事件 | 纯自定义走 `type=internal` + `_type` / `_data`；标准事件加细节走 `type=guild-member-updated` + `_type=satori-qq/mute`。前者被框架的 `dispatch` 直接派发成 `_type` 事件，后者被 `setInternal` 记成内部数据：两种约定都按框架的实现走 |
 
 刻意不同的（连同理由）：
 
 - **缺 6 个方法**：`channel.create`、`channel.delete`、`guild.role.create|update|delete`、`message.update`。QQ 的群就是频道、没有自定义角色、也不支持改消息，实现只能是假的；回 404，能力表里也不列。
 - **`channel.update` 的改名只有一条写入路径**：照 NapCat 只调内核的 `modifyGroupName`，不做二次写入、也不回读校验；空名字一律拒绝。理由与实现见 [`ARCHITECTURE.md`](ARCHITECTURE.md#群资料写入)。
-- **`reaction-removed` 而不是 `reaction-deleted`**：协议包写的是 `reaction-deleted`，但框架给插件的事件表（`@satorijs/core` 的 `Events`）与官方 QQ 适配器用 `reaction-added`/`reaction-removed`，两套名字在框架里不是别名，按「插件实际会监听哪个」选了后者。对接严格照协议包写的客户端时应在客户端兼容 `reaction-deleted` 别名，不同时广播两份相同事件。
-- **`login-updated`**：不在协议包的 `EventName` 里，但官方客户端的 WS 分支显式处理它（还有 `login-added`/`login-removed`），换号时靠它通知客户端重连。
-- **列表分页**：不带 `next`/`limit` 一次给完；指定分页后按 `next` 继续读取。
+- **`reaction-removed` 而不是 `reaction-deleted`**：协议包写的是 `reaction-deleted`，但框架给插件的事件表（`@satorijs/core` 的 `Events`）与官方 QQ 适配器用 `reaction-added` / `reaction-removed`，两套名字在框架里不是别名，按「插件实际会监听哪个」选了后者。对接严格照协议包写的客户端时应在客户端兼容 `reaction-deleted` 别名，不同时广播两份相同事件。
+- **`login-updated`**：不在协议包的 `EventName` 里，但官方客户端的 WS 分支显式处理它（还有 `login-added` / `login-removed`），换号时靠它通知客户端重连。
+- **列表分页**：不带 `next` / `limit` 一次给完；指定分页后按 `next` 继续读取。
 - **`channel.get` 多回一个 `avatar`**：协议里 `Channel` 没有这个字段，客户端会原样忽略。
 - **错误码**：令牌不对回 401（官方回 403）、未知 `Satori-User-ID` 回 404（官方回 403）；客户端两种都当失败处理，没有实际差别。
 

@@ -134,7 +134,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 消息 | `typing`、`mark_read`、`mark_read_seq`、`mark_all_read`、`message_abstract`、`click_inline_keyboard`、`reedit_recall`、`image_ocr`、`ocr_data`、`ocr_by_aio` |
 | 群管理 | `group_shut_up_list`、`group_join_link`、`group_essence_list`、`group_essence_latest`、`group_essence_cached`、`group_remark`、`group_quit`、`group_join`、`group_join_info`、`group_join_noverify`、`group_bulletin_publish`、`group_bulletin_delete`、`group_bulletin_upload_pic`、`group_bulletin_get`、`group_ext_list`、`group_member_level`、`group_identity_list`、`group_member_card`、`group_profile_card` |
 | 群文件 | `group_file_count`、`group_file_folder_create`、`group_file_folder_delete`、`group_file_folder_rename`、`group_file_delete`、`group_file_rename`、`group_file_move`、`group_file_trans` |
-| 头衔/身份原语 | `identity_title_info`、`identity_level_info`——`setIdentityTitleInfo`/`setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
+| 头衔/身份原语 | `identity_title_info`、`identity_level_info`：`setIdentityTitleInfo`/`setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
 | 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add` |
 | 其它 | `online_file_list`、`online_file_refuse`、`temp_chat_info` |
 
@@ -187,7 +187,7 @@ QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，
 
 ### 入站元素类型
 
-QQ 内核的 `elementType` 与本端收到的元素一一对应（2026-09-16 在 9.3.60.40970 上逐个核过）：
+QQ 内核的 `elementType` 与本端收到的元素一一对应（9.3.60.40970 上逐个核过）：
 
 | elementType | 内核元素 | 本端 |
 | --- | --- | --- |
@@ -229,13 +229,13 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 
 `<audio src>` 先转成 QQ 的 SILK（mp3、wav、amr 都走这条路），整条带重试、最多三次：`MediaCodec`
 的解码器在 QQ 进程里会被系统回收，`queueInputBuffer` 抛一个空消息的 `CodecException`，换个解码器重来
-即可。重试按时间收口——上次耗时乘二超过 20 秒就不试（实测 59 秒的语音转一次，前台约 8 秒、后台约
+即可。重试按时间收口：上次耗时乘二超过 20 秒就不试（实测 59 秒的语音转一次，前台约 8 秒、后台约
 34 秒，多试两次客户端就 HTTP 超时）。`node tests/media-live-probe.js voicerepeat` 能量这件事。
 `<video>` 需本地取到视频帧做缩略图；`<file>` 既发聊天气泡，也进群文件列表。
 
-### 顺媒体必须单独成条（2026-09-17）
+### 顺媒体必须单独成条
 
-`audio` / `video` / `file` 在 QQ 里是「顺媒体」：**一条消息带了其中一种，就只能有它自己**——再挂
+`audio` / `video` / `file` 在 QQ 里是「顺媒体」：**一条消息带了其中一种，就只能有它自己**，再挂
 `quote`、`at`、`text`、`img`，客户端渲染不出同条内容（顺媒体显示成空，引用与文字一起乱）。实测的现场
 是「引用 + 视频」在群里只剩一个空气泡。
 
@@ -256,7 +256,7 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 
 ## 与官方协议的对照
 
-2026-09-19 逐条核对过。对照物：`@satorijs/protocol@1.7.0`（协议类型定义就是规范本体）、
+逐条核对过。对照物：`@satorijs/protocol@1.7.0`（协议类型定义就是规范本体）、
 `@satorijs/core@4.6.0`（客户端框架）、`@satorijs/adapter-satori@1.5.1`（官方客户端）与
 `@satorijs/server` 里那份 satori 服务端实现。
 
@@ -269,9 +269,9 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 | 认证 | HTTP 用 `Authorization: Bearer`，WS 用 IDENTIFY 里的 `token`；`Satori-User-ID` / `Satori-Platform` 必须指向本实现端的登录 |
 | 对象 | `Login{sn,adapter,platform,status,features,user}`、`Guild`、`Channel`、`GuildMember`、`Message`、`List{data,next?}`、`Meta{logins,proxy_urls}` |
 | 方法 | 官方 37 个里实现 31 个，`features` 只列实现得了的（客户端据此判断能力） |
-| 上传 | `upload.create` 是 multipart，回 `{<字段名>: <引用>}`，引用形如 `internal:<platform>/<selfId>/_tmp/<id>`，客户端按该路径取回——与官方服务端一致 |
+| 上传 | `upload.create` 是 multipart，回 `{<字段名>: <引用>}`，引用形如 `internal:<platform>/<selfId>/_tmp/<id>`，客户端按该路径取回，与官方服务端一致 |
 | 事件名 | `message-created`（官方客户端显式认这个，`message` 只是框架里的别名）、`guild-member-added/updated/removed`、`guild-request`、`guild-member-request`、`friend-request` |
-| 非标准事件 | 纯自定义走 `type=internal` + `_type`/`_data`；标准事件加细节走 `type=guild-member-updated` + `_type=satori-qq/mute`。前者被框架的 `dispatch` 直接派发成 `_type` 事件，后者被 `setInternal` 记成内部数据——两种约定都按框架的实现走 |
+| 非标准事件 | 纯自定义走 `type=internal` + `_type`/`_data`；标准事件加细节走 `type=guild-member-updated` + `_type=satori-qq/mute`。前者被框架的 `dispatch` 直接派发成 `_type` 事件，后者被 `setInternal` 记成内部数据：两种约定都按框架的实现走 |
 
 刻意不同的（连同理由）：
 

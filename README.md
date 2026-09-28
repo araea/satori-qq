@@ -1,6 +1,6 @@
-# 知弦 · Satori QQ
+# 知弦（Satori QQ）
 
-知弦在 Android QQ 进程内提供 Satori v1 HTTP 与 WebSocket 服务，供本机 Koishi 等客户端连接。当前核验环境为 QQ 9.3.65（NT）。
+在 Android QQ 进程内提供 Satori v1 HTTP 与 WebSocket 服务，供本机 Koishi 等客户端连接，当前核验环境为 QQ 9.3.65（NT）
 
 ## 运行条件
 

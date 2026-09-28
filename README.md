@@ -1,16 +1,19 @@
-# 知弦（Satori QQ）
+# 知弦（satori-qq）
 
-在 Android QQ 进程内提供 Satori v1 HTTP 与 WebSocket 服务，供本机 Koishi 等客户端连接，当前核验环境为 QQ 9.3.65（NT）
+QQ 的 Satori 实现端：通过 Zygisk 注入把 QQ NT 内核暴露为统一 Satori 接口，支持收发消息与媒体
 
-## 运行条件
-
-- Android 8.0 或更高版本
-- QQ：`com.tencent.mobileqq`
-- Zygisk Next，用于注入模块；不需要 LSPosed 或 Xposed 框架
-
-QQ 会检查运行环境。检测到 LSPosed 等注入框架或 hook 引擎时，可能触发登录风控、账号掉线或反复验证。知弦使用 Zygisk 注入，不包含 ART hook 引擎；消息与会话通道通过 JNI 实现。
+[![GitHub](https://img.shields.io/badge/GitHub-仓库-181717)](https://github.com/araea/satori-qq)
+[![Release](https://img.shields.io/badge/Release-下载-2ea44f)](https://github.com/araea/satori-qq/releases)
 
 ## 安装
+
+运行环境：
+
+- Android 8.0 或更高版本
+- QQ 包名 `com.tencent.mobileqq`
+- Zygisk Next 1.5.0 或更高，用于注入模块；不依赖 LSPosed 或 Xposed 框架
+
+步骤：
 
 1. 安装管理应用 `SatoriQQ.apk`。
 2. 将 `SatoriQQ-module.zip` 刷入 Magisk / KernelSU，或解压到 `/data/adb/modules/satori_qq/`。
@@ -19,9 +22,9 @@ QQ 会检查运行环境。检测到 LSPosed 等注入框架或 hook 引擎时�
 
 模块基于 Zygisk API v4，已在 Zygisk Next 1.5.0 验证。管理应用的改动需单独安装 `build/SatoriQQ.apk`。
 
-## 连接 Koishi
+## 快速使用
 
-以下示例使用 `adapter-satori`：
+本机 Koishi 用 `adapter-satori` 连接：
 
 ```yaml
 plugins:
@@ -65,26 +68,15 @@ plugins:
 
 应用内「连接设置」会覆盖文件中的同名字段；选择「改用文件配置」可取消覆盖。修改配置后重启 QQ。
 
-## 保持在线
+## 限制 / 风险
 
-QQ 被系统冻结或结束时，Satori 服务会断开。知弦包含进程内 Keepalive；需要设备级恢复时，可用 root 看守 `qqguard` 检测进程、解冻 QQ 并按预算重启。安装、命令与策略见[常驻守护](docs/GUARD.md)。
+- QQ 会检查运行环境。检测到 LSPosed 等注入框架或 hook 引擎时，可能触发登录风控、账号掉线或反复验证。知弦使用 Zygisk 注入，不包含 ART hook 引擎；消息与会话通道通过 JNI 实现。
+- QQ 被系统冻结或结束时，Satori 服务会断开。知弦包含进程内 Keepalive；需要设备级恢复时用 root 看守 `qqguard`，见[常驻守护](docs/GUARD.md)。保持在线会增加耗电。
+- 媒体最多等待 45 秒确认，文字最多 20 秒；发送回调或消息状态更新均可确认。超时返回 `send outcome unknown`，不会假报成功或自动重发，原消息仍可能稍后送达。
+- 资源 URL（`/v1/assets/{id}`、`internal:` 回落地址）仅本机监听、不带鉴权。不要把 URL 公开转发。
+- 配置改动与「重新启动 QQ」后才能生效，热切换端口不被支持。
 
-`wifi_sustain` 只在 Wi-Fi 下生效。蜂窝网络需允许 QQ 使用后台数据；ColorOS 等系统还可能需要关闭深度睡眠或睡眠待机优化。保持在线会增加耗电。
-
-## 排障
-
-- 强行停止 QQ 后，看守会尊重系统的停止状态并暂停；重新启动保活请运行 `qqguard start`。
-- 锁屏后文字可发但图片或合并转发失败，要分别检查 QQ 内核后台调度与系统网络限制。
-  0.29.6 起媒体发送期间调用 QQ 自己的 `switchToFront()`；已连接的 bot 同样维持内核调度，
-  以便 ambient 等依赖实时入站事件的插件正常判断。看 `/healthz.kernel_foreground` 与
-  `POST /v1/internal/compat` 的 `observed`，接口存在不等于长时间锁屏行为已验证。
-- 媒体最多等待 45 秒确认，文字最多 20 秒；发送回调或消息状态更新均可确认。
-  超时返回 `send outcome unknown`，不会假报成功或自动重发，原消息仍可能稍后送达。
-  `/healthz.send` 显示当前等待数与最近结果，详见 [0.29.6 变更说明](changelogs/CHANGELOG-0.29.6.md)。
-- 知弦读不到应用内设置时，在系统设置中允许知弦的关联启动，再重启 QQ。
-- 区分 QQ 断线、模块故障和客户端连接问题，可查看 `/healthz`；网络诊断脚本见 `scripts/netwatch.sh`。
-
-## 文档
+## 必要链接
 
 - [Satori v1 方法、事件和消息元素](docs/SATORI_SUPPORT.md)
 - [架构、构建与测试](docs/ARCHITECTURE.md)

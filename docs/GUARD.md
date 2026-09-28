@@ -1,12 +1,8 @@
 # 常驻守护（qqguard）
 
-`qqguard` 是知弦在 root 侧独立运行的看守：让 QQ（`com.tencent.mobileqq`）在一台已 root 的
-Android 上尽可能不被冻结、不被断网、不被回收；异常死亡能自动恢复；用户随时可以明确停止保活并
-正常关闭 QQ。
+`qqguard` 是知弦在 root 侧独立运行的看守：让 QQ（`com.tencent.mobileqq`）在一台已 root 的 Android 上尽可能不被冻结、不被断网、不被回收；异常死亡能自动恢复；用户随时可以明确停止保活并正常关闭 QQ。
 
-它基于 KernelSU / ReSukiSU 的原生能力，以 `/system/bin/sh` 运行，工具全部取 `/system/bin`
-（toybox）与 KSU 自带 busybox；不依赖 Termux、LSPosed、Zygisk，不改写任何 ArtMethod。它与
-Zygisk 注入层解耦：即使注入暂时失效，进程死亡仍能被恢复。
+它基于 KernelSU / ReSukiSU 的原生能力，以 `/system/bin/sh` 运行，工具全部取 `/system/bin`（toybox）与 KSU 自带 busybox；不依赖 Termux、LSPosed、Zygisk，不改写任何 ArtMethod。它与 Zygisk 注入层解耦：即使注入暂时失效，进程死亡仍能被恢复。
 
 ## 安装
 
@@ -48,8 +44,7 @@ Android 快捷设置里另有两个磁贴：
 - **知弦守护**：单击切换 ON/OFF。关闭默认只暂停保护，**不关 QQ**。
 - **停止保活并关闭 QQ**：先暂停 watchdog，再强停 QQ。
 
-磁贴与知弦首页的「常驻守护」分组都通过 `su -c` 调用 root 侧的 `qqguard status --json`，
-显示的是看守的真实状态。
+磁贴与知弦首页的「常驻守护」分组都通过 `su -c` 调用 root 侧的 `qqguard status --json`，显示的是看守的真实状态。
 
 ## 状态模型
 
@@ -60,31 +55,21 @@ Android 快捷设置里另有两个磁贴：
 | `ARMED` | 保活中 | 运行 | 崩溃 / 被系统回收 → 按预算拉起 |
 | `PAUSED` | 已暂停 | 不运行 | 一律不拉起 |
 
-另外，**用户在系统设置里手动「强行停止」QQ**（`dumpsys package` 里 `stopped=true`）默认被尊重：
-即使处于 ARMED，看守也会记录一行、转入 `PAUSED`，不再跟用户抢。想重新保活就 `qqguard start`。
-要改成「强停也拉」，设 `QQGUARD_RESPECT_FORCE_STOP=0`。
+另外，**用户在系统设置里手动「强行停止」QQ**（`dumpsys package` 里 `stopped=true`）默认被尊重：即使处于 ARMED，看守也会记录一行、转入 `PAUSED`，不再跟用户抢。想重新保活就 `qqguard start`。要改成「强停也拉」，设 `QQGUARD_RESPECT_FORCE_STOP=0`。
 
 ## 判据与动作
 
 每 `INTERVAL` 秒（默认 30）一轮：
 
 1. `stopped=true` → 尊重用户，转 PAUSED。
-2. 主进程不在 → 崩遗或被回收。宽限期内继续等；设备没网先不动；`CRASH_WINDOW` 内重启达到
-   `CRASH_LIMIT` 次则转 PAUSED 等人工；否则按预算拉起。
-3. 进程在但被冻住（`uid_*/cgroup.freeze=1`、`pid_*/cgroup.freeze=1` 或
-   `wchan=do_freezer_trap`）→ 写 freezer cgroup 解冻，同一冷却期（默认 5s）内只写一次。
-   **不因为冻结就强杀重启。**
+2. 主进程不在 → 崩遗或被回收。宽限期内继续等；设备没网先不动；`CRASH_WINDOW` 内重启达到 `CRASH_LIMIT` 次则转 PAUSED 等人工；否则按预算拉起。
+3. 进程在但被冻住（`uid_*/cgroup.freeze=1`、`pid_*/cgroup.freeze=1` 或 `wchan=do_freezer_trap`）→ 写 freezer cgroup 解冻，同一冷却期（默认 5s）内只写一次。**不因为冻结就强杀重启。**
 4. 进程在、没冻，但 `/healthz` 连续 `UNRESPONSIVE_LIMIT` 轮无响应 → 判定挂死，按预算强拉起。
-5. 进程在、服务在，但 `/healthz.online=false` 连续 `OFFLINE_LIMIT` 轮，且
-   `LAST_ONLINE` 在 `OFFLINE_RESTART_WINDOW` 内（即「刚刚还在线」）→ 按预算拉起，触发自动登录。
-   从没在线过（开机等扫码）不会触发，避免反复重启。
+5. 进程在、服务在，但 `/healthz.online=false` 连续 `OFFLINE_LIMIT` 轮，且 `LAST_ONLINE` 在 `OFFLINE_RESTART_WINDOW` 内（即「刚刚还在线」）→ 按预算拉起，触发自动登录。从没在线过（开机等扫码）不会触发，避免反复重启。
 
-两次完整检查之间，每 5 秒只读 QQ 的 freezer 文件，发现冻结就按冷却解冻；完整检查前也先解冻，
-避免先白等 HTTP 超时。重启预算和离线判据仍按原来的完整检查节奏运行。
+两次完整检查之间，每 5 秒只读 QQ 的 freezer 文件，发现冻结就按冷却解冻；完整检查前也先解冻，避免先白等 HTTP 超时。重启预算和离线判据仍按原来的完整检查节奏运行。
 
-被冻住只解冻不重启，是因为 ColorOS 的冻结可能反复发生，服务已启动、唤醒锁已持有也不保证
-免于厂商冻结。原来的 60 秒解冻冷却会超过 acumen ambient 默认 25 秒的发言时效。
-这层恢复不等同于 QQ 内核的前后台切换，也不能解决物理网络或模型服务不可用。
+被冻住只解冻不重启，是因为 ColorOS 的冻结可能反复发生，服务已启动、唤醒锁已持有也不保证免于厂商冻结。这层恢复不等同于 QQ 内核的前后台切换，也不能解决物理网络或模型服务不可用。
 
 ## 重启刹车
 
@@ -99,22 +84,17 @@ Android 快捷设置里另有两个磁贴：
 
 `start` 会先跑一次，也可以单独调：
 
-- Doze 白名单：`dumpsys deviceidle whitelist +com.tencent.mobileqq`（只加白名单，**不动
-  `deviceidle` 全局开关**）。
+- Doze 白名单：`dumpsys deviceidle whitelist +com.tencent.mobileqq`（只加白名单，**不动 `deviceidle` 全局开关**）。
 - AppOps：`RUN_IN_BACKGROUND`、`RUN_ANY_IN_BACKGROUND`、`WAKE_LOCK`、`START_FOREGROUND` 设为 allow。
 - App Standby Bucket：尽量 `active`（Doze 白名单下通常是 `EXEMPTED=5`，比 active 更高）。
-- Data Saver：`cmd netpolicy add restrict-background-whitelist <uid>`，锁屏 / 省流量模式下仍允许
-  后台联网。
+- Data Saver：`cmd netpolicy add restrict-background-whitelist <uid>`，锁屏 / 省流量模式下仍允许后台联网。
 - `QQGUARD_OEM=1` 时额外尝试厂商自启动 / 关联启动 AppOps（不同 ROM 支持不一致，失败被忽略）。
 
-**不改全局**：不碰全局 LMK、不长期强占 `oom_score_adj`、不用永久亮屏。整机 Doze 是否关闭是另一个
-决定，见 `scripts/99-no-doze.sh`。
+**不改全局**：不碰全局 LMK、不长期强占 `oom_score_adj`、不用永久亮屏。整机 Doze 是否关闭是另一个决定，见 `scripts/99-no-doze.sh`。
 
 ## 配置
 
-拷 [`scripts/guard.conf.sample`](../scripts/guard.conf.sample) 到
-`/data/adb/satori-qq/guard.conf`，改完 `qqguard restart` 或重启手机生效。每一项都能用同名
-`QQGUARD_` 环境变量临时覆盖，环境变量优先。
+拷 [`scripts/guard.conf.sample`](../scripts/guard.conf.sample) 到 `/data/adb/satori-qq/guard.conf`，改完 `qqguard restart` 或重启手机生效。每一项都能用同名 `QQGUARD_` 环境变量临时覆盖，环境变量优先。
 
 ## 文件
 
@@ -127,20 +107,3 @@ Android 快捷设置里另有两个磁贴：
 | `/data/adb/satori-qq/guard.conf` | 可选配置 |
 | `/data/adb/modules/satori_qq/service.sh` | KernelSU 开机恢复入口 |
 | `/data/adb/modules/satori_qq/action.sh` | 模块「操作」按钮 = `qqguard toggle` |
-
-## 旧看守已移除
-
-0.23.x 及更早的 `scripts/qq-revive.sh` 与 `scripts/98-qq-revive.sh` 已在 0.24.0 删除。旧脚本每
-60 秒查 `/healthz`、MSF 上游连接与 `qk_kick.log`，偏重「僵尸会话」的判定，逻辑复杂、耦合
-Termux，而且会 force-stop 后重启。`qqguard` 改为以「进程死亡 / 冻结」为主，协议层自己管心跳与
-重连，重启预算更保守。
-
-从旧版升级时，把设备上的旧看守也清掉，避免两个看守抢 QQ：
-
-```sh
-# 先停掉还活着的旧看守
-[ -f /data/adb/satori-qq/qq-revive.pid ] && kill "$(cat /data/adb/satori-qq/qq-revive.pid)" 2>/dev/null
-rm -f /data/adb/satori-qq/qq-revive.sh /data/adb/satori-qq/qq-revive.log \
-      /data/adb/satori-qq/qq-revive.pid /data/adb/satori-qq/qq-revive.state \
-      /data/adb/satori-qq/qq-revive.flags /data/adb/service.d/98-qq-revive.sh
-```

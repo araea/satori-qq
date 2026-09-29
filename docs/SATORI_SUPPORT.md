@@ -6,11 +6,12 @@
 
 ## 连接约定
 
-- **HTTP**：`POST /v1/{resource}.{method}`，JSON body，`upload.create` 用 multipart。`Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时按未指定处理，只有明确指向别的平台（非 `red`）或别的账号才回 404。
+- **HTTP**：`POST /v1/{resource}.{method}`，JSON body，`upload.create` 用 multipart。`Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时按未指定处理，只有明确指向别的平台（非 `red`）或别的账号才回 403（官方服务端的 `login not found`）。
+- **状态码**：缺失鉴权 401、令牌不对 403（WebSocket 的 IDENTIFY 令牌不对用 4004 关闭）；标准方法在 QQ 上没有对应能力回 404（不是 501）；`GET` 打到方法路由回 405；参数缺失或格式错误 400。错误体是 `{"message": …}`，个别带机器可读的 `code`。
 - **事件**：`GET /v1/events` 升级 WebSocket，须在 10 秒内发 `IDENTIFY`，服务端回 `READY` 与 `EVENT`。省略 `sn` 建新会话，`sn=0` 回放缓冲区内 `sn>0` 的事件。账号未知时不发 `READY`，可知（每秒轮询）后补发，不把占位账号发给客户端。
 - `READY` 里的登录账号就是之后每个请求要带回来的 `Satori-User-ID`。
 - **官方客户端的登录域内路由**：动作 `POST /v1/internal/{platform}/{selfId}/_api/{name}`（`bot.internal.*`，参数按 `JsonForm` 编码，带 `Satori-Pagination: true` 时回 `{data, …}`）、资源 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`（`upload.create` 返回的 `internal:` 回落地址，免令牌）。两者只服务本机登录自身，其他登录 404；`POST /v1/internal/{name}` 是模块自己的简写。
-- `POST /v1/meta` 取元信息；`GET /v1/proxy/{url}` 代理本机资源。
+- `POST /v1/meta` 取元信息；`GET /v1/proxy/{url}` 代理本机资源，不需要任何头：不是合法 URL 或 `internal:` 格式不对回 400，登录或资源不存在 404，合法但不在 `proxy_urls` 的外链 403（本实现不下载外链，`proxy_urls` 恒为空）。
 - **分页**：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next?}`；不带 `next` / `limit` 时一次给完，带时按偏移分页，`next` 是下一次的偏移量；非法令牌返回 400，不会悄悄从头重放。`message.list` 双向分页，见下表。
 - `platform` 为 `red`，`adapter` 为 `satori-qq`；群频道的 `channel.id` 与 `guild.id` 均为群号、`channel.type=0`，私聊频道为 `private:{uin}`、`channel.type=1`。
 - 消息 ID 用 QQ NT `msgId` 字符串，历史游标用 `message_seq`；`<quote>` 与 `[CQ:reply]` 的 `id` 可直接用于 `message.get` 与 `message.delete`。
@@ -127,6 +128,8 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 
 QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，并在 `satori_qq.manual_self` 中携带实际身份；机器人 API 的发送回声会去重。登录期间的群列表同步不生成群变更事件。
 
+推送的事件遵守协议的资源提升：`channel`、`guild`、`user`、`member` 只在事件顶层，`message` 里不再重复，`member` 里也没有 `user`；`message.get` / `message.list` 返回的 `Message` 才是嵌套形态（必需资源在它里面）。
+
 每个事件的顶层都带 `sn`、`type`、`timestamp`、`login`，以及 `self_id` 与 `platform`（Event 类型里与 `login` 并列的扁平字段。只有 `login` 时客户端也能工作，但按协议类型实现的一方读的是扁平字段）。`login.get` 与 `READY` 里的 login 带 `sn`、`adapter`、`platform`、`self_id`、`hidden`、`status`、`user` 与 `features`。
 
 表态事件用 `reaction-added` / `reaction-removed`，与 `@satorijs/core` 声明的 `Events` 一致；`@satorijs/protocol` 的 `EventName` 写的是 `reaction-deleted`。模块跟随核心事件表，不两头发。
@@ -212,7 +215,8 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 - **`login-updated`**：不在协议包的 `EventName` 里，但官方客户端的 WS 分支显式处理它（还有 `login-added` / `login-removed`），换号时靠它通知客户端重连。
 - **列表分页**：不带 `next` / `limit` 一次给完；指定分页后按 `next` 继续读取。
 - **`channel.get` 多回一个 `avatar`**：协议里 `Channel` 没有这个字段，客户端会原样忽略。
-- **错误码**：令牌不对回 401（官方回 403）、未知 `Satori-User-ID` 回 404（官方回 403）；客户端两种都当失败处理，没有实际差别。
+
+对照可以直接跑：`python3 tests/conformance.py --base http://127.0.0.1:3001`（只读黑盒探针，不发任何聊天消息；`--listen 60` 再核对实时事件的形状）。同一份探针也在 satori-wx 里，两个实现用同一把尺子量。
 
 ## 与 Acumen 的协作约定
 
@@ -220,7 +224,7 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 
 - READY、历史回放和实时事件在同一把投递锁内串行完成。所有广播事件在投递时统一分配 sn；多条 JNI 回调不会令客户端先看到较大的 sn 再看到较小的 sn。重复 IDENTIFY 不重新回放。
 - 恢复连接不重复投递待审批申请；登录事件不进历史缓冲。换号清除回放与表态缓存。
-- READY 附加 `satori_qq.session_id` 和 `satori_qq.sn`，供 Acumen 识别模块进程重启。sn 从当前毫秒时间起算；缓冲仍为当前进程最近 4096 条，重启不恢复丢失的历史。
+- READY 附加 `satori_qq.session_id` 和 `satori_qq.sn`，供 Acumen 识别模块进程重启（satori-wx 的 READY 带同形的 `satori_wx` 对象，Acumen 认任何扩展对象里的 `session_id`）。带旧 `sn` 的 IDENTIFY 永远得到 READY，从不拒绝。sn 从当前毫秒时间起算；缓冲仍为当前进程最近 4096 条，重启不恢复丢失的历史。
 - `reaction.clear` 从 features 移除并返回 404。只清自己的非标准行为在 `POST /v1/internal/reaction_clear`，参数 `channel_id, message_id, emoji_id?`；返回 `{cleared, scope:"self"}`。无自己表态时返回 0；部分失败明确报错，不报完全成功。
 - `POST /v1/internal/reaction_summary` 参数 `channel_id, message_id`；返回 `{message_id, data:[{emoji_id,count,self}], source:"kernel_cache", observed_at}`。count 来自 QQ 本地缓存；self 优先使用本模块已确认的动作。两者更新时间可能不同。
 - 表态事件的 `_type=satori-qq/reaction`、`_data={before,count,delta}` 解释数量变化；没有可靠操作者时不填写 user，不能把消息作者认作回应者。

@@ -202,6 +202,29 @@ public final class ElementsTest {
         eq("7753807298269865192", del.getJSONObject("message").getString("id"),
                 "recall prefers qq_msg_id");
         eq("2", del.getJSONObject("user").getString("id"), "recall user");
+
+        // 资源提升：推送的事件里，message 不再带 channel/guild/user/member，member 不再带 user；
+        // 同一份 message 走 message.get / message.list 时仍是嵌套形态（未经 promote）。
+        JSONObject nested = Codec.toSatoriEvent(history, login, 4, "");
+        JSONObject msgApi = nested.getJSONObject("message");
+        for (String key : new String[]{"channel", "guild", "user", "member"})
+            check(msgApi.has(key), "API-shaped message keeps " + key);
+        JSONObject pushed = Codec.promote(Codec.toSatoriEvent(history, login, 5, ""));
+        for (String key : new String[]{"channel", "guild", "user", "member"}) {
+            check(pushed.has(key), "event carries " + key + " at the top");
+            check(!pushed.getJSONObject("message").has(key), "event.message has no " + key);
+        }
+        check(!pushed.getJSONObject("member").has("user"), "event.member has no user");
+        eq("群名片", pushed.getJSONObject("member").getString("nick"), "member keeps its own fields");
+        eq("hi", pushed.getJSONObject("message").getString("content"), "message keeps its own fields");
+
+        JSONObject join = new JSONObject()
+                .put("post_type", "notice").put("notice_type", "group_increase")
+                .put("group_id", 1).put("user_id", 2).put("operator_id", 3);
+        JSONObject joined = Codec.promote(Codec.toSatoriEvent(join, login, 6, ""));
+        eq("2", joined.getJSONObject("user").getString("id"), "join user at top");
+        check(!joined.getJSONObject("member").has("user"), "join member has no user");
+        check(Codec.promote(null) == null, "promote(null)");
     }
 
     private static void check(boolean v, String label) {

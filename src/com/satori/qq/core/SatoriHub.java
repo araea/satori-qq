@@ -341,7 +341,11 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("session", qq.sessionDiag())
                         .toString());
             }
-            if (!httpAuth(req)) return HttpServer.HttpResult.text(401, "unauthorized");
+            if (!httpAuth(req)) {
+                // 协议的状态码表：缺失鉴权 401，权限不足（令牌不对）403。
+                return HttpServer.HttpResult.json(hasCredentials(req) ? 403 : 401,
+                        errorJson(hasCredentials(req) ? "invalid token" : "missing token"));
+            }
             if ("GET".equals(req.method) && "/".equals(path)) {
                 return HttpServer.HttpResult.json(200, new JSONObject()
                         .put("name", APP_NAME).put("version", APP_VERSION)
@@ -371,7 +375,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             // stays JSON like every other error so a client can parse it uniformly.
             return HttpServer.HttpResult.json(404, errorJson(ni.getMessage()));
         } catch (ApiError e) {
-            int http = e.code == 1400 ? 400 : e.code == 1404 ? 404 : 500;
+            int http = e.code == 1400 ? 400 : e.code == 1403 ? 403 : e.code == 1404 ? 404 : 500;
             return HttpServer.HttpResult.json(http, errorJson(e.getMessage()));
         } catch (IllegalStateException e) {
             return HttpServer.HttpResult.json(500, errorJson(e.getMessage()));
@@ -423,7 +427,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private void handleIdentify(WsConn conn, JSONObject body) throws Exception {
         if (cfg.token != null && !cfg.token.isEmpty()
                 && !cfg.token.equals(body.optString("token", ""))) {
-            conn.close();
+            conn.closeWith(4004);
             return;
         }
         if (selfUin() == 0) {
@@ -450,6 +454,17 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     @Override public void onWsClose(WsConn conn) {
         identified.remove(conn);
         awaitingReady.remove(conn);
+    }
+
+    /** 请求带了令牌（不论对错）：区分「缺失鉴权」与「令牌不对」。 */
+    private static boolean hasCredentials(HttpServer.HttpReq req) {
+        if (!req.header("authorization").isEmpty()) return true;
+        String q = req.query;
+        if (q == null) return false;
+        for (String part : q.split("&")) {
+            if (part.equals("access_token") || part.startsWith("access_token=")) return true;
+        }
+        return false;
     }
 
     private boolean httpAuth(HttpServer.HttpReq req) {
@@ -580,13 +595,33 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String url;
         try { url = java.net.URLDecoder.decode(encoded, "UTF-8"); }
         catch (Exception e) { return HttpServer.HttpResult.text(400, "invalid url"); }
-        if (!url.startsWith("internal:")) return HttpServer.HttpResult.text(403, "proxy url not allowed");
-        String prefix = "internal:" + PLATFORM + "/" + selfUin() + "/_tmp/";
-        if (!url.startsWith(prefix)) return HttpServer.HttpResult.text(404, "login or resource not found");
-        String id = url.substring(prefix.length());
-        if (id.isEmpty() || id.indexOf('/') >= 0 || id.indexOf('\\') >= 0)
-            return HttpServer.HttpResult.text(400, "invalid internal resource");
-        return serveAsset(id);
+        if (url.startsWith("internal:")) {
+            // internal:{platform}/{user.id}/{path}；格式不对 400，找不到登录 404。
+            String[] parts = url.substring("internal:".length()).split("/", 3);
+            if (parts.length < 3 || parts[0].isEmpty() || parts[1].isEmpty() || parts[2].isEmpty())
+                return HttpServer.HttpResult.text(400, "invalid internal url");
+            if (!PLATFORM.equals(parts[0]) || !String.valueOf(selfUin()).equals(parts[1]))
+                return HttpServer.HttpResult.text(404, "login or resource not found");
+            if (!parts[2].startsWith("_tmp/")) return HttpServer.HttpResult.text(404, "unknown internal route");
+            String id = parts[2].substring("_tmp/".length());
+            if (id.isEmpty() || id.indexOf('/') >= 0 || id.indexOf('\\') >= 0)
+                return HttpServer.HttpResult.text(400, "invalid internal url");
+            return serveAsset(id);
+        }
+        if (!isHttpUrl(url)) return HttpServer.HttpResult.text(400, "invalid url");
+        // 本实现不下载任何外链，proxy_urls 恒为空，所以合法的外链一律不在代理范围内。
+        return HttpServer.HttpResult.text(403, "proxy url not allowed");
+    }
+
+    private static boolean isHttpUrl(String url) {
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            String scheme = uri.getScheme();
+            return scheme != null && (scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))
+                    && uri.getHost() != null && !uri.getHost().isEmpty();
+        } catch (java.net.URISyntaxException e) {
+            return false;
+        }
     }
 
     /**
@@ -621,9 +656,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String platform = req.header("satori-platform");
         String userId = req.header("satori-user-id");
         if (!platform.isEmpty() && !PLATFORM.equals(platform))
-            throw new ApiError(1404, "unknown Satori-Platform: " + platform);
+            throw new ApiError(1403, "login not found: Satori-Platform " + platform);
         if (isForeignLogin(userId, selfUin()))
-            throw new ApiError(1404, "unknown Satori-User-ID: " + userId);
+            throw new ApiError(1403, "login not found: Satori-User-ID " + userId);
     }
 
     /**
@@ -4349,7 +4384,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         // the delivery lock, otherwise a concurrent broadcast can arrive with a smaller sn.
         synchronized (eventEmitLock) {
             try {
-                JSONObject body = Codec.toSatoriEvent(obEvent, loginSlim(), 0, assetBase());
+                JSONObject body = Codec.promote(Codec.toSatoriEvent(obEvent, loginSlim(), 0, assetBase()));
                 if (body == null) return;
                 body.put("sn", eventSn.incrementAndGet());
                 conn.send(opJson(OP_EVENT, body).toString());
@@ -4373,7 +4408,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             try {
                 attachGroupName(obEvent);
                 long sn = 0;
-                JSONObject body = Codec.toSatoriEvent(obEvent, loginSlim(), sn, assetBase());
+                JSONObject body = Codec.promote(Codec.toSatoriEvent(obEvent, loginSlim(), sn, assetBase()));
                 if (body == null) return;
                 emitSatoriEvent(body);
             } catch (Throwable t) {

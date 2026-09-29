@@ -580,6 +580,25 @@ public final class Codec {
         return null;
     }
 
+    /**
+     * Satori's resource promotion for a pushed event: a resource nested inside another one moves
+     * to the top level and is no longer repeated inside it, so `message` has no `channel`, `guild`,
+     * `user` or `member`, and `member` has no `user`. `message.get` / `message.list` keep the
+     * nested form; those answer with a `Message` whose required resources live inside it.
+     */
+    public static JSONObject promote(JSONObject ev) {
+        if (ev == null) return null;
+        JSONObject message = ev.optJSONObject("message");
+        if (message != null) {
+            for (String key : new String[]{"channel", "guild", "user", "member"}) {
+                if (ev.has(key)) message.remove(key);
+            }
+        }
+        JSONObject member = ev.optJSONObject("member");
+        if (member != null && ev.has("user")) member.remove("user");
+        return ev;
+    }
+
     private static JSONObject messageCreated(JSONObject ob, JSONObject ev, String assetBase)
             throws Exception {
         boolean group = "group".equals(ob.optString("message_type"));

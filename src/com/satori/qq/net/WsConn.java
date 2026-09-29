@@ -63,6 +63,13 @@ public final class WsConn {
         }
     }
 
+    /** 带关闭码的关闭帧（协议里 4004 是令牌不对），随后断开。 */
+    public void closeWith(int code) {
+        try { writeFrame(0x8, new byte[]{(byte) (code >>> 8), (byte) code}); }
+        catch (Throwable ignore) {}
+        finally { close(); }
+    }
+
     public void close() {
         closed = true;
         try { socket.close(); } catch (Throwable ignore) {}

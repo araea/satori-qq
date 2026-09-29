@@ -1,0 +1,101 @@
+import com.satori.qq.Cfg;
+import com.satori.qq.core.MsgStore;
+import com.satori.qq.core.SatoriHub;
+import com.satori.qq.net.HttpServer;
+import com.satori.qq.net.WsConn;
+import com.satori.qq.qq.QQClient;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Field;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * The HTTP status table and event shape Satori prescribes, exercised through the real hub without
+ * QQ: api.md's status codes, resource.md's proxy route, events.md's IDENTIFY close code and the
+ * resource promotion rule of the protocol overview.
+ */
+public final class HubHttpTest {
+    static SatoriHub hub;
+
+    static HttpServer.HttpResult http(String method, String path, String token, String... headerPairs) {
+        Map<String, String> headers = new LinkedHashMap<>();
+        if (token != null) headers.put("authorization", "Bearer " + token);
+        for (int i = 0; i + 1 < headerPairs.length; i += 2) headers.put(headerPairs[i], headerPairs[i + 1]);
+        return hub.onHttp(new HttpServer.HttpReq(method, path, "", headers, "{}".getBytes()));
+    }
+
+    static String body(HttpServer.HttpResult r) throws Exception { return new String(r.body, "UTF-8"); }
+
+    public static void main(String[] args) throws Exception {
+        QQClient qq = new QQClient(HttpServer.class.getClassLoader(), false);
+        Field self = QQClient.class.getDeclaredField("selfUin");
+        self.setAccessible(true); self.set(qq, "10001");
+        Cfg cfg = new Cfg(); cfg.token = "s3cret";
+        hub = new SatoriHub(cfg, qq, new MsgStore());
+
+        // api.md 状态码：缺失鉴权 401，令牌不对 403；错误体是 JSON。
+        HttpServer.HttpResult missing = http("POST", "/v1/meta", null);
+        check(missing.status == 401, "missing token is 401, got " + missing.status);
+        check(new JSONObject(body(missing)).has("message"), "error bodies are JSON");
+        check(http("POST", "/v1/meta", "wrong").status == 403, "wrong token is 403");
+        check(http("POST", "/v1/meta", "s3cret").status == 200, "right token passes");
+
+        // 未知的登录（Satori-User-ID / Satori-Platform）：官方服务端答 403，不是 404。
+        check(http("POST", "/v1/login.get", "s3cret", "satori-user-id", "99999").status == 403, "foreign user is 403");
+        check(http("POST", "/v1/login.get", "s3cret", "satori-platform", "other").status == 403, "foreign platform is 403");
+        // 标准方法在平台上不存在：404，不是 501。
+        HttpServer.HttpResult unsupported = http("POST", "/v1/reaction.clear", "s3cret");
+        check(unsupported.status == 404, "unsupported standard method is 404, got " + unsupported.status + " " + body(unsupported));
+        check(http("GET", "/v1/message.create", "s3cret").status == 405, "GET on an RPC route is 405");
+
+        // resource.md 代理路由：不需要任何头。非法 URL 400；内部链接格式不对 400；登录不存在 404；
+        // 不在 proxy_urls 里的合法外链 403。
+        check(http("GET", "/v1/proxy/not%20a%20url", null).status == 400, "invalid url is 400");
+        check(http("GET", "/v1/proxy/internal:bad", null).status == 400, "malformed internal url is 400");
+        check(http("GET", "/v1/proxy/internal:red/10001/", null).status == 400, "empty internal path is 400");
+        check(http("GET", "/v1/proxy/internal:red/20002/_tmp/x", null).status == 404, "unknown login is 404");
+        check(http("GET", "/v1/proxy/internal:other/10001/_tmp/x", null).status == 404, "unknown platform is 404");
+        check(http("GET", "/v1/proxy/internal:red/10001/_tmp/nope", null).status == 404, "unknown resource is 404");
+        check(http("GET", "/v1/proxy/https://example.com/a.png", null).status == 403, "unlisted link is 403");
+        check(http("GET", "/v1/proxy/https:///nohost", null).status == 400, "hostless link is 400");
+
+        // events.md：IDENTIFY 的令牌不对，用 4004 关闭。
+        ByteArrayOutputStream wrong = new ByteArrayOutputStream();
+        hub.onWsText(HubDeliveryTest.connection(wrong),
+                new JSONObject().put("op", 3).put("body", new JSONObject().put("token", "nope")).toString());
+        byte[] frame = wrong.toByteArray();
+        check(frame.length == 4 && (frame[0] & 0x0F) == 8, "a close frame was written");
+        check((((frame[2] & 0xFF) << 8) | (frame[3] & 0xFF)) == 4004, "close code is 4004");
+
+        // 推送的事件遵守资源提升：message 里没有 channel/guild/user/member，member 里没有 user。
+        ByteArrayOutputStream live = new ByteArrayOutputStream();
+        WsConn conn = HubDeliveryTest.connection(live);
+        hub.onWsText(conn, new JSONObject().put("op", 3).put("body", new JSONObject().put("token", "s3cret")).toString());
+        JSONObject ob = new JSONObject()
+                .put("post_type", "message").put("message_type", "group")
+                .put("group_id", 42L).put("group_name", "测试群")
+                .put("message_id", "7000000000000000001").put("qq_msg_id", 7000000000000000001L)
+                .put("time", 1000)
+                .put("sender", new JSONObject().put("user_id", 7L).put("nickname", "小七").put("card", "七").put("role", "member"))
+                .put("message", new JSONArray().put(new JSONObject().put("type", "text")
+                        .put("data", new JSONObject().put("text", "你好"))));
+        HubDeliveryTest.call(hub, "emitObEvent", new Class[]{JSONObject.class}, ob);
+        List<JSONObject> packets = HubDeliveryTest.packets(live);
+        check(packets.size() == 2, "READY then the event");
+        JSONObject event = packets.get(1).getJSONObject("body");
+        check("message-created".equals(event.getString("type")), "message-created");
+        for (String key : new String[]{"channel", "guild", "user", "member"}) {
+            check(event.has(key), "event has " + key);
+            check(!event.getJSONObject("message").has(key), "message has no " + key);
+        }
+        check(!event.getJSONObject("member").has("user"), "member has no user");
+        check("你好".equals(event.getJSONObject("message").getString("content")), "content kept");
+        check(event.getJSONObject("message").getLong("created_at") == 1000000L, "created_at in ms");
+        System.out.println("HubHttpTest OK");
+    }
+
+    static void check(boolean condition, String message) { if (!condition) throw new AssertionError(message); }
+}

@@ -172,12 +172,14 @@ async function main() {
   });
 
   // ---- 0.17.0 收掉的内核接口：这些名字现在必须 404 ----
+  // group_remark / group_shut_up_list / user_detail / mark_read 已在 0.29.0 以扩展动作
+  // 形式回来（ExtraSvc 注册表），与 SatoriHub.REMOVED_0_17 保持一致，不在本名单里。
   for (const gone of ['group_overview', 'group_extra', 'member_info', 'group_member_search',
-                      'recent_contacts', 'contact_search', 'friend_relation', 'group_remark',
-                      'profile_self', 'group_honor', 'group_shut_up_list', 'group_active',
-                      'group_anniversary', 'group_detail', 'group_statistic', 'user_detail',
+                      'recent_contacts', 'contact_search', 'friend_relation',
+                      'profile_self', 'group_honor', 'group_active',
+                      'group_anniversary', 'group_detail', 'group_statistic',
                       'voice_to_text', 'message_context', 'message_search', 'group_file',
-                      'get_resource', 'mark_read', 'session_top', 'group_msg_mask',
+                      'get_resource', 'session_top', 'group_msg_mask',
                       'qzone.publish', 'offline']) {
     await check('removed.internal/' + gone, async () => {
       const msg = await client.callExpect('internal/' + gone, { guild_id: GROUP }, 404);
@@ -189,6 +191,20 @@ async function main() {
     const res = await client.callOk('friend.list');
     const arr = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
     return 'friends=' + arr.length;
+  });
+
+  // ---- 0.29.0 回归的扩展动作：正向各打一遍 ----
+  // group_remark（有状态写、无读回）与 group_shut_up_list（9.3.70 真机不回调，见
+  // docs/JNI_CAPABILITIES.md 群禁言名单）不在默认巡检里。
+  await check('internal/user_detail_by_uin', async () => {
+    const u = await client.callOk('internal/user_detail_by_uin', { user_id: selfId });
+    if (!u) throw new Error('空响应');
+    return 'ok';
+  });
+
+  await check('internal/mark_read', async () => {
+    await client.callOk('internal/mark_read', { channel_id: GROUP });
+    return 'ok';
   });
 
   // ---- 读回不该存在的目标，确认报错形状 ----

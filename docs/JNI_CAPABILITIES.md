@@ -1,6 +1,6 @@
 # 纯 JNI 能力盘点
 
-本实现端不引入 hook 引擎，全部能力经 JNI 层抵达。本文给出该层的功能边界：哪些已经在用，哪些能走通但没做，哪些走不通。依据为本机 QQ 9.3.65（versionCode 16240）的 dex 与运行中的模块。
+本实现端不引入 hook 引擎，全部能力经 JNI 层抵达。本文给出该层的功能边界：哪些已经在用，哪些能走通但没做，哪些走不通。依据为本机 QQ 9.3.70（versionCode 16410）的 dex 与运行中的模块。
 
 ## JNI 面
 
@@ -15,12 +15,12 @@
 
 不在四条里的手段：ART hook 引擎（改 ArtMethod、内联钩子、trampoline）、任意 Java 方法的 hook、第三方 native 依赖。理由见 [README](../README.md) 的运行条件。
 
-会话接口上有 54 个 `get*()` 入口，其中 51 个取服务（自 `IQQNTWrapperSession` 反编译，本机 9.3.65）。这 51 个就是反射通道的全部可达面，清单见文末。
+会话接口上有 55 个 `get*()` 入口，其中 51 个取服务（自 `IQQNTWrapperSession` 反编译，本机 9.3.70；比 9.3.65 记录的 54 个多一个非服务的 `getAccountPath`，服务数不变）。这 51 个就是反射通道的全部可达面，清单见文末。
 
 ## 证据级别
 
 - **已核验**：真机跑通，有测试脚本或线上观测。
-- **静态**：类、接口与方法签名取自本机 QQ 9.3.65 的 dex，未做真机调用。
+- **静态**：类、接口与方法签名取自本机 QQ 9.3.70 的 dex，未做真机调用。
 - **参考**：只有 NapCat 侧实现，Android 端未核。
 
 下文未标「已核验」的条目都是静态或参考。静态只说明接口面在，不说明调用会回调。
@@ -48,7 +48,7 @@
 | 已读标记 | `setMsgRead` `setSpecificMsgReadAndReport` `setAllC2CAndGroupMsgRead` | 静态。已接 `mark_read` / `mark_read_seq` / `mark_all_read`（撤下的 `mark_read` 由此回归） |
 | 图片 OCR | `IKernelSearchService.doOcrOnPicMsg` `searchOcrData` `getOcrDataByAIO` | 静态。已接 `image_ocr` / `ocr_data` / `ocr_by_aio`（参数语义未核，原样透传）。桌面端 OCR 走 `NodeMiscService`，Android 走这条路 |
 
-QQ 9.3.65 的 `MsgElement.walletElement` / `WalletElement` / `WalletAio` 在 dex 中可见：可通过现有 JNI 入站消息回调**被动看到**钱包消息。只投递 `[红包]`（展示标题含「红包」）或 `[QQ钱包消息]` 文本标记；绝不输出 `authkey`、`billNo`、跳转 URL 或钱包对象。这是静态核验的展示能力，不是领取回执；发红包与领取红包涉及钱包业务流程、身份校验与服务端支付确认；目前没有已核验的纯内核收发路径，不能把 `WalletElement` 当作发送参数绕过这些流程。未拿到真红包样本验证前，不做资金收发动作或自动领取。
+QQ 9.3.70 的 `MsgElement.walletElement` / `WalletElement` / `WalletAio` 在 dex 中可见（9.3.65 记录复核未变）：可通过现有 JNI 入站消息回调**被动看到**钱包消息。只投递 `[红包]`（展示标题含「红包」）或 `[QQ钱包消息]` 文本标记；绝不输出 `authkey`、`billNo`、跳转 URL 或钱包对象。这是静态核验的展示能力，不是领取回执；发红包与领取红包涉及钱包业务流程、身份校验与服务端支付确认；目前没有已核验的纯内核收发路径，不能把 `WalletElement` 当作发送参数绕过这些流程。未拿到真红包样本验证前，不做资金收发动作或自动领取。
 
 撤下的 `voice_to_text` 未记落点，重开前需先核内核入口。
 
@@ -57,10 +57,10 @@ QQ 9.3.65 的 `MsgElement.walletElement` / `WalletElement` / `WalletAio` 在 dex
 | 功能 | 落点 | 证据 |
 | --- | --- | --- |
 | 群公告收发 | `publishGroupBulletin` `deleteGroupBulletin` `getGroupBulletinList` `uploadGroupBulletinPic` | 静态。已接 `group_bulletin_publish` / `group_bulletin_delete` / `group_bulletin_get` / `group_bulletin_upload_pic`，写入口要 pskey |
-| 群精华读取 | `fetchGroupEssenceList` `getGroupLatestEssenceList` `queryCachedEssenceMsg` | 静态。已接 `group_essence_list` / `group_essence_latest` / `group_essence_cached`。本端已用写侧的 `essence` |
-| 群禁言名单 | `getGroupShutUpMemberList` | 静态。已接 `group_shut_up_list`（撤下后回归） |
+| 群精华读取 | `fetchGroupEssenceList` `getGroupLatestEssenceList` `queryCachedEssenceMsg` | 静态。已接 `group_essence_list` / `group_essence_latest` / `group_essence_cached`。本端已用写侧的 `essence`。9.3.70 真机：`group_essence_list` 不回调，`group_essence_latest` 回 `code=2 system error!`，`group_essence_cached` 未测 |
+| 群禁言名单 | `getGroupShutUpMemberList` | 静态。已接 `group_shut_up_list`（撤下后回归）。9.3.70 真机不回调 |
 | 群邀请链接 | `getJoinGroupLink` | 静态。已接 `group_join_link` |
-| 群扩展信息 | `getGroupExtList` `getGroupExt0xEF0Info` `modifyGroupExtInfoV2` | 静态。已接只读的 `group_ext_list`（撤下的 `group_extra` 写侧 `modifyGroupExtInfoV2` 未接） |
+| 群扩展信息 | `getGroupExtList` `getGroupExt0xEF0Info` `modifyGroupExtInfoV2` | 静态。已接只读的 `group_ext_list`（撤下的 `group_extra` 写侧 `modifyGroupExtInfoV2` 未接）。9.3.70 真机不回调 |
 | 退群 | `quitGroup` `quitGroupV2` | 静态。已接 `group_quit` |
 | 群备注 | `modifyGroupRemark` | 静态。已接 `group_remark`（撤下后回归） |
 | 转让群 | `transferGroup` `getTransferableGroupList` | 静态 |
@@ -227,14 +227,14 @@ NapCat 在桌面 QQNT 上实现约 160 个动作，通道与本文四条同源�
 
 针对「还能否增加有趣且有意义的 QQ 内部功能」重新按实际用途筛选：搭话前的输入状态和已读、戳一戳、表态、特殊消息、群打卡及素材发送均已有 JNI 路径；群公告、群文件和群管理等也已有一批扩展动作。剩余的收藏、相册、闪传、设置读写等主要服务手动操作，并没有明确的客户端调用方；消息搜索及批量资料查询又与先前撤下时的风控取舍冲突。**本轮不新增接口**，也不为了填满 dex 方法表而发布未实测的动作。
 
-核验口径：本机 QQ 9.3.65 上 `/healthz.compat` 静态检查为 204/204，`tests/ws-health.js` 的在线探针通过；这只证明当前接口面和链路可用，**不证明**上述未调用的候选入口会回调。将来有确定的使用者时，先核对 QQ 版本、字段、回调和权限，再用真机回执验证后决定是否接入。
+核验口径：本机 QQ 9.3.70 上 `/healthz.compat` 静态检查为 207/207，`tests/ws-health.js` 的在线探针通过；这只证明当前接口面和链路可用，**不证明**上述未调用的候选入口会回调。将来有确定的使用者时，先核对 QQ 版本、字段、回调和权限，再用真机回执验证后决定是否接入。
 
 ## 会话服务入口
 
-`IQQNTWrapperSession` 上的 54 个 `get*()` 入口，自本机 QQ 9.3.65 反编译。
+`IQQNTWrapperSession` 上的 55 个 `get*()` 入口，自本机 QQ 9.3.70 反编译。
 
 ```text
-getAIService getAVSDKService getAddBuddyService getAgentSearchService getAlbumService
+getAIService getAVSDKService getAccountPath getAddBuddyService getAgentSearchService getAlbumService
 getApiSixService getAvatarService getBaseEmojiService getBatchTransferService
 getBatchUploadService getBdhUploadService getBizKitService getBuddyService getCacheErrLog
 getCertifyService getCollectionService getConfigMgrService getDataReportService getEmojiService
@@ -249,4 +249,4 @@ getTipOffService getTrafficMonitorService getUixConvertService getUnifySearchSer
 getUnitedConfigService getWiFiPhotoHostService
 ```
 
-其中 `getCacheErrLog` `getSessionId` `getShortLinkBlacklist` 不是服务。本端在用 `getMsgService` `getGroupService` `getProfileService` `getBuddyService` `getRichMediaService` `getRecentContactService` `getRobotService`。
+其中 `getAccountPath` `getCacheErrLog` `getSessionId` `getShortLinkBlacklist` 不是服务。本端在用 `getMsgService` `getGroupService` `getProfileService` `getBuddyService` `getRichMediaService` `getRecentContactService` `getRobotService`。

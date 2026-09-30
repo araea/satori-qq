@@ -76,7 +76,7 @@ plugins:
 - 资源 URL（`/v1/assets/{id}`、`internal:` 回落地址）仅本机监听、不带鉴权，不要把 URL 公开转发。
 - 配置改动需重启 QQ 后生效，热切换端口不被支持。
 
-## 链接
+## 必要链接
 
 - [Satori v1 方法、事件和消息元素](docs/SATORI_SUPPORT.md)
 - [架构、构建与测试](docs/ARCHITECTURE.md)

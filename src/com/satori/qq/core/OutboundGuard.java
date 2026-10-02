@@ -81,7 +81,7 @@ public final class OutboundGuard {
         if (depth > maxQueued) {
             queued.decrementAndGet();
             rejected.incrementAndGet();
-            throw new BusyException("outbound queue full");
+            throw new BusyException("outbound_queue_full", "outbound queue full", 2, false);
         }
 
         boolean acquired = false;
@@ -92,7 +92,7 @@ public final class OutboundGuard {
         }
         if (!acquired) {
             rejected.incrementAndGet();
-            throw new BusyException("outbound queue timeout");
+            throw new BusyException("outbound_queue_timeout", "outbound queue timeout", 5, false);
         }
 
         try {
@@ -160,16 +160,18 @@ public final class OutboundGuard {
             if (circuitOpenUntilMs > now) {
                 circuitRejected++;
                 rejected.incrementAndGet();
-                throw new BusyException("outbound circuit open; retry after "
-                        + Math.max(1, (circuitOpenUntilMs - now + 999) / 1000) + "s");
+                long wait = Math.max(1, (circuitOpenUntilMs - now + 999) / 1000);
+                throw new BusyException("outbound_circuit_open", "outbound circuit open; retry after " + wait + "s",
+                        (int) Math.min(wait, 3600), false);
             }
             if (circuitOpenUntilMs > 0) halfOpen = true;
             if (admittedAtMs.size() >= maxPerMinute) {
                 long retryMs = 60000 - (now - admittedAtMs.peekFirst());
                 rateRejected++;
                 rejected.incrementAndGet();
-                throw new BusyException("outbound rate budget exhausted; retry after "
-                        + Math.max(1, (retryMs + 999) / 1000) + "s");
+                long wait = Math.max(1, (retryMs + 999) / 1000);
+                throw new BusyException("outbound_rate_limited", "outbound rate budget exhausted; retry after " + wait + "s",
+                        (int) Math.min(wait, 3600), true);
             }
         }
     }
@@ -246,7 +248,20 @@ public final class OutboundGuard {
         }
     }
 
+    /**
+     * 出站闸门挡下了一次请求：请求没有交给 QQ，重来是安全的。
+     * {@code slug} 是响应体里的机器可读 {@code code}，{@code retryAfterSeconds} 进 {@code Retry-After}，
+     * {@code rateLimited} 为真时 HTTP 状态是 429（超出每分钟额度），否则 503（队列满、熔断中）。
+     */
     public static final class BusyException extends Exception {
-        BusyException(String message) { super(message); }
+        public final String slug;
+        public final int retryAfterSeconds;
+        public final boolean rateLimited;
+        BusyException(String slug, String message, int retryAfterSeconds, boolean rateLimited) {
+            super(message);
+            this.slug = slug;
+            this.retryAfterSeconds = retryAfterSeconds;
+            this.rateLimited = rateLimited;
+        }
     }
 }

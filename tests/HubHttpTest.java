@@ -40,7 +40,9 @@ public final class HubHttpTest {
         HttpServer.HttpResult missing = http("POST", "/v1/meta", null);
         check(missing.status == 401, "missing token is 401, got " + missing.status);
         check(new JSONObject(body(missing)).has("message"), "error bodies are JSON");
+        check("missing_token".equals(new JSONObject(body(missing)).optString("code")), "error bodies carry a machine-readable code");
         check(http("POST", "/v1/meta", "wrong").status == 403, "wrong token is 403");
+        check("invalid_token".equals(new JSONObject(body(http("POST", "/v1/meta", "wrong"))).optString("code")), "invalid_token code");
         check(http("POST", "/v1/meta", "s3cret").status == 200, "right token passes");
 
         // 未知的登录（Satori-User-ID / Satori-Platform）：官方服务端答 403，不是 404。
@@ -49,7 +51,19 @@ public final class HubHttpTest {
         // 标准方法在平台上不存在：404，不是 501。
         HttpServer.HttpResult unsupported = http("POST", "/v1/reaction.clear", "s3cret");
         check(unsupported.status == 404, "unsupported standard method is 404, got " + unsupported.status + " " + body(unsupported));
+        check("unsupported_method".equals(new JSONObject(body(unsupported)).optString("code")), "unsupported method code");
         check(http("GET", "/v1/message.create", "s3cret").status == 405, "GET on an RPC route is 405");
+        // QQ 内核没上线：503（不是 500），且没有可承诺的恢复时间，所以不带 Retry-After。
+        HttpServer.HttpResult offline = http("POST", "/v1/message.get", "s3cret");
+        check(offline.status == 503, "kernel offline is 503, got " + offline.status + " " + body(offline));
+        check("kernel_offline".equals(new JSONObject(body(offline)).optString("code")), "kernel_offline code");
+        check(offline.extraHeaders == null || !offline.extraHeaders.containsKey("Retry-After"), "no promise, no Retry-After");
+        // 能力声明与 login.features 同源：标准方法一一对应，限额写明。
+        JSONObject caps = new JSONObject(body(http("POST", "/v1/internal/capabilities", "s3cret")));
+        check("satori-qq".equals(caps.optString("adapter")) && "red".equals(caps.optString("platform")), "capabilities names the adapter");
+        check(caps.getJSONArray("standard_methods").length() > 20, "capabilities lists the standard methods");
+        check(caps.getJSONObject("limits").getLong("upload_bytes") == HttpServer.MAX_UPLOAD_BYTES, "capabilities states the upload limit");
+        check(caps.getJSONArray("event_types").length() > 5 && caps.getJSONArray("message_elements").length() > 5, "capabilities lists events and elements");
 
         // resource.md 代理路由：不需要任何头。非法 URL 400；内部链接格式不对 400；登录不存在 404；
         // 不在 proxy_urls 里的合法外链 403。

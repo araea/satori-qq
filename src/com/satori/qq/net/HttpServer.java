@@ -64,9 +64,43 @@ public final class HttpServer {
             this.extraHeaders = extra;
         }
         public static HttpResult json(int status, String json) {
+            return json(status, json, null);
+        }
+        public static HttpResult json(int status, String json, Map<String, String> extra) {
             byte[] b;
             try { b = json.getBytes("UTF-8"); } catch (Exception e) { b = new byte[0]; }
-            return new HttpResult(status, "application/json; charset=utf-8", b);
+            return new HttpResult(status, "application/json; charset=utf-8", b, extra);
+        }
+        /**
+         * 错误体：{@code {"code": "<机器可读的短名>", "message": "<给人看的>"}}。
+         * 本实现端发出的每一个非 2xx 响应都是这个形状，客户端按 {@code code} 判断，不必匹配文案。
+         * {@code code} 缺省按状态码取（400 invalid_request、404 not_found……）。
+         */
+        public static HttpResult error(int status, String message) {
+            return error(status, null, message, null);
+        }
+        public static HttpResult error(int status, String code, String message, Map<String, String> extra) {
+            String slug = code != null && !code.isEmpty() ? code : defaultCode(status);
+            return json(status, errorBody(slug, message), extra);
+        }
+        public static String errorBody(String code, String message) {
+            try {
+                return new org.json.JSONObject().put("code", code)
+                        .put("message", message == null ? "" : message).toString();
+            } catch (Exception e) { return "{\"code\":\"" + code + "\",\"message\":\"error\"}"; }
+        }
+        public static String defaultCode(int status) {
+            switch (status) {
+                case 400: return "invalid_request";
+                case 401: return "missing_token";
+                case 403: return "forbidden";
+                case 404: return "not_found";
+                case 405: return "method_not_allowed";
+                case 413: return "payload_too_large";
+                case 429: return "rate_limited";
+                case 503: return "unavailable";
+                default: return status >= 500 ? "internal_error" : "error";
+            }
         }
         public static HttpResult text(int status, String text) {
             byte[] b;
@@ -76,6 +110,10 @@ public final class HttpServer {
     }
 
     private static final String GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    /** 一个请求体的字节上限。整份读进内存，所以设防；对客户端的口径见 {@link #MAX_UPLOAD_BYTES}。 */
+    public static final int MAX_BODY_BYTES = 64 * 1024 * 1024;
+    /** {@code upload.create} 里单个文件能有多大：请求体上限扣掉 multipart 的封装余量。 */
+    public static final long MAX_UPLOAD_BYTES = MAX_BODY_BYTES - 1024 * 1024;
     private final Cfg cfg;
     private final Handler handler;
     private volatile ServerSocket server;
@@ -136,6 +174,9 @@ public final class HttpServer {
             String reqLine = lines.length > 0 ? lines[0] : "";
             String[] parts = reqLine.split(" ");
             String method = parts.length > 0 ? parts[0] : "GET";
+            // HEAD 就是不带正文的 GET：照 GET 路由处理，响应只写头（Content-Length 仍是正文的长度）。
+            final boolean headOnly = "HEAD".equals(method);
+            if (headOnly) method = "GET";
             String target = parts.length > 1 ? parts[1] : "/";
             Map<String, String> headers = new LinkedHashMap<>();
             for (int i = 1; i < lines.length; i++) {
@@ -157,13 +198,13 @@ public final class HttpServer {
             boolean ws = upgrade != null && upgrade.equalsIgnoreCase("websocket");
             if (ws) {
                 if (!"/v1/events".equals(path)) {
-                    writeHttp(out, 404, "text/plain; charset=utf-8", "not found".getBytes("UTF-8"), null);
+                    writeResult(out, HttpResult.error(404, "not found"), false);
                     s.close();
                     return;
                 }
                 String key = headers.get("sec-websocket-key");
                 if (key == null) {
-                    writeHttp(out, 400, "text/plain; charset=utf-8", "bad request".getBytes("UTF-8"), null);
+                    writeResult(out, HttpResult.error(400, "bad request"), false);
                     s.close();
                     return;
                 }
@@ -187,8 +228,10 @@ public final class HttpServer {
             try { contentLength = Integer.parseInt(headers.getOrDefault("content-length", "0")); }
             catch (Exception ignore) {}
             if (contentLength < 0) contentLength = 0;
-            if (contentLength > 64 * 1024 * 1024) {
-                writeHttp(out, 413, "text/plain; charset=utf-8", "too large".getBytes("UTF-8"), null);
+            if (contentLength > MAX_BODY_BYTES) {
+                writeResult(out, HttpResult.error(413, "payload_too_large",
+                        "request body exceeds " + (MAX_BODY_BYTES >> 20) + " MiB; a single upload.create file may be at most "
+                                + MAX_UPLOAD_BYTES + " bytes", null), false);
                 s.close();
                 return;
             }
@@ -199,10 +242,10 @@ public final class HttpServer {
                 result = handler.onHttp(req);
             } catch (Throwable t) {
                 L.e("http handler " + method + " " + path, t);
-                result = HttpResult.text(500, String.valueOf(t));
+                result = HttpResult.error(500, String.valueOf(t));
             }
-            if (result == null) result = HttpResult.text(404, "not found");
-            writeHttp(out, result.status, result.contentType, result.body, result.extraHeaders);
+            if (result == null) result = HttpResult.error(404, "not found");
+            writeResult(out, result, headOnly);
         } catch (Throwable e) {
             // connection reset etc.
         } finally {
@@ -234,8 +277,12 @@ public final class HttpServer {
         return given != null && given.equals(cfg.token);
     }
 
+    private static void writeResult(OutputStream out, HttpResult r, boolean headOnly) throws Exception {
+        writeHttp(out, r.status, r.contentType, r.body, r.extraHeaders, headOnly);
+    }
+
     private static void writeHttp(OutputStream out, int status, String type, byte[] body,
-                                  Map<String, String> extra) throws Exception {
+                                  Map<String, String> extra, boolean headOnly) throws Exception {
         String reason;
         switch (status) {
             case 200: reason = "OK"; break;
@@ -246,6 +293,9 @@ public final class HttpServer {
             case 404: reason = "Not Found"; break;
             case 405: reason = "Method Not Allowed"; break;
             case 413: reason = "Payload Too Large"; break;
+            case 429: reason = "Too Many Requests"; break;
+            case 502: reason = "Bad Gateway"; break;
+            case 503: reason = "Service Unavailable"; break;
             default: reason = status >= 500 ? "Server Error" : "Error"; break;
         }
         StringBuilder sb = new StringBuilder();
@@ -260,7 +310,7 @@ public final class HttpServer {
         }
         sb.append("\r\n");
         out.write(sb.toString().getBytes("UTF-8"));
-        if (body != null && body.length > 0) out.write(body);
+        if (!headOnly && body != null && body.length > 0) out.write(body);
         out.flush();
     }
 

@@ -33,6 +33,15 @@ def check(cond, name, detail='', warn=False):
     out('PASS' if cond else ('WARN' if warn else 'FAIL'), name, '' if cond else detail)
     return bool(cond)
 
+def error_shape(name, status, body):
+    """Every non-2xx body from our servers is {"code": <slug>, "message": <text>} — clients branch on code."""
+    if isinstance(body, (bytes, bytearray)):
+        try: body = json.loads(body)
+        except ValueError: body = None
+    ok = isinstance(body, dict) and isinstance(body.get('code'), str) and body['code'] \
+        and isinstance(body.get('message'), str)
+    check(ok, f'errors.shape[{name}]', f'{status} {str(body)[:120]}')
+
 def http_call(method, path, body=None, headers=None, raw=False, timeout=15):
     c = http.client.HTTPConnection(HOST, PORT, timeout=timeout)
     h = dict(headers or {})
@@ -108,8 +117,9 @@ else:
 features = set((login or {}).get('features') or [])
 
 if args.token:
-    st, _, _ = http_call('POST', '/v1/meta', b'{}', {'Content-Type': 'application/json'})
+    st, _, body = http_call('POST', '/v1/meta', b'{}', {'Content-Type': 'application/json'})
     check(st == 401, 'auth.missing-token=401', f'got {st}')
+    error_shape('401', st, body)
     st, _, _ = http_call('POST', '/v1/meta', b'{}', {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + 'x' * len(args.token)})
     check(st == 403, 'auth.wrong-token=403', f'got {st}')
 else:
@@ -123,8 +133,10 @@ if not login:
 print('# routing & status codes')
 st, _, body = rpc('nosuch.method')
 check(st == 404, 'route.unknown-method=404', f'got {st}')
+error_shape('404', st, body)
 st, _, body = http_call('GET', '/v1/login.get', None, {**AUTH, 'Satori-Platform': IDS['platform'], 'Satori-User-ID': IDS['user']})
 check(st == 405, 'route.get-on-rpc=405', f'got {st}')
+error_shape('405', st, body)
 st, _, body = rpc('login.get', ids=False)
 out('INFO', 'headers.missing-login-headers', f'login.get without Satori-* headers -> {st}')
 st, _, body = rpc('login.get', hdr={'Satori-User-ID': 'no-such-user-0'})
@@ -311,20 +323,22 @@ if 'upload.create' in features:
             check(st == 200 and data == PNG, 'proxy.internal-roundtrip', f'{st} len={len(data)}')
             check(hd.get('content-type', '').startswith('image/png'), 'proxy.content-type', hd.get('content-type'))
             st, hd, data = http_call('HEAD', '/v1/proxy/' + url, None, {}, raw=True)
-            check(st == 200, 'proxy.head', f'{st}', warn=True)
+            check(st == 200 and not data, 'proxy.head', f'{st} body={len(data)}B')
             st, hd, data = http_call('GET', '/v1/proxy/' + url, None, {'Range': 'bytes=0-3'}, raw=True)
             check(st in (200, 206), 'proxy.range', f'{st}', warn=True)
             check('access-control-allow-origin' in hd, 'proxy.cors-header', 'spec: may add Access-Control-Allow-Origin', warn=True)
     st, _, none = http_call('POST', '/v1/upload.create', b'not multipart', {'Content-Type': 'application/json', **AUTH, 'Satori-Platform': IDS['platform'], 'Satori-User-ID': IDS['user']})
     check(st in (400, 415), 'upload.create.bad-body=400', f'got {st}')
+    error_shape('upload.create.bad-body', st, none)
 else:
     out('INFO', 'upload.create', 'not in features (spec: core SDK provides the default implementation)')
 for path, want, name in [('not a url', 400, 'proxy.invalid-url=400'),
                          ('internal:bad', 400, 'proxy.internal-malformed=400'),
                          (f"internal:{IDS['platform']}/nobody-0000/_tmp/x", 404, 'proxy.internal-unknown-login=404'),
                          ('https://example.invalid/x.png', 403, 'proxy.unlisted-http=403')]:
-    st, hd, _ = http_call('GET', '/v1/proxy/' + path.replace(' ', '%20'), None, AUTH, raw=True)
+    st, hd, data = http_call('GET', '/v1/proxy/' + path.replace(' ', '%20'), None, AUTH, raw=True)
     check(st == want, name, f'got {st}')
+    error_shape(name, st, data)
 
 # ---------------------------------------------------------------- internal / webhook
 print('# internal & webhook')
@@ -332,6 +346,27 @@ st, _, _ = rpc('internal/definitely-not-a-thing')
 check(st in (404, 400), 'internal.unknown=404', f'got {st}', warn=(st == 400))
 st, _, _ = http_call('POST', '/v1/meta/webhook.create', b'{}', {'Content-Type': 'application/json', **AUTH})
 out('INFO', 'webhook.create-empty', f'{st} (optional feature; 404 if unsupported, 400 if supported)')
+
+# ---------------------------------------------------------------- capabilities
+# internal/capabilities 是两个实现端共用的能力声明口径，acumen 连上后按它协商。
+print('# capabilities')
+st, _, caps = rpc('internal/capabilities')
+if check(st == 200 and isinstance(caps, dict), 'capabilities.200', f'{st} {str(caps)[:120]}'):
+    check(caps.get('adapter') == login.get('adapter'), 'capabilities.adapter', f"{caps.get('adapter')!r} vs {login.get('adapter')!r}")
+    check(caps.get('platform') == login.get('platform'), 'capabilities.platform', f"{caps.get('platform')!r} vs {login.get('platform')!r}")
+    check(isinstance(caps.get('version'), str) and caps['version'], 'capabilities.version')
+    methods = caps.get('standard_methods')
+    if check(isinstance(methods, list) and all(isinstance(m, str) for m in methods), 'capabilities.standard_methods-strings', str(methods)[:80]):
+        check(set(methods) == features - {'guild.plain'}, 'capabilities.standard_methods==login.features',
+              f'only in capabilities: {sorted(set(methods) - features)}; only in features: {sorted(features - set(methods) - {"guild.plain"})}')
+    unsup = caps.get('unsupported')
+    if check(isinstance(unsup, list), 'capabilities.unsupported-list'):
+        check(not (set(unsup) & features), 'capabilities.unsupported-disjoint-from-features', str(sorted(set(unsup) & features)))
+    for key in ('event_types', 'message_elements'):
+        check(isinstance(caps.get(key), list) and caps[key] and all(isinstance(v, str) for v in caps[key]), f'capabilities.{key}-strings')
+    limits = caps.get('limits')
+    if check(isinstance(limits, dict), 'capabilities.limits-object'):
+        check(isinstance(limits.get('upload_bytes'), int) and limits['upload_bytes'] > 0, 'capabilities.limits.upload_bytes', repr(limits.get('upload_bytes')))
 
 # ---------------------------------------------------------------- websocket
 print('# websocket')

@@ -7,11 +7,13 @@
 ## 连接约定
 
 - **HTTP**：`POST /v1/{resource}.{method}`，JSON body，`upload.create` 用 multipart。`Satori-Platform` 与 `Satori-User-ID` 省略、留空或为 `0` 时按未指定处理，只有明确指向别的平台（非 `red`）或别的账号才回 403（官方服务端的 `login not found`）。
-- **状态码**：缺失鉴权 401、令牌不对 403（WebSocket 的 IDENTIFY 令牌不对用 4004 关闭）；标准方法在 QQ 上没有对应能力回 404（不是 501）；`GET` 打到方法路由回 405；参数缺失或格式错误 400。错误体是 `{"message": …}`，个别带机器可读的 `code`。
+- **状态码**：缺失鉴权 401、令牌不对 403（WebSocket 的 IDENTIFY 令牌不对用 4004 关闭）；标准方法在 QQ 上没有对应能力回 404（不是 501）；`GET` 打到方法路由回 405；参数缺失或格式错误 400；请求体超过 64 MiB 回 413。
+- **错误体**：每个非 2xx 响应都是 `{"code": "<机器可读的短名>", "message": "<给人看的>"}`，客户端按 `code` 判断。常用的：`missing_token` / `invalid_token`、`login_not_found`、`unsupported_method`（404）、`removed_action`（404，曾经有过现在没了）、`invalid_request`、`payload_too_large`（413，`message` 里写着单个文件的上限）、`kernel_offline`、`session_stabilizing`、`outbound_queue_full` / `outbound_queue_timeout` / `outbound_circuit_open`（503）、`outbound_rate_limited`（429）。
+- **暂时不可用**：请求在交给 QQ 之前被挡下（内核离线、上线后的稳定期、出站队列满、熔断中）回 **503**，超出每分钟发送额度回 **429**；能给出恢复时间的带 `Retry-After`（秒）。这几种情况消息**没有**发出，原样再发一次是安全的；acumen 对带 `Retry-After` 的 503 会等够时间再来一次。内核离线没有可承诺的时间，不带 `Retry-After`。发出之后才出的错（`send outcome unknown`）不在此列，结果不明不能盲目重发。
 - **事件**：`GET /v1/events` 升级 WebSocket，须在 10 秒内发 `IDENTIFY`，服务端回 `READY` 与 `EVENT`。省略 `sn` 建新会话，`sn=0` 回放缓冲区内 `sn>0` 的事件。账号未知时不发 `READY`，可知（每秒轮询）后补发，不把占位账号发给客户端。
 - `READY` 里的登录账号就是之后每个请求要带回来的 `Satori-User-ID`。
 - **官方客户端的登录域内路由**：动作 `POST /v1/internal/{platform}/{selfId}/_api/{name}`（`bot.internal.*`，参数按 `JsonForm` 编码，带 `Satori-Pagination: true` 时回 `{data, …}`）、资源 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`（`upload.create` 返回的 `internal:` 回落地址，免令牌）。两者只服务本机登录自身，其他登录 404；`POST /v1/internal/{name}` 是模块自己的简写。
-- `POST /v1/meta` 取元信息；`GET /v1/proxy/{url}` 代理本机资源，不需要任何头：不是合法 URL 或 `internal:` 格式不对回 400，登录或资源不存在 404，合法但不在 `proxy_urls` 的外链 403（本实现不下载外链，`proxy_urls` 恒为空）。
+- `POST /v1/meta` 取元信息；`GET`（及 `HEAD`，不带正文、`Content-Length` 照旧）`/v1/proxy/{url}` 代理本机资源，不需要任何头：不是合法 URL 或 `internal:` 格式不对回 400，登录或资源不存在 404，合法但不在 `proxy_urls` 的外链 403（本实现不下载外链，`proxy_urls` 恒为空）。
 - **分页**：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next?}`；不带 `next` / `limit` 时一次给完，带时按偏移分页，`next` 是下一次的偏移量；非法令牌返回 400，不会悄悄从头重放。`message.list` 双向分页，见下表。
 - `platform` 为 `red`，`adapter` 为 `satori-qq`；群频道的 `channel.id` 与 `guild.id` 均为群号、`channel.type=0`，私聊频道为 `private:{uin}`、`channel.type=1`。
 - 消息 ID 用 QQ NT `msgId` 字符串，历史游标用 `message_seq`；`<quote>` 与 `[CQ:reply]` 的 `id` 可直接用于 `message.get` 与 `message.delete`。
@@ -84,7 +86,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳（超级表情） |
 | 消息读取 | `get_forward` / `chat_screenshot` | `chat_screenshot` 的范围渲染见下；`get_forward` 读取合并转发。`id` 是转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取 |
-| 能力查询 | `capabilities` / `help` / `compat` | 扩展动作与参数清单；内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
+| 能力查询 | `capabilities` / `help` / `compat` | `capabilities` 与 satori-wx 共用一份口径：`adapter`、`version`、`platform`、`standard_methods`（与 `login.features` 同源）、`unsupported`、`event_types`、`message_elements`（`message.create` 接受的元素）、`limits`（`upload_bytes`：`upload.create` 单个文件的字节上限，acumen 取片时按它收窄），再加本实现端的扩展动作清单（`actions`、`params`、`removed`）；`compat` 是内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
 | 状态查询 | `status` / `version` | 健康状态或版本 |
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程、清理临时文件 |
 

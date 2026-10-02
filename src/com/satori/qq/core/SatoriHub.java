@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.30.0";
+    public static final String APP_VERSION = "0.31.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -252,8 +252,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         login.put("hidden", false);
         login.put("self_id", String.valueOf(selfUin()));
         login.put("user", Codec.user(selfUin(), qq.selfNick(), ""));
-        JSONArray features = new JSONArray()
-                .put("guild.plain")
+        JSONArray features = new JSONArray().put("guild.plain");
+        JSONArray methods = standardMethods();
+        for (int i = 0; i < methods.length(); i++) features.put(methods.get(i));
+        login.put("features", features);
+        return login;
+    }
+
+    /**
+     * 本实现端提供的标准 Satori 方法。{@code login.features} 与 {@code internal/capabilities} 的
+     * {@code standard_methods} 都从这一份来，客户端按它决定能调什么。
+     */
+    private static JSONArray standardMethods() {
+        JSONArray methods = new JSONArray()
                 .put("login.get")
                 .put("message.create")
                 .put("message.get")
@@ -284,8 +295,13 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 .put("guild.approve")
                 .put("guild.member.approve")
                 .put("upload.create");
-        login.put("features", features);
-        return login;
+        return methods;
+    }
+
+    private static boolean serves(String method) {
+        JSONArray methods = standardMethods();
+        for (int i = 0; i < methods.length(); i++) if (methods.optString(i).equals(method)) return true;
+        return false;
     }
 
     private JSONObject loginSlim() throws Exception {
@@ -343,8 +359,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             }
             if (!httpAuth(req)) {
                 // 协议的状态码表：缺失鉴权 401，权限不足（令牌不对）403。
-                return HttpServer.HttpResult.json(hasCredentials(req) ? 403 : 401,
-                        errorJson(hasCredentials(req) ? "invalid token" : "missing token"));
+                return hasCredentials(req)
+                        ? HttpServer.HttpResult.error(403, "invalid_token", "invalid token", null)
+                        : HttpServer.HttpResult.error(401, "missing_token", "missing token", null);
             }
             if ("GET".equals(req.method) && "/".equals(path)) {
                 return HttpServer.HttpResult.json(200, new JSONObject()
@@ -352,10 +369,10 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         .put("protocol", "v1").toString());
             }
             if (!"POST".equals(req.method)) {
-                if (path.startsWith("/v1/")) return HttpServer.HttpResult.text(405, "Please use POST");
-                return HttpServer.HttpResult.text(404, "not found");
+                if (path.startsWith("/v1/")) return HttpServer.HttpResult.error(405, "Please use POST");
+                return HttpServer.HttpResult.error(404, "not found");
             }
-            if (!path.startsWith("/v1/")) return HttpServer.HttpResult.text(404, "not found");
+            if (!path.startsWith("/v1/")) return HttpServer.HttpResult.error(404, "not found");
             String method = path.substring("/v1/".length());
             if ("meta".equals(method)) return jsonResult(meta());
             validateLoginHeaders(req, method);
@@ -369,19 +386,23 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             return jsonResult(dispatch(method, body));
         } catch (RemovedAction ra) {
             // 404 但带 code：这是「曾经有过、现在没了」，不是方法名写错。
-            return HttpServer.HttpResult.json(404, errorJson(ra.getMessage(), "removed_action"));
+            return HttpServer.HttpResult.error(404, "removed_action", ra.getMessage(), null);
         } catch (NotImplemented ni) {
             // 404, not 501: every method here is one QQ has no equivalent for at all. The body
             // stays JSON like every other error so a client can parse it uniformly.
-            return HttpServer.HttpResult.json(404, errorJson(ni.getMessage()));
+            return HttpServer.HttpResult.error(404, "unsupported_method", ni.getMessage(), null);
         } catch (ApiError e) {
-            int http = e.code == 1400 ? 400 : e.code == 1403 ? 403 : e.code == 1404 ? 404 : 500;
-            return HttpServer.HttpResult.json(http, errorJson(e.getMessage()));
+            java.util.Map<String, String> extra = null;
+            if (e.retryAfter > 0) {
+                extra = new java.util.LinkedHashMap<>();
+                extra.put("Retry-After", String.valueOf(e.retryAfter));
+            }
+            return HttpServer.HttpResult.error(e.http(), e.slug, e.getMessage(), extra);
         } catch (IllegalStateException e) {
-            return HttpServer.HttpResult.json(500, errorJson(e.getMessage()));
+            return HttpServer.HttpResult.error(500, e.getMessage());
         } catch (Throwable t) {
             L.e("http " + req.method + " " + req.path, t);
-            return HttpServer.HttpResult.json(500, errorJson(String.valueOf(t)));
+            return HttpServer.HttpResult.error(500, String.valueOf(t));
         }
     }
 
@@ -544,25 +565,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return HttpServer.HttpResult.json(200, data.toString());
     }
 
-    private static String errorJson(String msg) {
-        return errorJson(msg, null);
-    }
-
-    /** 错误体。带 `code` 时客户端可以按机器可读的字段判断，不必去匹配文案。 */
-    private static String errorJson(String msg, String code) {
-        try {
-            JSONObject o = new JSONObject().put("message", msg == null ? "" : msg);
-            if (code != null) o.put("code", code);
-            return o.toString();
-        } catch (Exception e) { return "{\"message\":\"error\"}"; }
-    }
-
     private static JSONObject opJson(int op, JSONObject body) throws Exception {
         return new JSONObject().put("op", op).put("body", body == null ? JSONObject.NULL : body);
     }
 
     private HttpServer.HttpResult serveAsset(String id) {
-        if (id == null || id.isEmpty()) return HttpServer.HttpResult.text(400, "missing id");
+        if (id == null || id.isEmpty()) return HttpServer.HttpResult.error(400, "missing id");
         int q = id.indexOf('?');
         if (q >= 0) id = id.substring(0, q);
         try {
@@ -571,12 +579,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         try {
             // This unauthenticated browser-facing route only serves opaque ids issued by us.
             // Direct paths remain accepted by internal/get_resource, never by HTTP GET.
-            if (store.getResource(id) == null) return HttpServer.HttpResult.text(404, "not found");
+            if (store.getResource(id) == null) return HttpServer.HttpResult.error(404, "not found");
             JSONObject p = new JSONObject().put("file", id);
             JSONObject res = getResource(p, null);
             String file = res.optString("file", "");
             java.io.File local = file.isEmpty() ? null : new java.io.File(file);
-            if (local == null || !local.isFile()) return HttpServer.HttpResult.text(404, "not found");
+            if (local == null || !local.isFile()) return HttpServer.HttpResult.error(404, "not found");
             byte[] data = java.nio.file.Files.readAllBytes(local.toPath());
             String type = sniffMime(data, local.getName(), res.optString("resource_type", ""));
             java.util.Map<String, String> extra = new java.util.LinkedHashMap<>();
@@ -584,33 +592,33 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             extra.put("Cache-Control", "private, max-age=3600");
             return new HttpServer.HttpResult(200, type, data, extra);
         } catch (ApiError e) {
-            return HttpServer.HttpResult.text(e.code == 1404 ? 404 : 400, e.getMessage());
+            return HttpServer.HttpResult.error(e.code == 1404 ? 404 : 400, e.getMessage());
         } catch (Throwable t) {
-            return HttpServer.HttpResult.text(500, String.valueOf(t));
+            return HttpServer.HttpResult.error(500, String.valueOf(t));
         }
     }
 
     private HttpServer.HttpResult serveProxy(String encoded) {
-        if (encoded == null || encoded.isEmpty()) return HttpServer.HttpResult.text(400, "missing url");
+        if (encoded == null || encoded.isEmpty()) return HttpServer.HttpResult.error(400, "missing url");
         String url;
         try { url = java.net.URLDecoder.decode(encoded, "UTF-8"); }
-        catch (Exception e) { return HttpServer.HttpResult.text(400, "invalid url"); }
+        catch (Exception e) { return HttpServer.HttpResult.error(400, "invalid url"); }
         if (url.startsWith("internal:")) {
             // internal:{platform}/{user.id}/{path}；格式不对 400，找不到登录 404。
             String[] parts = url.substring("internal:".length()).split("/", 3);
             if (parts.length < 3 || parts[0].isEmpty() || parts[1].isEmpty() || parts[2].isEmpty())
-                return HttpServer.HttpResult.text(400, "invalid internal url");
+                return HttpServer.HttpResult.error(400, "invalid internal url");
             if (!PLATFORM.equals(parts[0]) || !String.valueOf(selfUin()).equals(parts[1]))
-                return HttpServer.HttpResult.text(404, "login or resource not found");
-            if (!parts[2].startsWith("_tmp/")) return HttpServer.HttpResult.text(404, "unknown internal route");
+                return HttpServer.HttpResult.error(404, "login or resource not found");
+            if (!parts[2].startsWith("_tmp/")) return HttpServer.HttpResult.error(404, "unknown internal route");
             String id = parts[2].substring("_tmp/".length());
             if (id.isEmpty() || id.indexOf('/') >= 0 || id.indexOf('\\') >= 0)
-                return HttpServer.HttpResult.text(400, "invalid internal url");
+                return HttpServer.HttpResult.error(400, "invalid internal url");
             return serveAsset(id);
         }
-        if (!isHttpUrl(url)) return HttpServer.HttpResult.text(400, "invalid url");
+        if (!isHttpUrl(url)) return HttpServer.HttpResult.error(400, "invalid url");
         // 本实现不下载任何外链，proxy_urls 恒为空，所以合法的外链一律不在代理范围内。
-        return HttpServer.HttpResult.text(403, "proxy url not allowed");
+        return HttpServer.HttpResult.error(403, "proxy url not allowed");
     }
 
     private static boolean isHttpUrl(String url) {
@@ -635,12 +643,12 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
      */
     private HttpServer.HttpResult serveInternalResource(String path) {
         String[] parts = path.substring("/v1/internal/".length()).split("/", 3);
-        if (parts.length < 3 || parts[2].isEmpty()) return HttpServer.HttpResult.text(404, "not found");
+        if (parts.length < 3 || parts[2].isEmpty()) return HttpServer.HttpResult.error(404, "not found");
         if (!PLATFORM.equals(parts[0]) || isForeignLogin(parts[1], selfUin()))
-            return HttpServer.HttpResult.json(404, errorJson("internal login not found"));
+            return HttpServer.HttpResult.error(404, "login_not_found", "internal login not found", null);
         if (parts[2].startsWith("_tmp/")) return serveAsset(parts[2].substring("_tmp/".length()));
         // _api is POST-only; anything else under a login is not a resource we publish.
-        return HttpServer.HttpResult.text(404, "not found");
+        return HttpServer.HttpResult.error(404, "not found");
     }
 
     private JSONObject meta() throws Exception {
@@ -656,9 +664,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String platform = req.header("satori-platform");
         String userId = req.header("satori-user-id");
         if (!platform.isEmpty() && !PLATFORM.equals(platform))
-            throw new ApiError(1403, "login not found: Satori-Platform " + platform);
+            throw new ApiError(1403, "login_not_found", "login not found: Satori-Platform " + platform, 0);
         if (isForeignLogin(userId, selfUin()))
-            throw new ApiError(1403, "login not found: Satori-User-ID " + userId);
+            throw new ApiError(1403, "login_not_found", "login not found: Satori-User-ID " + userId, 0);
     }
 
     /**
@@ -728,8 +736,20 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return "application/octet-stream";
     }
 
+    /**
+     * 内部错误码：1400/1403/1404 对应同号 HTTP 状态，1429 → 429，1503 → 503，其余 500。
+     * {@code slug} 进响应体的 {@code code}（缺省按状态取），{@code retryAfter} 秒数大于 0 时带 {@code Retry-After}。
+     */
     private static final class ApiError extends RuntimeException {
-        final int code; ApiError(int code, String msg) { super(msg); this.code = code; }
+        final int code; final String slug; final int retryAfter;
+        ApiError(int code, String msg) { this(code, null, msg, 0); }
+        ApiError(int code, String slug, String msg, int retryAfter) {
+            super(msg); this.code = code; this.slug = slug; this.retryAfter = retryAfter;
+        }
+        int http() {
+            return code == 1400 ? 400 : code == 1403 ? 403 : code == 1404 ? 404
+                    : code == 1429 ? 429 : code == 1503 ? 503 : 500;
+        }
     }
     private static final class NotImplemented extends RuntimeException {
         NotImplemented(String method) { super("API not found: " + method); }
@@ -781,13 +801,20 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return why != null ? why : "QQ 内核查询接口不再向客户端暴露";
     }
 
+    /** 内核离线：503，没有可承诺的恢复时间，所以不带 Retry-After。 */
+    private static ApiError kernelOffline() {
+        return new ApiError(1503, "kernel_offline", "QQ kernel offline or not ready", 0);
+    }
+
     private void ensureOutboundReady() {
-        if (!qq.isOnline()) throw new ApiError(1500, "QQ kernel offline or not ready");
+        if (!qq.isOnline()) throw kernelOffline();
         long since = onlineSinceMs;
         long remaining = cfg.onlineStabilizeMs - (System.currentTimeMillis() - since);
         if (since <= 0 || remaining > 0) {
             long seconds = Math.max(1, (remaining + 999) / 1000);
-            throw new ApiError(1500, "QQ session stabilizing; retry after " + seconds + "s");
+            // 503 + Retry-After：请求没有交给 QQ，等够时间原样再发一次就行。
+            throw new ApiError(1503, "session_stabilizing", "QQ session stabilizing; retry after " + seconds + "s",
+                    (int) Math.min(seconds, 3600));
         }
     }
 
@@ -807,7 +834,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             try {
                 lease = outboundGuard.acquire(method);
             } catch (OutboundGuard.BusyException busy) {
-                throw new ApiError(1500, busy.getMessage());
+                throw new ApiError(busy.rateLimited ? 1429 : 1503, busy.slug, busy.getMessage(), busy.retryAfterSeconds);
             }
             ensureOutboundReady();
             if (account == 0 || account != selfUin()) throw new ApiError(1404, "login changed while waiting");
@@ -860,7 +887,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         if (p == null) p = new JSONObject();
         if ("login.get".equals(method)) return loginFull();
         if ("reaction.clear".equals(method)) throw new NotImplemented("reaction.clear (use internal/reaction_clear for own reactions)");
-        if (!qq.isOnline()) throw new ApiError(1500, "QQ kernel offline or not ready");
+        // 没有的方法与内核在不在线无关：先判 404，再判 503，客户端才分得清「没这个」和「现在不行」。
+        if (!serves(method)) throw new NotImplemented(method);
+        if (!qq.isOnline()) throw kernelOffline();
         switch (method) {
             case "message.create": return messageCreate(p);
             case "message.get": return satoriGetMsg(p);
@@ -1336,7 +1365,28 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         // 只列真正还实现得出来的（移除过的见下面的 removed）：列了却 404 会让客户端
         // 白试一轮，acumen 的资料卡点赞就吃过这个亏。
         return new JSONObject()
+                // 与 satori-wx 共用的口径：adapter / version / platform / standard_methods / unsupported /
+                // event_types / message_elements / limits。acumen 按它协商，不靠适配器名字猜。
+                .put("adapter", ADAPTER)
                 .put("version", APP_VERSION)
+                .put("platform", PLATFORM)
+                .put("standard_methods", standardMethods())
+                .put("unsupported", new JSONArray()
+                        .put("reaction.clear").put("message.update").put("channel.create").put("channel.delete")
+                        .put("guild.role.create").put("guild.role.update").put("guild.role.delete"))
+                .put("event_types", new JSONArray()
+                        .put("message-created").put("message-deleted")
+                        .put("guild-added").put("guild-updated").put("guild-removed")
+                        .put("channel-added").put("channel-updated").put("channel-removed")
+                        .put("guild-member-added").put("guild-member-updated").put("guild-member-removed")
+                        .put("reaction-added").put("reaction-removed")
+                        .put("friend-request").put("guild-member-request").put("guild-request")
+                        .put("internal").put("login-updated"))
+                .put("message_elements", new JSONArray()
+                        .put("text").put("at").put("sharp").put("quote").put("emoji").put("a").put("br").put("p")
+                        .put("img").put("audio").put("video").put("file").put("message"))
+                .put("limits", new JSONObject()
+                        .put("upload_bytes", HttpServer.MAX_UPLOAD_BYTES))
                 .put("actions", actions)
                 .put("special_faces", new JSONObject()
                         .put("dice", Codec.DICE_FACE).put("rps", Codec.RPS_FACE)

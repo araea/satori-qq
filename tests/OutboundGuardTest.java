@@ -58,7 +58,7 @@ public final class OutboundGuardTest {
         OutboundGuard budget = new OutboundGuard(0, 1000, 2, 2, 3, 1000);
         try (OutboundGuard.Lease ignored = budget.acquire("message.create")) {}
         try (OutboundGuard.Lease ignored = budget.acquire("message.create")) {}
-        expectBusy(() -> budget.acquire("message.create"), "rate budget rejects excess");
+        expectBusy(() -> budget.acquire("message.create"), "rate budget rejects excess", "outbound_rate_limited", true);
         check(budget.stats().getLong("rate_rejected") == 1, "rate rejection count");
 
         OutboundGuard circuit = new OutboundGuard(0, 1000, 2, 20, 2, 20);
@@ -66,7 +66,7 @@ public final class OutboundGuardTest {
         failed.complete(false);
         failed = circuit.acquire("message.create");
         failed.complete(false);
-        expectBusy(() -> circuit.acquire("message.create"), "open circuit rejects writes");
+        expectBusy(() -> circuit.acquire("message.create"), "open circuit rejects writes", "outbound_circuit_open", false);
         check("open".equals(circuit.stats().getString("circuit_state")), "circuit opens");
         Thread.sleep(30);
         try (OutboundGuard.Lease ignored = circuit.acquire("message.create")) {}
@@ -96,7 +96,7 @@ public final class OutboundGuardTest {
         check("closed".equals(mixed.stats().getString("circuit_state")),
                 "one real failure below threshold keeps the circuit closed");
         mixed.acquire("message.create").complete(false);
-        expectBusy(() -> mixed.acquire("message.create"), "two real failures still open the circuit");
+        expectBusy(() -> mixed.acquire("message.create"), "two real failures still open the circuit", "outbound_circuit_open", false);
 
         System.out.println("OutboundGuardTest OK");
     }
@@ -105,13 +105,16 @@ public final class OutboundGuardTest {
         if (!value) throw new AssertionError(label);
     }
 
-    private static void expectBusy(ThrowingCall call, String label) throws Exception {
+    /** 闸门挡下请求时要说清楚：机器可读的名字、该不该按 429 回、多久以后再来。 */
+    private static void expectBusy(ThrowingCall call, String label, String slug, boolean rateLimited) throws Exception {
         try {
             OutboundGuard.Lease lease = call.run();
             lease.close();
             throw new AssertionError(label);
         } catch (OutboundGuard.BusyException expected) {
-            // expected
+            check(slug.equals(expected.slug), label + ": slug " + expected.slug);
+            check(expected.rateLimited == rateLimited, label + ": rateLimited");
+            check(expected.retryAfterSeconds >= 1, label + ": retry-after");
         }
     }
 

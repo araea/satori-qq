@@ -1,9 +1,10 @@
 package com.satori.qq.guard;
 
-import org.json.JSONObject;
-
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
+import java.util.concurrent.TimeUnit;
+import org.json.JSONObject;
 
 /**
  * Thin bridge from the management app to the root {@code qqguard} watchdog.
@@ -89,7 +90,7 @@ public final class GuardCommand {
         Process process = null;
         try {
             process = new ProcessBuilder(su(), "-c", script).start();
-            boolean done = process.waitFor(TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            boolean done = process.waitFor(TIMEOUT_MS, TimeUnit.MILLISECONDS);
             String out = read(process.getInputStream());
             String err = read(process.getErrorStream());
             if (!done) {
@@ -119,7 +120,7 @@ public final class GuardCommand {
 
     /** Root 通常挂在 /system/bin/su；先试绝对路径，失败再退回 PATH 查找。 */
     private static String su() {
-        if (new java.io.File("/system/bin/su").canExecute()) return "/system/bin/su";
+        if (new File("/system/bin/su").canExecute()) return "/system/bin/su";
         return "su";
     }
 

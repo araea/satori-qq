@@ -15,13 +15,13 @@ public final class RichText {
     public static String keyboard(Ref ref, Object element) {
         Object keyboard = ref.getOrNull(element, "inlineKeyboardElement");
         Object rows = ref.getOrNull(keyboard, "rows");
-        if (!(rows instanceof List)) return "";
+        if (!(rows instanceof List<?> items)) return "";
         StringBuilder out = new StringBuilder();
         int count = 0;
-        for (Object row : (List<?>) rows) {
+        for (Object row : items) {
             Object buttons = ref.getOrNull(row, "buttons");
-            if (!(buttons instanceof List)) continue;
-            for (Object button : (List<?>) buttons) {
+            if (!(buttons instanceof List<?> list)) continue;
+            for (Object button : list) {
                 String label = clean(Ref.asStr(ref.getOrNull(button, "label")))
                         .replace('\n', ' ').trim();
                 if (label.isEmpty()) label = clean(Ref.asStr(ref.getOrNull(button, "visitedLabel")))

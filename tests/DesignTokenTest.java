@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -331,7 +333,7 @@ public final class DesignTokenTest {
 
     private static List<String> matches(String text, String regex) {
         List<String> out = new ArrayList<>();
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(regex).matcher(text);
+        Matcher matcher = Pattern.compile(regex).matcher(text);
         while (matcher.find()) out.add(matcher.group(1));
         return out;
     }

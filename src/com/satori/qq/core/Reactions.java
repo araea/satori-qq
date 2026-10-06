@@ -5,6 +5,7 @@ import com.satori.qq.qq.Convert;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
 import com.satori.qq.satori.Codec;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -181,7 +182,7 @@ final class Reactions {
         String cookie = cursor == null ? "" : cursor;
         CountDownLatch answered = new CountDownLatch(1);
         Answer answer = new Answer();
-        Object callback = java.lang.reflect.Proxy.newProxyInstance(qq.ref.cl, new Class<?>[]{qq.ref.cls(LIST_CALLBACK)},
+        Object callback = Proxy.newProxyInstance(qq.ref.cl, new Class<?>[]{qq.ref.cls(LIST_CALLBACK)},
                 (proxy, m, args) -> {
                     try {
                         if (args != null) for (Object arg : args) absorb(arg, answer);

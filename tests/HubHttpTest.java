@@ -4,13 +4,18 @@ import com.satori.qq.Cfg;
 import com.satori.qq.net.HttpServer;
 import com.satori.qq.net.WsConn;
 import com.satori.qq.qq.QQClient;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.lang.reflect.Field;
+import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * The HTTP status table and event shape Satori prescribes, exercised through the real hub without
@@ -129,10 +134,10 @@ public final class HubHttpTest {
 
     /** upload.create 流到磁盘、回 internal: 链接；/v1/proxy 按块回读，支持 Range 与 HEAD。 */
     static void uploadsStreamAndServeWithRanges() throws Exception {
-        java.io.File scratch = java.nio.file.Files.createTempDirectory("hub-upload").toFile();
+        File scratch = Files.createTempDirectory("hub-upload").toFile();
         System.setProperty("satori.qq.media_tmp", scratch.getAbsolutePath());
         byte[] data = new byte[700_000];
-        new java.util.Random(11).nextBytes(data);
+        new Random(11).nextBytes(data);
         data[0] = (byte) 0xff; data[1] = (byte) 0xd8; // looks like a JPEG, so the extension is guessed
         ByteArrayOutputStream raw = new ByteArrayOutputStream();
         raw.write(("--B\r\nContent-Disposition: form-data; name=\"pic\"\r\nContent-Type: image/jpeg\r\n\r\n").getBytes());
@@ -142,7 +147,7 @@ public final class HubHttpTest {
         headers.put("authorization", "Bearer s3cret");
         headers.put("content-type", "multipart/form-data; boundary=B");
         HttpServer.HttpResult up = hub.onHttp(new HttpServer.HttpReq("POST", "/v1/upload.create", "", headers, new byte[0],
-                new java.io.ByteArrayInputStream(raw.toByteArray()), raw.size()));
+                new ByteArrayInputStream(raw.toByteArray()), raw.size()));
         check(up.status == 200, "streamed upload is 200: " + up.status + " " + new String(up.body, "UTF-8"));
         String link = new JSONObject(new String(up.body, "UTF-8")).getString("pic");
         check(link.startsWith("internal:red/10001/_tmp/"), "upload answers an internal: link: " + link);
@@ -166,11 +171,11 @@ public final class HubHttpTest {
         // 超过单个文件上限：413，不留残片。
         byte[] before = null;
         HttpServer.HttpResult bad = hub.onHttp(new HttpServer.HttpReq("POST", "/v1/upload.create", "", headers, new byte[0],
-                new java.io.ByteArrayInputStream("--B\r\nnot a part".getBytes()), 16));
+                new ByteArrayInputStream("--B\r\nnot a part".getBytes()), 16));
         check(bad.status == 400 && "invalid_request".equals(new JSONObject(new String(bad.body, "UTF-8")).optString("code")),
                 "malformed multipart is 400: " + bad.status);
         String[] files = scratch.list();
-        check(files != null && files.length == 1, "only the adopted upload remains on disk: " + java.util.Arrays.toString(files));
+        check(files != null && files.length == 1, "only the adopted upload remains on disk: " + Arrays.toString(files));
     }
 
     static void check(boolean condition, String message) { if (!condition) throw new AssertionError(message); }

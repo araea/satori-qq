@@ -1,11 +1,11 @@
 package com.satori.qq.core;
 
 import com.satori.qq.satori.Elements;
-import org.json.JSONArray;
-import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /** Bounded, fail-closed selection of a QQ history window. Never return a partial range. */
 public final class ShotRange {

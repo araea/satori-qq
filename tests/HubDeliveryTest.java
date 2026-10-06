@@ -3,12 +3,12 @@ package com.satori.qq.core;
 import com.satori.qq.Cfg;
 import com.satori.qq.net.WsConn;
 import com.satori.qq.qq.QQClient;
-import org.json.JSONObject;
 import java.io.*;
 import java.lang.reflect.*;
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.*;
+import org.json.JSONObject;
 
 /** Exercises the real hub publication/replay path without loading QQ or Android. */
 public final class HubDeliveryTest {

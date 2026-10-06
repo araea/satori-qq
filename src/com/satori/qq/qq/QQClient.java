@@ -3,18 +3,35 @@ package com.satori.qq.qq;
 import android.app.ActivityManager;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.PackageInfo;
 import com.satori.qq.L;
 import com.satori.qq.packet.PacketSvc;
-
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.nio.charset.StandardCharsets;
 
 /** Bridge into the Android QQ NT kernel: capture session, send, register listeners and identity. */
 public final class QQClient {
@@ -66,8 +83,8 @@ public final class QQClient {
     private volatile Listener listener;
     private volatile String selfUin = "";
     private volatile String selfNick = "";
-    private final java.util.concurrent.ConcurrentHashMap<Long, SendReceipt> pendingSends =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, SendReceipt> pendingSends =
+            new ConcurrentHashMap<>();
     private volatile String lastSend = "none";
     public String sendDiag() { return "pending=" + pendingSends.size() + " last=" + lastSend; }
     private volatile MediaForeground residentForeground;
@@ -101,12 +118,12 @@ public final class QQClient {
 
     public String kernelForegroundDiag() { return residentForeground == null ? "idle" : "requested"; }
     private final boolean mainProcess;
-    private final java.util.concurrent.ConcurrentHashMap<String, MediaDownload> mediaDownloads =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.concurrent.ConcurrentHashMap<Long, java.util.Map<String, Object>>
-            groupMemberCache = new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.Set<Long> groupMemberWarmups =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, MediaDownload> mediaDownloads =
+            new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Map<String, Object>>
+            groupMemberCache = new ConcurrentHashMap<>();
+    private final Set<Long> groupMemberWarmups =
+            ConcurrentHashMap.newKeySet();
 
     private static final class MediaDownload {
         final CountDownLatch latch = new CountDownLatch(1);
@@ -248,7 +265,7 @@ public final class QQClient {
         scanHit = "";
         StringBuilder errors = new StringBuilder();
         for (Class<?> c = target.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
-            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+            for (Method m : c.getDeclaredMethods()) {
                 if (m.getParameterCount() != 0) continue;
                 if (!m.getReturnType().getName().endsWith(suffix)) continue;
                 try {
@@ -269,7 +286,7 @@ public final class QQClient {
     private static String describeMethods(Class<?> cls, String filter) {
         StringBuilder b = new StringBuilder();
         for (Class<?> c = cls; c != null && c != Object.class; c = c.getSuperclass()) {
-            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+            for (Method m : c.getDeclaredMethods()) {
                 if (!m.getName().toLowerCase().contains(filter)) continue;
                 if (b.length() > 400) { b.append("..."); return b.toString(); }
                 b.append(m.getName()).append('(');
@@ -376,10 +393,10 @@ public final class QQClient {
         Object rt = appRuntime();
         if (rt == null) return null;
         try {
-            java.lang.reflect.Method m = rt.getClass().getMethod("isLogin");
+            Method m = rt.getClass().getMethod("isLogin");
             m.setAccessible(true);
             Object v = m.invoke(rt);
-            return v instanceof Boolean ? (Boolean) v : null;
+            return v instanceof Boolean flag ? flag : null;
         } catch (Throwable t) {
             return null;
         }
@@ -449,7 +466,7 @@ public final class QQClient {
     }
 
     private final class ListenerHandler implements InvocationHandler {
-        @Override public Object invoke(Object proxy, java.lang.reflect.Method m, Object[] args) {
+        @Override public Object invoke(Object proxy, Method m, Object[] args) {
             String name = m.getName();
             try {
                 if ("onRichMediaDownloadComplete".equals(name) && args != null && args.length > 0) {
@@ -491,7 +508,7 @@ public final class QQClient {
             }
             return def(m);
         }
-        private Object def(java.lang.reflect.Method m) {
+        private Object def(Method m) {
             Class<?> r = m.getReturnType();
             if (!r.isPrimitive()) return null;
             if (r == boolean.class) return false;
@@ -558,7 +575,7 @@ public final class QQClient {
         try {
             Object app = ref.callS(MOBILEQQ, "getMobileQQ");
             if (app instanceof Context) {
-                android.content.pm.PackageInfo info = ((Context) app).getPackageManager()
+                PackageInfo info = ((Context) app).getPackageManager()
                         .getPackageInfo("com.tencent.mobileqq", 0);
                 if (info != null && info.versionName != null) return info.versionName;
             }
@@ -569,10 +586,10 @@ public final class QQClient {
     }
 
     /** QQ's own Application as a Context, for posting notifications under QQ's identity. */
-    public android.content.Context appContext() {
+    public Context appContext() {
         try {
             Object app = ref.callS(MOBILEQQ, "getMobileQQ");
-            if (app instanceof Context) return (Context) app;
+            if (app instanceof Context context) return context;
         } catch (Throwable t) { L.e("appContext", t); }
         return null;
     }
@@ -743,8 +760,8 @@ public final class QQClient {
     private Object cloneVasAttrFromRecord(Object rec) {
         try {
             Object mapObj = ref.get(rec, "msgAttrs");
-            if (!(mapObj instanceof java.util.Map)) return null;
-            Object src = ((java.util.Map<?, ?>) mapObj).get(0);
+            if (!(mapObj instanceof Map<?, ?> map)) return null;
+            Object src = map.get(0);
             if (src == null) return null;
             Object vas = ref.get(src, "vasMsgInfo");
             if (vas == null) return null;
@@ -791,7 +808,7 @@ public final class QQClient {
         copyIntegerField(src, dst, "diyFontImageId");
         Object sub = ref.get(src, "subFontId");
         if (sub instanceof Long) ref.set(dst, "subFontId", sub);
-        else if (sub instanceof Integer) ref.set(dst, "subFontId", ((Integer) sub).longValue());
+        else if (sub instanceof Integer number) ref.set(dst, "subFontId", number.longValue());
         return dst;
     }
 
@@ -851,7 +868,7 @@ public final class QQClient {
         if (record == null) return;
         SendReceipt pending = pendingSends.get(ref.getLong(record, "msgId"));
         Object status = ref.getOrNull(record, "sendStatus");
-        if (pending != null && status instanceof Number) pending.record(((Number) status).intValue());
+        if (pending != null && status instanceof Number number) pending.record(number.intValue());
     }
 
     public SendResult sendMsg(int chatType, String peerUid, List<?> elements,
@@ -887,7 +904,7 @@ public final class QQClient {
                 // Android/data 下那个路径，那个目录一旦不可写就每次发消息抛一次
                 // FileNotFoundException（logcat 里连着整串栈），既是噪声也是暴露面。
                 if (L.verbose()) {
-                    try (java.io.FileWriter w = new java.io.FileWriter(LAST_SEND_DUMP, false)) {
+                    try (FileWriter w = new FileWriter(LAST_SEND_DUMP, false)) {
                         w.write("PRE\n" + pre);
                     }
                 }
@@ -956,12 +973,12 @@ public final class QQClient {
         if (!L.verbose()) return;
         try {
             String pre = "";
-            java.io.File dump = new java.io.File(LAST_SEND_DUMP);
+            File dump = new File(LAST_SEND_DUMP);
             if (dump.isFile()) {
-                byte[] raw = java.nio.file.Files.readAllBytes(dump.toPath());
-                pre = new String(raw, java.nio.charset.StandardCharsets.UTF_8);
+                byte[] raw = Files.readAllBytes(dump.toPath());
+                pre = new String(raw, StandardCharsets.UTF_8);
             }
-            try (java.io.FileWriter w = new java.io.FileWriter(dump, false)) {
+            try (FileWriter w = new FileWriter(dump, false)) {
                 w.write(pre);
                 if (!pre.endsWith("\n")) w.write("\n");
                 w.write("POST\n");
@@ -972,7 +989,7 @@ public final class QQClient {
         }
     }
 
-    public String describeElements(java.util.List<?> list) {
+    public String describeElements(List<?> list) {
         StringBuilder sb = new StringBuilder();
         if (list == null) return "elements=null\n";
         sb.append("elements=").append(list.size()).append('\n');
@@ -986,7 +1003,7 @@ public final class QQClient {
                 Object pic = ref.get(e, "picElement");
                 if (pic == null) { sb.append(" pic=null\n"); continue; }
                 String src = Ref.asStr(ref.get(pic, "sourcePath"));
-                java.io.File srcF = src == null || src.isEmpty() ? null : new java.io.File(src);
+                File srcF = src == null || src.isEmpty() ? null : new File(src);
                 sb.append(" ").append(Ref.asInt(ref.get(pic, "picWidth"))).append('x')
                         .append(Ref.asInt(ref.get(pic, "picHeight")));
                 sb.append(" size=").append(ref.get(pic, "fileSize"));
@@ -1031,7 +1048,7 @@ public final class QQClient {
                 Object pic = ref.get(e, "picElement");
                 if (pic == null) { sb.append(" pic=null\n"); continue; }
                 String src = Ref.asStr(ref.get(pic, "sourcePath"));
-                java.io.File srcF = src == null || src.isEmpty() ? null : new java.io.File(src);
+                File srcF = src == null || src.isEmpty() ? null : new File(src);
                 sb.append(" ").append(Ref.asInt(ref.get(pic, "picWidth"))).append('x')
                         .append(Ref.asInt(ref.get(pic, "picHeight")));
                 sb.append(" size=").append(ref.get(pic, "fileSize"));
@@ -1057,7 +1074,7 @@ public final class QQClient {
     private void appendPtt(StringBuilder sb, Object ptt) {
         if (ptt == null) { sb.append(" ptt=null"); return; }
         String path = Ref.asStr(ref.get(ptt, "filePath"));
-        java.io.File local = path.isEmpty() ? null : new java.io.File(path);
+        File local = path.isEmpty() ? null : new File(path);
         Object waves = ref.get(ptt, "waveAmplitudes");
         sb.append(" duration=").append(ref.get(ptt, "duration"));
         sb.append(" format=").append(ref.get(ptt, "formatType"));
@@ -1071,7 +1088,7 @@ public final class QQClient {
         sb.append(" play=").append(ref.get(ptt, "playState"));
         sb.append(" invalid=").append(ref.get(ptt, "invalidState"));
         sb.append(" uuidEmpty=").append(Ref.asStr(ref.get(ptt, "fileUuid")).isEmpty());
-        sb.append(" waves=").append(waves instanceof java.util.List ? ((java.util.List<?>) waves).size() : -1);
+        sb.append(" waves=").append(waves instanceof List<?> items ? items.size() : -1);
     }
 
     /**
@@ -1118,7 +1135,7 @@ public final class QQClient {
             if (latch.await(8, TimeUnit.SECONDS)) {
                 result.code = code[0];
                 result.msg = wording[0] == null ? "" : wording[0];
-                if (records[0] instanceof List) result.records = (List<?>) records[0];
+                if (records[0] instanceof List<?> items) result.records = items;
             } else {
                 result.timedOut = true;
                 result.msg = "getMultiMsg timeout";
@@ -1195,9 +1212,9 @@ public final class QQClient {
         public int code = -1;
         public String msg = "";
         public boolean timedOut;
-        public List<?> records = java.util.Collections.emptyList();
+        public List<?> records = Collections.emptyList();
         public String trace = "";
-        public final java.util.Map<String, String> texts = new java.util.HashMap<>();
+        public final Map<String, String> texts = new HashMap<>();
         public boolean ok() { return !timedOut && code == 0; }
         public String describe() {
             if (timedOut) return msg == null || msg.isEmpty() ? "timeout" : msg;
@@ -1234,8 +1251,8 @@ public final class QQClient {
         if (rec == null) return false;
         try {
             Object els = ref.get(rec, "elements");
-            if (!(els instanceof List)) return false;
-            for (Object e : (List<?>) els) {
+            if (!(els instanceof List<?> items)) return false;
+            for (Object e : items) {
                 if (e == null) continue;
                 int et = Ref.asInt(ref.get(e, "elementType"));
                 if (et == 1) {
@@ -1264,7 +1281,7 @@ public final class QQClient {
 
     private MsgListResult hydrate(int chatType, String peerUid, MsgListResult src) {
         if (!hasRecords(src)) return src;
-        java.util.ArrayList<Object> full = new java.util.ArrayList<>();
+        ArrayList<Object> full = new ArrayList<>();
         boolean changed = false;
         for (Object rec : src.records) {
             if (recordHasElements(rec)) {
@@ -1291,12 +1308,12 @@ public final class QQClient {
 
     @SuppressWarnings("unchecked")
     private List<?> takeRecords(Object holder) {
-        if (!(holder instanceof List)) return java.util.Collections.emptyList();
-        List<?> raw = (List<?>) holder;
-        java.util.ArrayList<Object> out = new java.util.ArrayList<>(raw.size());
+        if (!(holder instanceof List<?> items)) return Collections.emptyList();
+        List<?> raw = items;
+        ArrayList<Object> out = new ArrayList<>(raw.size());
         for (Object o : raw) {
             if (o == null) continue;
-            out.add(com.satori.qq.qq.Convert.unwrapRecord(o));
+            out.add(Convert.unwrapRecord(o));
         }
         return out;
     }
@@ -1480,7 +1497,7 @@ public final class QQClient {
             return r;
         }
         try {
-            java.util.ArrayList<Object> contacts = new java.util.ArrayList<>();
+            ArrayList<Object> contacts = new ArrayList<>();
             contacts.add(ref.neu(CONTACT, chatType, peerUid, ""));
             final Object[] holder = new Object[1];
             final int[] code = new int[]{-1};
@@ -1521,10 +1538,10 @@ public final class QQClient {
             catch (Throwable ignore) { info = ref.call(svc, "getRecentContactListSync"); }
             if (info == null) return a;
             Object list = ref.get(info, "changedList");
-            if (!(list instanceof List)) return a;
+            if (!(list instanceof List<?> items)) return a;
             long wantUin = 0;
             try { wantUin = Long.parseLong(peerUid); } catch (Exception ignore) {}
-            for (Object c : (List<?>) list) {
+            for (Object c : items) {
                 if (c == null) continue;
                 if (Ref.asInt(ref.get(c, "chatType")) != chatType) continue;
                 String uid = Ref.asStr(ref.get(c, "peerUid"));
@@ -1603,9 +1620,9 @@ public final class QQClient {
         if (rec == null) return "";
         try {
             Object els = ref.get(rec, "elements");
-            if (!(els instanceof List)) return "";
+            if (!(els instanceof List<?> items)) return "";
             StringBuilder sb = new StringBuilder();
-            for (Object e : (List<?>) els) {
+            for (Object e : items) {
                 if (e == null) continue;
                 if (Ref.asInt(ref.get(e, "elementType")) != 1) continue;
                 Object t = ref.get(e, "textElement");
@@ -1623,7 +1640,7 @@ public final class QQClient {
         Object rec = r.records.get(0);
         try {
             Object els = ref.get(rec, "elements");
-            int n = els instanceof List ? ((List<?>) els).size() : -1;
+            int n = els instanceof List<?> list ? list.size() : -1;
             int et = -1;
             int textLen = -1;
             String textHead = "";
@@ -1675,9 +1692,9 @@ public final class QQClient {
         L.e(r.trace, null);
         // Same reasoning as dumpSent: the trace belongs in logcat, not in a file in Android/data.
         if (L.verbose()) try {
-            java.io.File f = new java.io.File(
+            File f = new File(
                     "/data/data/com.tencent.mobileqq/files/satori-history.txt");
-            try (java.io.FileWriter w = new java.io.FileWriter(f, false)) { w.write(r.trace); }
+            try (FileWriter w = new FileWriter(f, false)) { w.write(r.trace); }
         } catch (Throwable ignore) {}
         return r;
     }
@@ -1707,8 +1724,8 @@ public final class QQClient {
             ref.set(params, "isIncludeCurrent", Boolean.TRUE);
             ref.set(params, "filterMsgFromTime", 0L);
             ref.set(params, "filterMsgToTime", System.currentTimeMillis() / 1000);
-            ref.set(params, "filterMsgType", new java.util.ArrayList<>());
-            ref.set(params, "filterSendersUid", new java.util.ArrayList<String>());
+            ref.set(params, "filterMsgType", new ArrayList<>());
+            ref.set(params, "filterSendersUid", new ArrayList<String>());
             final Object[] holder = new Object[1];
             final int[] code = new int[]{-1};
             final String[] wording = new String[]{""};
@@ -1775,7 +1792,7 @@ public final class QQClient {
         }
         try {
             Object contact = ref.neu(CONTACT, chatType, peerUid, "");
-            java.util.ArrayList<Long> ids = new java.util.ArrayList<>();
+            ArrayList<Long> ids = new ArrayList<>();
             ids.add(msgId);
             final Object[] holder = new Object[1];
             final int[] code = new int[]{-1};
@@ -1835,7 +1852,7 @@ public final class QQClient {
                 L.e("downloadRichMedia empty path elem=" + elementId, null);
                 return "";
             }
-            java.io.File result = new java.io.File(pending.path);
+            File result = new File(pending.path);
             return result.isFile() && result.length() > 0 ? result.getAbsolutePath() : "";
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1891,8 +1908,8 @@ public final class QQClient {
         try {
             for (String field : new String[]{"domainUrl", "v4IpUrl", "v6IpUrl"}) {
                 Object list = ref.get(result, field);
-                if (!(list instanceof List)) continue;
-                for (Object info : (List<?>) list) {
+                if (!(list instanceof List<?> items)) continue;
+                for (Object info : items) {
                     if (info == null) continue;
                     String u = Ref.asStr(ref.get(info, "url"));
                     if (u != null && !u.isEmpty()) return u;
@@ -1904,7 +1921,7 @@ public final class QQClient {
 
 
     // ---------- group queries ----------
-    private final java.util.Map<Long, Object> groupInfoCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<Long, Object> groupInfoCache = new ConcurrentHashMap<>();
     private volatile boolean groupListenerRegistered;
     private volatile Object groupListenerSession;
     private volatile boolean buddyListenerRegistered;
@@ -1966,7 +1983,7 @@ public final class QQClient {
         else if ("onGroupNotifiesUpdatedV2".equals(name) && args.length >= 3) list = args[2];
         else if ("onGroupSingleScreenNotifies".equals(name) && args.length >= 3) list = args[2];
         else if ("onGroupSingleScreenNotifiesV2".equals(name) && args.length >= 6) list = args[5];
-        return list instanceof List ? (List<?>) list : null;
+        return list instanceof List<?> items ? items : null;
     }
 
     private synchronized void tryRegisterBuddyListener() {
@@ -2055,12 +2072,12 @@ public final class QQClient {
     }
 
     /** All members of a group: HashMap<uid, MemberInfo>. Blocks up to 15s. Null on failure. */
-    public java.util.Map<String, Object> getAllMembers(long groupCode) {
+    public Map<String, Object> getAllMembers(long groupCode) {
         return getAllMembers(groupCode, false);
     }
 
     @SuppressWarnings("unchecked")
-    public java.util.Map<String, Object> getAllMembers(long groupCode, boolean force) {
+    public Map<String, Object> getAllMembers(long groupCode, boolean force) {
         Object gs = getGroupService();
         if (gs == null) return null;
         try {
@@ -2075,7 +2092,7 @@ public final class QQClient {
             });
             ref.call(gs, "getAllMemberList", groupCode, force, cb);
             latch.await(15, TimeUnit.SECONDS);
-            java.util.Map<String, Object> result = (java.util.Map<String, Object>) holder[0];
+            Map<String, Object> result = (Map<String, Object>) holder[0];
             if (result != null) groupMemberCache.put(groupCode, result);
             return result;
         } catch (Throwable t) {
@@ -2086,7 +2103,7 @@ public final class QQClient {
 
     /** Resolve a message sender's role from an already fetched QQ member map, without blocking. */
     public String cachedGroupMemberRole(long groupCode, String uid, long uin) {
-        java.util.Map<String, Object> members = groupMemberCache.get(groupCode);
+        Map<String, Object> members = groupMemberCache.get(groupCode);
         if (members == null) return "";
         Object info = uid == null || uid.isEmpty() ? null : members.get(uid);
         if (info == null && uin != 0) {
@@ -2101,10 +2118,10 @@ public final class QQClient {
         Object role = ref.getOrNull(info, "role");
         String name = "";
         try {
-            if (role instanceof Enum) name = ((Enum<?>) role).name();
+            if (role instanceof Enum<?> named) name = named.name();
             else if (role != null) name = String.valueOf(ref.call(role, "name"));
         } catch (Throwable ignore) {}
-        name = name.toUpperCase(java.util.Locale.ROOT);
+        name = name.toUpperCase(Locale.ROOT);
         if (name.contains("OWNER")) return "owner";
         if (name.contains("ADMIN")) return "admin";
         if (name.contains("MEMBER")) return "member";
@@ -2129,7 +2146,7 @@ public final class QQClient {
     }
 
     /** Cached group simple-infos; triggers a refresh and waits briefly if the cache is empty. */
-    public java.util.Collection<Object> getGroupList() {
+    public Collection<Object> getGroupList() {
         if (groupInfoCache.isEmpty()) {
             Object gs = getGroupService();
             if (gs != null) {
@@ -2169,7 +2186,7 @@ public final class QQClient {
         }
         try {
             final CountDownLatch latch = new CountDownLatch(1);
-            final java.util.concurrent.atomic.AtomicInteger code = new java.util.concurrent.atomic.AtomicInteger(-1);
+            final AtomicInteger code = new AtomicInteger(-1);
             final String[] wording = new String[]{""};
             Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(cbClass)}, (p, m, args) -> {
                 if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
@@ -2209,14 +2226,14 @@ public final class QQClient {
 
     public OpResult kickMember(long groupCode, String uid, boolean rejectAddReq) {
         return awaitGroup(KICK_CB, "kickMember", (gs, cb) -> {
-            java.util.ArrayList<String> uids = new java.util.ArrayList<>();
+            ArrayList<String> uids = new ArrayList<>();
             uids.add(uid);
             ref.call(gs, "kickMember", groupCode, uids, rejectAddReq, "", cb);
         });
     }
     public OpResult inviteToGroup(long groupCode, String uid) {
         return awaitGroup(OPERATE_CB, "inviteToGroup", (gs, cb) -> {
-            java.util.ArrayList<String> uids = new java.util.ArrayList<>();
+            ArrayList<String> uids = new ArrayList<>();
             uids.add(uid);
             ref.call(gs, "inviteToGroup", groupCode, uids, cb);
         });
@@ -2226,7 +2243,7 @@ public final class QQClient {
             Object info = ref.neu(SHUTUP_INFO);
             ref.set(info, "uid", uid);
             ref.set(info, "timeStamp", seconds);
-            java.util.ArrayList<Object> list = new java.util.ArrayList<>();
+            ArrayList<Object> list = new ArrayList<>();
             list.add(info);
             ref.call(gs, "setMemberShutUp", groupCode, list, cb);
         });
@@ -2293,11 +2310,11 @@ public final class QQClient {
      */
     private static void audit(String line) {
         try {
-            java.io.File f = new java.io.File(AUDIT_FILE);
+            File f = new File(AUDIT_FILE);
             if (f.exists() && f.length() > 256 * 1024) f.delete();
-            java.io.FileWriter w = new java.io.FileWriter(f, true);
-            w.write(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT)
-                    .format(new java.util.Date()) + " " + line + "\n");
+            FileWriter w = new FileWriter(f, true);
+            w.write(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
+                    .format(new Date()) + " " + line + "\n");
             w.close();
         } catch (Throwable ignore) { }
     }
@@ -2323,21 +2340,21 @@ public final class QQClient {
         public int userShowFlag;
         public int userShowFlagNew;
         public int sysShowFlag;
-        public final java.util.List<int[]> levelIds = new ArrayList<>();
-        public final java.util.List<String> levelNames = new ArrayList<>();
-        public final java.util.List<int[]> levelIdsNew = new ArrayList<>();
-        public final java.util.List<String> levelNamesNew = new ArrayList<>();
+        public final List<int[]> levelIds = new ArrayList<>();
+        public final List<String> levelNames = new ArrayList<>();
+        public final List<int[]> levelIdsNew = new ArrayList<>();
+        public final List<String> levelNamesNew = new ArrayList<>();
         public boolean ok() { return code == 0; }
         /** AIO 专属/成员群头衔: cGroupRankUserFlag == 1. */
         public boolean titleOpen() { return userShowFlag == 1; }
     }
 
     private void copyLevelNames(Object result, String field,
-                                java.util.List<int[]> ids, java.util.List<String> names) {
+                                List<int[]> ids, List<String> names) {
         try {
             Object list = ref.get(result, field);
-            if (!(list instanceof java.util.Collection)) return;
-            for (Object item : (java.util.Collection<?>) list) {
+            if (!(list instanceof Collection<?> items)) return;
+            for (Object item : items) {
                 ids.add(new int[]{Ref.asInt(ref.get(item, "level"))});
                 names.add(Ref.asStr(ref.get(item, "strName")));
             }
@@ -2452,7 +2469,7 @@ public final class QQClient {
         return awaitGroup(OPERATE_CB, "setIdentityTitleInfo", (gs, cb) -> {
             Object req = ref.neu(reqName);
             int flag = show ? 1 : 0;
-            for (java.lang.reflect.Field f : req.getClass().getDeclaredFields()) {
+            for (Field f : req.getClass().getDeclaredFields()) {
                 String n = f.getName();
                 Class<?> t = f.getType();
                 try {
@@ -2496,7 +2513,7 @@ public final class QQClient {
                     if (args.length >= 3 && args[2] != null) {
                         wording[0] = wording[0] + " rsp=" + args[2];
                         try {
-                            for (java.lang.reflect.Field f : args[2].getClass().getDeclaredFields()) {
+                            for (Field f : args[2].getClass().getDeclaredFields()) {
                                 f.setAccessible(true);
                                 wording[0] = wording[0] + " " + f.getName() + "=" + f.get(args[2]);
                             }
@@ -2540,7 +2557,7 @@ public final class QQClient {
             Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, args) -> {
                 if (args != null && args.length >= 1) {
                     Object a0 = args[0];
-                    if (a0 instanceof Boolean) code[0] = ((Boolean) a0) ? 0 : 1;
+                    if (a0 instanceof Boolean flag) code[0] = flag ? 0 : 1;
                     else code[0] = Ref.asInt(a0);
                     if (args.length >= 2) msg[0] = Ref.asStr(args[1]);
                     latch.countDown();
@@ -2666,8 +2683,8 @@ public final class QQClient {
      * <p>落盘一份：名字守卫要能对付「重启之后名字是空的」这种情形，而进程内的记忆一重启就没了
      * （2026-09-19 用户两次都是在重启后发现名字变空）。文件很小（一百来个群），改动时整体重写。
      */
-    private final java.util.concurrent.ConcurrentHashMap<Long, String> knownGroupNames =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, String> knownGroupNames =
+            new ConcurrentHashMap<>();
     private volatile boolean groupNamesLoaded;
     private volatile long groupNamesSavedAt;
 
@@ -2686,9 +2703,9 @@ public final class QQClient {
         if (groupNamesLoaded) return;
         groupNamesLoaded = true;
         try {
-            java.io.File f = new java.io.File(GROUP_NAMES_FILE);
+            File f = new File(GROUP_NAMES_FILE);
             if (!f.exists()) return;
-            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f));
+            BufferedReader r = new BufferedReader(new FileReader(f));
             try {
                 String line;
                 while ((line = r.readLine()) != null) {
@@ -2713,10 +2730,10 @@ public final class QQClient {
         groupNamesSavedAt = now;
         try {
             StringBuilder sb = new StringBuilder();
-            for (java.util.Map.Entry<Long, String> e : knownGroupNames.entrySet()) {
+            for (Map.Entry<Long, String> e : knownGroupNames.entrySet()) {
                 sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
             }
-            java.io.FileWriter w = new java.io.FileWriter(GROUP_NAMES_FILE, false);
+            FileWriter w = new FileWriter(GROUP_NAMES_FILE, false);
             try {
                 w.write(sb.toString());
             } finally {
@@ -2742,7 +2759,7 @@ public final class QQClient {
     }
 
     /** 见过名字的群号。名字守卫只处理这些群——本来就没名字的群不该被改名。 */
-    public java.util.Set<Long> knownGroupCodes() {
+    public Set<Long> knownGroupCodes() {
         ensureGroupNamesLoaded();
         return knownGroupNames.keySet();
     }
@@ -2776,9 +2793,9 @@ public final class QQClient {
             ArrayList<Long> uins = new ArrayList<>();
             uins.add(uin);
             Object res = ref.call(profile, "getUidByUin", "", uins);
-            if (res instanceof java.util.Map) {
-                Object uid = ((java.util.Map<Object, Object>) res).get(uin);
-                if (uid == null) uid = ((java.util.Map<Object, Object>) res).get(Long.valueOf(uin));
+            if (res instanceof Map) {
+                Object uid = ((Map<Object, Object>) res).get(uin);
+                if (uid == null) uid = ((Map<Object, Object>) res).get(Long.valueOf(uin));
                 return uid == null ? "" : String.valueOf(uid);
             }
         } catch (Throwable t) {
@@ -2797,8 +2814,8 @@ public final class QQClient {
             ArrayList<String> uids = new ArrayList<>();
             uids.add(uid);
             Object res = ref.call(profile, "getUinByUid", "", uids);
-            if (res instanceof java.util.Map) {
-                Object uin = ((java.util.Map<Object, Object>) res).get(uid);
+            if (res instanceof Map) {
+                Object uin = ((Map<Object, Object>) res).get(uid);
                 return uin == null ? 0 : Ref.asLong(uin);
             }
         } catch (Throwable t) {
@@ -2817,7 +2834,7 @@ public final class QQClient {
         }
         try {
             final CountDownLatch latch = new CountDownLatch(1);
-            final java.util.concurrent.atomic.AtomicInteger code = new java.util.concurrent.atomic.AtomicInteger(-1);
+            final AtomicInteger code = new AtomicInteger(-1);
             final String[] wording = new String[]{""};
             Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, args) -> {
                 if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
@@ -2854,7 +2871,7 @@ public final class QQClient {
         if (uid == null || uid.isEmpty()) { r.msg = "cannot resolve friend uid"; return r; }
         try {
             final CountDownLatch latch = new CountDownLatch(1);
-            final java.util.concurrent.atomic.AtomicInteger code = new java.util.concurrent.atomic.AtomicInteger(-1);
+            final AtomicInteger code = new AtomicInteger(-1);
             final String[] wording = new String[]{""};
             Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(OPERATE_CB)}, (p, m, args) -> {
                 if ("onResult".equals(m.getName()) && args != null && args.length >= 1) {
@@ -2903,8 +2920,8 @@ public final class QQClient {
 
     /** Ordered map uid -> CoreInfo for the current account's complete buddy list. */
     @SuppressWarnings("unchecked")
-    public java.util.Map<String, Object> getFriendCoreInfos() {
-        java.util.LinkedHashMap<String, Object> out = new java.util.LinkedHashMap<>();
+    public Map<String, Object> getFriendCoreInfos() {
+        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         Object buddy = getBuddyService();
         Object profile = getProfileService();
         if (buddy == null || profile == null) return out;
@@ -2921,12 +2938,12 @@ public final class QQClient {
                 latch.await(10, TimeUnit.SECONDS);
                 categories = (List<?>) ref.call(buddy, "getBuddyListFromCache", "", reqType);
             }
-            java.util.LinkedHashSet<String> uidSet = new java.util.LinkedHashSet<>();
+            LinkedHashSet<String> uidSet = new LinkedHashSet<>();
             if (categories != null) {
                 for (Object category : categories) {
                     Object raw = ref.get(category, "buddyUids");
-                    if (!(raw instanceof List)) continue;
-                    for (Object uid : (List<?>) raw) {
+                    if (!(raw instanceof List<?> items)) continue;
+                    for (Object uid : items) {
                         String value = Ref.asStr(uid);
                         if (!value.isEmpty()) uidSet.add(value);
                     }
@@ -2936,10 +2953,9 @@ public final class QQClient {
             for (int from = 0; from < all.size(); from += 200) {
                 ArrayList<String> chunk = new ArrayList<>(all.subList(from, Math.min(from + 200, all.size())));
                 Object rawMap = ref.call(profile, "getCoreInfo", "", chunk);
-                if (!(rawMap instanceof java.util.Map)) continue;
-                java.util.Map<Object, Object> map = (java.util.Map<Object, Object>) rawMap;
+                if (!(rawMap instanceof Map<?, ?> entries)) continue;
                 for (String uid : chunk) {
-                    Object info = map.get(uid);
+                    Object info = entries.get(uid);
                     if (info != null) out.put(uid, info);
                 }
             }
@@ -2959,8 +2975,8 @@ public final class QQClient {
             ArrayList<String> uids = new ArrayList<>();
             uids.add(uid);
             Object raw = ref.call(profile, "getCoreInfo", "", uids);
-            if (!(raw instanceof java.util.Map)) return null;
-            return ((java.util.Map<Object, Object>) raw).get(uid);
+            if (!(raw instanceof Map)) return null;
+            return ((Map<Object, Object>) raw).get(uid);
         } catch (Throwable t) {
             L.e("getCoreInfo " + uin, t);
             return null;

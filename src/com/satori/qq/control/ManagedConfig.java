@@ -17,8 +17,8 @@ public final class ManagedConfig {
         if (port < 1024 || port > 65535) throw new IllegalArgumentException("端口须为 1024–65535 的整数");
         clean.put("port", port);
         Object tokenValue = raw.opt("token");
-        if (!(tokenValue instanceof String)) throw new IllegalArgumentException("请输入有效令牌");
-        String token = (String) tokenValue;
+        if (!(tokenValue instanceof String text)) throw new IllegalArgumentException("请输入有效令牌");
+        String token = text;
         if (token.length() > 128) throw new IllegalArgumentException("令牌最多 128 个字符");
         for (int i = 0; i < token.length(); i++) {
             char c = token.charAt(i);

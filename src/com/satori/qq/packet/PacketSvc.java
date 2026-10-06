@@ -1,18 +1,22 @@
 package com.satori.qq.packet;
 
 import android.os.Looper;
-
 import com.satori.qq.L;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
-
+import com.satori.qq.xp.Xp;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.RandomAccessFile;
+import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-
-import com.satori.qq.xp.Xp;
 
 /**
  * Raw QQNT packet transport for QQ 9.3.50.
@@ -62,7 +66,7 @@ public final class PacketSvc {
     private static final AtomicLong SSO_FAILURES = new AtomicLong();
     private static final AtomicLong SSO_SESSION_ERRORS = new AtomicLong();
     private static final int SSO_LOG_MAX = 12;
-    private static final java.util.ArrayDeque<String> SSO_LOG = new java.util.ArrayDeque<>();
+    private static final ArrayDeque<String> SSO_LOG = new ArrayDeque<>();
 
     public static long ssoFailures() { return SSO_FAILURES.get(); }
     public static long ssoSessionErrors() { return SSO_SESSION_ERRORS.get(); }
@@ -250,8 +254,8 @@ public final class PacketSvc {
         boolean session = sessionFamilyCode(r.ssoRetCode, r.trpcRetCode);
         if (session) SSO_SESSION_ERRORS.incrementAndGet();
         if (!session && r.timedOut) return; // 超时不落盘，只计数：网络慢时会是噪声
-        String line = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
-                .format(new java.util.Date(System.currentTimeMillis()))
+        String line = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                .format(new Date(System.currentTimeMillis()))
                 + (session ? " SESSION-ERROR " : " failed ")
                 + serviceCmd + " " + r.describe();
         line = line.replace('\n', ' ').replace('\r', ' ');
@@ -267,11 +271,11 @@ public final class PacketSvc {
     /** 追加一行到 app 私有目录，超 64KB 只留尾部 32KB。 */
     private static void appendPrivate(String dir, String name, String line) {
         try {
-            java.io.File d = new java.io.File(dir);
+            File d = new File(dir);
             if (!d.isDirectory()) return;
-            java.io.File f = new java.io.File(d, name);
+            File f = new File(d, name);
             if (f.length() > 65536L) {
-                java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw");
+                RandomAccessFile raf = new RandomAccessFile(f, "rw");
                 byte[] tail = new byte[(int) Math.min(32768L, f.length())];
                 raf.seek(f.length() - tail.length);
                 raf.readFully(tail);
@@ -279,7 +283,7 @@ public final class PacketSvc {
                 raf.write(tail);
                 raf.close();
             }
-            java.io.FileOutputStream out = new java.io.FileOutputStream(f, true);
+            FileOutputStream out = new FileOutputStream(f, true);
             out.write((line + "\n").getBytes("UTF-8"));
             out.close();
         } catch (Throwable ignore) {}

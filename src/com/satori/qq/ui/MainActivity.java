@@ -8,11 +8,13 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.graphics.Insets;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PersistableBundle;
+import android.view.Gravity;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -21,6 +23,10 @@ import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.window.BackEvent;
+import android.window.OnBackAnimationCallback;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import com.satori.qq.control.ControlStore;
 import com.satori.qq.guard.GuardCommand;
 import java.util.concurrent.ExecutorService;
@@ -82,7 +88,7 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
         home = new HomePage(ui, this, !twoPane);
         if (twoPane) {
             LinearLayout panes = ui.row();
-            panes.setGravity(android.view.Gravity.FILL_VERTICAL);
+            panes.setGravity(Gravity.FILL_VERTICAL);
             panes.addView(home.root, new LinearLayout.LayoutParams(0, -1, 1));
             panes.addView(ensureSettings().root, new LinearLayout.LayoutParams(0, -1, 1));
             frame.addView(panes, new FrameLayout.LayoutParams(-1, -1));
@@ -133,8 +139,8 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
 
     private WindowInsets onInsets(View view, WindowInsets insets) {
         if (Build.VERSION.SDK_INT >= 30) {
-            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-            android.graphics.Insets ime = insets.getInsets(WindowInsets.Type.ime());
+            Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            Insets ime = insets.getInsets(WindowInsets.Type.ime());
             insetTop = bars.top;
             insetBottom = bars.bottom;
             insetLeft = bars.left;
@@ -300,15 +306,15 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
     /** Android 13+：只在需要拦截时注册回调，其余时候系统能播放预测性返回动画。 */
     private void setupBack() {
         if (Build.VERSION.SDK_INT >= 34) {
-            backCallback = new android.window.OnBackAnimationCallback() {
+            backCallback = new OnBackAnimationCallback() {
                 private boolean tracking;
 
-                @Override public void onBackStarted(android.window.BackEvent event) {
+                @Override public void onBackStarted(BackEvent event) {
                     tracking = page == SETTINGS && settings != null && !settings.dirty() && Spring.enabled();
                     if (tracking) home.root.setVisibility(View.VISIBLE);
                 }
 
-                @Override public void onBackProgressed(android.window.BackEvent event) {
+                @Override public void onBackProgressed(BackEvent event) {
                     if (!tracking) return;
                     // M3 预测性返回：页面随手势缩到 90%、向手势方向偏移，露出下层页面。
                     float p = event.getProgress();
@@ -316,7 +322,7 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
                     float scale = 1f - 0.1f * p;
                     view.setScaleX(scale);
                     view.setScaleY(scale);
-                    float direction = event.getSwipeEdge() == android.window.BackEvent.EDGE_LEFT ? 1 : -1;
+                    float direction = event.getSwipeEdge() == BackEvent.EDGE_LEFT ? 1 : -1;
                     view.setTranslationX(direction * t.dp(24) * p);
                     view.setAlpha(1f - 0.2f * p);
                 }
@@ -337,7 +343,7 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
                 }
             };
         } else {
-            backCallback = (android.window.OnBackInvokedCallback) () -> { if (!handleBack()) finish(); };
+            backCallback = (OnBackInvokedCallback) () -> { if (!handleBack()) finish(); };
         }
         updateBackCallback();
     }
@@ -347,9 +353,9 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
         boolean need = page == SETTINGS || (settings != null && settings.dirty());
         if (need == backRegistered) return;
         backRegistered = need;
-        android.window.OnBackInvokedDispatcher dispatcher = getOnBackInvokedDispatcher();
-        android.window.OnBackInvokedCallback callback = (android.window.OnBackInvokedCallback) backCallback;
-        if (need) dispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
+        OnBackInvokedDispatcher dispatcher = getOnBackInvokedDispatcher();
+        OnBackInvokedCallback callback = (OnBackInvokedCallback) backCallback;
+        if (need) dispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
         else dispatcher.unregisterOnBackInvokedCallback(callback);
     }
 

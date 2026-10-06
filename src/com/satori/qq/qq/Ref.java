@@ -1,6 +1,8 @@
 package com.satori.qq.qq;
 
 import com.satori.qq.xp.Reflect;
+import java.lang.reflect.Field;
+import java.lang.reflect.Proxy;
 
 /** Thin reflection facade bound to QQ's ClassLoader (all QQ classes are obfuscated / off-classpath). */
 public final class Ref {
@@ -31,7 +33,7 @@ public final class Ref {
         if (o == null || f == null || f.isEmpty()) return null;
         for (Class<?> c = o.getClass(); c != null; c = c.getSuperclass()) {
             try {
-                java.lang.reflect.Field field = c.getDeclaredField(f);
+                Field field = c.getDeclaredField(f);
                 field.setAccessible(true);
                 return field.get(o);
             } catch (NoSuchFieldException ignore) {
@@ -45,7 +47,7 @@ public final class Ref {
     public long getLong(Object o, String f) {
         try {
             Object v = Reflect.getObjectField(o, f);
-            if (v instanceof Number) return ((Number) v).longValue();
+            if (v instanceof Number number) return number.longValue();
             if (v != null) {
                 try { return Long.parseLong(String.valueOf(v).trim()); } catch (Exception ignore) {}
             }
@@ -57,12 +59,12 @@ public final class Ref {
     /** Public field write that accepts boxed numbers for primitive ints/longs. */
     public void put(Object o, String f, Object v) {
         try {
-            java.lang.reflect.Field field = Reflect.findField(o.getClass(), f);
+            Field field = Reflect.findField(o.getClass(), f);
             field.setAccessible(true);
             Class<?> t = field.getType();
             if (t == int.class) field.setInt(o, v == null ? 0 : ((Number) v).intValue());
             else if (t == long.class) field.setLong(o, v == null ? 0L : ((Number) v).longValue());
-            else if (t == boolean.class) field.setBoolean(o, v instanceof Boolean ? (Boolean) v : false);
+            else if (t == boolean.class) field.setBoolean(o, v instanceof Boolean flag ? flag : false);
             else field.set(o, v);
         } catch (Throwable e) {
             set(o, f, v);
@@ -72,7 +74,7 @@ public final class Ref {
 
     /** A no-op proxy of the given callback interface (for fire-and-forget kernel calls). */
     public Object nullCb(String cbClass) {
-        return java.lang.reflect.Proxy.newProxyInstance(cl, new Class[]{cls(cbClass)}, (p, m, a) -> null);
+        return Proxy.newProxyInstance(cl, new Class[]{cls(cbClass)}, (p, m, a) -> null);
     }
 
     public static long asLong(Object o) { return o == null ? 0 : ((Number) o).longValue(); }

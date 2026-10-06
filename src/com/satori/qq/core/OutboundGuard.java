@@ -1,9 +1,7 @@
 package com.satori.qq.core;
 
-import org.json.JSONObject;
-
-import java.util.Collections;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.Set;
@@ -11,6 +9,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import org.json.JSONObject;
 
 /**
  * Serializes state-changing QQ operations and spaces them apart.

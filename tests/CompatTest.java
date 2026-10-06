@@ -1,6 +1,8 @@
 package com.satori.qq.qq;
 
 import java.util.List;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * Compat 的匹配逻辑。真机上的类来自 QQ 的 ClassLoader，这里用等价的本地形状验证判定口径：
@@ -62,9 +64,9 @@ public final class CompatTest {
         Compat.observe("unit-test-label", "ok");
         try {
             boolean seen = false;
-            org.json.JSONArray rows = Compat.observed().getJSONArray("calls");
+            JSONArray rows = Compat.observed().getJSONArray("calls");
             for (int i = 0; i < rows.length(); i++) {
-                org.json.JSONObject row = rows.getJSONObject(i);
+                JSONObject row = rows.getJSONObject(i);
                 if (!"unit-test-label".equals(row.optString("label"))) continue;
                 seen = true;
                 eq(row.optLong("ok"), 2L, "ok 计数");

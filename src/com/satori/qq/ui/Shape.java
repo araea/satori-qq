@@ -1,5 +1,6 @@
 package com.satori.qq.ui;
 
+import android.R;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
@@ -132,7 +133,7 @@ final class Shape extends Drawable {
     @Override protected boolean onStateChange(int[] state) {
         boolean now = false;
         for (int value : state) {
-            if (value == android.R.attr.state_focused) now = true;
+            if (value == R.attr.state_focused) now = true;
         }
         if (now == focused) return false;
         focused = now;

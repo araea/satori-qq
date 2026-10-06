@@ -8,7 +8,6 @@ import android.content.IntentFilter;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.PowerManager;
-
 import com.satori.qq.L;
 
 /**

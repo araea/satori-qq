@@ -1,4 +1,7 @@
 import java.io.File;
+import java.nio.file.Files;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -65,8 +68,8 @@ public final class ManifestTest {
     /** 从 SatoriHub.java 里读出 {@code APP_VERSION = "x.y.z"}。 */
     private static String appVersion(File source) throws Exception {
         if (!source.isFile()) throw new AssertionError("missing " + source);
-        String text = new String(java.nio.file.Files.readAllBytes(source.toPath()), "UTF-8");
-        java.util.regex.Matcher m = java.util.regex.Pattern
+        String text = new String(Files.readAllBytes(source.toPath()), "UTF-8");
+        Matcher m = Pattern
                 .compile("APP_VERSION\\s*=\\s*\"([^\"]+)\"").matcher(text);
         if (!m.find()) throw new AssertionError("APP_VERSION not found in " + source);
         return m.group(1);
@@ -93,7 +96,7 @@ public final class ManifestTest {
 
     private static String read(File file) throws Exception {
         if (!file.isFile()) throw new AssertionError("missing " + file);
-        return new String(java.nio.file.Files.readAllBytes(file.toPath()), "UTF-8");
+        return new String(Files.readAllBytes(file.toPath()), "UTF-8");
     }
 
     /**

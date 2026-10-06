@@ -1,4 +1,6 @@
 import com.satori.qq.qq.Media;
+import com.satori.qq.qq.Ref;
+import java.nio.charset.StandardCharsets;
 
 public final class MediaTest {
     public static void main(String[] args) {
@@ -22,7 +24,7 @@ public final class MediaTest {
     }
 
     private static void gif() {
-        byte[] d = "GIF89a........".getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] d = "GIF89a........".getBytes(StandardCharsets.ISO_8859_1);
         eq(".gif", Media.guessExt(d), "gif magic");
     }
 
@@ -52,7 +54,7 @@ public final class MediaTest {
     }
 
     private static void stickerFlagLandsOnThePicture() {
-        com.satori.qq.qq.Ref ref = new com.satori.qq.qq.Ref(MediaTest.class.getClassLoader());
+        Ref ref = new Ref(MediaTest.class.getClassLoader());
         FakeMsgElement elem = new FakeMsgElement();
         Media.markSticker(ref, elem, 1, "");
         FakePic pic = (FakePic) elem.picElement;

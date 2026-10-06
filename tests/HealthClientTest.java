@@ -1,8 +1,11 @@
 import com.satori.qq.ui.HealthClient;
-import org.json.JSONObject;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import org.json.JSONObject;
 
 public final class HealthClientTest {
     public static void main(String[] args) throws Exception {
@@ -22,11 +25,11 @@ public final class HealthClientTest {
         System.out.println("HealthClientTest passed");
     }
     private static JSONObject serve(int status, String response) throws Exception {
-        try (ServerSocket listener = new ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))) {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
             Thread thread = new Thread(() -> {
                 try (Socket socket = listener.accept()) {
                     socket.setSoTimeout(3000);
-                    java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
                     String line; while ((line = reader.readLine()) != null && !line.isEmpty()) {}
                     byte[] body = response.getBytes(StandardCharsets.UTF_8);
                     socket.getOutputStream().write(("HTTP/1.1 " + status + " Result\r\nContent-Type: application/json\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));

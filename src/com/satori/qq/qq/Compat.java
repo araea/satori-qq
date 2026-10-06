@@ -1,5 +1,9 @@
 package com.satori.qq.qq;
 
+import java.lang.reflect.Method;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -290,11 +294,11 @@ public final class Compat {
     /** 只按名字查方法（-1 参数个数那条用）。 */
     static boolean hasMethodNamed(Class<?> cls, String name) {
         for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
-            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+            for (Method m : c.getDeclaredMethods()) {
                 if (m.getName().equals(name)) return true;
             }
             for (Class<?> itf : c.getInterfaces()) {
-                for (java.lang.reflect.Method m : itf.getDeclaredMethods()) {
+                for (Method m : itf.getDeclaredMethods()) {
                     if (m.getName().equals(name)) return true;
                 }
             }
@@ -305,11 +309,11 @@ public final class Compat {
     /** 方法存在性：按名字与参数个数匹配，不比对具体类型（QQ 用 long/ArrayList 等基本形状）。 */
     static boolean hasMethod(Class<?> cls, String name, int argc) {
         for (Class<?> c = cls; c != null; c = c.getSuperclass()) {
-            for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+            for (Method m : c.getDeclaredMethods()) {
                 if (m.getName().equals(name) && m.getParameterTypes().length == argc) return true;
             }
             for (Class<?> itf : c.getInterfaces()) {
-                for (java.lang.reflect.Method m : itf.getDeclaredMethods()) {
+                for (Method m : itf.getDeclaredMethods()) {
                     if (m.getName().equals(name) && m.getParameterTypes().length == argc) return true;
                 }
             }
@@ -335,7 +339,7 @@ public final class Compat {
      * 模块只依赖前两个（code、msg）与紧跟的那个载荷。
      */
     static boolean hasCallback(Class<?> cls, int argc, boolean atLeast) {
-        for (java.lang.reflect.Method m : cls.getDeclaredMethods()) {
+        for (Method m : cls.getDeclaredMethods()) {
             if (!m.getName().startsWith("on")) continue;
             int n = m.getParameterTypes().length;
             if (atLeast ? n >= argc : n == argc) return true;
@@ -345,8 +349,8 @@ public final class Compat {
 
     // ------------------------------------------------------------ 运行时观测
 
-    private static final java.util.concurrent.ConcurrentHashMap<String, long[]> OBSERVED =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, long[]> OBSERVED =
+            new ConcurrentHashMap<>();
 
     /**
      * `ExtraSvc.call` 每次调用记一行：成功 / 超时 / 其它失败。QQ 升级后哪个入口开始不回调，
@@ -365,7 +369,7 @@ public final class Compat {
     public static JSONObject observed() throws Exception {
         JSONObject out = new JSONObject();
         JSONArray rows = new JSONArray();
-        for (java.util.Map.Entry<String, long[]> e : new java.util.TreeMap<>(OBSERVED).entrySet()) {
+        for (Map.Entry<String, long[]> e : new TreeMap<>(OBSERVED).entrySet()) {
             long[] v = e.getValue();
             rows.put(new JSONObject().put("label", e.getKey())
                     .put("ok", v[0]).put("timeout", v[1]).put("failed", v[2]));

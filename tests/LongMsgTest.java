@@ -1,7 +1,8 @@
 import com.satori.qq.packet.LongMsg;
 import com.satori.qq.packet.Pb;
-
+import java.util.Collections;
 import java.util.List;
+import org.json.JSONObject;
 
 /** Offline encode/parse checks for merge-forward Elems (text/at/face/reply/image/file). */
 public final class LongMsgTest {
@@ -17,16 +18,16 @@ public final class LongMsgTest {
 
     private static void testAt() {
         byte[] all = LongMsg.elemAt("@全体成员", true, 0, "");
-        LongMsg.Seg s = LongMsg.parseElems(java.util.Collections.singletonList(all)).get(0);
+        LongMsg.Seg s = LongMsg.parseElems(Collections.singletonList(all)).get(0);
         eq("at", s.type, "at-all type");
         eq("all", s.qq, "at-all qq");
 
         byte[] one = LongMsg.elemAt("@bob", false, 20002L, "u_bob");
-        s = LongMsg.parseElems(java.util.Collections.singletonList(one)).get(0);
+        s = LongMsg.parseElems(Collections.singletonList(one)).get(0);
         eq("at", s.type, "at-one type");
         eq("20002", s.qq, "at-one uin");
 
-        s = LongMsg.parseElems(java.util.Collections.singletonList(LongMsg.elemText("@12345"))).get(0);
+        s = LongMsg.parseElems(Collections.singletonList(LongMsg.elemText("@12345"))).get(0);
         eq("at", s.type, "at-fallback type");
         eq("12345", s.qq, "at-fallback qq");
     }
@@ -39,7 +40,7 @@ public final class LongMsgTest {
         pic.size = 33;
         pic.group = true;
         pic.fileName = "0123456789abcdef0123456789abcdef.jpg";
-        LongMsg.Seg s = LongMsg.parseElems(java.util.Collections.singletonList(LongMsg.elemImage(pic))).get(0);
+        LongMsg.Seg s = LongMsg.parseElems(Collections.singletonList(LongMsg.elemImage(pic))).get(0);
         eq("image", s.type, "image type");
         check(s.file.contains("0123456789abcdef0123456789abcdef"), "image md5 file");
         check(s.url.contains("gchat.qpic.cn"), "image group url");
@@ -52,7 +53,7 @@ public final class LongMsgTest {
         f.name = "note.txt";
         f.size = 9;
         f.busId = 102;
-        LongMsg.Seg s = LongMsg.parseElems(java.util.Collections.singletonList(LongMsg.elemFile(f))).get(0);
+        LongMsg.Seg s = LongMsg.parseElems(Collections.singletonList(LongMsg.elemFile(f))).get(0);
         eq("file", s.type, "file type");
         eq("/abc-id", s.file, "file id");
         eq("note.txt", s.name, "file name");
@@ -103,7 +104,7 @@ public final class LongMsgTest {
         n.senderUin = 10001;
         n.senderName = "alice&bob";
         n.text = "hello <world>";
-        java.util.List<LongMsg.Node> nodes = java.util.Collections.singletonList(n);
+        List<LongMsg.Node> nodes = Collections.singletonList(n);
         String xml = LongMsg.buildXmlContent("RESID<>", "fn-1", nodes, true);
         check(xml.contains("serviceID=\"35\""), "xml serviceID");
         check(xml.contains("action=\"viewMultiMsg\""), "xml action");
@@ -119,9 +120,9 @@ public final class LongMsgTest {
         n.senderUin = 10001;
         n.senderName = "alice";
         n.text = "hello";
-        java.util.List<LongMsg.Node> nodes = java.util.Collections.singletonList(n);
+        List<LongMsg.Node> nodes = Collections.singletonList(n);
         LongMsg.Card card = LongMsg.buildCard("RID", nodes, true, "uuid-1");
-        org.json.JSONObject j = new org.json.JSONObject(card.json);
+        JSONObject j = new JSONObject(card.json);
         check(j.optJSONObject("extra") != null, "extra is object");
         eq("uuid-1", j.getJSONObject("extra").getString("filename"), "extra filename");
         eq("RID", j.getJSONObject("meta").getJSONObject("detail").getString("resid"), "resid");

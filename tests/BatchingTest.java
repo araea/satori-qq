@@ -1,6 +1,5 @@
 import com.satori.qq.satori.Batching;
 import com.satori.qq.satori.Elements;
-
 import java.util.List;
 
 /**

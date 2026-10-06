@@ -2,6 +2,7 @@ package com.satori.qq.ui;
 
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ImageButton;
@@ -39,7 +40,7 @@ final class TopBar extends LinearLayout {
         setBackgroundColor(base);
         title = ui.text(text, Tokens.TITLE_LARGE, t.onSurface);
         title.setSingleLine(true);
-        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        title.setEllipsize(TextUtils.TruncateAt.END);
         title.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         title.setAlpha(0f);
         title.setPaddingRelative(t.spaceMd, 0, t.spaceSm, 0);

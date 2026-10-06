@@ -1,11 +1,13 @@
 package com.satori.qq.satori;
 
 import com.satori.qq.qq.QQClient;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONObject;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Bidirectional mapping between Satori content / events and the kernel's internal
@@ -33,14 +35,14 @@ public final class Codec {
         if (text == null || text.isEmpty()) return segs;
         // A json card carries commas and brackets inside its payload; when it is the whole
         // message, take everything up to the last bracket instead of the first.
-        java.util.regex.Matcher whole = CQ_JSON_ONLY.matcher(text);
+        Matcher whole = CQ_JSON_ONLY.matcher(text);
         if (whole.matches()) {
             JSONObject d = new JSONObject();
             try { d.put("data", unescapeCq(whole.group(1))); } catch (Exception ignore) {}
             segObj(segs, "json", d);
             return segs;
         }
-        java.util.regex.Matcher m = CQ_CODE.matcher(text);
+        Matcher m = CQ_CODE.matcher(text);
         int last = 0;
         while (m.find()) {
             if (m.start() > last) segText(segs, text.substring(last, m.start()));
@@ -58,13 +60,13 @@ public final class Codec {
         return fromSegments(cqToSegments(text), assetBase);
     }
 
-    private static final java.util.regex.Pattern CQ_CODE =
-            java.util.regex.Pattern.compile("\\[CQ:([A-Za-z][A-Za-z0-9_\\-]*)((?:,[^\\]]*)?)\\]");
-    private static final java.util.regex.Pattern CQ_JSON_ONLY =
-            java.util.regex.Pattern.compile("\\[CQ:(?:json|lightapp),data=(.*)\\]", java.util.regex.Pattern.DOTALL);
+    private static final Pattern CQ_CODE =
+            Pattern.compile("\\[CQ:([A-Za-z][A-Za-z0-9_\\-]*)((?:,[^\\]]*)?)\\]");
+    private static final Pattern CQ_JSON_ONLY =
+            Pattern.compile("\\[CQ:(?:json|lightapp),data=(.*)\\]", Pattern.DOTALL);
     /** Params are separated by commas; a comma inside a value is not followed by "key=". */
-    private static final java.util.regex.Pattern CQ_PARAM_SPLIT =
-            java.util.regex.Pattern.compile(",(?=[A-Za-z_][A-Za-z0-9_]*=)");
+    private static final Pattern CQ_PARAM_SPLIT =
+            Pattern.compile(",(?=[A-Za-z_][A-Za-z0-9_]*=)");
 
     /** Known CQ types map onto the same segment shapes {@code Convert} emits. */
     private static JSONObject cqSegment(String type, String params) {
@@ -312,7 +314,7 @@ public final class Codec {
     }
 
     private static void copyAttrs(Elements.El el, JSONObject d) {
-        java.util.Iterator<String> keys = el.attrs.keys();
+        Iterator<String> keys = el.attrs.keys();
         while (keys.hasNext()) {
             String k = keys.next();
             try { d.put(snake(k), el.attrs.opt(k)); } catch (Exception ignore) {}
@@ -458,7 +460,7 @@ public final class Codec {
     }
 
     private static void copySnake(JSONObject d, Elements.El el) {
-        java.util.Iterator<String> keys = d.keys();
+        Iterator<String> keys = d.keys();
         while (keys.hasNext()) {
             String k = keys.next();
             try { el.attrs.put(Elements.camelize(k), d.opt(k)); } catch (Exception ignore) {}

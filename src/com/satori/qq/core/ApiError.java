@@ -1,6 +1,7 @@
 package com.satori.qq.core;
 
 import com.satori.qq.qq.QQClient;
+import java.util.Locale;
 
 /**
  * 一次 API 调用的失败。{@code code} 是内部错误码：1400/1403/1404/1413 对应同号 HTTP 状态，
@@ -104,7 +105,7 @@ final class ApiError extends RuntimeException {
             if (c instanceof ApiError e && (e.code == 1400 || e.code == 1404)) return true;
             String m = c.getMessage();
             if (m == null) continue;
-            String lower = m.toLowerCase(java.util.Locale.ROOT);
+            String lower = m.toLowerCase(Locale.ROOT);
             if (lower.contains("rich media") || lower.contains("media transfer") || lower.contains("富媒体")) {
                 return true;
             }

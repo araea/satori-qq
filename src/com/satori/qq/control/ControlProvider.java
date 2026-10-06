@@ -2,6 +2,7 @@ package com.satori.qq.control;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Binder;
@@ -19,7 +20,7 @@ public final class ControlProvider extends ContentProvider {
         try {
             int qqUid = getContext().getPackageManager().getApplicationInfo("com.tencent.mobileqq", 0).uid;
             if (uid == qqUid) return;
-        } catch (android.content.pm.PackageManager.NameNotFoundException ignored) {}
+        } catch (PackageManager.NameNotFoundException ignored) {}
         throw new SecurityException("Caller is not QQ or the module");
     }
     @Override public Bundle call(String method, String arg, Bundle extras) {

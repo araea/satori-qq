@@ -1,5 +1,6 @@
 package com.satori.qq.test;
 
+import android.R;
 import android.app.Activity;
 import android.app.Dialog;
 import android.app.Instrumentation;
@@ -8,16 +9,22 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Rect;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.os.Handler;
 import android.text.Layout;
 import android.text.method.PasswordTransformationMethod;
+import android.util.DisplayMetrics;
+import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.EditText;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.File;
@@ -25,6 +32,7 @@ import java.io.FileOutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -76,7 +84,7 @@ public final class DesignSmoke extends Instrumentation {
         try {
             settingsFile = new File(getTargetContext().getNoBackupFilesDir(), "zhixian-control.json");
             hadOriginal = settingsFile.exists();
-            original = hadOriginal ? java.nio.file.Files.readAllBytes(settingsFile.toPath()) : new byte[0];
+            original = hadOriginal ? Files.readAllBytes(settingsFile.toPath()) : new byte[0];
             writeSettings();
 
             launch();
@@ -134,7 +142,7 @@ public final class DesignSmoke extends Instrumentation {
         } catch (Throwable error) {
             try { if (activity != null) close(); } catch (Throwable ignored) {}
             try { restore(); } catch (Throwable ignored) {}
-            out.putString("stream", "\n" + report + "FAIL: " + android.util.Log.getStackTraceString(error));
+            out.putString("stream", "\n" + report + "FAIL: " + Log.getStackTraceString(error));
             finish(Activity.RESULT_CANCELED, out);
         }
     }
@@ -148,7 +156,7 @@ public final class DesignSmoke extends Instrumentation {
         ui(() -> {
             try {
                 set(activity, "resumed", false);
-                ((android.os.Handler) field(activity, "main")).removeCallbacks((Runnable) field(activity, "poll"));
+                ((Handler) field(activity, "main")).removeCallbacks((Runnable) field(activity, "poll"));
                 set(activity, "guardAt", System.currentTimeMillis());
                 Object model = field(activity, "model");
                 JSONObject health = null;
@@ -354,7 +362,7 @@ public final class DesignSmoke extends Instrumentation {
             id("save").performClick();
         });
         await("保存完成", () -> id("save_bar").getVisibility() == View.GONE);
-        JSONObject saved = new JSONObject(new String(java.nio.file.Files.readAllBytes(settingsFile.toPath()), "UTF-8"));
+        JSONObject saved = new JSONObject(new String(Files.readAllBytes(settingsFile.toPath()), "UTF-8"));
         check(saved.getJSONObject("overrides").getInt("port") == 3002, "保存写入设置文件");
         check(saved.getLong("revision") == 1, "保存递增修订号");
         ui(() -> check(id("snackbar").getVisibility() == View.VISIBLE, "保存后给出结果提示"));
@@ -496,14 +504,14 @@ public final class DesignSmoke extends Instrumentation {
                     if (column.getChildAt(i) instanceof ScrollView) ((ScrollView) column.getChildAt(i)).scrollTo(0, 0);
                 }
             }
-            View frame = ((ViewGroup) activity.findViewById(android.R.id.content)).getChildAt(0);
+            View frame = ((ViewGroup) activity.findViewById(R.id.content)).getChildAt(0);
             frame.setFocusableInTouchMode(true);
             frame.requestFocus();
         });
         waitForIdleSync();
         ui(() -> {
             try {
-                View pages = id("home").getParent() instanceof android.widget.LinearLayout
+                View pages = id("home").getParent() instanceof LinearLayout
                         ? (View) id("home").getParent() : null;
                 List<View> columns = new ArrayList<>();
                 if (pages != null) {
@@ -521,8 +529,8 @@ public final class DesignSmoke extends Instrumentation {
                 Bitmap bitmap = Bitmap.createBitmap(Math.round(width * scale), Math.round(height * scale), Bitmap.Config.ARGB_8888);
                 Canvas canvas = new Canvas(bitmap);
                 canvas.scale(scale, scale);
-                View frame = ((ViewGroup) activity.findViewById(android.R.id.content)).getChildAt(0);
-                canvas.drawColor(((android.graphics.drawable.ColorDrawable) frame.getBackground()).getColor());
+                View frame = ((ViewGroup) activity.findViewById(R.id.content)).getChildAt(0);
+                canvas.drawColor(((ColorDrawable) frame.getBackground()).getColor());
                 for (View column : columns) {
                     drawLong(canvas, (ViewGroup) column);
                     canvas.translate(column.getWidth(), 0);
@@ -554,8 +562,8 @@ public final class DesignSmoke extends Instrumentation {
     private static void drawLong(Canvas canvas, ViewGroup column) {
         int save = canvas.save();
         if (column.getBackground() != null) {
-            android.graphics.drawable.Drawable background = column.getBackground();
-            android.graphics.Rect bounds = new android.graphics.Rect(background.getBounds());
+            Drawable background = column.getBackground();
+            Rect bounds = new Rect(background.getBounds());
             background.setBounds(0, 0, column.getWidth(), longHeight(column));
             background.draw(canvas);
             background.setBounds(bounds);
@@ -592,7 +600,7 @@ public final class DesignSmoke extends Instrumentation {
             View decor = activity.getWindow().getDecorView();
             View page = id(settings ? "settings" : "home");
             if (page.getWidth() == 0 || page.getHeight() == 0) {
-                android.util.DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
+                DisplayMetrics metrics = activity.getResources().getDisplayMetrics();
                 decor.measure(View.MeasureSpec.makeMeasureSpec(metrics.widthPixels, View.MeasureSpec.EXACTLY),
                         View.MeasureSpec.makeMeasureSpec(metrics.heightPixels, View.MeasureSpec.EXACTLY));
                 decor.layout(0, 0, metrics.widthPixels, metrics.heightPixels);
@@ -636,8 +644,8 @@ public final class DesignSmoke extends Instrumentation {
                 View decor = (View) getView.invoke(root);
                 if (decor == null) continue;
                 Object window = findWindow(decor);
-                if (window instanceof android.view.Window && ((android.view.Window) window).getCallback() instanceof Dialog) {
-                    return (Dialog) ((android.view.Window) window).getCallback();
+                if (window instanceof Window && ((Window) window).getCallback() instanceof Dialog) {
+                    return (Dialog) ((Window) window).getCallback();
                 }
             }
         } catch (Exception error) {
@@ -677,13 +685,13 @@ public final class DesignSmoke extends Instrumentation {
                 .put("status_notification", true).put("wake_lock_auto", true)
                 .put("wifi_sustain", true).put("manual_self_messages", true);
         JSONObject all = new JSONObject().put("revision", 0).put("overrides", config);
-        java.nio.file.Files.write(settingsFile.toPath(), all.toString().getBytes("UTF-8"));
+        Files.write(settingsFile.toPath(), all.toString().getBytes("UTF-8"));
     }
 
     private void restore() throws Exception {
         if (settingsFile == null) return;
-        if (hadOriginal) java.nio.file.Files.write(settingsFile.toPath(), original);
-        else java.nio.file.Files.deleteIfExists(settingsFile.toPath());
+        if (hadOriginal) Files.write(settingsFile.toPath(), original);
+        else Files.deleteIfExists(settingsFile.toPath());
         report.append("ok 原始设置已还原\n");
     }
 

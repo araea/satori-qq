@@ -1,5 +1,6 @@
 package com.satori.qq.ui;
 
+import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputFilter;
@@ -14,6 +15,7 @@ import android.widget.TextView;
 import com.satori.qq.R;
 import com.satori.qq.control.ManagedConfig;
 import java.security.SecureRandom;
+import java.util.Base64;
 import org.json.JSONObject;
 
 /**
@@ -130,7 +132,7 @@ final class SettingsPage {
         generate.setOnClickListener(v -> {
             byte[] bytes = new byte[24];
             new SecureRandom().nextBytes(bytes);
-            token.setText(java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes));
+            token.setText(Base64.getUrlEncoder().withoutPadding().encodeToString(bytes));
             token.error(null);
             actions.message("已生成新令牌。保存后，记得同步到客户端。");
         });
@@ -376,7 +378,7 @@ final class SettingsPage {
         token.input.setSelection(Math.max(0, Math.min(selection, token.input.length())));
         Ui.setIcon(reveal, t, value ? Icon.HIDE : Icon.SHOW, t.onSurfaceVariant);
         reveal.setContentDescription(value ? "隐藏令牌" : "显示令牌");
-        if (android.os.Build.VERSION.SDK_INT >= 26) reveal.setTooltipText(reveal.getContentDescription());
+        if (Build.VERSION.SDK_INT >= 26) reveal.setTooltipText(reveal.getContentDescription());
         actions.secure(value);
     }
 

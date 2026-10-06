@@ -2,12 +2,13 @@ package com.satori.qq.control;
 
 import android.content.Context;
 import android.util.AtomicFile;
-import org.json.JSONObject;
 import com.satori.qq.Cfg;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import org.json.JSONObject;
 
 /** Explicit private file avoids frameworks redirecting module SharedPreferences between variants. */
 public final class ControlStore {
@@ -23,7 +24,7 @@ public final class ControlStore {
                     out.write(buffer, 0, size);
                 }
                 return new JSONObject(out.toString("UTF-8"));
-            } catch (java.io.FileNotFoundException missing) { return new JSONObject(); }
+            } catch (FileNotFoundException missing) { return new JSONObject(); }
             catch (Exception error) { throw new IllegalStateException("配置读取失败，请检查应用存储", error); }
         }
     }

@@ -1,6 +1,10 @@
 package com.satori.qq;
 
+import android.os.Handler;
+import android.os.Looper;
 import com.satori.qq.xp.Xp;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 注入后的引导入口：native 侧在轮询到宿主的 Application 之后调用 {@link #start(String, ClassLoader)}。
@@ -47,10 +51,10 @@ public final class Boot {
      * {@code handleBindApplication} 里，任务只会在它返回、{@code Looper.loop()} 之后才被执行。
      */
     private static void awaitApplicationBound() {
-        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        final CountDownLatch latch = new CountDownLatch(1);
         try {
-            new android.os.Handler(android.os.Looper.getMainLooper()).post(latch::countDown);
-            if (!latch.await(15, java.util.concurrent.TimeUnit.SECONDS)) {
+            new Handler(Looper.getMainLooper()).post(latch::countDown);
+            if (!latch.await(15, TimeUnit.SECONDS)) {
                 L.e("main looper did not come up in 15s", null);
             }
         } catch (Throwable t) {

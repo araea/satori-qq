@@ -1,12 +1,20 @@
 package com.satori.qq.qq;
 
+import android.os.Handler;
+import android.os.Looper;
 import com.satori.qq.L;
-
+import com.satori.qq.satori.Codec;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * Thin wrappers over the QQNT kernel services that the Satori core does not need but the
@@ -238,9 +246,9 @@ public final class ExtraSvc {
             // QQ's kernel services are main-thread affine: invoking them from an HTTP worker
             // thread returns immediately but the callback never fires. Post the invocation to the
             // main looper (which returns at once) and keep waiting here on the worker thread.
-            android.os.Looper main = android.os.Looper.getMainLooper();
-            if (main != null && android.os.Looper.myLooper() != main) {
-                new android.os.Handler(main).post(() -> {
+            Looper main = Looper.getMainLooper();
+            if (main != null && Looper.myLooper() != main) {
+                new Handler(main).post(() -> {
                     try {
                         call.run(svc, cb);
                         L.i("ExtraSvc dispatched " + label);
@@ -298,9 +306,9 @@ public final class ExtraSvc {
      */
     private static boolean hasData(Object payload) {
         if (payload == null) return false;
-        if (payload instanceof java.util.Collection) return !((java.util.Collection<?>) payload).isEmpty();
-        if (payload instanceof java.util.Map) return !((java.util.Map<?, ?>) payload).isEmpty();
-        if (payload instanceof String) return !((String) payload).trim().isEmpty();
+        if (payload instanceof Collection<?> items) return !items.isEmpty();
+        if (payload instanceof Map<?, ?> entries) return !entries.isEmpty();
+        if (payload instanceof String text) return !text.trim().isEmpty();
         return true;
     }
 
@@ -381,7 +389,7 @@ public final class ExtraSvc {
     // 结构体字段的取值都记在下方注释里，取自本机 QQ 9.3.65 的反编译结果。
 
     /** 返回 {@link Result}（等内核回调）或 {@link org.json.JSONObject}（同步读）。 */
-    public interface Fn { Object run(ExtraSvc s, org.json.JSONObject p) throws Exception; }
+    public interface Fn { Object run(ExtraSvc s, JSONObject p) throws Exception; }
 
     /** 一个内核扩展动作。 */
     public static final class Spec {
@@ -396,14 +404,14 @@ public final class ExtraSvc {
         }
     }
 
-    private static final java.util.List<Spec> ACTIONS = new java.util.ArrayList<>();
+    private static final List<Spec> ACTIONS = new ArrayList<>();
 
     private static void reg(String name, String[] alias, boolean write, String params, Fn fn) {
         ACTIONS.add(new Spec(name, alias, write, params, fn));
     }
 
-    public static java.util.List<Spec> actions() {
-        return java.util.Collections.unmodifiableList(ACTIONS);
+    public static List<Spec> actions() {
+        return Collections.unmodifiableList(ACTIONS);
     }
 
     public static Spec find(String name) {
@@ -418,23 +426,23 @@ public final class ExtraSvc {
     // ------------------------------------------------------------------ 取参
 
     /** 从 channel_id / guild_id+user_id 里取群号。 */
-    static long groupOf(org.json.JSONObject p) {
+    static long groupOf(JSONObject p) {
         long g = p.optLong("guild_id", p.optLong("group_id", 0));
         if (g != 0) return g;
         String ch = p.optString("channel_id", "");
-        if (!ch.isEmpty() && !com.satori.qq.satori.Codec.isPrivateChannel(ch))
-            return com.satori.qq.satori.Codec.channelPeer(ch);
+        if (!ch.isEmpty() && !Codec.isPrivateChannel(ch))
+            return Codec.channelPeer(ch);
         return 0;
     }
 
     /** 会话 Contact（QQ 的 kernelpublic Contact）：群聊用群号，私聊用 UID。 */
-    Object contactOf(org.json.JSONObject p) throws Exception {
+    Object contactOf(JSONObject p) throws Exception {
         long g = groupOf(p);
         if (g != 0) return ref.neu(QQClient.CONTACT, QQClient.CT_GROUP, String.valueOf(g), "");
         String ch = p.optString("channel_id", "");
         long uin = 0;
-        if (!ch.isEmpty() && com.satori.qq.satori.Codec.isPrivateChannel(ch))
-            uin = com.satori.qq.satori.Codec.channelPeer(ch);
+        if (!ch.isEmpty() && Codec.isPrivateChannel(ch))
+            uin = Codec.channelPeer(ch);
         else uin = parseUin(p.optString("user_id", ""));
         if (uin == 0) throw new IllegalArgumentException("missing channel_id");
         String uid = qq.resolveUid(uin);
@@ -448,25 +456,25 @@ public final class ExtraSvc {
         try { return ref.getStatic(cls, name); } catch (Throwable t) { return null; }
     }
 
-    private static java.util.ArrayList<Long> longs(org.json.JSONArray a) {
-        java.util.ArrayList<Long> out = new java.util.ArrayList<>();
+    private static ArrayList<Long> longs(JSONArray a) {
+        ArrayList<Long> out = new ArrayList<>();
         for (int i = 0; a != null && i < a.length(); i++) out.add(a.optLong(i));
         return out;
     }
-    private static java.util.ArrayList<String> strings(org.json.JSONArray a) {
-        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+    private static ArrayList<String> strings(JSONArray a) {
+        ArrayList<String> out = new ArrayList<>();
         for (int i = 0; a != null && i < a.length(); i++) out.add(a.optString(i, ""));
         return out;
     }
-    private static java.util.ArrayList<Integer> ints(org.json.JSONArray a) {
-        java.util.ArrayList<Integer> out = new java.util.ArrayList<>();
+    private static ArrayList<Integer> ints(JSONArray a) {
+        ArrayList<Integer> out = new ArrayList<>();
         for (int i = 0; a != null && i < a.length(); i++) out.add(a.optInt(i));
         return out;
     }
 
     /** 同步读到的东西直接包成 JSON；内核回调的读走 {@link Result}。 */
-    private static org.json.JSONObject ok(org.json.JSONObject body) throws Exception {
-        return body == null ? new org.json.JSONObject() : body;
+    private static JSONObject ok(JSONObject body) throws Exception {
+        return body == null ? new JSONObject() : body;
     }
 
     private static final String[] NONE = new String[0];
@@ -522,7 +530,7 @@ public final class ExtraSvc {
                         long uin = parseUin(p.optString("user_id", ""));
                         String ch = p.optString("channel_id", "");
                         if (uin == 0 && !ch.isEmpty())
-                            uin = com.satori.qq.satori.Codec.channelPeer(ch);
+                            uin = Codec.channelPeer(ch);
                         if (uin == 0) throw new IllegalArgumentException("missing channel_id");
                         String uid = s.qq.resolveUid(uin);
                         peer = uid == null || uid.isEmpty() ? String.valueOf(uin) : uid;
@@ -796,9 +804,9 @@ public final class ExtraSvc {
         // batchGetGroupFileCount(ArrayList<Long>, IBatchGroupFileCountCallback)
         reg("group_file_count", NONE, false, "guild_ids[]",
                 (s, p) -> {
-                    final java.util.ArrayList<Long> gids = p.has("guild_ids")
+                    final ArrayList<Long> gids = p.has("guild_ids")
                             ? longs(p.optJSONArray("guild_ids"))
-                            : new java.util.ArrayList<>(java.util.Collections.singletonList(groupOf(p)));
+                            : new ArrayList<>(Collections.singletonList(groupOf(p)));
                     return s.call(s.svc("richmedia"), BATCH_FILE_COUNT_CB, "batchGetGroupFileCount",
                             (svc2, cb) -> s.ref.call(svc2, "batchGetGroupFileCount", gids, cb));
                 });
@@ -824,10 +832,10 @@ public final class ExtraSvc {
         // deleteGroupFile(long groupCode, ArrayList<Integer> busIds, ArrayList<String> files, cb)
         reg("group_file_delete", NONE, true, "guild_id, files[], bus_ids?",
                 (s, p) -> {
-                    final java.util.ArrayList<Integer> bus = p.has("bus_ids")
+                    final ArrayList<Integer> bus = p.has("bus_ids")
                             ? ints(p.optJSONArray("bus_ids"))
-                            : new java.util.ArrayList<>(java.util.Collections.singletonList(p.optInt("bus_id", 102)));
-                    final java.util.ArrayList<String> files = strings(p.optJSONArray("files"));
+                            : new ArrayList<>(Collections.singletonList(p.optInt("bus_id", 102)));
+                    final ArrayList<String> files = strings(p.optJSONArray("files"));
                     return s.call(s.svc("richmedia"), DELETE_GROUP_FILE_CB, "deleteGroupFile",
                             (svc2, cb) -> s.ref.call(svc2, "deleteGroupFile", groupOf(p), bus, files, cb));
                 });
@@ -843,10 +851,10 @@ public final class ExtraSvc {
         //               String parentFolderId, String destFolderId, cb)
         reg("group_file_move", NONE, true, "guild_id, files[], dest_folder_id, parent_id?, bus_ids?",
                 (s, p) -> {
-                    final java.util.ArrayList<Integer> bus = p.has("bus_ids")
+                    final ArrayList<Integer> bus = p.has("bus_ids")
                             ? ints(p.optJSONArray("bus_ids"))
-                            : new java.util.ArrayList<>(java.util.Collections.singletonList(p.optInt("bus_id", 102)));
-                    final java.util.ArrayList<String> files = strings(p.optJSONArray("files"));
+                            : new ArrayList<>(Collections.singletonList(p.optInt("bus_id", 102)));
+                    final ArrayList<String> files = strings(p.optJSONArray("files"));
                     return s.call(s.svc("richmedia"), MOVE_GROUP_FILE_CB, "moveGroupFile",
                             (svc2, cb) -> s.ref.call(svc2, "moveGroupFile", groupOf(p), bus, files,
                                     p.optString("parent_id", ""), p.optString("dest_folder_id", ""), cb));
@@ -886,9 +894,9 @@ public final class ExtraSvc {
         // getUserSimpleInfo(boolean, ArrayList<String> uids, IOperateCallback)
         reg("user_simple_info", NONE, false, "user_ids[]",
                 (s, p) -> {
-                    final java.util.ArrayList<String> uids = new java.util.ArrayList<>();
-                    org.json.JSONArray a = p.optJSONArray("user_ids");
-                    if (a == null && p.has("user_id")) a = new org.json.JSONArray().put(p.opt("user_id"));
+                    final ArrayList<String> uids = new ArrayList<>();
+                    JSONArray a = p.optJSONArray("user_ids");
+                    if (a == null && p.has("user_id")) a = new JSONArray().put(p.opt("user_id"));
                     for (int i = 0; a != null && i < a.length(); i++) uids.add(s.uidForUin(a.optString(i, "")));
                     return s.call(s.svc("profile"), OPERATE_CB, "getUserSimpleInfo",
                             (svc2, cb) -> s.ref.call(svc2, "getUserSimpleInfo", true, uids, cb));
@@ -902,12 +910,12 @@ public final class ExtraSvc {
         // getBuddyRemark(ArrayList<String> uids) —— 同步读，回 HashMap<String,String>
         reg("friend_remark_get", NONE, false, "user_ids[]",
                 (s, p) -> {
-                    java.util.ArrayList<String> uids = new java.util.ArrayList<>();
-                    org.json.JSONArray a = p.optJSONArray("user_ids");
-                    if (a == null && p.has("user_id")) a = new org.json.JSONArray().put(p.opt("user_id"));
+                    ArrayList<String> uids = new ArrayList<>();
+                    JSONArray a = p.optJSONArray("user_ids");
+                    if (a == null && p.has("user_id")) a = new JSONArray().put(p.opt("user_id"));
                     for (int i = 0; a != null && i < a.length(); i++) uids.add(s.uidForUin(a.optString(i, "")));
                     Object map = s.ref.call(s.svc("buddy"), "getBuddyRemark", uids);
-                    return new org.json.JSONObject().put("ok", true)
+                    return new JSONObject().put("ok", true)
                             .put("remark", s.mapJson(map));
                 });
 
@@ -945,8 +953,8 @@ public final class ExtraSvc {
 
         reg("friend_category_set_batch", NONE, true, "user_ids[], category_id",
                 (s, p) -> {
-                    final java.util.ArrayList<String> uids = new java.util.ArrayList<>();
-                    org.json.JSONArray a = p.optJSONArray("user_ids");
+                    final ArrayList<String> uids = new ArrayList<>();
+                    JSONArray a = p.optJSONArray("user_ids");
                     for (int i = 0; a != null && i < a.length(); i++) uids.add(s.uidForUin(a.optString(i, "")));
                     final int id = p.optInt("category_id", 0);
                     return s.call(s.svc("buddy"), OPERATE_CB, "setBatchBuddyCategory",
@@ -1030,18 +1038,18 @@ public final class ExtraSvc {
         }
     }
 
-    private static org.json.JSONObject opJson(QQClient.OpResult r) throws Exception {
-        return new org.json.JSONObject().put("ok", r != null && r.ok())
+    private static JSONObject opJson(QQClient.OpResult r) throws Exception {
+        return new JSONObject().put("ok", r != null && r.ok())
                 .put("code", r == null ? -1 : r.code)
                 .put("msg", r == null ? "no result" : r.msg);
     }
 
     /** 同步返回的 Map 直接转 JSON（字段名是 uin/uid 这类普通串，不需要深度反射）。 */
     @SuppressWarnings("unchecked")
-    private static org.json.JSONObject mapJson(Object map) throws Exception {
-        org.json.JSONObject out = new org.json.JSONObject();
-        if (map instanceof java.util.Map) {
-            for (java.util.Map.Entry<?, ?> e : ((java.util.Map<?, ?>) map).entrySet())
+    private static JSONObject mapJson(Object map) throws Exception {
+        JSONObject out = new JSONObject();
+        if (map instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) map).entrySet())
                 out.put(String.valueOf(e.getKey()), e.getValue() == null ? "" : String.valueOf(e.getValue()));
         }
         return out;

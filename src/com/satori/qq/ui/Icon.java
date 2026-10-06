@@ -8,6 +8,7 @@ import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
+import android.view.View;
 
 /**
  * 统一图标：24 单位网格、2 单位描边、圆头圆接，路径只在类加载时建一次，各处共享。
@@ -261,7 +262,7 @@ final class Icon extends Drawable {
         if (scale <= 0) return;
         int save = canvas.save();
         canvas.translate(b.exactCenterX() - 12 * scale, b.exactCenterY() - 12 * scale);
-        if (MIRRORED[kind] && getLayoutDirection() == android.view.View.LAYOUT_DIRECTION_RTL) {
+        if (MIRRORED[kind] && getLayoutDirection() == View.LAYOUT_DIRECTION_RTL) {
             canvas.scale(-1, 1, 12 * scale, 12 * scale);
         }
         canvas.scale(scale, scale);

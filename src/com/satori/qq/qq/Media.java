@@ -1,16 +1,24 @@
 package com.satori.qq.qq;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.MediaMetadataRetriever;
 import com.satori.qq.L;
-
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 
 /** Media handling: resolve a file spec to a local file, and build a QQ NT PicElement
@@ -43,8 +51,8 @@ public final class Media {
         try {
             Class<?> at = Class.forName("android.app.ActivityThread");
             Object app = at.getDeclaredMethod("currentApplication").invoke(null);
-            if (app instanceof android.content.Context) {
-                File dir = new File(((android.content.Context) app).getCacheDir(), "nt-media-tmp");
+            if (app instanceof Context) {
+                File dir = new File(((Context) app).getCacheDir(), "nt-media-tmp");
                 if (dir.isDirectory() || dir.mkdirs()) return dir;
             }
         } catch (Throwable t) {
@@ -76,7 +84,7 @@ public final class Media {
      *  MediaCodec AMR-NB is accepted by sendMsg but the NT client cannot play it (21:34 测试群). */
     public static File prepareVoice(Ref ref, File file) {
         if (file == null || !file.isFile()) return null;
-        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
             byte[] head = new byte[(int) Math.min(16, raf.length())];
             raf.readFully(head);
             String value = new String(head, "ISO-8859-1");
@@ -125,12 +133,12 @@ public final class Media {
         if (suffix.isEmpty() || ".dat".equals(suffix)) {
             byte[] head = new byte[32];
             int n;
-            try (java.io.FileInputStream in = new java.io.FileInputStream(written)) { n = Math.max(0, in.read(head)); }
-            suffix = guessExt(n == head.length ? head : java.util.Arrays.copyOf(head, n));
+            try (FileInputStream in = new FileInputStream(written)) { n = Math.max(0, in.read(head)); }
+            suffix = guessExt(n == head.length ? head : Arrays.copyOf(head, n));
         }
         File out = File.createTempFile("ntm", suffix, tempDir());
         if (written.renameTo(out)) return out;
-        try (java.io.InputStream in = new java.io.FileInputStream(written);
+        try (InputStream in = new FileInputStream(written);
              FileOutputStream stream = new FileOutputStream(out)) {
             byte[] buf = new byte[64 * 1024];
             int n;
@@ -241,7 +249,7 @@ public final class Media {
             if (data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') return ".webp";
             if (data[8] == 'W' && data[9] == 'A' && data[10] == 'V' && data[11] == 'E') return ".wav";
         }
-        String head = new String(data, 0, Math.min(16, data.length), java.nio.charset.StandardCharsets.ISO_8859_1);
+        String head = new String(data, 0, Math.min(16, data.length), StandardCharsets.ISO_8859_1);
         if (head.contains("#!SILK")) return ".silk";
         if (head.contains("#!AMR")) return ".amr";
         if (data.length >= 3 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') return ".mp3";
@@ -288,7 +296,7 @@ public final class Media {
     }
 
     private static byte[] headBytes(File f) {
-        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "r")) {
+        try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
             byte[] head = new byte[(int) Math.min(16, raf.length())];
             raf.readFully(head);
             return head;
@@ -298,7 +306,7 @@ public final class Media {
     }
 
     private static void copyFile(File src, File dst) throws Exception {
-        try (InputStream in = new java.io.FileInputStream(src); FileOutputStream o = new FileOutputStream(dst)) {
+        try (InputStream in = new FileInputStream(src); FileOutputStream o = new FileOutputStream(dst)) {
             byte[] buf = new byte[8192]; int n;
             while ((n = in.read(buf)) > 0) o.write(buf, 0, n);
         }
@@ -413,7 +421,7 @@ public final class Media {
         ref.set(pic, "isInApplicationDataPath", Boolean.FALSE);
         ref.set(pic, "isFlashPic", Boolean.FALSE);
         if (thumbPath != null && !thumbPath.isEmpty()) {
-            java.util.HashMap<Integer, String> thumbs = new java.util.HashMap<>();
+            HashMap<Integer, String> thumbs = new HashMap<>();
             thumbs.put(0, thumbPath);
             thumbs.put(720, thumbPath);
             ref.set(pic, "thumbPath", thumbs);
@@ -474,7 +482,7 @@ public final class Media {
     }
 
     private static File writeThumbJpeg(File src, int maxSide) {
-        android.graphics.Bitmap bmp = null;
+        Bitmap bmp = null;
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
@@ -491,7 +499,7 @@ public final class Media {
             int longSide = Math.max(bw, bh);
             if (longSide > maxSide) {
                 float scale = maxSide / (float) longSide;
-                android.graphics.Bitmap scaled = android.graphics.Bitmap.createScaledBitmap(
+                Bitmap scaled = Bitmap.createScaledBitmap(
                         bmp, Math.max(1, Math.round(bw * scale)), Math.max(1, Math.round(bh * scale)), true);
                 if (scaled != bmp) {
                     bmp.recycle();
@@ -500,7 +508,7 @@ public final class Media {
             }
             File out = File.createTempFile("ntm", ".jpg", tempDir());
             try (FileOutputStream os = new FileOutputStream(out)) {
-                if (!bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, os)) return null;
+                if (!bmp.compress(Bitmap.CompressFormat.JPEG, 80, os)) return null;
             }
             return out;
         } catch (Throwable t) {
@@ -634,7 +642,7 @@ public final class Media {
             String fileName = (md5 == null || md5.isEmpty())
                     ? file.getName()
                     : md5 + (fmt[0] == 0 ? ".amr" : ".silk");
-            java.util.ArrayList<Byte> waves = pttWaves(fmt[1]);
+            ArrayList<Byte> waves = pttWaves(fmt[1]);
             String classic = classicPttPath(ref, fileName);
             String ntDest = "";
             if (msgService != null && md5 != null && !md5.isEmpty()) {
@@ -700,8 +708,8 @@ public final class Media {
     public static void repairSentPtt(Ref ref, Object rec) {
         if (ref == null || rec == null) return;
         Object els = ref.get(rec, "elements");
-        if (!(els instanceof java.util.List)) return;
-        for (Object e : (java.util.List<?>) els) {
+        if (!(els instanceof List<?> items)) return;
+        for (Object e : items) {
             if (e == null || Ref.asInt(ref.get(e, "elementType")) != 4) continue;
             Object ptt = ref.get(e, "pttElement");
             if (ptt == null) continue;
@@ -785,9 +793,9 @@ public final class Media {
     }
 
     /** AIO hides the voice duration/wave controls when the outgoing PTT waveform is empty. */
-    private static java.util.ArrayList<Byte> pttWaves(int durationSec) {
+    private static ArrayList<Byte> pttWaves(int durationSec) {
         int count = Math.max(12, Math.min(300, Math.max(1, durationSec) * 10));
-        java.util.ArrayList<Byte> waves = new java.util.ArrayList<>(count);
+        ArrayList<Byte> waves = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             int amplitude = 18 + ((i * 17 + i * i * 3) % 45);
             waves.add(Byte.valueOf((byte) amplitude));
@@ -826,7 +834,7 @@ public final class Media {
      *  Recipe per OpenShamrock/QQ NT: orig path (elemType 5, subType 2, dl 1) + thumb path
      *  (elemType 5, subType 1, dl 2). Returns null on failure. */
     public static Object buildVideoElement(Ref ref, Object msgService, File file) {
-        android.media.MediaMetadataRetriever mmr = null;
+        MediaMetadataRetriever mmr = null;
         try {
             String path = file.getAbsolutePath();
             String md5 = Ref.asStr(ref.callS(QQNT_UTIL, "genFileMd5Hex", path));
@@ -834,13 +842,13 @@ public final class Media {
             String origPath = richMediaDest(ref, msgService, 5, 2, md5, fileName, 1);
             String thumbPath = richMediaDest(ref, msgService, 5, 1, md5, fileName, 2);
 
-            mmr = new android.media.MediaMetadataRetriever();
+            mmr = new MediaMetadataRetriever();
             mmr.setDataSource(path);
             int durSec = (int) Math.max(1, parseLong(
-                    mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)) / 1000);
-            int vw = (int) parseLong(mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
-            int vh = (int) parseLong(mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
-            android.graphics.Bitmap frame = mmr.getFrameAtTime(0);
+                    mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)) / 1000);
+            int vw = (int) parseLong(mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
+            int vh = (int) parseLong(mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
+            Bitmap frame = mmr.getFrameAtTime(0);
 
             boolean exist = (Boolean) ref.callS(QQNT_UTIL, "fileIsExist", origPath);
             long osize = Ref.asLong(ref.callS(QQNT_UTIL, "getFileSize", origPath));
@@ -865,7 +873,7 @@ public final class Media {
             ref.set(v, "thumbSize", thumbSize);
             ref.set(v, "thumbWidth", tw);
             ref.set(v, "thumbHeight", th);
-            java.util.HashMap<Integer, String> tp = new java.util.HashMap<>();
+            HashMap<Integer, String> tp = new HashMap<>();
             tp.put(0, thumbPath);
             ref.set(v, "thumbPath", tp);
             ref.set(v, "fileUuid", "");
@@ -882,10 +890,10 @@ public final class Media {
         }
     }
 
-    private static void saveJpeg(android.graphics.Bitmap bmp, String destPath) {
+    private static void saveJpeg(Bitmap bmp, String destPath) {
         if (bmp == null) return;
         try (FileOutputStream o = new FileOutputStream(destPath)) {
-            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, o);
+            bmp.compress(Bitmap.CompressFormat.JPEG, 85, o);
         } catch (Throwable t) {
             L.e("saveJpeg", t);
         }
@@ -897,7 +905,7 @@ public final class Media {
 
     /** Detect voice format + estimate duration (seconds). [0]=formatType(1 silk / 0 amr), [1]=durationSec. */
     private static int[] pttFormat(String path) {
-        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(path, "r")) {
+        try (RandomAccessFile raf = new RandomAccessFile(path, "r")) {
             long len = raf.length();
             byte[] head = new byte[Math.min(16, (int) len)];
             raf.readFully(head);
@@ -918,7 +926,7 @@ public final class Media {
     }
 
     /** SILK v3: after the header, frames are [int16-LE blockLen][payload], 20ms each. */
-    private static int silkDurationSec(java.io.RandomAccessFile raf, int headerLen) {
+    private static int silkDurationSec(RandomAccessFile raf, int headerLen) {
         try {
             long len = raf.length();
             raf.seek(headerLen);

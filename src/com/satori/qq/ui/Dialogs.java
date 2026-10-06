@@ -1,6 +1,7 @@
 package com.satori.qq.ui;
 
 import android.app.Dialog;
+import android.graphics.drawable.ColorDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -71,7 +72,7 @@ final class Dialogs {
         dialog.setCanceledOnTouchOutside(true);
         Window window = dialog.getWindow();
         if (window != null) {
-            window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0));
+            window.setBackgroundDrawable(new ColorDrawable(0));
             window.setDimAmount(t.scrimPct / 100f);
             int screen = t.res.getDisplayMetrics().widthPixels;
             int width = Math.max(Math.min(t.dialogMin, screen - 2 * t.spaceLg),

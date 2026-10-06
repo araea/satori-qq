@@ -8,6 +8,7 @@ import android.view.accessibility.AccessibilityManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import com.satori.qq.R;
 
 /**
  * M3 信息条：一句操作结果 + 至多一个动作，出现在内容底部、不遮挡系统栏。
@@ -33,7 +34,7 @@ final class Snackbar {
         this.t = ui.t;
         this.host = host;
         bar = ui.row();
-        bar.setId(com.satori.qq.R.id.snackbar);
+        bar.setId(R.id.snackbar);
         bar.setPaddingRelative(t.spaceLg, t.spaceXs, t.spaceXs, t.spaceXs);
         bar.setMinimumHeight(t.button);
         bar.setBackground(Shape.round(t.inverseSurface, t.shapeXs));

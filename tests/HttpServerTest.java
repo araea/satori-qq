@@ -1,13 +1,17 @@
 import com.satori.qq.Cfg;
 import com.satori.qq.net.HttpServer;
 import com.satori.qq.net.WsConn;
-import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Collections;
+import org.json.JSONObject;
 
 /**
  * The wire behaviour the Satori docs ask of an HTTP surface, through the real socket server:
@@ -18,11 +22,11 @@ public final class HttpServerTest {
     public static void main(String[] args) throws Exception {
         int port;
         try (ServerSocket probe = new ServerSocket(0)) { port = probe.getLocalPort(); }
-        java.io.File payload = java.io.File.createTempFile("http-test", ".bin");
+        File payload = File.createTempFile("http-test", ".bin");
         payload.deleteOnExit();
         byte[] bytes = new byte[1000];
         for (int i = 0; i < bytes.length; i++) bytes[i] = (byte) i;
-        java.nio.file.Files.write(payload.toPath(), bytes);
+        Files.write(payload.toPath(), bytes);
         Cfg cfg = new Cfg();
         cfg.host = "127.0.0.1";
         cfg.port = port;
@@ -117,7 +121,7 @@ public final class HttpServerTest {
             try {
                 int n;
                 while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-            } catch (java.net.SocketTimeoutException ignore) {}
+            } catch (SocketTimeoutException ignore) {}
             return out.toString("UTF-8");
         }
     }
@@ -126,7 +130,7 @@ public final class HttpServerTest {
     private static String rawWithBody(int port, String head, int bodyBytes) throws Exception {
         try (Socket s = new Socket("127.0.0.1", port)) {
             s.setSoTimeout(10000);
-            java.io.OutputStream out = s.getOutputStream();
+            OutputStream out = s.getOutputStream();
             out.write(head.getBytes(StandardCharsets.UTF_8));
             byte[] chunk = new byte[64 * 1024];
             for (int sent = 0; sent < bodyBytes; sent += chunk.length) out.write(chunk, 0, Math.min(chunk.length, bodyBytes - sent));
@@ -138,7 +142,7 @@ public final class HttpServerTest {
             try {
                 int n;
                 while ((n = in.read(buf)) > 0) got.write(buf, 0, n);
-            } catch (java.net.SocketTimeoutException ignore) {}
+            } catch (SocketTimeoutException ignore) {}
             return got.toString("ISO-8859-1");
         }
     }

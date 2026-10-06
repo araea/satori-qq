@@ -1,5 +1,6 @@
 package com.satori.qq.ui;
 
+import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -10,6 +11,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import com.satori.qq.R;
 import com.satori.qq.guard.GuardCommand;
+import java.util.Arrays;
 import org.json.JSONObject;
 
 /**
@@ -173,7 +175,7 @@ final class HomePage {
             tile.addView(ui.text(labels[i], Tokens.LABEL_MEDIUM, t.onSurfaceVariant), Ui.stack(0));
             values[i] = ui.text("—", Tokens.HEADLINE_SMALL, t.onSurface);
             tile.addView(values[i], Ui.stack(t.spaceXs));
-            if (android.os.Build.VERSION.SDK_INT >= 28) tile.setScreenReaderFocusable(true);
+            if (Build.VERSION.SDK_INT >= 28) tile.setScreenReaderFocusable(true);
             if (pair) metrics.addView(tile, Ui.share(i == 0 ? 0 : t.space2xs));
             else metrics.addView(tile, Ui.stack(i == 0 ? 0 : t.space2xs));
         }
@@ -192,7 +194,7 @@ final class HomePage {
         String[] names = {"QQ 账号", "本机服务", "Satori 客户端"};
         for (int i = 0; i < 3; i++) {
             chain[i] = chainGroup.add(new Item(t, Item.STATIC, names[i], "检查中").leading(Icon.UNKNOWN, t.onSurfaceVariant));
-            if (android.os.Build.VERSION.SDK_INT >= 28) chain[i].setScreenReaderFocusable(true);
+            if (Build.VERSION.SDK_INT >= 28) chain[i].setScreenReaderFocusable(true);
         }
         content.addView(chainGroup, Ui.stack(0));
 
@@ -284,7 +286,7 @@ final class HomePage {
 
         int[] steps = Status.steps(state, m.health);
         String[] values = Status.stepValues(state, m.health, m.port);
-        boolean restyle = !java.util.Arrays.equals(steps, stepStates);
+        boolean restyle = !Arrays.equals(steps, stepStates);
         stepStates = steps;
         for (int i = 0; i < 3; i++) {
             if (restyle) {

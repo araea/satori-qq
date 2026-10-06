@@ -1,5 +1,6 @@
 package com.satori.qq.core;
 
+import android.R;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -8,8 +9,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.service.notification.StatusBarNotification;
-
 import com.satori.qq.L;
+import com.satori.qq.qq.WakeLockCtl;
 
 /**
  * Resident status notification for the Satori service.
@@ -52,7 +53,7 @@ public final class StatusNotice {
     private volatile long lastPostAt;
     private volatile long repostCount;
     // Optional user-toggled wake lock, surfaced as a notification action button (Termux-style).
-    private volatile com.satori.qq.qq.WakeLockCtl wake;
+    private volatile WakeLockCtl wake;
     // Tap target, resolved once (see openAppIntent); openAppTried keeps a failed lookup from
     // repeating a package query on every rebuild.
     private volatile PendingIntent openApp;
@@ -72,7 +73,7 @@ public final class StatusNotice {
     public boolean available() { return nm != null; }
 
     /** Attach the wake-lock controller so its acquire/release toggle rides on the resident entry. */
-    public void setWake(com.satori.qq.qq.WakeLockCtl w) { this.wake = w; }
+    public void setWake(WakeLockCtl w) { this.wake = w; }
 
     /** Diagnostic string for /healthz: whether the OS currently accepts our posts. */
     public String diag() {
@@ -153,7 +154,7 @@ public final class StatusNotice {
             coarse = String.valueOf(up / 60000L); // minute granularity for dedupe
             v.big += "\n已在线 " + humanUptime(up);
         }
-        com.satori.qq.qq.WakeLockCtl w = wake;
+        WakeLockCtl w = wake;
         String wk = w == null ? "w-" : (w.held() ? "w1" : "w0");
         v.key = v.title + '|' + v.text + '|' + uin + '|' + nick + '|' + coarse + '|' + wk;
         return v;
@@ -208,13 +209,13 @@ public final class StatusNotice {
 
     /** Termux-style acquire/release wake-lock button. Silently skipped when no controller is set. */
     private void addWakeAction(Notification.Builder b) {
-        com.satori.qq.qq.WakeLockCtl w = wake;
+        WakeLockCtl w = wake;
         if (w == null) return;
         try {
-            android.app.PendingIntent pi = w.toggleIntent();
+            PendingIntent pi = w.toggleIntent();
             if (pi == null) return;
-            int icon = w.held() ? android.R.drawable.ic_lock_idle_lock
-                                : android.R.drawable.ic_lock_lock;
+            int icon = w.held() ? R.drawable.ic_lock_idle_lock
+                                : R.drawable.ic_lock_lock;
             b.addAction(icon, w.label(), pi);
         } catch (Throwable t) {
             L.e("notice: wake action", t);

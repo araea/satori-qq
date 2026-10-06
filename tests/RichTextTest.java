@@ -1,6 +1,7 @@
 package com.satori.qq.qq;
 
 import java.util.Arrays;
+import java.util.List;
 
 public final class RichTextTest {
     static final class Markdown { String content = "**你好**\r\n第二行\u0000"; }
@@ -11,9 +12,9 @@ public final class RichTextTest {
         String data = "private callback token";
         Button(String label, String visitedLabel) { this.label = label; this.visitedLabel = visitedLabel; }
     }
-    static final class Row { java.util.List<Button> buttons = Arrays.asList(
+    static final class Row { List<Button> buttons = Arrays.asList(
             new Button("打开", ""), new Button("", "重试")); }
-    static final class Keyboard { java.util.List<Row> rows = Arrays.asList(new Row()); }
+    static final class Keyboard { List<Row> rows = Arrays.asList(new Row()); }
     static final class KeyboardElement { Keyboard inlineKeyboardElement = new Keyboard(); }
 
     public static void main(String[] args) {

@@ -4,6 +4,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import org.json.JSONObject;
 
 /** Read-only loopback probe with bounded time and response size. */
@@ -41,7 +44,7 @@ public final class HealthClient {
         out.append("应用版本：").append(installedVersion).append('\n');
         out.append("本机端口：").append(port).append('\n');
         if (health == null) return out.append("状态：未能连接本机服务\n不包含令牌、QQ 账号或消息内容。\n").toString();
-        out.append("检查时间：").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).format(new java.util.Date(checkedAt))).append('\n');
+        out.append("检查时间：").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(new Date(checkedAt))).append('\n');
         for (String key : new String[]{"version", "qq_version", "online", "listening", "connections", "config_revision", "config_status"}) {
             out.append(key).append(": ").append(health.opt(key)).append('\n');
         }

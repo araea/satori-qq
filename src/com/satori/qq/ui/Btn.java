@@ -1,5 +1,6 @@
 package com.satori.qq.ui;
 
+import android.R;
 import android.animation.ValueAnimator;
 import android.content.res.ColorStateList;
 import android.view.Gravity;
@@ -50,7 +51,7 @@ final class Btn extends Button {
                 .ring(ring(), tokens.focusRing);
         if (style == OUTLINED) shape.stroke(tokens.outline, tokens.border);
         setBackground(shape.pressable(Tokens.alpha(content(), tokens.pressedPct)));
-        setTextColor(new ColorStateList(new int[][]{{-android.R.attr.state_enabled}, {}},
+        setTextColor(new ColorStateList(new int[][]{{-R.attr.state_enabled}, {}},
                 new int[]{Tokens.alpha(tokens.onSurface, tokens.disabledContentPct), content()}));
     }
 

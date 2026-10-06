@@ -1,8 +1,8 @@
 package com.satori.qq.core;
 
 import com.satori.qq.L;
-import com.satori.qq.packet.Pb;
 import com.satori.qq.packet.PacketSvc;
+import com.satori.qq.packet.Pb;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.satori.Codec;
 import com.satori.qq.satori.Protocol;

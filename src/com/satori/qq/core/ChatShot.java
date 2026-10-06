@@ -5,13 +5,13 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
-import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import org.json.JSONObject;
 
 /** Render a chat-history image off-screen with Android Canvas; NOT a capture of QQ's UI. */
 public final class ChatShot {

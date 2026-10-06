@@ -1,5 +1,8 @@
 package com.satori.qq.core;
 
+import java.util.ArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -36,7 +39,7 @@ public final class Notices {
         JSONObject root = new JSONObject(json);
         JSONArray items = root.optJSONArray("items");
         if (items == null) return null;
-        java.util.ArrayList<String> uids = new java.util.ArrayList<>();
+        ArrayList<String> uids = new ArrayList<>();
         for (int i = 0; i < items.length(); i++) {
             JSONObject it = items.optJSONObject(i);
             if (it == null) continue;
@@ -62,7 +65,7 @@ public final class Notices {
         if (xml == null || xml.isEmpty()) return null;
         String lower = xml.toLowerCase();
         if (!lower.contains("nudgeaction") && !lower.contains("nudge")) return null;
-        java.util.ArrayList<String> uids = xmlUids(xml);
+        ArrayList<String> uids = xmlUids(xml);
         if (uids.size() < 2) return null;
         JSONObject n = base(self, time);
         n.put("notice_type", "notify");
@@ -83,7 +86,7 @@ public final class Notices {
         if (lower.contains("nudgeaction") || lower.contains("nudge")) return null;
         boolean lift = xml.contains("解除禁言") || xml.contains("取消禁言");
         if (!lift && !xml.contains("禁言")) return null;
-        java.util.ArrayList<String> uids = xmlUids(xml);
+        ArrayList<String> uids = xmlUids(xml);
         long duration = lift ? 0 : parseBanDuration(xml);
         JSONObject n = groupBan(self, time, groupId, 0, 0, duration);
         if (uids.size() >= 2) {
@@ -95,8 +98,8 @@ public final class Notices {
         return n;
     }
 
-    static java.util.ArrayList<String> xmlUids(String xml) {
-        java.util.ArrayList<String> uids = new java.util.ArrayList<>();
+    static ArrayList<String> xmlUids(String xml) {
+        ArrayList<String> uids = new ArrayList<>();
         int from = 0;
         while (true) {
             int i = xml.indexOf("uin=\"", from);
@@ -112,7 +115,7 @@ public final class Notices {
     }
 
     static long parseBanDuration(String xml) {
-        java.util.regex.Matcher m = java.util.regex.Pattern
+        Matcher m = Pattern
                 .compile("(\\d+)\\s*(秒|分钟|小时|天)").matcher(xml);
         if (!m.find()) return 1;
         long n = Long.parseLong(m.group(1));
@@ -133,7 +136,7 @@ public final class Notices {
         boolean leave = xml.contains("退出了") || xml.contains("退出群");
         boolean join = xml.contains("加入") || xml.contains("入群");
         if (!kick && !leave && !join) return null;
-        java.util.ArrayList<String> uids = xmlUids(xml);
+        ArrayList<String> uids = xmlUids(xml);
         JSONObject n;
         if (join) {
             n = groupIncrease(self, time, groupId, 0, 0, xml.contains("邀请") ? "invite" : "approve");

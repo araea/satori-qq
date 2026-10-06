@@ -1,4 +1,5 @@
 import com.satori.qq.core.MsgStore;
+import java.util.List;
 
 public final class MsgStoreTest {
     public static void main(String[] args) {
@@ -49,7 +50,7 @@ public final class MsgStoreTest {
         MsgStore.Rec other = new MsgStore.Rec();
         other.chatType = 2; other.peerUin = 1; other.peerUid = "1"; other.msgId = 13; other.msgSeq = 3;
         store.put(a); store.put(b); store.put(other);
-        java.util.List<MsgStore.Rec> listed = store.listPeer(2, 928613831L, "928613831", 10);
+        List<MsgStore.Rec> listed = store.listPeer(2, 928613831L, "928613831", 10);
         check(listed.size() == 2 && listed.get(0).msgId == 11 && listed.get(1).msgId == 12, "listPeer");
 
         // 引用元素兜底靠 seq 反查 msgId：同频道命中，跨频道和零 seq 必须落空。

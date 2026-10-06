@@ -1,5 +1,6 @@
 import com.satori.qq.guard.GuardCommand;
 import com.satori.qq.ui.Status;
+import java.lang.reflect.Constructor;
 import org.json.JSONObject;
 
 /**
@@ -97,7 +98,7 @@ public final class StatusTest {
     }
 
     private static GuardCommand.Result guard(boolean ok, JSONObject status, String error) throws Exception {
-        java.lang.reflect.Constructor<GuardCommand.Result> constructor =
+        Constructor<GuardCommand.Result> constructor =
                 GuardCommand.Result.class.getDeclaredConstructor(boolean.class, JSONObject.class, String.class);
         constructor.setAccessible(true);
         return constructor.newInstance(ok, status, error);

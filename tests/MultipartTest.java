@@ -1,11 +1,11 @@
 import com.satori.qq.satori.Multipart;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 
@@ -21,7 +21,7 @@ public final class MultipartTest {
         rejectsMissingBoundary(dir);
         rejectsUnterminatedAndTooLarge(dir);
         String[] left = dir.list();
-        if (left == null || left.length != 0) throw new AssertionError("failed parses left files behind: " + java.util.Arrays.toString(left));
+        if (left == null || left.length != 0) throw new AssertionError("failed parses left files behind: " + Arrays.toString(left));
         System.out.println("MultipartTest OK");
     }
 
@@ -48,7 +48,7 @@ public final class MultipartTest {
         eq("x0.bin", part.filename, "filename");
         eq("application/octet-stream", part.contentType, "content type");
         eq(tricky.length, part.size, "size");
-        eq(true, java.util.Arrays.equals(tricky, Files.readAllBytes(part.file.toPath())), "bytes round-trip");
+        eq(true, Arrays.equals(tricky, Files.readAllBytes(part.file.toPath())), "bytes round-trip");
         eq(0L, parts.get(1).size, "empty part");
         for (Multipart.Part p : parts) p.file.delete();
     }
@@ -61,7 +61,7 @@ public final class MultipartTest {
         for (int chunk : new int[]{1, 2, 7, 4096, 70_001}) {
             List<Multipart.Part> parts = Multipart.parseStream(new Trickle(raw, chunk), TYPE, dir, 1 << 20);
             eq(2, parts.size(), "parts at read size " + chunk);
-            eq(true, java.util.Arrays.equals(big, Files.readAllBytes(parts.get(0).file.toPath())), "big part at read size " + chunk);
+            eq(true, Arrays.equals(big, Files.readAllBytes(parts.get(0).file.toPath())), "big part at read size " + chunk);
             eq("tail", new String(Files.readAllBytes(parts.get(1).file.toPath()), StandardCharsets.ISO_8859_1), "tail at read size " + chunk);
             for (Multipart.Part p : parts) p.file.delete();
         }
@@ -85,7 +85,7 @@ public final class MultipartTest {
 
     private static void rejectsUnterminatedAndTooLarge(File dir) throws Exception {
         byte[] raw = body(new byte[1000]);
-        byte[] cut = java.util.Arrays.copyOf(raw, raw.length - 40);
+        byte[] cut = Arrays.copyOf(raw, raw.length - 40);
         expect(IllegalArgumentException.class, () -> Multipart.parseStream(new ByteArrayInputStream(cut), TYPE, dir, 1 << 20),
                 "unterminated part accepted");
         expect(Multipart.TooLarge.class, () -> Multipart.parseStream(new ByteArrayInputStream(raw), TYPE, dir, 999),

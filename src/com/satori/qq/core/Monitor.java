@@ -2,6 +2,8 @@ package com.satori.qq.core;
 
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.os.Handler;
+import android.os.Looper;
 import com.satori.qq.Cfg;
 import com.satori.qq.L;
 import com.satori.qq.control.ControlBridge;
@@ -79,7 +81,7 @@ final class Monitor {
             refreshNotice();
             Workers.start(Workers.STATUS_MONITOR, this::loop);
         });
-        new android.os.Handler(android.os.Looper.getMainLooper()).post(bootstrap::start);
+        new Handler(Looper.getMainLooper()).post(bootstrap::start);
     }
 
     private static boolean contextReady(Context context) {

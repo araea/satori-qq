@@ -1,16 +1,21 @@
 package com.satori.qq.packet;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
-
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * Merge-forward (合并转发) via trpc SsoSendLongMsg.
@@ -486,12 +491,12 @@ public final class LongMsg {
         public String json = "";
     }
 
-    public static Card buildCard(String resId, List<Node> nodes, boolean group) throws org.json.JSONException {
+    public static Card buildCard(String resId, List<Node> nodes, boolean group) throws JSONException {
         return buildCard(resId, nodes, group, UUID.randomUUID().toString());
     }
 
     public static Card buildCard(String resId, List<Node> nodes, boolean group, String fileName)
-            throws org.json.JSONException {
+            throws JSONException {
         Card c = new Card();
         c.fileName = fileName == null || fileName.isEmpty() ? UUID.randomUUID().toString() : fileName;
         String source = sourceTitle(nodes, group);
@@ -586,11 +591,11 @@ public final class LongMsg {
         return b.toString();
     }
 
-    public static byte[] md5Of(java.io.File file) {
+    public static byte[] md5Of(File file) {
         if (file == null || !file.isFile()) return null;
         try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
-            try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            try (FileInputStream in = new FileInputStream(file)) {
                 byte[] buf = new byte[8192];
                 int n;
                 while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
@@ -685,8 +690,8 @@ public final class LongMsg {
     }
 
     private static byte[] gunzip(byte[] data) {
-        try (java.util.zip.GZIPInputStream gz =
-                     new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(data))) {
+        try (GZIPInputStream gz =
+                     new GZIPInputStream(new ByteArrayInputStream(data))) {
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
             int r;

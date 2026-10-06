@@ -1,5 +1,8 @@
 package com.satori.qq.core;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,7 +51,7 @@ public final class MsgStore {
     private final int CAP = 4000;
     // ring of ids -> Rec
     private final Map<Integer, Rec> byId = new ConcurrentHashMap<>();
-    private final java.util.ArrayDeque<Integer> order = new java.util.ArrayDeque<>();
+    private final ArrayDeque<Integer> order = new ArrayDeque<>();
     // dedupe: qq msgId -> local id (so the same message isn't stored twice)
     private final Map<Long, Integer> byMsgId = new ConcurrentHashMap<>();
 
@@ -59,7 +62,7 @@ public final class MsgStore {
 
     private final AtomicInteger resourceSeq = new AtomicInteger(1);
     private final Map<String, Resource> resources = new ConcurrentHashMap<>();
-    private final java.util.ArrayDeque<String> resourceOrder = new java.util.ArrayDeque<>();
+    private final ArrayDeque<String> resourceOrder = new ArrayDeque<>();
     private static final int RESOURCE_CAP = 4000;
 
     /** Never expose the previous login's message/resource cache after switching accounts. */
@@ -115,8 +118,8 @@ public final class MsgStore {
     }
 
     /** In-process records for one peer, oldest first, capped at the newest {@code limit}. */
-    public java.util.List<Rec> listPeer(int chatType, long peerUin, String peerUid, int limit) {
-        java.util.ArrayList<Rec> out = new java.util.ArrayList<>();
+    public List<Rec> listPeer(int chatType, long peerUin, String peerUid, int limit) {
+        ArrayList<Rec> out = new ArrayList<>();
         for (Rec r : byId.values()) {
             if (r == null) continue;
             if (chatType != 0 && r.chatType != chatType) continue;
@@ -130,7 +133,7 @@ public final class MsgStore {
             return bySeq != 0 ? bySeq : Long.compare(a.msgId, b.msgId);
         });
         int cap = Math.max(1, limit);
-        if (out.size() > cap) return new java.util.ArrayList<>(out.subList(out.size() - cap, out.size()));
+        if (out.size() > cap) return new ArrayList<>(out.subList(out.size() - cap, out.size()));
         return out;
     }
 

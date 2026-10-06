@@ -3,11 +3,13 @@ package com.satori.qq.qq;
 import com.satori.qq.L;
 import com.satori.qq.core.MsgStore;
 import com.satori.qq.core.Notices;
-import org.json.JSONArray;
-import org.json.JSONObject;
-
+import java.io.File;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /** Converts between internal message segments and QQ NT MsgElement objects,
  *  and turns a received MsgRecord into an event object for the Satori hub. */
@@ -54,7 +56,7 @@ public final class Convert {
                 L.e("toElements seg " + type, e);
                 if ("record".equals(type) || "video".equals(type) || "file".equals(type)
                         || "image".equals(type)) {
-                    throw (e instanceof RuntimeException) ? (RuntimeException) e
+                    throw (e instanceof RuntimeException failure) ? failure
                             : new IllegalStateException(type + " send failed", e);
                 }
             }
@@ -75,7 +77,7 @@ public final class Convert {
     }
 
     private JSONArray normalize(Object message) {
-        if (message instanceof JSONArray) return (JSONArray) message;
+        if (message instanceof JSONArray array) return array;
         JSONArray a = new JSONArray();
         JSONObject seg = new JSONObject();
         try { seg.put("type", "text"); seg.put("data", new JSONObject().put("text", String.valueOf(message))); } catch (Exception ignore) {}
@@ -127,7 +129,7 @@ public final class Convert {
      * `stickerType` / `sourceType` / `faceText`），内核才会按大表情发出去。字段名与取值照抄
      * NapCat 的 `packages/napcat-onebot/api/msg.ts` 里 dice / rps 两个段。
      */
-    private void addFace(ArrayList<Object> out, org.json.JSONObject d) {
+    private void addFace(ArrayList<Object> out, JSONObject d) {
         Object e = newElement(6);
         Object f = ref.neu("com.tencent.qqnt.kernel.nativeinterface.FaceElement");
         int fid = (int) parseLong(d.optString("id", "0"));
@@ -242,7 +244,7 @@ public final class Convert {
     }
 
     /** Market face (商城表情) -> KELEMTYPEMARKETFACE(11). */
-    private void addMface(ArrayList<Object> out, org.json.JSONObject d) {
+    private void addMface(ArrayList<Object> out, JSONObject d) {
         try {
             Object e = newElement(11);
             Object mf = ref.neu(MARKET_FACE_ELEMENT);
@@ -256,7 +258,7 @@ public final class Convert {
     }
 
     /** Poke (戳一戳) as a FaceElement -> KELEMTYPEFACE(6). */
-    private void addPoke(ArrayList<Object> out, org.json.JSONObject d) {
+    private void addPoke(ArrayList<Object> out, JSONObject d) {
         try {
             Object e = newElement(6);
             Object f = ref.neu(FACE_ELEMENT);
@@ -270,10 +272,10 @@ public final class Convert {
         } catch (Throwable t) { L.e("addPoke", t); }
     }
 
-    private void addImage(ArrayList<Object> out, org.json.JSONObject d) {
+    private void addImage(ArrayList<Object> out, JSONObject d) {
         String file = d.optString("file", "");
         String url = d.optString("url", "");
-        java.io.File f = Media.resolve(file, url);
+        File f = Media.resolve(file, url);
         if (f == null) throw new IllegalStateException("image send failed: unresolved " + clipSpec(file, url));
         Object msgService = qq.getMsgService();
         if (msgService == null) throw new IllegalStateException("image send failed: no msgService");
@@ -289,16 +291,16 @@ public final class Convert {
         return s.replace('\n', ' ');
     }
 
-    private void addRecord(ArrayList<Object> out, org.json.JSONObject d) {
-        java.io.File f = Media.prepareVoice(ref, Media.resolve(d.optString("file", ""), d.optString("url", "")));
+    private void addRecord(ArrayList<Object> out, JSONObject d) {
+        File f = Media.prepareVoice(ref, Media.resolve(d.optString("file", ""), d.optString("url", "")));
         Object msgService = qq.getMsgService();
         Object elem = (f != null && msgService != null) ? Media.buildPttElement(ref, msgService, f) : null;
         if (elem != null) out.add(elem);
         else throw new IllegalStateException("record transcode/send failed");
     }
 
-    private void addFile(ArrayList<Object> out, org.json.JSONObject d) {
-        java.io.File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
+    private void addFile(ArrayList<Object> out, JSONObject d) {
+        File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
         Object msgService = qq.getMsgService();
         Object elem = (f != null && msgService != null)
                 ? Media.buildFileElement(ref, msgService, f, d.optString("name", "")) : null;
@@ -306,8 +308,8 @@ public final class Convert {
         else throw new IllegalStateException("file send failed");
     }
 
-    private void addVideo(ArrayList<Object> out, org.json.JSONObject d) {
-        java.io.File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
+    private void addVideo(ArrayList<Object> out, JSONObject d) {
+        File f = Media.resolve(d.optString("file", ""), d.optString("url", ""));
         Object msgService = qq.getMsgService();
         Object elem = (f != null && msgService != null) ? Media.buildVideoElement(ref, msgService, f) : null;
         if (elem != null) out.add(elem);
@@ -334,7 +336,7 @@ public final class Convert {
         String name = rec.getClass().getSimpleName();
         if (name == null || (!name.contains("Queried") && !name.contains("Query"))) return rec;
         try {
-            java.lang.reflect.Field f = rec.getClass().getDeclaredField("msgRecord");
+            Field f = rec.getClass().getDeclaredField("msgRecord");
             f.setAccessible(true);
             Object inner = f.get(rec);
             if (inner != null) return inner;
@@ -394,8 +396,8 @@ public final class Convert {
                 raw.append(peek);
             }
         }
-        lastParseDebug = "elsIsList=" + (elements instanceof java.util.List)
-                + " n=" + (elements instanceof java.util.List ? ((java.util.List<?>) elements).size() : -1)
+        lastParseDebug = "elsIsList=" + (elements instanceof List)
+                + " n=" + (elements instanceof List<?> items ? items.size() : -1)
                 + " segs=" + segs.length() + " rawLen=" + raw.length()
                 + " peek=" + peekPlainText(elements)
                 + " cls=" + rec.getClass().getSimpleName()
@@ -453,9 +455,9 @@ public final class Convert {
 
     private boolean grayTipOnly(Object rec) {
         Object elements = ref.get(rec, "elements");
-        if (!(elements instanceof java.util.List)) return false;
+        if (!(elements instanceof List<?> items)) return false;
         boolean gray = false;
-        for (Object e : (java.util.List<?>) elements) {
+        for (Object e : items) {
             if (e == null) continue;
             int et = ref.asInt(ref.get(e, "elementType"));
             if (et == 8) gray = true;
@@ -502,7 +504,7 @@ public final class Convert {
             if (v.getClass().isEnum()) name = ((Enum<?>) v).name();
         } catch (Throwable ignore) {}
         if (name.isEmpty()) name = String.valueOf(v);
-        String n = name.toUpperCase(java.util.Locale.ROOT);
+        String n = name.toUpperCase(Locale.ROOT);
         if (n.contains("OWNER")) return "owner";
         if (n.contains("ADMIN")) return "admin";
         if (n.contains("MEMBER")) return "member";
@@ -511,9 +513,9 @@ public final class Convert {
 
     /** Same field reads as QQClient.sampleRecord; used when parseElements yields nothing. */
     private String peekPlainText(Object elements) {
-        if (!(elements instanceof java.util.List)) return "";
+        if (!(elements instanceof List<?> items)) return "";
         StringBuilder sb = new StringBuilder();
-        for (Object e : (java.util.List<?>) elements) {
+        for (Object e : items) {
             if (e == null) continue;
             try {
                 if (Ref.asInt(ref.get(e, "elementType")) != 1) continue;
@@ -527,8 +529,8 @@ public final class Convert {
 
     private void parseElements(Object elements, JSONArray segs, StringBuilder raw,
                                int chatType, String peerUid, long msgId) {
-        if (!(elements instanceof java.util.List)) return;
-        java.util.List<?> list = (java.util.List<?>) elements;
+        if (!(elements instanceof List<?> elementsList)) return;
+        List<?> list = elementsList;
         for (Object e : list) {
             if (e == null) continue;
             try {
@@ -783,8 +785,8 @@ public final class Convert {
                                        String peerUid, long senderUin, String senderUid,
                                        long msgId, long msgSeq, long msgTime) {
         Object elements = ref.get(rec, "elements");
-        if (!(elements instanceof java.util.List)) return null;
-        for (Object e : (java.util.List<?>) elements) {
+        if (!(elements instanceof List<?> items)) return null;
+        for (Object e : items) {
             if (e == null) continue;
             if (ref.asInt(ref.get(e, "elementType")) != 8) continue;
             Object gray = ref.get(e, "grayTipElement");

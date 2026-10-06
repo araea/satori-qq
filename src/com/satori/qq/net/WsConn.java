@@ -1,5 +1,6 @@
 package com.satori.qq.net;
 
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 
@@ -45,7 +46,7 @@ public final class WsConn {
         if (closed) return;
         synchronized (writeLock) {
             int len = payload.length;
-            java.io.ByteArrayOutputStream h = new java.io.ByteArrayOutputStream();
+            ByteArrayOutputStream h = new ByteArrayOutputStream();
             h.write(0x80 | (opcode & 0x0F)); // FIN + opcode
             if (len < 126) {
                 h.write(len);

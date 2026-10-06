@@ -1,12 +1,11 @@
 package com.satori.qq.satori;
 
-import org.json.JSONObject;
-
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.json.JSONObject;
 
 /** Satori element tree: parse / stringify the XML-like {@code content} string. */
 public final class Elements {
@@ -85,7 +84,7 @@ public final class Elements {
                 .replace("&lt;", "<")
                 .replace("&gt;", ">")
                 .replace("&quot;", "\"");
-        java.util.regex.Matcher m = Pattern.compile("&#(\\d+);").matcher(s);
+        Matcher m = Pattern.compile("&#(\\d+);").matcher(s);
         StringBuffer out = new StringBuffer();
         while (m.find()) {
             String replacement = m.group();

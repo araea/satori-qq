@@ -1,5 +1,6 @@
 package com.satori.qq.ui;
 
+import android.R;
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
 import android.graphics.Canvas;
@@ -71,7 +72,7 @@ final class Toggle extends View {
     @Override protected void drawableStateChanged() {
         super.drawableStateChanged();
         boolean pressed = false;
-        for (int state : getDrawableState()) if (state == android.R.attr.state_pressed) pressed = true;
+        for (int state : getDrawableState()) if (state == R.attr.state_pressed) pressed = true;
         float target = pressed ? 1 : 0;
         if (press == target && (squeeze == null || !squeeze.isRunning())) return;
         if (squeeze != null) squeeze.cancel();

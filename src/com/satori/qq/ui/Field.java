@@ -1,5 +1,6 @@
 package com.satori.qq.ui;
 
+import android.graphics.Rect;
 import android.text.InputType;
 import android.text.method.PasswordTransformationMethod;
 import android.view.Gravity;
@@ -123,7 +124,7 @@ final class Field extends LinearLayout {
         if (failed) {
             input.requestFocus();
             input.post(() -> input.requestRectangleOnScreen(
-                    new android.graphics.Rect(0, 0, input.getWidth(), getHeight()), false));
+                    new Rect(0, 0, input.getWidth(), getHeight()), false));
         }
         restyle();
     }

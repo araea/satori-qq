@@ -1,9 +1,10 @@
 package com.satori.qq;
 
-import org.json.JSONObject;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.ByteArrayOutputStream;
+import java.util.Locale;
+import org.json.JSONObject;
 
 /** Runtime config, loaded best-effort from a JSON file readable by the QQ process.
  *  Falls back to sane defaults so the module works out-of-the-box. */
@@ -108,7 +109,7 @@ public final class Cfg {
     }
 
     private static String normalizeForwardMode(String raw) {
-        String v = raw == null ? "" : raw.trim().toLowerCase(java.util.Locale.ROOT);
+        String v = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         return "native".equals(v) || "fake".equals(v) ? v : "auto";
     }
 }

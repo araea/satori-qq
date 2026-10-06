@@ -3,9 +3,7 @@ package com.satori.qq.qq;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-
 import com.satori.qq.L;
-
 import java.io.RandomAccessFile;
 
 /**

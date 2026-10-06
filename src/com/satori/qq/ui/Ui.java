@@ -9,6 +9,7 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import com.satori.qq.R;
@@ -156,7 +157,7 @@ final class Ui {
                 : new Icon(t, kind, color);
         if (kind == Icon.REFRESH) icon.setTint(color);
         view.setImageDrawable(icon);
-        view.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+        view.setScaleType(ImageView.ScaleType.CENTER);
         int inset = (t.touchTarget - t.iconButton) / 2;
         Shape shape = Shape.round(0, Shape.FULL).ring(t.primary, t.focusRing);
         view.setBackground(new RippleDrawable(ColorStateList.valueOf(Tokens.alpha(color, t.pressedPct)),

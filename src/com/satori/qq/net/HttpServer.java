@@ -2,10 +2,13 @@ package com.satori.qq.net;
 
 import com.satori.qq.Cfg;
 import com.satori.qq.L;
-
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -17,6 +20,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
+import org.json.JSONObject;
 
 /** HTTP + RFC6455 server on one local port. Satori API is HTTP; events are WebSocket. */
 public final class HttpServer {
@@ -70,7 +74,7 @@ public final class HttpServer {
         public final byte[] body;
         public final Map<String, String> extraHeaders;
         /** 正文来自文件的一段（{@link #file} 非空时 {@link #body} 为空）：按块写出，不整份读进堆。 */
-        public final java.io.File file;
+        public final File file;
         public final long fileOffset;
         public final long fileLength;
         public HttpResult(int status, String contentType, byte[] body) {
@@ -80,7 +84,7 @@ public final class HttpServer {
             this(status, contentType, body, extra, null, 0, 0);
         }
         private HttpResult(int status, String contentType, byte[] body, Map<String, String> extra,
-                           java.io.File file, long fileOffset, long fileLength) {
+                           File file, long fileOffset, long fileLength) {
             this.status = status;
             this.contentType = contentType == null ? "text/plain; charset=utf-8" : contentType;
             this.body = body == null ? new byte[0] : body;
@@ -90,7 +94,7 @@ public final class HttpServer {
             this.fileLength = fileLength;
         }
         /** 文件里 [offset, offset+length) 这一段做正文（整份文件就是 0 到 file.length()）。 */
-        public static HttpResult file(int status, String contentType, java.io.File file, long offset, long length,
+        public static HttpResult file(int status, String contentType, File file, long offset, long length,
                                       Map<String, String> extra) {
             return new HttpResult(status, contentType, null, extra, file, offset, length);
         }
@@ -116,7 +120,7 @@ public final class HttpServer {
         }
         public static String errorBody(String code, String message) {
             try {
-                return new org.json.JSONObject().put("code", code)
+                return new JSONObject().put("code", code)
                         .put("message", message == null ? "" : message).toString();
             } catch (Exception e) { return "{\"code\":\"" + code + "\",\"message\":\"error\"}"; }
         }
@@ -291,7 +295,7 @@ public final class HttpServer {
             if (result == null) result = HttpResult.error(404, "not found");
             writeResult(out, result, headOnly);
             if (stream != null && stream.remaining() > 0) lingerAndDrain(s, in, stream.remaining());
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             // connection reset, client went away mid-request
         } catch (Throwable e) {
             L.e("http connection", e);
@@ -335,14 +339,14 @@ public final class HttpServer {
     }
 
     /** 文件里 [offset, offset+length) 按 64 KiB 一块写出。文件在写的途中变短就提前断开，对方看到长度不符。 */
-    private static void copyRange(OutputStream out, java.io.File file, long offset, long length) throws Exception {
-        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+    private static void copyRange(OutputStream out, File file, long offset, long length) throws Exception {
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
             raf.seek(offset);
             byte[] buf = new byte[64 * 1024];
             long left = length;
             while (left > 0) {
                 int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
-                if (n < 0) throw new java.io.EOFException("file shrank while serving");
+                if (n < 0) throw new EOFException("file shrank while serving");
                 out.write(buf, 0, n);
                 left -= n;
             }
@@ -375,13 +379,13 @@ public final class HttpServer {
         private long left;
         LimitedInput(InputStream in, long limit) { this.in = in; this.left = limit; }
         long remaining() { return left; }
-        @Override public int read() throws java.io.IOException {
+        @Override public int read() throws IOException {
             if (left <= 0) return -1;
             int b = in.read();
             if (b >= 0) left--;
             return b;
         }
-        @Override public int read(byte[] b, int off, int len) throws java.io.IOException {
+        @Override public int read(byte[] b, int off, int len) throws IOException {
             if (left <= 0) return -1;
             int n = in.read(b, off, (int) Math.min(len, left));
             if (n > 0) left -= n;
@@ -516,7 +520,7 @@ public final class HttpServer {
 
     private int readN(InputStream in) throws Exception {
         int v = in.read();
-        if (v < 0) throw new java.io.EOFException();
+        if (v < 0) throw new EOFException();
         return v;
     }
 }

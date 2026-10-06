@@ -7,11 +7,12 @@ import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import com.satori.qq.L;
-
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /** Decode common Android audio and encode Tencent SILK_V3 that the QQ NT client can play. */
 public final class AudioTranscoder {
@@ -174,7 +175,7 @@ public final class AudioTranscoder {
 
     public static boolean isSilk(File file) {
         if (file == null || !file.isFile()) return false;
-        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
             byte[] head = new byte[(int) Math.min(16, raf.length())];
             raf.readFully(head);
             return new String(head, "ISO-8859-1").contains("#!SILK");
@@ -320,10 +321,10 @@ public final class AudioTranscoder {
 
     /** Direct PCM extract for RIFF/WAVE s16le — avoids MediaExtractor failing on `.dat` temps. */
     static boolean tryDecodeWavPcm(File source, File pcm) throws Exception {
-        java.io.RandomAccessFile raf = null;
+        RandomAccessFile raf = null;
         FileOutputStream out = null;
         try {
-            raf = new java.io.RandomAccessFile(source, "r");
+            raf = new RandomAccessFile(source, "r");
             if (raf.length() < 44) return false;
             byte[] riff = new byte[12];
             raf.readFully(riff);
@@ -363,7 +364,7 @@ public final class AudioTranscoder {
             while (remain > 0) {
                 int n = raf.read(buf, 0, (int) Math.min(buf.length, remain));
                 if (n <= 0) break;
-                down.write(java.nio.ByteBuffer.wrap(buf, 0, n).order(java.nio.ByteOrder.LITTLE_ENDIAN));
+                down.write(ByteBuffer.wrap(buf, 0, n).order(ByteOrder.LITTLE_ENDIAN));
                 remain -= n;
             }
             return pcm.length() >= 2;
@@ -381,7 +382,7 @@ public final class AudioTranscoder {
         Object codec = silkCodec(ref, app, false);
         if (codec == null) throw new IllegalStateException("SilkCodecWrapper missing");
         boolean initialized = false;
-        java.io.RandomAccessFile raf = null;
+        RandomAccessFile raf = null;
         FileOutputStream out = null;
         try {
             // Exactly mirror SilkPlayerThread: b(sampleRate, 0, 1), then c() for each frame.
@@ -389,7 +390,7 @@ public final class AudioTranscoder {
             ref.call(codec, "b", TARGET_RATE, 0, TARGET_CHANNELS);
             initialized = true;
             if (ref.getLong(codec, "r") == 0) throw new IllegalStateException("Silk decoder not initialized");
-            raf = new java.io.RandomAccessFile(silk, "r");
+            raf = new RandomAccessFile(silk, "r");
             byte[] head = new byte[(int) Math.min(16, raf.length())];
             raf.readFully(head);
             String h = new String(head, "ISO-8859-1");

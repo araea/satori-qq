@@ -1,17 +1,19 @@
 package com.satori.qq.qq;
 
+import java.util.function.BooleanSupplier;
+
 /** QQ's own background flag is independent of Android wakelocks and process priority. */
 final class MediaForeground implements AutoCloseable {
     private final Ref ref;
     private final Object session;
     private boolean entered;
-    private final java.util.function.BooleanSupplier keepActive;
+    private final BooleanSupplier keepActive;
 
     MediaForeground(Ref ref, Object session) {
         this(ref, session, () -> false);
     }
 
-    MediaForeground(Ref ref, Object session, java.util.function.BooleanSupplier keepActive) {
+    MediaForeground(Ref ref, Object session, BooleanSupplier keepActive) {
         this.ref = ref;
         this.session = session;
         this.keepActive = keepActive;

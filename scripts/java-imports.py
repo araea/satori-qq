@@ -55,11 +55,17 @@ def package_of(src):
     m = re.search(r'^package ([\w.]+);', src, re.M)
     return m.group(1) if m else ''
 
-def simple_names_in_package(path, pkg_cache={}):
-    d = os.path.dirname(path)
-    if d not in pkg_cache:
-        pkg_cache[d] = {f[:-5] for f in os.listdir(d) if f.endswith('.java')}
-    return pkg_cache[d]
+PACKAGES = {}   # 包名 -> 这个包里的类名；按声明的包统计，与文件所在目录无关（测试类常常不在同名目录）
+
+
+def register(path):
+    src = open(path, encoding='utf-8').read()
+    PACKAGES.setdefault(package_of(src), set()).add(os.path.basename(path)[:-5])
+
+
+def simple_names_in_package(pkg):
+    return PACKAGES.get(pkg, set())
+
 
 def declared_types(src):
     return set(re.findall(r'\b(?:class|interface|enum|record)\s+([A-Z]\w*)', src))
@@ -78,7 +84,7 @@ def process(path, check=False):
     regions = mask(src)
     starts = [r[0] for r in regions]
     body_start = m_imports[-1].end() if m_imports else (re.search(r'^package .*\n', src, re.M).end() if pkg else 0)
-    same_pkg = simple_names_in_package(path)
+    same_pkg = simple_names_in_package(pkg)
     codeonly = list(src)
     for a,b in regions:
         for k in range(a,min(b,len(codeonly))): codeonly[k]=' '
@@ -148,6 +154,8 @@ if __name__ == '__main__':
     args = sys.argv[1:]
     check = '--check' in args
     files = [a for a in args if not a.startswith('--')]
+    for f in files:
+        register(f)
     changed = sum(process(f, check) for f in files)
     print(('需要改写' if check else '已改写'), changed, '个文件，共', len(files), '个')
     sys.exit(1 if check and changed else 0)

@@ -21,7 +21,7 @@ fi
 
 rm -rf "$OUT" && mkdir -p "$OUT/classes" "$OUT/dex"
 echo "== 1. javac =="
-javac -classpath "$ANDROID_JAR" -source 8 -target 8 -encoding UTF-8 -nowarn \
+javac -classpath "$ANDROID_JAR" --release 17 -encoding UTF-8 -nowarn \
   -d "$OUT/classes" "$ROOT/tests/ui/DesignSmoke.java"
 
 echo "== 2. d8 =="

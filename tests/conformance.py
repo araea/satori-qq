@@ -325,7 +325,10 @@ if 'upload.create' in features:
             st, hd, data = http_call('HEAD', '/v1/proxy/' + url, None, {}, raw=True)
             check(st == 200 and not data, 'proxy.head', f'{st} body={len(data)}B')
             st, hd, data = http_call('GET', '/v1/proxy/' + url, None, {'Range': 'bytes=0-3'}, raw=True)
-            check(st in (200, 206), 'proxy.range', f'{st}', warn=True)
+            check(st == 206 and data == PNG[:4] and hd.get('content-range', '').startswith('bytes 0-3/'), 'proxy.range',
+                  f"{st} {hd.get('content-range')} len={len(data)}")
+            st, hd, _ = http_call('GET', '/v1/proxy/' + url, None, {'Range': f'bytes={len(PNG) + 10}-'}, raw=True)
+            check(st == 416, 'proxy.range-unsatisfiable', f'{st}')
             check('access-control-allow-origin' in hd, 'proxy.cors-header', 'spec: may add Access-Control-Allow-Origin', warn=True)
     st, _, none = http_call('POST', '/v1/upload.create', b'not multipart', {'Content-Type': 'application/json', **AUTH, 'Satori-Platform': IDS['platform'], 'Satori-User-ID': IDS['user']})
     check(st in (400, 415), 'upload.create.bad-body=400', f'got {st}')
@@ -525,6 +528,10 @@ if args.listen:
                 check(not any(k in msg for k in ('user', 'channel', 'guild', 'member')), f'{t}.resource-promotion', f'message still nests {[k for k in ("user","channel","guild","member") if k in msg]}')
                 check(isinstance(msg.get('id'), str), f'{t}.message.id-string')
                 check(isinstance(msg.get('content'), str) or t == 'message-deleted', f'{t}.message.content-string')
+            # resource.md: a link tied to this server's own address breaks the moment the client is elsewhere.
+            # Media in received messages should be internal: links (or a public CDN), never loopback/bind address.
+            local = re.findall(r'src="(https?://(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1?\])[^"]*)"', msg.get('content') or '')
+            check(not local, f'{t}.media-not-bound-to-server-address', local[0][:100] if local else '')
             out('INFO', 'event', f"{t} sn={e.get('sn')} keys={sorted(k for k in e if k not in ('sn','type','timestamp','login'))}")
     finally:
         w.close()

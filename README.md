@@ -71,7 +71,7 @@ plugins:
 - QQ 会检查运行环境。检测到 LSPosed 等注入框架或 hook 引擎时，可能触发登录风控、账号掉线或反复验证。知弦使用 Zygisk 注入，不包含 ART hook 引擎。消息与会话通道通过 JNI 实现。
 - QQ 被系统冻结或结束时，Satori 服务会断开。知弦包含进程内 Keepalive；需要设备级恢复时用 root 看守 `qqguard`，见 [常驻守护](docs/GUARD.md)。保持在线会增加耗电。
 - 媒体最多等待 45 秒确认，文字最多 20 秒。发送回调或消息状态更新均可确认。超时返回 `send outcome unknown`，不会假报成功或自动重发，原消息仍可能稍后送达。
-- 资源 URL（`/v1/assets/{id}`、`internal:` 回落地址）仅本机监听、不带鉴权，不要把 URL 公开转发。
+- 资源链接（收到的媒体与 `upload.create` 的结果都是 `internal:red/{uin}/_tmp/{id}`）经 `/v1/proxy` 回读，该路由仅本机监听、不带鉴权，不要把代理地址公开转发。
 - 配置改动需重启 QQ 后生效，热切换端口不被支持。
 
 ## 必要链接

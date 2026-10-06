@@ -46,12 +46,11 @@ APK 里的 dex 包含全部代码。注入 QQ 的那份内嵌进 `libsatori.so`�
 | `POST /v1/{resource}.{method}` | 需要（配了 token 时） | Satori 标准方法 |
 | `POST /v1/internal/{name}` | 需要 | 模块自身的 QQ 扩展简写，`name` 可用 `.` / `_` / `-` 分隔，也接受 camelCase；白名单没命中时转去 `ExtraSvc` 的动作注册表查表执行，仍未命中的一律 404 |
 | `POST /v1/internal/{platform}/{selfId}/_api/{name}` | 需要 | `@satorijs/adapter-satori` 的 `bot.internal.*` 走法，参数按 `JsonForm` 编码，`Satori-Pagination: true` 时回 `{data, …}` |
-| `GET /v1/internal/{platform}/{selfId}/_tmp/{id}` | 免 | `upload.create` 返回的 `internal:` 资源回落地址 |
-| `GET /v1/assets/{id}` | 免 | 无令牌可达的本地图片资源 |
-| `GET /v1/proxy/{url}` | 免 | 只代理本机登录自己的 `internal:` 资源 |
+| `GET /v1/internal/{platform}/{selfId}/_tmp/{id}` | 免 | 官方客户端的登录域内路由，读 `internal:` 资源（收到的媒体与 `upload.create` 的结果同一份存储） |
+| `GET /v1/proxy/{url}` | 免 | 代理本机登录自己的 `internal:` 资源，支持 `HEAD` 与单段 `Range` |
 | `GET /healthz` | 免 | 运维探针 |
 
-免鉴权的三条只服务本机登录自己，且只认模块签发的不透明 id。请求指向别的 platform 或 selfId 一律 404。
+免鉴权的两条只服务本机登录自己，且只认模块签发的不透明 id。请求指向别的 platform 或 selfId 一律 404。
 
 `qq/ExtraSvc` 承载扩展动作的内核服务调用：个人资料、群设置、好友关系、最近联系人、富媒体与机器人。这些服务主线程亲和，从 HTTP 工作线程直接调用会立即返回而回调永不触发，所以 `ExtraSvc` 把调用投递到主 Looper，再由工作线程等回调。
 

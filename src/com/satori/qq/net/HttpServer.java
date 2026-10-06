@@ -22,6 +22,11 @@ import java.util.concurrent.CopyOnWriteArraySet;
 public final class HttpServer {
     public interface Handler {
         HttpResult onHttp(HttpReq req);
+        /**
+         * 这条路由要不要流式读请求体。是的话 {@link HttpReq#stream} 给出限长的输入流，{@link HttpReq#body}
+         * 为空，处理方自己读（上传一类大请求体不进堆）；读不完的部分由服务器在应答后丢弃。
+         */
+        default boolean streams(String method, String path) { return false; }
         void onWsText(WsConn conn, String text);
         default void onWsOpen(WsConn conn) {}
         default void onWsClose(WsConn conn) {}
@@ -33,12 +38,22 @@ public final class HttpServer {
         public final String query;
         public final Map<String, String> headers;
         public final byte[] body;
+        /** 流式路由的请求体（见 {@link Handler#streams}），其余请求为 null。 */
+        public final InputStream stream;
+        /** 请求体声明的长度；流式路由时 {@link #body} 为空，长度以它为准。 */
+        public final long length;
         public HttpReq(String method, String path, String query, Map<String, String> headers, byte[] body) {
+            this(method, path, query, headers, body, null, body == null ? 0 : body.length);
+        }
+        public HttpReq(String method, String path, String query, Map<String, String> headers, byte[] body,
+                       InputStream stream, long length) {
             this.method = method;
             this.path = path;
             this.query = query == null ? "" : query;
             this.headers = headers;
             this.body = body == null ? new byte[0] : body;
+            this.stream = stream;
+            this.length = length;
         }
         public String header(String name) {
             String v = headers.get(name.toLowerCase(Locale.ROOT));
@@ -54,14 +69,30 @@ public final class HttpServer {
         public final String contentType;
         public final byte[] body;
         public final Map<String, String> extraHeaders;
+        /** 正文来自文件的一段（{@link #file} 非空时 {@link #body} 为空）：按块写出，不整份读进堆。 */
+        public final java.io.File file;
+        public final long fileOffset;
+        public final long fileLength;
         public HttpResult(int status, String contentType, byte[] body) {
             this(status, contentType, body, null);
         }
         public HttpResult(int status, String contentType, byte[] body, Map<String, String> extra) {
+            this(status, contentType, body, extra, null, 0, 0);
+        }
+        private HttpResult(int status, String contentType, byte[] body, Map<String, String> extra,
+                           java.io.File file, long fileOffset, long fileLength) {
             this.status = status;
             this.contentType = contentType == null ? "text/plain; charset=utf-8" : contentType;
             this.body = body == null ? new byte[0] : body;
             this.extraHeaders = extra;
+            this.file = file;
+            this.fileOffset = fileOffset;
+            this.fileLength = fileLength;
+        }
+        /** 文件里 [offset, offset+length) 这一段做正文（整份文件就是 0 到 file.length()）。 */
+        public static HttpResult file(int status, String contentType, java.io.File file, long offset, long length,
+                                      Map<String, String> extra) {
+            return new HttpResult(status, contentType, null, extra, file, offset, length);
         }
         public static HttpResult json(int status, String json) {
             return json(status, json, null);
@@ -97,6 +128,7 @@ public final class HttpServer {
                 case 404: return "not_found";
                 case 405: return "method_not_allowed";
                 case 413: return "payload_too_large";
+                case 416: return "range_not_satisfiable";
                 case 429: return "rate_limited";
                 case 503: return "unavailable";
                 default: return status >= 500 ? "internal_error" : "error";
@@ -224,19 +256,31 @@ public final class HttpServer {
                 return;
             }
 
-            int contentLength = 0;
-            try { contentLength = Integer.parseInt(headers.getOrDefault("content-length", "0")); }
+            long contentLength = 0;
+            try { contentLength = Long.parseLong(headers.getOrDefault("content-length", "0").trim()); }
             catch (Exception ignore) {}
             if (contentLength < 0) contentLength = 0;
             if (contentLength > MAX_BODY_BYTES) {
+                // 先应答再把没读的丢掉：客户端还在发请求体时就关连接，对方会收到 RST 而读不到这条 413。
                 writeResult(out, HttpResult.error(413, "payload_too_large",
                         "request body exceeds " + (MAX_BODY_BYTES >> 20) + " MiB; a single upload.create file may be at most "
                                 + MAX_UPLOAD_BYTES + " bytes", null), false);
-                s.close();
+                lingerAndDrain(s, in, contentLength);
                 return;
             }
-            byte[] body = readFully(in, contentLength);
-            HttpReq req = new HttpReq(method, path, query, headers, body);
+            if (contentLength > 0 && "100-continue".equalsIgnoreCase(headers.getOrDefault("expect", "").trim())) {
+                out.write("HTTP/1.1 100 Continue\r\n\r\n".getBytes("UTF-8"));
+                out.flush();
+            }
+            LimitedInput stream = null;
+            HttpReq req;
+            if (handler.streams(method, path)) {
+                stream = new LimitedInput(in, contentLength);
+                req = new HttpReq(method, path, query, headers, new byte[0], stream, contentLength);
+            } else {
+                byte[] body = readFully(in, (int) contentLength);
+                req = new HttpReq(method, path, query, headers, body);
+            }
             HttpResult result;
             try {
                 result = handler.onHttp(req);
@@ -246,8 +290,11 @@ public final class HttpServer {
             }
             if (result == null) result = HttpResult.error(404, "not found");
             writeResult(out, result, headOnly);
+            if (stream != null && stream.remaining() > 0) lingerAndDrain(s, in, stream.remaining());
+        } catch (java.io.IOException e) {
+            // connection reset, client went away mid-request
         } catch (Throwable e) {
-            // connection reset etc.
+            L.e("http connection", e);
         } finally {
             if (conn != null) {
                 conns.remove(conn);
@@ -278,21 +325,84 @@ public final class HttpServer {
     }
 
     private static void writeResult(OutputStream out, HttpResult r, boolean headOnly) throws Exception {
-        writeHttp(out, r.status, r.contentType, r.body, r.extraHeaders, headOnly);
+        if (r.file != null) {
+            writeHttp(out, r.status, r.contentType, null, r.fileLength, r.extraHeaders, true);
+            if (!headOnly) copyRange(out, r.file, r.fileOffset, r.fileLength);
+            out.flush();
+            return;
+        }
+        writeHttp(out, r.status, r.contentType, r.body, r.body.length, r.extraHeaders, headOnly);
     }
 
-    private static void writeHttp(OutputStream out, int status, String type, byte[] body,
+    /** 文件里 [offset, offset+length) 按 64 KiB 一块写出。文件在写的途中变短就提前断开，对方看到长度不符。 */
+    private static void copyRange(OutputStream out, java.io.File file, long offset, long length) throws Exception {
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+            raf.seek(offset);
+            byte[] buf = new byte[64 * 1024];
+            long left = length;
+            while (left > 0) {
+                int n = raf.read(buf, 0, (int) Math.min(buf.length, left));
+                if (n < 0) throw new java.io.EOFException("file shrank while serving");
+                out.write(buf, 0, n);
+                left -= n;
+            }
+        }
+    }
+
+    /**
+     * 应答已发出后收尾：先关写端让对方读到应答，再把还没读的请求体丢掉（限时限量），最后才关连接。
+     * 直接 close 一个还有未读数据的 socket 会发 RST，对方可能连应答都读不到，只看见「发送失败」。
+     */
+    private static void lingerAndDrain(Socket s, InputStream in, long remaining) {
+        try {
+            s.shutdownOutput();
+            s.setSoTimeout(2000);
+            long deadline = System.currentTimeMillis() + 10_000L;
+            long budget = Math.min(remaining, 512L * 1024 * 1024);
+            byte[] sink = new byte[64 * 1024];
+            while (budget > 0 && System.currentTimeMillis() < deadline) {
+                int n = in.read(sink, 0, (int) Math.min(sink.length, budget));
+                if (n < 0) break;
+                budget -= n;
+            }
+        } catch (Throwable ignore) {
+        }
+    }
+
+    /** 至多读 {@code limit} 字节的输入流，不关底层连接；{@link #remaining} 是还没被读走的字节数。 */
+    private static final class LimitedInput extends InputStream {
+        private final InputStream in;
+        private long left;
+        LimitedInput(InputStream in, long limit) { this.in = in; this.left = limit; }
+        long remaining() { return left; }
+        @Override public int read() throws java.io.IOException {
+            if (left <= 0) return -1;
+            int b = in.read();
+            if (b >= 0) left--;
+            return b;
+        }
+        @Override public int read(byte[] b, int off, int len) throws java.io.IOException {
+            if (left <= 0) return -1;
+            int n = in.read(b, off, (int) Math.min(len, left));
+            if (n > 0) left -= n;
+            return n;
+        }
+    }
+
+    private static void writeHttp(OutputStream out, int status, String type, byte[] body, long length,
                                   Map<String, String> extra, boolean headOnly) throws Exception {
         String reason;
         switch (status) {
             case 200: reason = "OK"; break;
             case 204: reason = "No Content"; break;
+            case 206: reason = "Partial Content"; break;
             case 400: reason = "Bad Request"; break;
             case 401: reason = "Unauthorized"; break;
             case 403: reason = "Forbidden"; break;
             case 404: reason = "Not Found"; break;
             case 405: reason = "Method Not Allowed"; break;
             case 413: reason = "Payload Too Large"; break;
+            case 416: reason = "Range Not Satisfiable"; break;
             case 429: reason = "Too Many Requests"; break;
             case 502: reason = "Bad Gateway"; break;
             case 503: reason = "Service Unavailable"; break;
@@ -302,7 +412,7 @@ public final class HttpServer {
         sb.append("HTTP/1.1 ").append(status).append(' ').append(reason).append("\r\n");
         sb.append("Connection: close\r\n");
         if (type != null) sb.append("Content-Type: ").append(type).append("\r\n");
-        sb.append("Content-Length: ").append(body == null ? 0 : body.length).append("\r\n");
+        sb.append("Content-Length: ").append(length).append("\r\n");
         if (extra != null) {
             for (Map.Entry<String, String> e : extra.entrySet()) {
                 sb.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");

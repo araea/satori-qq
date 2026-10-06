@@ -34,6 +34,12 @@ public final class Media {
 
     /** Resolve through the host application's cache directory instead of a module-named path. */
     private static File tempDir() {
+        // Tests (and nothing else) point this at a scratch directory: the host cache dir does not exist off-device.
+        String forced = System.getProperty("satori.qq.media_tmp");
+        if (forced != null && !forced.isEmpty()) {
+            File dir = new File(forced);
+            if (dir.isDirectory() || dir.mkdirs()) return dir;
+        }
         try {
             Class<?> at = Class.forName("android.app.ActivityThread");
             Object app = at.getDeclaredMethod("currentApplication").invoke(null);
@@ -101,6 +107,37 @@ public final class Media {
         // paths containing the module name, including from this process's native open().
         File out = File.createTempFile("ntm", suffix, tempDir());
         try (FileOutputStream stream = new FileOutputStream(out)) { stream.write(data); }
+        return out;
+    }
+
+    /** The directory uploads are streamed into, so {@link #adoptUpload} can rename within it. */
+    public static File uploadDir() { return tempDir(); }
+
+    /**
+     * Take a file the multipart reader already wrote (in {@link #uploadDir}) as a finished upload:
+     * give it a name with the right extension and hand back the final file. The bytes are never
+     * loaded; only the first few are read to guess the extension when neither the file name nor the
+     * content type names one.
+     */
+    public static File adoptUpload(File written, String filename, String contentType) throws Exception {
+        String suffix = safeSuffix(filename);
+        if (suffix.isEmpty()) suffix = extFromMime(contentType);
+        if (suffix.isEmpty() || ".dat".equals(suffix)) {
+            byte[] head = new byte[32];
+            int n;
+            try (java.io.FileInputStream in = new java.io.FileInputStream(written)) { n = Math.max(0, in.read(head)); }
+            suffix = guessExt(n == head.length ? head : java.util.Arrays.copyOf(head, n));
+        }
+        File out = File.createTempFile("ntm", suffix, tempDir());
+        if (written.renameTo(out)) return out;
+        try (java.io.InputStream in = new java.io.FileInputStream(written);
+             FileOutputStream stream = new FileOutputStream(out)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) stream.write(buf, 0, n);
+        } finally {
+            written.delete();
+        }
         return out;
     }
 

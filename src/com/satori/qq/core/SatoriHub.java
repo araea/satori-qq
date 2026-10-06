@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Satori v1 hub: HTTP RPC in + WebSocket events out. QQ kernel ops stay below this layer. */
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.31.0";
+    public static final String APP_VERSION = "0.32.0";
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -238,8 +238,15 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                         ? 0 : full.optJSONArray("missing").length());
     }
 
+    /**
+     * Where received media points. An {@code internal:} link names the login and the resource, and
+     * carries no address: it survives a changed host or port, and a client resolves it through
+     * {@code /v1/proxy/…} (or hands it back unchanged in a reply, where we resolve it from disk
+     * without a round trip to ourselves). A URL built from this server's own bind address — what
+     * this used to return — breaks as soon as the client is not on the same host.
+     */
     private String assetBase() {
-        return "http://" + cfg.host + ":" + cfg.port + "/v1/assets/";
+        return "internal:" + PLATFORM + "/" + selfUin() + "/_tmp/";
     }
 
     private JSONObject loginFull() throws Exception {
@@ -309,18 +316,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     // ============ HTTP API + WS events ============
+    /** upload.create 的请求体直接流到磁盘，不整份读进 QQ 进程的堆。 */
+    @Override public boolean streams(String method, String path) {
+        return "POST".equals(method) && "/v1/upload.create".equals(path);
+    }
+
     @Override public HttpServer.HttpResult onHttp(HttpServer.HttpReq req) {
         try {
             String path = req.path == null ? "/" : req.path;
-            if ("GET".equals(req.method) && path.startsWith("/v1/assets/")) {
-                // Local-only bind; Koishi/puppeteer <img> cannot send Bearer.
-                return serveAsset(path.substring("/v1/assets/".length()));
-            }
             if ("GET".equals(req.method) && path.startsWith("/v1/proxy/")) {
-                return serveProxy(path.substring("/v1/proxy/".length()));
+                return serveProxy(path.substring("/v1/proxy/".length()), req);
             }
             if (path.startsWith("/v1/internal/") && "GET".equals(req.method)) {
-                return serveInternalResource(path);
+                return serveInternalResource(path, req);
             }
             if ("GET".equals(req.method) && "/healthz".equals(path)) {
                 // Unauthenticated, local-only liveness an operator/tooling can poll to tell a
@@ -520,12 +528,19 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         String text = req.bodyText();
         String ctype = req.header("content-type");
         if (ctype != null && ctype.toLowerCase(java.util.Locale.ROOT).startsWith("multipart/form-data")) {
+            java.util.List<Multipart.Part> parts = java.util.Collections.emptyList();
             try {
-                for (Multipart.Part part : Multipart.parse(req.body, ctype)) {
-                    if ("$".equals(part.name)) text = new String(part.data, "UTF-8");
+                parts = Multipart.parseStream(new java.io.ByteArrayInputStream(req.body), ctype,
+                        Media.uploadDir(), 1024 * 1024);
+                for (Multipart.Part part : parts) {
+                    // Only the argument array matters here; the blobs next to it are not used by any action.
+                    if ("$".equals(part.name))
+                        text = new String(java.nio.file.Files.readAllBytes(part.file.toPath()), "UTF-8");
                 }
             } catch (Exception e) {
                 throw new ApiError(1400, "malformed internal multipart body");
+            } finally {
+                for (Multipart.Part part : parts) if (part.file != null) part.file.delete();
             }
         }
         if (text == null || text.trim().isEmpty()) return new JSONObject();
@@ -569,7 +584,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         return new JSONObject().put("op", op).put("body", body == null ? JSONObject.NULL : body);
     }
 
-    private HttpServer.HttpResult serveAsset(String id) {
+    private HttpServer.HttpResult serveAsset(String id, HttpServer.HttpReq req) {
         if (id == null || id.isEmpty()) return HttpServer.HttpResult.error(400, "missing id");
         int q = id.indexOf('?');
         if (q >= 0) id = id.substring(0, q);
@@ -585,12 +600,27 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             String file = res.optString("file", "");
             java.io.File local = file.isEmpty() ? null : new java.io.File(file);
             if (local == null || !local.isFile()) return HttpServer.HttpResult.error(404, "not found");
-            byte[] data = java.nio.file.Files.readAllBytes(local.toPath());
-            String type = sniffMime(data, local.getName(), res.optString("resource_type", ""));
+            long size = local.length();
+            byte[] head = new byte[32];
+            int headLen;
+            try (java.io.FileInputStream in = new java.io.FileInputStream(local)) { headLen = Math.max(0, in.read(head)); }
+            String type = sniffMime(headLen == head.length ? head : java.util.Arrays.copyOf(head, headLen),
+                    local.getName(), res.optString("resource_type", ""));
             java.util.Map<String, String> extra = new java.util.LinkedHashMap<>();
             extra.put("Access-Control-Allow-Origin", "*");
             extra.put("Cache-Control", "private, max-age=3600");
-            return new HttpServer.HttpResult(200, type, data, extra);
+            extra.put("Accept-Ranges", "bytes");
+            long[] range = byteRange(req == null ? "" : req.header("range"), size);
+            if (range != null && range[0] < 0) {
+                extra.put("Content-Range", "bytes */" + size);
+                return HttpServer.HttpResult.error(416, "range_not_satisfiable",
+                        "requested range is outside the " + size + " byte resource", extra);
+            }
+            if (range != null) {
+                extra.put("Content-Range", "bytes " + range[0] + "-" + range[1] + "/" + size);
+                return HttpServer.HttpResult.file(206, type, local, range[0], range[1] - range[0] + 1, extra);
+            }
+            return HttpServer.HttpResult.file(200, type, local, 0, size, extra);
         } catch (ApiError e) {
             return HttpServer.HttpResult.error(e.code == 1404 ? 404 : 400, e.getMessage());
         } catch (Throwable t) {
@@ -598,7 +628,39 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         }
     }
 
-    private HttpServer.HttpResult serveProxy(String encoded) {
+    /**
+     * A single {@code bytes=a-b} / {@code bytes=a-} / {@code bytes=-n} range as {@code {first, last}}
+     * (inclusive). {@code null} means serve the whole thing (no header, a unit we do not know, or a
+     * list of ranges — RFC 9110 lets a server ignore those); {@code {-1}} means unsatisfiable.
+     */
+    static long[] byteRange(String header, long size) {
+        if (header == null) return null;
+        String h = header.trim();
+        if (!h.regionMatches(true, 0, "bytes=", 0, 6) || h.indexOf(',') >= 0) return null;
+        String spec = h.substring(6).trim();
+        int dash = spec.indexOf('-');
+        if (dash < 0) return null;
+        try {
+            String from = spec.substring(0, dash).trim(), to = spec.substring(dash + 1).trim();
+            long first, last;
+            if (from.isEmpty()) {
+                if (to.isEmpty()) return null;
+                long suffix = Long.parseLong(to);
+                if (suffix <= 0) return new long[]{-1};
+                first = Math.max(0, size - suffix);
+                last = size - 1;
+            } else {
+                first = Long.parseLong(from);
+                last = to.isEmpty() ? size - 1 : Math.min(Long.parseLong(to), size - 1);
+            }
+            if (first < 0 || first >= size || last < first) return new long[]{-1};
+            return new long[]{first, last};
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private HttpServer.HttpResult serveProxy(String encoded, HttpServer.HttpReq req) {
         if (encoded == null || encoded.isEmpty()) return HttpServer.HttpResult.error(400, "missing url");
         String url;
         try { url = java.net.URLDecoder.decode(encoded, "UTF-8"); }
@@ -614,7 +676,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             String id = parts[2].substring("_tmp/".length());
             if (id.isEmpty() || id.indexOf('/') >= 0 || id.indexOf('\\') >= 0)
                 return HttpServer.HttpResult.error(400, "invalid internal url");
-            return serveAsset(id);
+            return serveAsset(id, req);
         }
         if (!isHttpUrl(url)) return HttpServer.HttpResult.error(400, "invalid url");
         // 本实现不下载任何外链，proxy_urls 恒为空，所以合法的外链一律不在代理范围内。
@@ -638,15 +700,16 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
      * <p>Resource ids that {@code upload.create} hands out are written as
      * {@code internal:{platform}/{selfId}/_tmp/{id}}. A client resolving one of those goes through
      * its own internal router and comes back here as a plain GET, so without this route the id we
-     * just returned cannot be read. Local-only and unauthenticated for the same reason
-     * {@code /v1/assets/{id}} is: the fetch carries no token.
+     * just returned cannot be read. Received media uses the same links, so this and
+     * {@code /v1/proxy/…} are the only resource routes. Local-only and unauthenticated: a browser
+     * {@code <img>} cannot send a token.
      */
-    private HttpServer.HttpResult serveInternalResource(String path) {
+    private HttpServer.HttpResult serveInternalResource(String path, HttpServer.HttpReq req) {
         String[] parts = path.substring("/v1/internal/".length()).split("/", 3);
         if (parts.length < 3 || parts[2].isEmpty()) return HttpServer.HttpResult.error(404, "not found");
         if (!PLATFORM.equals(parts[0]) || isForeignLogin(parts[1], selfUin()))
             return HttpServer.HttpResult.error(404, "login_not_found", "internal login not found", null);
-        if (parts[2].startsWith("_tmp/")) return serveAsset(parts[2].substring("_tmp/".length()));
+        if (parts[2].startsWith("_tmp/")) return serveAsset(parts[2].substring("_tmp/".length()), req);
         // _api is POST-only; anything else under a login is not a resource we publish.
         return HttpServer.HttpResult.error(404, "not found");
     }
@@ -686,23 +749,36 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private JSONObject uploadCreate(HttpServer.HttpReq req) throws Exception {
         String type = req.header("content-type");
         java.util.List<Multipart.Part> parts;
-        try { parts = Multipart.parse(req.body, type); }
-        catch (IllegalArgumentException e) { throw new ApiError(1400, e.getMessage()); }
-        if (parts.isEmpty()) throw new ApiError(1400, "upload contains no files");
-        JSONObject out = new JSONObject();
-        java.util.HashSet<String> names = new java.util.HashSet<>();
-        for (Multipart.Part part : parts) {
-            if (part.name == null || part.name.isEmpty()) throw new ApiError(1400, "upload part missing name");
-            if (!names.add(part.name)) throw new ApiError(1400, "duplicate upload name: " + part.name);
-            if (part.contentType == null || part.contentType.isEmpty())
-                throw new ApiError(1400, "upload part missing Content-Type: " + part.name);
-            java.io.File file = Media.storeUpload(part.data, part.filename, part.contentType);
-            String kind = resourceKind(part.contentType);
-            String id = store.putResource(kind, "", file.getAbsolutePath(), "",
-                    part.filename, file.length());
-            out.put(part.name, "internal:" + PLATFORM + "/" + selfUin() + "/_tmp/" + id);
+        java.io.InputStream body = req.stream != null ? req.stream : new java.io.ByteArrayInputStream(req.body);
+        try { parts = Multipart.parseStream(body, type, Media.uploadDir(), HttpServer.MAX_UPLOAD_BYTES); }
+        catch (Multipart.TooLarge e) {
+            throw new ApiError(1413, "payload_too_large", e.getMessage() + "; a single upload.create file may be at most "
+                    + HttpServer.MAX_UPLOAD_BYTES + " bytes", 0);
         }
-        return out;
+        catch (IllegalArgumentException e) { throw new ApiError(1400, e.getMessage()); }
+        try {
+            if (parts.isEmpty()) throw new ApiError(1400, "upload contains no files");
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            for (Multipart.Part part : parts) {
+                if (part.name == null || part.name.isEmpty()) throw new ApiError(1400, "upload part missing name");
+                if (!names.add(part.name)) throw new ApiError(1400, "duplicate upload name: " + part.name);
+                if (part.contentType == null || part.contentType.isEmpty())
+                    throw new ApiError(1400, "upload part missing Content-Type: " + part.name);
+            }
+            JSONObject out = new JSONObject();
+            for (Multipart.Part part : parts) {
+                java.io.File file = Media.adoptUpload(part.file, part.filename, part.contentType);
+                part.file = null;
+                String kind = resourceKind(part.contentType);
+                String id = store.putResource(kind, "", file.getAbsolutePath(), "",
+                        part.filename, file.length());
+                out.put(part.name, "internal:" + PLATFORM + "/" + selfUin() + "/_tmp/" + id);
+            }
+            return out;
+        } finally {
+            // Whatever was not adopted (a validation error part-way) must not linger on disk.
+            for (Multipart.Part part : parts) if (part.file != null) part.file.delete();
+        }
     }
 
     private static String resourceKind(String contentType) {
@@ -747,7 +823,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
             super(msg); this.code = code; this.slug = slug; this.retryAfter = retryAfter;
         }
         int http() {
-            return code == 1400 ? 400 : code == 1403 ? 403 : code == 1404 ? 404
+            return code == 1400 ? 400 : code == 1403 ? 403 : code == 1404 ? 404 : code == 1413 ? 413
                     : code == 1429 ? 429 : code == 1503 ? 503 : 500;
         }
     }
@@ -1656,7 +1732,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
         java.io.File file = Media.storeUpload(png, "chat.png", "image/png");
         String id = store.putResource("image", "", file.getAbsolutePath(), "", "chat.png", file.length());
         return new JSONObject().put("file", "internal:" + PLATFORM + "/" + selfUin() + "/_tmp/" + id)
-                .put("url", assetBase() + id).put("mime", "image/png")
+                .put("mime", "image/png")
                 .put("count", range.messages().size()).put("width", 720)
                 .put("height_limit", 8192).put("rendering", "text_and_placeholders");
     }
@@ -4603,7 +4679,9 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
                 heartbeatReaped.incrementAndGet();
                 L.i("heartbeat: dropping client idle " + (idle / 1000) + "s");
                 identified.remove(c);
-                c.close();
+                // A close frame, not a bare socket drop: a client that was only frozen reads it when
+                // it thaws and reconnects with its cursor, instead of seeing the connection reset.
+                c.closeWith(1001);
                 continue;
             }
             // A pong is what we expect; OP_PONG / any data frame counts as liveness too.

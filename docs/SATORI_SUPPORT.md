@@ -13,7 +13,7 @@
 - **事件**：`GET /v1/events` 升级 WebSocket，须在 10 秒内发 `IDENTIFY`，服务端回 `READY` 与 `EVENT`。省略 `sn` 建新会话，`sn=0` 回放缓冲区内 `sn>0` 的事件。账号未知时不发 `READY`，可知后补发。
 - `READY` 里的登录账号就是之后每个请求要带回来的 `Satori-User-ID`。
 - **官方客户端的登录域内路由**：动作 `POST /v1/internal/{platform}/{selfId}/_api/{name}`（`bot.internal.*`，参数按 `JsonForm` 编码，带 `Satori-Pagination: true` 时回 `{data, …}`）、资源 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`（`upload.create` 返回的 `internal:` 回落地址，免令牌）。两者只服务本机登录自身，其他登录 404。`POST /v1/internal/{name}` 是模块自己的简写。
-- `POST /v1/meta` 取元信息。`GET`（及 `HEAD`，不带正文、`Content-Length` 照旧）`/v1/proxy/{url}` 代理本机资源，不需要任何头：不是合法 URL 或 `internal:` 格式不对回 400，登录或资源不存在 404，合法但不在 `proxy_urls` 的外链 403。本实现不下载外链，`proxy_urls` 恒为空。
+- `POST /v1/meta` 取元信息。`GET`（及 `HEAD`，不带正文、`Content-Length` 照旧）`/v1/proxy/{url}` 代理本机资源，不需要任何头：不是合法 URL 或 `internal:` 格式不对回 400，登录或资源不存在 404，合法但不在 `proxy_urls` 的外链 403。本实现不下载外链，`proxy_urls` 恒为空。回包按块从文件读出，不整份进堆；支持单段 `Range`（`bytes=a-b`、`a-`、`-n` 回 206，越界 416，多段忽略当整份回）。
 - **分页**：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next?}`。不带 `next` / `limit` 时一次给完，带时按偏移分页，`next` 是下一次的偏移量。非法令牌返回 400，不会悄悄从头重放。`message.list` 双向分页，见下表。
 - `platform` 为 `red`，`adapter` 为 `satori-qq`。群频道的 `channel.id` 与 `guild.id` 均为群号、`channel.type=0`，私聊频道为 `private:{uin}`、`channel.type=1`。
 - 消息 ID 用 QQ NT `msgId` 字符串，历史游标用 `message_seq`。`<quote>` 与 `[CQ:reply]` 的 `id` 可直接用于 `message.get` 与 `message.delete`。
@@ -46,7 +46,7 @@ QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调�
 | `guild.approve` / `guild.member.approve` | 受限 | 处理群邀请或加群申请 |
 | `reaction.create` / `delete` / `list` | 支持 | `emoji_id` 为表情 ID，只能操作自己的表态 |
 | `reaction.clear` | 不支持 | 标准语义是清除所有用户的表态，QQ JNI 无此能力；清自己的用 `internal/reaction_clear` |
-| `upload.create` | 支持 | 上传多个文件，返回 `internal:red/{uin}/_tmp/{id}` |
+| `upload.create` | 支持 | 上传多个文件，返回 `internal:red/{uin}/_tmp/{id}`；请求体流式落盘，进堆的只有一个 128 KiB 窗口，单个文件上限见 `limits.upload_bytes` |
 | `message.update` / `channel.create` / `channel.delete` | 不支持 | 返回 404 |
 | `guild.role.create` / `update` / `delete` 及其余表态管理 | 不支持 | 返回 404 |
 
@@ -92,7 +92,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 
 ### 范围截图（离屏渲染）
 
-`POST /v1/internal/chat_screenshot`（或登录域 `_api/chat_screenshot`），JSON 例如 `{"channel_id":"123456","start_message_id":"QQ消息ID","end_message_id":"QQ消息ID"}`。首尾必须是**同一频道**可从 QQ 本地历史查到的 NT 消息 ID，按 `message_seq` 正序，最多 40 条且含两端。返回 `file`（`internal:red/{selfId}/_tmp/{id}`）、`url`（本机 `/v1/assets/{id}`）、`mime=image/png`、`count`。
+`POST /v1/internal/chat_screenshot`（或登录域 `_api/chat_screenshot`），JSON 例如 `{"channel_id":"123456","start_message_id":"QQ消息ID","end_message_id":"QQ消息ID"}`。首尾必须是**同一频道**可从 QQ 本地历史查到的 NT 消息 ID，按 `message_seq` 正序，最多 40 条且含两端。返回 `file`（`internal:red/{selfId}/_tmp/{id}`）、`mime=image/png`、`count`。
 
 由 QQ 内核历史读记录，经 Android `Canvas` 在 QQ 进程内渲染文字气泡。图片、语音、视频、文件只画类型占位，没有 QQ 客户端聊天页的皮肤、头像、媒体像素或跨屏截取，也不调用 MediaProjection 与截屏权限。内核历史漏掉起止消息、游标不前进、超过数量或画布超过 8192px 时失败，不返回截断图。图片在 QQ 的本地临时缓存中，资源 URL 仅本机监听且不带鉴权，任何能访问本机端口并拿到不透明 ID 的程序可读取。不要把 URL 公开转发，过期文件可用 `clean_cache` 清理。
 
@@ -129,6 +129,8 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，并在 `satori_qq.manual_self` 中携带实际身份。机器人 API 的发送回声会去重。登录期间的群列表同步不生成群变更事件。
 
 推送的事件遵守协议的资源提升：`channel`、`guild`、`user`、`member` 只在事件顶层，`message` 里不再重复，`member` 里也没有 `user`。`message.get` / `message.list` 返回的 `Message` 才是嵌套形态，必需资源在它里面。
+
+`user` 是这个人本身，`name` 与 `nick` 都是 QQ 昵称，在每个群里一样；群名片归成员，在 `member.nick`。
 
 每个事件的顶层都带 `sn`、`type`、`timestamp`、`login`，以及 `self_id` 与 `platform`（Event 类型里与 `login` 并列的扁平字段。只有 `login` 时客户端也能工作，但按协议类型实现的一方读的是扁平字段）。`login.get` 与 `READY` 里的 login 带 `sn`、`adapter`、`platform`、`self_id`、`hidden`、`status`、`user` 与 `features`。
 
@@ -168,7 +170,7 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 
 本端不改写载荷，也不替客户端挑地址。Satori 没有卡片元素，裁剪一次就回不去，字段优先级由客户端按用途定（同机的 acumen 在 `command::card_target_url` 里按此序取）。
 
-媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径、`upload.create` 返回的 `internal:`，以及本端的 `/v1/assets/{id}`。入站图片优先返回无需 Bearer 令牌的本地资源地址，头像使用 QQ 头像 CDN。
+媒体 `src` 接受 `http(s):`、`data:`、`file:`、本地路径与 `internal:`。收到的图片、语音、视频、文件在事件里是 `internal:red/{selfId}/_tmp/{id}`（与 `upload.create` 同一份存储），不带本机地址：换主机或端口不会让旧链接失效，调用方经 `/v1/proxy/{url}` 读取，原样放进回复里时本端直接从磁盘解析，不请求自己。头像使用 QQ 头像 CDN。
 
 `<audio src>` 先转成 QQ 的 SILK（mp3、wav、amr 都走这条路），整条带重试、最多三次：`MediaCodec` 的解码器在 QQ 进程里会被系统回收，`queueInputBuffer` 抛一个空消息的 `CodecException`，换个解码器重来。重试按时间收口：上次耗时乘二超过 20 秒就不试。`node tests/media-live-probe.js voicerepeat` 能量这件事。`<video>` 需本地取到视频帧做缩略图。`<file>` 既发聊天气泡，也进群文件列表。
 

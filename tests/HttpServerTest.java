@@ -18,6 +18,11 @@ public final class HttpServerTest {
     public static void main(String[] args) throws Exception {
         int port;
         try (ServerSocket probe = new ServerSocket(0)) { port = probe.getLocalPort(); }
+        java.io.File payload = java.io.File.createTempFile("http-test", ".bin");
+        payload.deleteOnExit();
+        byte[] bytes = new byte[1000];
+        for (int i = 0; i < bytes.length; i++) bytes[i] = (byte) i;
+        java.nio.file.Files.write(payload.toPath(), bytes);
         Cfg cfg = new Cfg();
         cfg.host = "127.0.0.1";
         cfg.port = port;
@@ -28,12 +33,25 @@ public final class HttpServerTest {
                     return "GET".equals(req.method) ? HttpServer.HttpResult.json(200, "{\"hi\":1}")
                             : HttpServer.HttpResult.error(405, "head not mapped to GET");
                 }
+                if ("/file".equals(req.path)) {
+                    return HttpServer.HttpResult.file(206, "application/octet-stream", payload, 10, 20,
+                            Collections.singletonMap("Content-Range", "bytes 10-29/1000"));
+                }
+                if ("/sink".equals(req.path)) {
+                    // Reads a few bytes of a streamed body and answers; the server must discard the rest.
+                    try {
+                        byte[] first = new byte[10];
+                        int n = req.stream.read(first);
+                        return HttpServer.HttpResult.json(200, "{\"read\":" + n + ",\"declared\":" + req.length + "}");
+                    } catch (Exception e) { return HttpServer.HttpResult.error(500, e.toString()); }
+                }
                 if ("/later".equals(req.path)) {
                     return HttpServer.HttpResult.error(503, "session_stabilizing", "wait",
                             Collections.singletonMap("Retry-After", "3"));
                 }
                 return null;
             }
+            @Override public boolean streams(String method, String path) { return "/sink".equals(path); }
             @Override public void onWsText(WsConn conn, String text) {}
         });
         server.start();
@@ -62,6 +80,27 @@ public final class HttpServerTest {
         check("payload_too_large".equals(bigBody.getString("code")), "413 code");
         check(bigBody.getString("message").contains(String.valueOf(HttpServer.MAX_UPLOAD_BYTES)), "413 names the file limit");
 
+        // 正文来自文件的一段：长度是这一段的，内容也是。
+        String file = raw(port, "GET /file HTTP/1.1\r\nHost: x\r\n\r\n");
+        check(file.startsWith("HTTP/1.1 206 Partial Content"), "file result keeps its status: " + file);
+        check(file.contains("Content-Length: 20\r\n") && file.contains("Content-Range: bytes 10-29/1000\r\n"), "file range headers");
+        byte[] fileBytes = file.substring(file.indexOf("\r\n\r\n") + 4).getBytes(StandardCharsets.ISO_8859_1);
+        check(fileBytes.length == 20, "20 bytes of body: " + fileBytes.length);
+
+        // 流式路由：处理方只读一点点，剩下的由服务器丢掉，应答照样送达（不是 RST）。
+        int sent = 3 * 1024 * 1024;
+        String sink = rawWithBody(port, "POST /sink HTTP/1.1\r\nHost: x\r\nContent-Length: " + sent + "\r\n\r\n", sent);
+        check(sink.startsWith("HTTP/1.1 200 OK") && sink.contains("\"declared\":" + sent), "streamed route answers: " + sink);
+
+        // 声明超限：先应答 413，再把客户端还在发的请求体丢掉，客户端读得到这条 413。
+        String early = rawWithBody(port, "POST /hello HTTP/1.1\r\nHost: x\r\nContent-Length: " + (HttpServer.MAX_BODY_BYTES + 1L)
+                + "\r\n\r\n", 4 * 1024 * 1024);
+        check(early.startsWith("HTTP/1.1 413 Payload Too Large"), "early 413 reaches a client that is still sending: " + early.length());
+
+        // Expect: 100-continue 先收到 100，再发请求体。
+        String cont = raw(port, "POST /hello HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n{}");
+        check(cont.startsWith("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 "), "100 Continue first: " + cont);
+
         System.out.println("HttpServerTest OK");
         System.exit(0);
     }
@@ -80,6 +119,27 @@ public final class HttpServerTest {
                 while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
             } catch (java.net.SocketTimeoutException ignore) {}
             return out.toString("UTF-8");
+        }
+    }
+
+    /** Send the headers, then {@code bodyBytes} of body while the server may already be answering. */
+    private static String rawWithBody(int port, String head, int bodyBytes) throws Exception {
+        try (Socket s = new Socket("127.0.0.1", port)) {
+            s.setSoTimeout(10000);
+            java.io.OutputStream out = s.getOutputStream();
+            out.write(head.getBytes(StandardCharsets.UTF_8));
+            byte[] chunk = new byte[64 * 1024];
+            for (int sent = 0; sent < bodyBytes; sent += chunk.length) out.write(chunk, 0, Math.min(chunk.length, bodyBytes - sent));
+            out.flush();
+            s.shutdownOutput();
+            ByteArrayOutputStream got = new ByteArrayOutputStream();
+            InputStream in = s.getInputStream();
+            byte[] buf = new byte[4096];
+            try {
+                int n;
+                while ((n = in.read(buf)) > 0) got.write(buf, 0, n);
+            } catch (java.net.SocketTimeoutException ignore) {}
+            return got.toString("ISO-8859-1");
         }
     }
 

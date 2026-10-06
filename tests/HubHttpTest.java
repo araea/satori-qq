@@ -108,7 +108,69 @@ public final class HubHttpTest {
         check(!event.getJSONObject("member").has("user"), "member has no user");
         check("你好".equals(event.getJSONObject("message").getString("content")), "content kept");
         check(event.getJSONObject("message").getLong("created_at") == 1000000L, "created_at in ms");
+        // 群名片归成员：user 是这个人（QQ 昵称），member.nick 才是这个群里的叫法。
+        check("小七".equals(event.getJSONObject("user").optString("nick")), "user.nick is the QQ nickname, not the card");
+        check("七".equals(event.getJSONObject("member").optString("nick")), "member.nick is the group card");
+        // 收到的媒体是 internal: 链接，不带本机地址。
+        JSONObject media = new JSONObject()
+                .put("post_type", "message").put("message_type", "group").put("group_id", 42L)
+                .put("message_id", "7000000000000000002").put("qq_msg_id", 7000000000000000002L).put("time", 1001)
+                .put("sender", new JSONObject().put("user_id", 7L).put("nickname", "小七").put("role", "member"))
+                .put("message", new JSONArray().put(new JSONObject().put("type", "image")
+                        .put("data", new JSONObject().put("file", "abc123.image").put("url", "https://gchat.qpic.cn/x"))));
+        HubDeliveryTest.call(hub, "emitObEvent", new Class[]{JSONObject.class}, media);
+        String content = HubDeliveryTest.packets(live).get(2).getJSONObject("body").getJSONObject("message").getString("content");
+        check(content.contains("src=\"internal:red/10001/_tmp/abc123.image\""), "received media is an internal: link: " + content);
+        check(!content.contains("127.0.0.1") && !content.contains("/v1/assets/"), "no address baked into the link");
+
+        uploadsStreamAndServeWithRanges();
         System.out.println("HubHttpTest OK");
+    }
+
+    /** upload.create 流到磁盘、回 internal: 链接；/v1/proxy 按块回读，支持 Range 与 HEAD。 */
+    static void uploadsStreamAndServeWithRanges() throws Exception {
+        java.io.File scratch = java.nio.file.Files.createTempDirectory("hub-upload").toFile();
+        System.setProperty("satori.qq.media_tmp", scratch.getAbsolutePath());
+        byte[] data = new byte[700_000];
+        new java.util.Random(11).nextBytes(data);
+        data[0] = (byte) 0xff; data[1] = (byte) 0xd8; // looks like a JPEG, so the extension is guessed
+        ByteArrayOutputStream raw = new ByteArrayOutputStream();
+        raw.write(("--B\r\nContent-Disposition: form-data; name=\"pic\"\r\nContent-Type: image/jpeg\r\n\r\n").getBytes());
+        raw.write(data);
+        raw.write("\r\n--B--\r\n".getBytes());
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("authorization", "Bearer s3cret");
+        headers.put("content-type", "multipart/form-data; boundary=B");
+        HttpServer.HttpResult up = hub.onHttp(new HttpServer.HttpReq("POST", "/v1/upload.create", "", headers, new byte[0],
+                new java.io.ByteArrayInputStream(raw.toByteArray()), raw.size()));
+        check(up.status == 200, "streamed upload is 200: " + up.status + " " + new String(up.body, "UTF-8"));
+        String link = new JSONObject(new String(up.body, "UTF-8")).getString("pic");
+        check(link.startsWith("internal:red/10001/_tmp/"), "upload answers an internal: link: " + link);
+
+        HttpServer.HttpResult whole = http("GET", "/v1/proxy/" + link, null);
+        check(whole.status == 200 && whole.file != null && whole.fileLength == data.length, "proxy serves the stored file: " + whole.status);
+        check("image/jpeg".equals(whole.contentType), "type sniffed from the bytes: " + whole.contentType);
+        check("bytes".equals(whole.extraHeaders.get("Accept-Ranges")), "ranges are advertised");
+
+        HttpServer.HttpResult part = http("GET", "/v1/proxy/" + link, null, "range", "bytes=100-199");
+        check(part.status == 206 && part.fileOffset == 100 && part.fileLength == 100, "range is 206");
+        check(("bytes 100-199/" + data.length).equals(part.extraHeaders.get("Content-Range")), "Content-Range");
+        HttpServer.HttpResult tail = http("GET", "/v1/proxy/" + link, null, "range", "bytes=-50");
+        check(tail.status == 206 && tail.fileOffset == data.length - 50 && tail.fileLength == 50, "suffix range");
+        HttpServer.HttpResult open = http("GET", "/v1/proxy/" + link, null, "range", "bytes=" + (data.length - 10) + "-");
+        check(open.status == 206 && open.fileLength == 10, "open-ended range");
+        HttpServer.HttpResult past = http("GET", "/v1/proxy/" + link, null, "range", "bytes=" + data.length + "-");
+        check(past.status == 416 && ("bytes */" + data.length).equals(past.extraHeaders.get("Content-Range")), "range past the end is 416");
+        check(http("GET", "/v1/proxy/" + link, null, "range", "bytes=0-1,5-6").status == 200, "a range list is ignored, whole body");
+
+        // 超过单个文件上限：413，不留残片。
+        byte[] before = null;
+        HttpServer.HttpResult bad = hub.onHttp(new HttpServer.HttpReq("POST", "/v1/upload.create", "", headers, new byte[0],
+                new java.io.ByteArrayInputStream("--B\r\nnot a part".getBytes()), 16));
+        check(bad.status == 400 && "invalid_request".equals(new JSONObject(new String(bad.body, "UTF-8")).optString("code")),
+                "malformed multipart is 400: " + bad.status);
+        String[] files = scratch.list();
+        check(files != null && files.length == 1, "only the adopted upload remains on disk: " + java.util.Arrays.toString(files));
     }
 
     static void check(boolean condition, String message) { if (!condition) throw new AssertionError(message); }

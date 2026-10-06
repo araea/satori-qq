@@ -616,7 +616,10 @@ public final class Codec {
         ev.put("type", "message-created");
         ev.put("channel", channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, gname));
         if (group) ev.put("guild", guild(peer, gname));
-        JSONObject author = user(userId, display, card);
+        // user.name/nick describe the person (their QQ nickname) and are the same in every group;
+        // the group card is the member's and lives in member.nick. Putting the card in user.nick
+        // made the same account look different depending on which group the event came from.
+        JSONObject author = user(userId, display, nick);
         String satoriUserId = ob.optString("satori_user_id", "").trim();
         if (!satoriUserId.isEmpty()) author.put("id", satoriUserId);
         ev.put("user", author);

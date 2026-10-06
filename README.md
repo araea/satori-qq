@@ -80,5 +80,6 @@ plugins:
 - [架构、构建与测试](docs/ARCHITECTURE.md)
 - [常驻守护 qqguard](docs/GUARD.md)
 - [JNI 能力范围](docs/JNI_CAPABILITIES.md)
+- [代码规范](docs/STYLE.md)
 - [OIDB 与封包参考](reference/PACKETS.md)
 - [MIT](LICENSE-MIT) / [Apache-2.0](LICENSE-APACHE)

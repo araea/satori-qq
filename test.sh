@@ -22,7 +22,10 @@ if [ ! -f "$JSON_JAR" ]; then
   echo "missing $JSON_JAR — see the download line at the top of this script" >&2
   exit 1
 fi
-echo "== 0. aapt R.java =="
+echo "== 0. import 规范 =="
+python3 "$R/scripts/java-imports.py" --check $(find "$R/src" "$R/tests" -name '*.java')
+
+echo "== 0b. aapt R.java =="
 AAPT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools/aapt
 rm -rf "$OUT/test-gen" && mkdir -p "$OUT/test-gen"
 "$AAPT" package -f -m -J "$OUT/test-gen" -M "$R/AndroidManifest.xml" \

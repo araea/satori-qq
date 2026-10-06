@@ -5,7 +5,7 @@
 # 前置：已安装 com.satori.qq（跑一次 build.sh + 装机），本机有 root（su）。
 # 不碰 QQ 服务：测试只读写知弦自己的配置文件，跑完还原。
 set -euo pipefail
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 OUT="$ROOT/build/design-tests"
 SHOTS="$OUT/design-review"
 PKG=com.satori.qq.test

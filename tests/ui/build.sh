@@ -3,7 +3,7 @@
 #
 # 测试类只用框架 API + 反射，不引用模块内部类，所以这里不需要编译 src/。
 set -euo pipefail
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 OUT="$ROOT/build/design-tests"
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar
 BT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools

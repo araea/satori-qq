@@ -46,21 +46,21 @@ static const char *kXpClass = "com.satori.qq.xp.Xp";
 static const char *kSsoClass = "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
 static const char *kSsoMethod = "native_onSendSSOReply";
 static const char *kSsoSignature =
-        "(JJLjava/lang/String;ILjava/lang/String;Lcom/tencent/qqnt/kernel/nativeinterface/MsfRspInfo;)V";
+    "(JJLjava/lang/String;ILjava/lang/String;Lcom/tencent/qqnt/kernel/nativeinterface/MsfRspInfo;)V";
 static const char *kSsoCallbackClass = "com.satori.qq.packet.PacketSvc";
 static const char *kSsoCallbackMethod = "onNativeSsoReply";
 static const char *kSsoCallbackSignature = "(JLjava/lang/String;ILjava/lang/String;Ljava/lang/Object;)Z";
 
 static JavaVM *g_vm = nullptr;
-static jclass g_sso_class = nullptr;          // 全局引用
-static jclass g_callback_class = nullptr;     // 全局引用
+static jclass g_sso_class = nullptr;      // 全局引用
+static jclass g_callback_class = nullptr; // 全局引用
 static jmethodID g_callback_method = nullptr;
 static void *g_orig_sso_reply = nullptr;
 static char g_process[256] = {0};
 static bool g_bootstrap_started = false;
 static char g_hook_info[256] = "not-attempted";
-static unsigned long g_sso_calls = 0;       // 进过我们替换实现的次数
-static unsigned long g_sso_consumed = 0;    // 其中被本模块消费掉的次数
+static unsigned long g_sso_calls = 0;    // 进过我们替换实现的次数
+static unsigned long g_sso_consumed = 0; // 其中被本模块消费掉的次数
 
 /**
  * 记一行到 logcat **并**落到 QQ 私有目录。
@@ -82,8 +82,8 @@ static void NLog(const char *fmt, ...) {
 }
 
 // 替换 QQ native 方法的函数：必须在取地址之前先行声明。
-static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id,
-                           jstring cmd, jint result_code, jstring error_msg, jobject info);
+static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id, jstring cmd, jint result_code,
+                           jstring error_msg, jobject info);
 
 // ---- JNI 小工具 -----------------------------------------------------------------
 
@@ -109,29 +109,41 @@ static void ReleaseEnv(bool attached) {
 static jclass LoadClass(JNIEnv *env, jobject loader, const char *name) {
     if (loader == nullptr) return nullptr;
     jclass loader_cls = env->FindClass("java/lang/ClassLoader");
-    if (loader_cls == nullptr) { env->ExceptionClear(); return nullptr; }
-    jmethodID load_class = env->GetMethodID(loader_cls, "loadClass",
-                                            "(Ljava/lang/String;)Ljava/lang/Class;");
-    if (load_class == nullptr) { env->ExceptionClear(); return nullptr; }
+    if (loader_cls == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+    jmethodID load_class = env->GetMethodID(loader_cls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (load_class == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     jstring n = env->NewStringUTF(name);
     auto cls = static_cast<jclass>(env->CallObjectMethod(loader, load_class, n));
     env->DeleteLocalRef(n);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     return cls;
 }
 
 /** 关掉 hidden API 限制：Java 侧要反射 QQ 的内部类。走 JNI 调用，不走 Java 反射。 */
 static void ExemptHiddenApis(JNIEnv *env) {
     jclass vm_runtime = env->FindClass("dalvik/system/VMRuntime");
-    if (vm_runtime == nullptr) { env->ExceptionClear(); return; }
-    jmethodID get_runtime = env->GetStaticMethodID(vm_runtime, "getRuntime",
-                                                   "()Ldalvik/system/VMRuntime;");
-    jmethodID set_exemptions = env->GetMethodID(vm_runtime, "setHiddenApiExemptions",
-                                                "([Ljava/lang/String;)V");
-    if (get_runtime == nullptr || set_exemptions == nullptr) { env->ExceptionClear(); return; }
+    if (vm_runtime == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
+    jmethodID get_runtime = env->GetStaticMethodID(vm_runtime, "getRuntime", "()Ldalvik/system/VMRuntime;");
+    jmethodID set_exemptions = env->GetMethodID(vm_runtime, "setHiddenApiExemptions", "([Ljava/lang/String;)V");
+    if (get_runtime == nullptr || set_exemptions == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
     jobject runtime = env->CallStaticObjectMethod(vm_runtime, get_runtime);
     jclass string_cls = env->FindClass("java/lang/String");
-    jstring all = env->NewStringUTF("L");  // 前缀 "L" 覆盖所有类
+    jstring all = env->NewStringUTF("L"); // 前缀 "L" 覆盖所有类
     jobjectArray arr = env->NewObjectArray(1, string_cls, all);
     env->CallVoidMethod(runtime, set_exemptions, arr);
     if (env->ExceptionCheck()) {
@@ -151,29 +163,37 @@ static void ExemptHiddenApis(JNIEnv *env) {
  * 三条路依次退：currentApplication() → currentActivityThread().getApplication() → 读
  * mInitialApplication 字段。
  */
-static jobject CurrentApplicationOnce(JNIEnv *env, jclass at_cls, jmethodID current_app,
-                                      jmethodID current_at, jmethodID get_app,
-                                      jfieldID initial_app) {
+static jobject CurrentApplicationOnce(JNIEnv *env, jclass at_cls, jmethodID current_app, jmethodID current_at,
+                                      jmethodID get_app, jfieldID initial_app) {
     if (current_app != nullptr) {
         jobject a = env->CallStaticObjectMethod(at_cls, current_app);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); }
-        else if (a != nullptr) return a;
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        } else if (a != nullptr)
+            return a;
     }
     jobject at = nullptr;
     if (current_at != nullptr) {
         at = env->CallStaticObjectMethod(at_cls, current_at);
-        if (env->ExceptionCheck()) { env->ExceptionClear(); at = nullptr; }
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            at = nullptr;
+        }
     }
     if (at != nullptr) {
         if (get_app != nullptr) {
             jobject a = env->CallObjectMethod(at, get_app);
-            if (env->ExceptionCheck()) { env->ExceptionClear(); }
-            else if (a != nullptr) return a;
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            } else if (a != nullptr)
+                return a;
         }
         if (initial_app != nullptr) {
             jobject a = env->GetObjectField(at, initial_app);
-            if (env->ExceptionCheck()) { env->ExceptionClear(); }
-            else if (a != nullptr) return a;
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+            } else if (a != nullptr)
+                return a;
         }
     }
     return nullptr;
@@ -181,26 +201,25 @@ static jobject CurrentApplicationOnce(JNIEnv *env, jclass at_cls, jmethodID curr
 
 static jobject WaitForApplication(JNIEnv *env, int timeout_ms) {
     jclass at_cls = env->FindClass("android/app/ActivityThread");
-    if (at_cls == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return nullptr; }
-    jmethodID current_app = env->GetStaticMethodID(at_cls, "currentApplication",
-                                                   "()Landroid/app/Application;");
+    if (at_cls == nullptr) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        return nullptr;
+    }
+    jmethodID current_app = env->GetStaticMethodID(at_cls, "currentApplication", "()Landroid/app/Application;");
     env->ExceptionClear();
-    jmethodID current_at = env->GetStaticMethodID(at_cls, "currentActivityThread",
-                                                  "()Landroid/app/ActivityThread;");
+    jmethodID current_at = env->GetStaticMethodID(at_cls, "currentActivityThread", "()Landroid/app/ActivityThread;");
     env->ExceptionClear();
-    jmethodID get_app = env->GetMethodID(at_cls, "getApplication",
-                                         "()Landroid/app/Application;");
+    jmethodID get_app = env->GetMethodID(at_cls, "getApplication", "()Landroid/app/Application;");
     env->ExceptionClear();
-    jfieldID initial_app = env->GetFieldID(at_cls, "mInitialApplication",
-                                           "Landroid/app/Application;");
+    jfieldID initial_app = env->GetFieldID(at_cls, "mInitialApplication", "Landroid/app/Application;");
     env->ExceptionClear();
     if (current_app == nullptr && current_at == nullptr) {
         LOGE("ActivityThread has no currentApplication/currentActivityThread");
         return nullptr;
     }
     for (int waited = 0; waited < timeout_ms; waited += 20) {
-        jobject app = CurrentApplicationOnce(env, at_cls, current_app, current_at, get_app,
-                                             initial_app);
+        jobject app = CurrentApplicationOnce(env, at_cls, current_app, current_at, get_app, initial_app);
         if (app != nullptr) return app;
         usleep(20 * 1000);
     }
@@ -209,27 +228,49 @@ static jobject WaitForApplication(JNIEnv *env, int timeout_ms) {
 
 static jobject HostLoaderFromApplication(JNIEnv *env, jobject app) {
     jclass context_cls = env->FindClass("android/content/Context");
-    jmethodID get_loader = env->GetMethodID(context_cls, "getClassLoader",
-                                            "()Ljava/lang/ClassLoader;");
-    if (get_loader == nullptr) { env->ExceptionClear(); return nullptr; }
+    jmethodID get_loader = env->GetMethodID(context_cls, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    if (get_loader == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     jobject loader = env->CallObjectMethod(app, get_loader);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return nullptr;
+    }
     return loader;
 }
 
 static jobject MakeEmbeddedLoader(JNIEnv *env, jobject parent) {
     const auto *begin = satori_dex_start;
     size_t size = static_cast<size_t>(satori_dex_end - satori_dex_start);
-    if (size == 0) { LOGE("embedded dex is empty"); return nullptr; }
+    if (size == 0) {
+        LOGE("embedded dex is empty");
+        return nullptr;
+    }
     jobject buffer = env->NewDirectByteBuffer(const_cast<uint8_t *>(begin), size);
-    if (buffer == nullptr) { LOGE("NewDirectByteBuffer failed"); return nullptr; }
+    if (buffer == nullptr) {
+        LOGE("NewDirectByteBuffer failed");
+        return nullptr;
+    }
     jclass loader_cls = env->FindClass("dalvik/system/InMemoryDexClassLoader");
-    if (loader_cls == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return nullptr; }
-    jmethodID ctor = env->GetMethodID(loader_cls, "<init>",
-                                      "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
-    if (ctor == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return nullptr; }
+    if (loader_cls == nullptr) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        return nullptr;
+    }
+    jmethodID ctor = env->GetMethodID(loader_cls, "<init>", "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
+    if (ctor == nullptr) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        return nullptr;
+    }
     jobject loader = env->NewObject(loader_cls, ctor, buffer, parent);
-    if (loader == nullptr) { env->ExceptionDescribe(); env->ExceptionClear(); return nullptr; }
+    if (loader == nullptr) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        return nullptr;
+    }
     return loader;
 }
 
@@ -286,7 +327,7 @@ static bool IsExecutableAddress(const void *p) {
 static bool LooksLikeThirdPartyJni(void *p, char *path, size_t path_size) {
     bool exec = false;
     if (!MappingOf(p, &exec, path, path_size) || !exec) return false;
-    if (path[0] == '\0') return false;                       // 匿名映射：说不清是谁的，不装
+    if (path[0] == '\0') return false; // 匿名映射：说不清是谁的，不装
     if (strstr(path, "/system/") != nullptr) return false;
     if (strstr(path, "/apex/") != nullptr) return false;
     if (strstr(path, ".oat") != nullptr) return false;
@@ -356,8 +397,7 @@ static bool InstallSsoHook(JNIEnv *env, jobject loader) {
         return false;
     }
 
-    JNINativeMethod method{kSsoMethod, const_cast<char *>(kSsoSignature),
-                           reinterpret_cast<void *>(&SatoriSsoReply)};
+    JNINativeMethod method{kSsoMethod, const_cast<char *>(kSsoSignature), reinterpret_cast<void *>(&SatoriSsoReply)};
     if (env->RegisterNatives(cpp, &method, 1) != JNI_OK) {
         env->ExceptionDescribe();
         env->ExceptionClear();
@@ -387,24 +427,23 @@ static bool InstallSsoHook(JNIEnv *env, jobject loader) {
 static jstring NativeSsoHookInfo(JNIEnv *env, jclass) {
     char buf[320];
     snprintf(buf, sizeof(buf), "%s calls=%lu consumed=%lu", g_hook_info,
-             __atomic_load_n(&g_sso_calls, __ATOMIC_RELAXED),
-             __atomic_load_n(&g_sso_consumed, __ATOMIC_RELAXED));
+             __atomic_load_n(&g_sso_calls, __ATOMIC_RELAXED), __atomic_load_n(&g_sso_consumed, __ATOMIC_RELAXED));
     return env->NewStringUTF(buf);
 }
 
 /** 把回包交给 Java 侧；返回 true 表示本模块已经消费掉，不要再喂给 QQ 原生会话。 */
 static thread_local bool g_in_sso_reply = false;
 
-static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id,
-                           jstring cmd, jint result_code, jstring error_msg, jobject info) {
+static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong request_id, jstring cmd, jint result_code,
+                           jstring error_msg, jobject info) {
     // 重入护栏：如果被换掉的那个入口本来就指向「派回方法自身」的存根，转交原实现会再进到这里。
     // 没有这道闸就是每秒几百万次的互相递归（实测过）。重入直接返回。
     if (g_in_sso_reply) return;
     g_in_sso_reply = true;
     __atomic_add_fetch(&g_sso_calls, 1, __ATOMIC_RELAXED);
     if (g_callback_method != nullptr) {
-        jboolean consumed = env->CallStaticBooleanMethod(
-                g_callback_class, g_callback_method, request_id, cmd, result_code, error_msg, info);
+        jboolean consumed = env->CallStaticBooleanMethod(g_callback_class, g_callback_method, request_id, cmd,
+                                                         result_code, error_msg, info);
         if (env->ExceptionCheck()) {
             env->ExceptionDescribe();
             env->ExceptionClear();
@@ -416,15 +455,15 @@ static void SatoriSsoReply(JNIEnv *env, jobject thiz, jlong native_ref, jlong re
     }
     if (g_orig_sso_reply != nullptr) {
         using OrigFn = void (*)(JNIEnv *, jobject, jlong, jlong, jstring, jint, jstring, jobject);
-        reinterpret_cast<OrigFn>(g_orig_sso_reply)(
-                env, thiz, native_ref, request_id, cmd, result_code, error_msg, info);
+        reinterpret_cast<OrigFn>(g_orig_sso_reply)(env, thiz, native_ref, request_id, cmd, result_code, error_msg,
+                                                   info);
     }
     g_in_sso_reply = false;
 }
 
 /** Xp.nativeInstallSsoHook(ClassLoader)：Java 侧在拿到宿主 classloader 后调用一次。 */
 static jboolean NativeInstallSsoHook(JNIEnv *env, jclass, jobject loader) {
-    if (g_orig_sso_reply != nullptr) return JNI_TRUE;  // 幂等
+    if (g_orig_sso_reply != nullptr) return JNI_TRUE; // 幂等
     return InstallSsoHook(env, loader) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -432,18 +471,24 @@ static jboolean NativeInstallSsoHook(JNIEnv *env, jclass, jobject loader) {
 
 static bool StartJava(JNIEnv *env, jobject loader, jobject host, const char *process) {
     jclass boot = LoadClass(env, loader, "com.satori.qq.Boot");
-    if (boot == nullptr) { LOGE("com.satori.qq.Boot not found in the embedded dex"); return false; }
-    jmethodID start = env->GetStaticMethodID(
-            boot, "start", "(Ljava/lang/String;Ljava/lang/ClassLoader;)V");
-    if (start == nullptr) { LOGE("Boot.start(String, ClassLoader) not found"); return false; }
+    if (boot == nullptr) {
+        LOGE("com.satori.qq.Boot not found in the embedded dex");
+        return false;
+    }
+    jmethodID start = env->GetStaticMethodID(boot, "start", "(Ljava/lang/String;Ljava/lang/ClassLoader;)V");
+    if (start == nullptr) {
+        LOGE("Boot.start(String, ClassLoader) not found");
+        return false;
+    }
 
     jclass xp = LoadClass(env, loader, kXpClass);
-    if (xp == nullptr) { LOGE("Xp class not found"); return false; }
+    if (xp == nullptr) {
+        LOGE("Xp class not found");
+        return false;
+    }
     static const JNINativeMethod kXpMethods[] = {
-            {"nativeInstallSsoHook", "(Ljava/lang/ClassLoader;)Z",
-             reinterpret_cast<void *>(&NativeInstallSsoHook)},
-            {"nativeSsoHookInfo", "()Ljava/lang/String;",
-             reinterpret_cast<void *>(&NativeSsoHookInfo)},
+        {"nativeInstallSsoHook", "(Ljava/lang/ClassLoader;)Z", reinterpret_cast<void *>(&NativeInstallSsoHook)},
+        {"nativeSsoHookInfo", "()Ljava/lang/String;", reinterpret_cast<void *>(&NativeSsoHookInfo)},
     };
     if (env->RegisterNatives(xp, kXpMethods, 2) != JNI_OK) {
         env->ExceptionDescribe();
@@ -467,23 +512,38 @@ static bool StartJava(JNIEnv *env, jobject loader, jobject host, const char *pro
 static void *BootstrapThread(void *) {
     bool attached = false;
     JNIEnv *env = GetEnv(&attached);
-    if (env == nullptr) { LOGE("cannot attach bootstrap thread"); return nullptr; }
+    if (env == nullptr) {
+        LOGE("cannot attach bootstrap thread");
+        return nullptr;
+    }
 
     // 先放开 hidden API：下面要问的 ActivityThread 那几个入口都是 hidden 的。
     ExemptHiddenApis(env);
 
     jobject app = WaitForApplication(env, 120000);
-    if (app == nullptr) { NLog("Application never appeared"); ReleaseEnv(attached); return nullptr; }
+    if (app == nullptr) {
+        NLog("Application never appeared");
+        ReleaseEnv(attached);
+        return nullptr;
+    }
     NLog("application ready in %s", g_process);
 
     jobject host = HostLoaderFromApplication(env, app);
-    if (host == nullptr) { NLog("no host classloader"); ReleaseEnv(attached); return nullptr; }
+    if (host == nullptr) {
+        NLog("no host classloader");
+        ReleaseEnv(attached);
+        return nullptr;
+    }
     NLog("host classloader captured");
 
     // 内嵌 dex 的父加载器就用宿主的：这样模块自己的 Java 代码可以直接按名字引用 QQ 的类，
     // 也让 native 侧 loadClass 一次就能同时找到两边的类。
     jobject loader = MakeEmbeddedLoader(env, host);
-    if (loader == nullptr) { NLog("cannot create embedded dex loader"); ReleaseEnv(attached); return nullptr; }
+    if (loader == nullptr) {
+        NLog("cannot create embedded dex loader");
+        ReleaseEnv(attached);
+        return nullptr;
+    }
 
     NLog("StartJava(%s)", g_process);
     StartJava(env, loader, host, g_process);
@@ -494,7 +554,7 @@ static void *BootstrapThread(void *) {
 class SatoriModule : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
-        (void) api;
+        (void)api;
         env_ = env;
         env->GetJavaVM(&g_vm);
     }

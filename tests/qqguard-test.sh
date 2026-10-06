@@ -4,7 +4,7 @@
 # 只 source 脚本里的函数（QQGUARD_LIB_ONLY=1），全部状态落在临时目录，不碰系统、不碰 QQ、
 # 不需要 root。真机行为（解冻、强停、开机恢复）仍靠现场验证。
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/qqguard-test.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 

@@ -7,7 +7,7 @@
 #   curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/20250517/json-20250517.jar
 # android.jar 里的 org.json 是会抛 "Stub!" 的桩，运行期必须让真实实现排在它前面。
 set -e
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 R=${SATORI_QQ_ROOT:-$SCRIPT_DIR}
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar
 JSON_JAR=$R/libs/json.jar

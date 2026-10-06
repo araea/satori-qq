@@ -8,7 +8,7 @@
 #   curl -fsSL -o libs/r8.jar https://maven.google.com/com/android/tools/r8/8.9.35/r8-8.9.35.jar
 #   curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/20250517/json-20250517.jar
 set -e
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 R=${SATORI_QQ_ROOT:-$SCRIPT_DIR}
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar
 BT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools

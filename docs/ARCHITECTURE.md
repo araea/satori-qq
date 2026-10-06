@@ -167,7 +167,9 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 
 产物为 `build/SatoriQQ.apk` 与 `build/SatoriQQ-module.zip`。模块不含第三方原生依赖：`native/satori.cpp` 用 Termux 的 clang 编译，不含界面代码的 dex 用 `.incbin` 内嵌进 `.so`，NEEDED 只有 `liblog/libdl/libm/libc`。
 
-`test.sh` 跑 JVM 单测，含 `Reflect` 反射层的语义测试。真机巡检脚本要求 QQ 已上线，且显式给测试群。破坏性用例（改群名、全员禁言）再加 `SATORI_DESTRUCTIVE=1`：
+`test.sh` 跑 JVM 单测，含 `Reflect` 反射层的语义测试，开头先查 import 规范。Zygisk 把线上那份钉在内存里，改了 Java 层又不想重启手机时，
+`tests/art/run.sh`（root）在真 ART 的 `app_process` 里起一个没有 QQ 内核的 `SatoriHub`，再用黑盒探针 `tests/conformance.py` 打它：
+验 D8 脱糖、类库差异与 HTTP / 事件面，探针里 `kernel_offline` 的 6 个 503 是预期的。真机巡检脚本要求 QQ 已上线，且显式给测试群。破坏性用例（改群名、全员禁言）再加 `SATORI_DESTRUCTIVE=1`：
 
 ```bash
 SATORI_TEST_GROUP=<群号> node tests/ws-feature-sweep.js

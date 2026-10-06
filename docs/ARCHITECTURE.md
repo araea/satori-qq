@@ -12,7 +12,7 @@
 | `guard` | App → root `qqguard` 的调用桥：只拼写死的 `su -c` 命令，不接收任何界面 / 网络输入 |
 | `control` | 私有设置、UID 校验的 Provider、启动时配置同步 |
 | `net` | HTTP 与事件 WebSocket，只监听 `127.0.0.1` |
-| `core` | 方法分发、事件、消息与文件标识管理 |
+| `core` | Satori 服务本体：HTTP 路由与方法分发、事件广播、消息与文件标识管理（部件见下） |
 | `satori` | Satori 元素与数据结构转换 |
 | `qq` | NT 会话、消息、媒体与保活 |
 | `packet` | OIDB 与合并转发封包 |
@@ -23,11 +23,36 @@ HTTP 服务、消息监听与保活只在主进程运行，APK 里不含 native 
 
 `ui.MainActivity` 与 `control.ControlProvider` 在应用自身进程。Provider 只允许模块自身 UID 与当前安装的 `com.tencent.mobileqq` UID 调用，其余调用方含 shell 抛 `SecurityException`。Provider 只支持读配置与运行快照，不接受文件路径、命令或 HTTP 写设置。
 
-`Main` 尽早安装 QQ hooks。`SatoriHub.start()` 在独立工作线程等 Application 基础 Context attach，至多 10 秒。Provider 短暂不可用时重试至多 1.2 秒。从 Provider 读到端口、令牌与四个运行偏好并应用后才绑定 HTTP 端口，其余高级配置不被覆盖。Provider 不可用时保留原文件或默认行为。`/healthz.config_revision` 是本进程读到的配置修订号，用来区分已保存与已生效。
+`Main` 尽早安装 QQ hooks。`SatoriHub.start()` 交给 `Monitor.start`，在独立工作线程等 Application 基础 Context attach，至多 10 秒。Provider 短暂不可用时重试至多 1.2 秒。从 Provider 读到端口、令牌与四个运行偏好并应用后才绑定 HTTP 端口，其余高级配置不被覆盖。Provider 不可用时保留原文件或默认行为。`/healthz.config_revision` 是本进程读到的配置修订号，用来区分已保存与已生效。
 
 运行快照写进 `noBackupFilesDir/zhixian-control.json`，用 AtomicFile 原子更新，不用 SharedPreferences。首页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口。
 
 ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接重试失败后回退原文件配置，并通过 `config_status` 暴露不含敏感信息的原因。设置页给出系统设置里的路径（应用 → 关联启动）。引导线程在 QQ 主线程初始化任务之后启动，不阻塞 Application 创建。
+
+## core 的部件
+
+`SatoriHub` 只做接线：按依赖顺序建好下面这些部件，把 `HttpServer.Handler` 的回调转给它们。部件都是包内可见，互相只通过构造参数依赖，没有循环。
+
+| 部件 | 职责 |
+| --- | --- |
+| `HttpRoutes` | 鉴权、路由、请求体解析、`upload.create`、资源回读（含 `Range`），错误统一成 `{code, message}` |
+| `Dispatcher` | 标准方法与 `internal/*` 的方法名 → 实现；写动作一律经 `OutboundGate` |
+| `Capabilities` | `internal/capabilities` 目录与「曾经有过」的动作清单 |
+| `Events` | WebSocket 握手（IDENTIFY → READY）、事件广播与断线重放、传输层心跳、换号时的断开重连 |
+| `Inbound` | 内核回调 → 事件：消息、撤回、成员变动、申请、群列表；自己在 QQ 里发的消息的补偿轮询 |
+| `Requests` | 好友与入群申请：事件生成、待处理表、按 flag 同意或拒绝 |
+| `Messages` / `Sender` | `message.create`、`message.delete`；`Sender` 是最底层的发送：转元素、过内核、重试媒体上传、登记回执 |
+| `Forwards` | 合并转发的发出（原生或 fake）与读回（res_id 或内核父消息） |
+| `History` | `message.get`、`message.list`、聊天截图，以及补全空壳记录的整形 |
+| `Reactions` | 表情回应的增、撤、列，别人回应变化的事件 |
+| `GroupOps` | 踢人、禁言、设管理、改群、头衔、签到、精华、戳一戳、骰子猜拳 |
+| `Directory` | 群、成员、好友、资料的查询，uin 与 uid 的互查，群名缓存 |
+| `Lookup` / `Resources` | `message_id` 找回本地登记的消息；资源 id、`internal:` 链接与本地文件的换算 |
+| `OutboundGate` | 写动作的必经之路：等会话稳定、限频与熔断、占着唤醒锁 |
+| `Monitor` | 每秒一拍的状态循环（在线、心跳、换号、常驻通知）与 `/healthz`、`internal/status` 的诊断 |
+| `ApiError` / `Workers` / `Ids` / `Json` | 错误码的静态工厂；外部可见的线程命名；松散 id 的解析；org.json 的小零件 |
+
+换号时 `Monitor` 在 `Events.accountChanged` 的锁里调用每个部件的 `reset()`，旧账号的消息、资源、申请与回应缓存一并作废。
 
 ## 界面构建
 
@@ -39,7 +64,7 @@ APK 里的 dex 包含全部代码。注入 QQ 的那份内嵌进 `libsatori.so`�
 
 ## HTTP 路由
 
-三条通道各自独立，都在 `core/SatoriHub` 的 `onHttp` 里分派：
+三条通道各自独立，都在 `core/HttpRoutes` 里分派，方法名再交给 `core/Dispatcher`：
 
 | 路径 | 鉴权 | 用途 |
 | --- | --- | --- |
@@ -56,7 +81,7 @@ APK 里的 dex 包含全部代码。注入 QQ 的那份内嵌进 `libsatori.so`�
 
 回调按 `(int code, String msg, <payload>...)` 的形状匹配，不按方法名。`IOperateCallback` 的签名是 `onResult(int, String)`，不带结果。需要返回结构的读取要用各自的回调接口，例如 `IGroupMemberHonorCallback`、`IKernelRecentGetContactCallback`，第三个参数才是 payload。不回调的入口一律不进模块，否则调用方要等满 15 秒超时。
 
-`ExtraSvc` 维护一份动作注册表（`ExtraSvc.Spec`）：名字、别名、是否写、参数说明、调用体各登记一次。`SatoriHub.dispatchExtension` 按名字查表执行，写动作复用 `guarded` 的限频与熔断。`internalCapabilities` 的目录、参数、读写分类也从这份表生成。
+`ExtraSvc` 维护一份动作注册表（`ExtraSvc.Spec`）：名字、别名、是否写、参数说明、调用体各登记一次。`Dispatcher.extension` 按名字查表执行，写动作复用 `OutboundGate.guarded` 的限频与熔断。`Capabilities.build` 的目录、参数、读写分类也从这份表生成。
 
 新增扩展动作前核三件事：类名在不在 QQ 的 dex 类索引里、参数结构体的字段名、入口会不会回调。`packet` 只在协议需要直接发包时使用，不与内核服务混用。
 
@@ -90,7 +115,7 @@ APK 里的 dex 包含全部代码。注入 QQ 的那份内嵌进 `libsatori.so`�
 | 最近联系人 | `getRecentContactService` → `IKernelRecentContactService` |
 | 机器人 | `getRobotService` → `IKernelRobotService` |
 
-UIN 转 UID 走资料服务上的 `getUidByUin`。读操作的返回结构由 `SatoriHub.toJson` 反射导出，QQ 增删字段时跟着变。
+UIN 转 UID 走资料服务上的 `getUidByUin`。读操作的返回结构由 `Json.reflect` 反射导出，QQ 增删字段时跟着变。
 
 会话上共有 55 个 `get*()` 入口，模块只用上面 7 个。完整入口表、各服务的方法面与本层的功能边界见 [`JNI_CAPABILITIES.md`](JNI_CAPABILITIES.md)。
 

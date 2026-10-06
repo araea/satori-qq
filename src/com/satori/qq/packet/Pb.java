@@ -62,7 +62,7 @@ public final class Pb {
             while (p < end) {
                 long[] t = varint(d, p); long tag = t[0]; p = (int) t[1];
                 int field = (int) (tag >>> 3), wire = (int) (tag & 7);
-                Object val; 
+                Object val;
                 switch (wire) {
                     case 0: { long[] v = varint(d, p); val = v[0]; p = (int) v[1]; break; }
                     case 1: { long v = 0; for (int i = 0; i < 8; i++) v |= (long) (d[p+i] & 0xFF) << (8*i); p += 8; val = v; break; }

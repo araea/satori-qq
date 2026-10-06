@@ -30,6 +30,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     public static final String APP_NAME = "satori-qq";
     public static final String APP_VERSION = "0.32.0";
+    /** `login.sn` only tells a connection's logins apart; one account, one number, same as satori-wx. */
+    private static final int LOGIN_SN = 1;
     public static final String PLATFORM = "red";
     public static final String ADAPTER = "satori-qq";
 
@@ -252,7 +254,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     private JSONObject loginFull() throws Exception {
         boolean online = qq.isOnline();
         JSONObject login = new JSONObject();
-        login.put("sn", 0);
+        login.put("sn", LOGIN_SN);
         login.put("adapter", ADAPTER);
         login.put("platform", PLATFORM);
         login.put("status", online ? 1 : 0);
@@ -312,7 +314,7 @@ public final class SatoriHub implements HttpServer.Handler, QQClient.Listener {
     }
 
     private JSONObject loginSlim() throws Exception {
-        return Protocol.eventLogin(0, PLATFORM, Codec.user(selfUin(), qq.selfNick(), ""));
+        return Protocol.eventLogin(LOGIN_SN, PLATFORM, Codec.user(selfUin(), qq.selfNick(), ""));
     }
 
     // ============ HTTP API + WS events ============

@@ -492,6 +492,11 @@ public final class Codec {
         return "https://p.qlogo.cn/gh/" + groupId + "/" + groupId + "/640/";
     }
 
+    /** The user resource for an id, or nothing at all when QQ did not say who: `{"id":"0"}` names no one. */
+    private static void putUser(JSONObject ev, String key, long id) throws Exception {
+        if (id != 0) ev.put(key, user(id, "", ""));
+    }
+
     public static JSONObject user(long id, String name, String nick) throws Exception {
         JSONObject u = new JSONObject();
         u.put("id", String.valueOf(id));
@@ -667,8 +672,8 @@ public final class Codec {
             ev.put("type", "message-deleted");
             String mid = publicMessageId(ob);
             ev.put("message", new JSONObject().put("id", mid.isEmpty() ? "0" : mid));
-            ev.put("user", user(eventUserId(ob), "", ""));
-            ev.put("operator", user(ob.optLong("operator_id", 0), "", ""));
+            putUser(ev, "user", eventUserId(ob));
+            putUser(ev, "operator", ob.optLong("operator_id", 0));
             return ev;
         }
         if ("notify".equals(nt) && "poke".equals(ob.optString("sub_type"))) {
@@ -684,21 +689,21 @@ public final class Codec {
         if ("group_increase".equals(nt)) {
             ev.put("type", "guild-member-added");
             ev.put("user", user(ob.optLong("user_id"), "", ""));
-            ev.put("operator", user(ob.optLong("operator_id"), "", ""));
+            putUser(ev, "operator", ob.optLong("operator_id"));
             ev.put("member", new JSONObject().put("user", ev.optJSONObject("user")));
             return ev;
         }
         if ("group_decrease".equals(nt)) {
             ev.put("type", "guild-member-removed");
             ev.put("user", user(ob.optLong("user_id"), "", ""));
-            ev.put("operator", user(ob.optLong("operator_id"), "", ""));
+            putUser(ev, "operator", ob.optLong("operator_id"));
             ev.put("member", new JSONObject().put("user", ev.optJSONObject("user")));
             return ev;
         }
         if ("group_ban".equals(nt)) {
             ev.put("type", "guild-member-updated");
             ev.put("user", user(ob.optLong("user_id"), "", ""));
-            ev.put("operator", user(ob.optLong("operator_id"), "", ""));
+            putUser(ev, "operator", ob.optLong("operator_id"));
             ev.put("member", new JSONObject().put("user", ev.optJSONObject("user")));
             ev.put("_type", "satori-qq/mute");
             ev.put("_data", new JSONObject().put("duration", ob.optLong("duration") * 1000));

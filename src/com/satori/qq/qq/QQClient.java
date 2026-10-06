@@ -833,7 +833,7 @@ public final class QQClient {
     }
 
     /** Send a pre-built element list to a group (chatType=2) or c2c (chatType=1). */
-    public SendResult sendMsg(int chatType, String peerUid, ArrayList<?> elements) {
+    public SendResult sendMsg(int chatType, String peerUid, List<?> elements) {
         return sendMsg(chatType, peerUid, elements, null);
     }
 
@@ -842,7 +842,7 @@ public final class QQClient {
      * suppression exact: unrelated messages typed in the QQ UI are never classified by a
      * broad "a bot send is in progress" time window.
      */
-    public SendResult sendMsg(int chatType, String peerUid, ArrayList<?> elements,
+    public SendResult sendMsg(int chatType, String peerUid, List<?> elements,
                               SendTracker tracker) {
         return sendMsg(chatType, peerUid, elements, tracker, 45000);
     }
@@ -854,7 +854,7 @@ public final class QQClient {
         if (pending != null && status instanceof Number) pending.record(((Number) status).intValue());
     }
 
-    public SendResult sendMsg(int chatType, String peerUid, ArrayList<?> elements,
+    public SendResult sendMsg(int chatType, String peerUid, List<?> elements,
                               SendTracker tracker, long timeoutMs) {
         SendResult r = new SendResult();
         Object msgService = getMsgService();
@@ -1135,8 +1135,8 @@ public final class QQClient {
     }
 
     /** Native merge-forward of already-sent messages. src and dest are usually the same contact. */
-    public SendResult multiForward(int chatType, String peerUid, ArrayList<Long> msgIds,
-                                   ArrayList<String> names) {
+    public SendResult multiForward(int chatType, String peerUid, List<Long> msgIds,
+                                   List<String> names) {
         return multiForward(chatType, peerUid, chatType, peerUid, msgIds, names);
     }
 
@@ -1146,8 +1146,8 @@ public final class QQClient {
      * into a group). Mirrors the manual QQ flow: select messages in chat A, forward to chat B.
      */
     public SendResult multiForward(int srcChatType, String srcPeerUid, int dstChatType,
-                                   String dstPeerUid, ArrayList<Long> msgIds,
-                                   ArrayList<String> names) {
+                                   String dstPeerUid, List<Long> msgIds,
+                                   List<String> names) {
         SendResult r = new SendResult();
         Object msgService = getMsgService();
         if (msgService == null) { r.msg = "kernel session not ready"; return r; }

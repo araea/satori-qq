@@ -7,6 +7,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.List;
 
 /** Converts between internal message segments and QQ NT MsgElement objects,
  *  and turns a received MsgRecord into an event object for the Satori hub. */
@@ -21,7 +22,7 @@ public final class Convert {
     // ---------------- internal segments -> QQ elements (for sending) ----------------
 
     /** message may be a JSONArray of segments or a plain String. */
-    public ArrayList<Object> toElements(Object message, int chatType) {
+    public List<Object> toElements(Object message, int chatType) {
         ArrayList<Object> out = new ArrayList<>();
         JSONArray arr = normalize(message);
         for (int i = 0; i < arr.length(); i++) {
@@ -153,13 +154,13 @@ public final class Convert {
      * Merge-forward card -> KELEMTYPEMULTIFORWARD(16). Android QQNT opens via getMultiMsg using
      * resId + fileName; xmlContent on this version is the multimsg JSON (not the old serviceID=35 XML).
      */
-    public ArrayList<Object> toMultiForward(String xmlContent, String resId, String fileName) {
+    public List<Object> toMultiForward(String xmlContent, String resId, String fileName) {
         ArrayList<Object> out = new ArrayList<>();
         addMultiForward(out, xmlContent, resId, fileName);
         return out;
     }
 
-    public ArrayList<Object> toStructLongMsg(String xmlContent, String resId) {
+    public List<Object> toStructLongMsg(String xmlContent, String resId) {
         ArrayList<Object> out = new ArrayList<>();
         addStructLongMsg(out, xmlContent, resId);
         return out;

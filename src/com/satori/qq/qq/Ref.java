@@ -79,8 +79,12 @@ public final class Ref {
     public static int asInt(Object o) { return o == null ? 0 : ((Number) o).intValue(); }
     public static String asStr(Object o) { return o == null ? "" : String.valueOf(o); }
     public static boolean asBool(Object o) {
-        if (o instanceof Boolean) return (Boolean) o;
-        if (o instanceof Number) return ((Number) o).intValue() != 0;
+        if (o instanceof Boolean b) return b;
+        if (o instanceof Number n) return n.intValue() != 0;
         return false;
+    }
+    /** 内核枚举的名字；不是枚举就取它的字符串形式，null 是空串。 */
+    public static String enumName(Object e) {
+        return e instanceof Enum<?> named ? named.name() : asStr(e);
     }
 }

@@ -1,6 +1,6 @@
+package com.satori.qq.core;
+
 import com.satori.qq.Cfg;
-import com.satori.qq.core.MsgStore;
-import com.satori.qq.core.SatoriHub;
 import com.satori.qq.net.HttpServer;
 import com.satori.qq.net.WsConn;
 import com.satori.qq.qq.QQClient;
@@ -96,7 +96,7 @@ public final class HubHttpTest {
                 .put("sender", new JSONObject().put("user_id", 7L).put("nickname", "小七").put("card", "七").put("role", "member"))
                 .put("message", new JSONArray().put(new JSONObject().put("type", "text")
                         .put("data", new JSONObject().put("text", "你好"))));
-        HubDeliveryTest.call(hub, "emitObEvent", new Class[]{JSONObject.class}, ob);
+        hub.events.emit(ob);
         List<JSONObject> packets = HubDeliveryTest.packets(live);
         check(packets.size() == 2, "READY then the event");
         JSONObject event = packets.get(1).getJSONObject("body");
@@ -118,7 +118,7 @@ public final class HubHttpTest {
                 .put("sender", new JSONObject().put("user_id", 7L).put("nickname", "小七").put("role", "member"))
                 .put("message", new JSONArray().put(new JSONObject().put("type", "image")
                         .put("data", new JSONObject().put("file", "abc123.image").put("url", "https://gchat.qpic.cn/x"))));
-        HubDeliveryTest.call(hub, "emitObEvent", new Class[]{JSONObject.class}, media);
+        hub.events.emit(media);
         String content = HubDeliveryTest.packets(live).get(2).getJSONObject("body").getJSONObject("message").getString("content");
         check(content.contains("src=\"internal:red/10001/_tmp/abc123.image\""), "received media is an internal: link: " + content);
         check(!content.contains("127.0.0.1") && !content.contains("/v1/assets/"), "no address baked into the link");

@@ -21,6 +21,11 @@ public final class MsgStore {
         public String content;    // last outbound Satori content, for get after send
         /** true when {@link #content} is a Satori element string (this end sent it), not CQ text. */
         public boolean contentIsElements;
+
+        /** The contact's peer string as QQ's kernel wants it: the uid when known, else the number. */
+        public String peer() {
+            return peerUid == null || peerUid.isEmpty() ? String.valueOf(peerUin) : peerUid;
+        }
     }
 
     /** Opaque resource id -> the best local/remote representation learned from QQ. */

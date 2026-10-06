@@ -30,8 +30,8 @@ $AAPT package -f -m -J $OUT/gen -M $R/AndroidManifest.xml -I $FRAMEWORK -S $R/re
 echo "== 1. javac =="
 rm -rf $OUT/classes && mkdir -p $OUT/classes
 find $R/src $OUT/gen -name '*.java' > $OUT/sources.txt
-javac -classpath $ANDROID_JAR:$R/libs/json.jar -source 8 -target 8 -encoding UTF-8 \
-  -nowarn -d $OUT/classes @$OUT/sources.txt
+javac --release 17 -classpath $ANDROID_JAR:$R/libs/json.jar -encoding UTF-8 \
+  -Xlint:all,-deprecation,-serial,-rawtypes -d $OUT/classes @$OUT/sources.txt
 echo "   compiled $(find $OUT/classes -name '*.class' | wc -l) classes"
 
 echo "== 2. d8 -> dex =="

@@ -31,7 +31,7 @@ rm -rf "$OUT/test-gen" && mkdir -p "$OUT/test-gen"
 echo "== 1. javac =="
 rm -rf "$CLASSES" && mkdir -p "$CLASSES"
 find "$R/src" "$R/tests" "$OUT/test-gen" -name '*.java' -not -path "$R/tests/ui/*" > "$OUT/test-sources.txt"
-javac -classpath "$JSON_JAR:$ANDROID_JAR" -encoding UTF-8 -nowarn \
+javac --release 17 -classpath "$JSON_JAR:$ANDROID_JAR" -encoding UTF-8 -nowarn \
   -d "$CLASSES" @"$OUT/test-sources.txt"
 echo "   compiled $(find "$CLASSES" -name '*.class' | wc -l) classes"
 

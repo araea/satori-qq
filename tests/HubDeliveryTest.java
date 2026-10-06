@@ -1,6 +1,6 @@
+package com.satori.qq.core;
+
 import com.satori.qq.Cfg;
-import com.satori.qq.core.MsgStore;
-import com.satori.qq.core.SatoriHub;
 import com.satori.qq.net.WsConn;
 import com.satori.qq.qq.QQClient;
 import org.json.JSONObject;
@@ -12,11 +12,6 @@ import java.util.concurrent.*;
 
 /** Exercises the real hub publication/replay path without loading QQ or Android. */
 public final class HubDeliveryTest {
-    static Object call(Object target, String method, Class<?>[] types, Object... args) throws Exception {
-        Method m = target.getClass().getDeclaredMethod(method, types);
-        m.setAccessible(true);
-        return m.invoke(target, args);
-    }
     static WsConn connection(ByteArrayOutputStream out) throws Exception {
         Constructor<WsConn> c = WsConn.class.getDeclaredConstructor(Socket.class, OutputStream.class);
         c.setAccessible(true);
@@ -52,8 +47,7 @@ public final class HubDeliveryTest {
         List<Future<?>> work = new ArrayList<>();
         for (int n = 0; n < 4; n++) work.add(pool.submit(() -> {
             try {
-                for (int i = 0; i < 50; i++) call(hub, "emitSatoriEvent", new Class[]{JSONObject.class},
-                        new JSONObject().put("sn", 0).put("type", "internal"));
+                for (int i = 0; i < 50; i++) hub.events.emitSatori(new JSONObject().put("sn", 0).put("type", "internal"));
             } catch (Exception e) { throw new RuntimeException(e); }
         }));
         for (Future<?> f : work) f.get();
@@ -77,23 +71,22 @@ public final class HubDeliveryTest {
         // Pending requests have a connection-local event but consume the same global sn.
         // A broadcast immediately after it must be newer; otherwise the client's
         // monotonic cursor would discard that broadcast.
-        JSONObject pending = com.satori.qq.core.Notices.friendRequest(10001, 10, 20002, "hi", "123");
-        call(hub, "sendSatori", new Class[]{WsConn.class, JSONObject.class}, resumed, pending);
-        call(hub, "emitSatoriEvent", new Class[]{JSONObject.class},
-                new JSONObject().put("sn", 0).put("type", "internal"));
+        JSONObject pending = Notices.friendRequest(10001, 10, 20002, "hi", "123");
+        hub.events.sendPending(resumed, pending);
+        hub.events.emitSatori(new JSONObject().put("sn", 0).put("type", "internal"));
         List<JSONObject> afterPending = packets(replay);
         check(afterPending.size() == 103, "pending request and broadcast delivered");
         check(afterPending.get(102).getJSONObject("body").getLong("sn") >
                 afterPending.get(101).getJSONObject("body").getLong("sn"), "pending request precedes broadcast");
-        call(hub, "emitLoginUpdated", new Class[]{});
+        hub.events.loginUpdated();
         ByteArrayOutputStream noLoginReplay = new ByteArrayOutputStream();
         hub.onWsText(connection(noLoginReplay), new JSONObject().put("op",3).put("body",new JSONObject().put("sn",
                 afterPending.get(102).getJSONObject("body").getLong("sn"))).toString());
         check(packets(noLoginReplay).size() == 1, "login events never replay");
         try {
-            call(hub, "dispatch", new Class[]{String.class, JSONObject.class}, "reaction.clear", new JSONObject());
+            hub.dispatcher.call("reaction.clear", new JSONObject());
             throw new AssertionError("standard clear must not mean self-only");
-        } catch (InvocationTargetException e) { check(e.getCause().getMessage().contains("reaction.clear"), "clear unsupported"); }
+        } catch (ApiError e) { check(e.getMessage().contains("reaction.clear"), "clear unsupported"); }
         System.out.println("HubDeliveryTest OK");
     }
     static void check(boolean condition, String message) { if (!condition) throw new AssertionError(message); }

@@ -22,32 +22,32 @@ public final class SatoriListTest {
     }
 
     private static void unpagedKeepsWholeSet() throws Exception {
-        JSONObject out = SatoriHub.pagedList(rows(5), new JSONObject(), 200);
+        JSONObject out = Json.page(rows(5), new JSONObject(), 200);
         eq(5, out.getJSONArray("data").length(), "unpaged keeps every row");
         if (out.has("next")) throw new AssertionError("unpaged must not advertise next");
     }
 
     private static void pagedSlicesAndTokens() throws Exception {
-        JSONObject out = SatoriHub.pagedList(rows(5), new JSONObject().put("limit", 2), 200);
+        JSONObject out = Json.page(rows(5), new JSONObject().put("limit", 2), 200);
         eq(2, out.getJSONArray("data").length(), "limit honoured");
         eq("2", out.getString("next"), "next token is the offset");
     }
 
     private static void tokenWalksToTheEnd() throws Exception {
-        JSONObject out = SatoriHub.pagedList(rows(5), new JSONObject().put("next", "4"), 200);
+        JSONObject out = Json.page(rows(5), new JSONObject().put("next", "4"), 200);
         eq(1, out.getJSONArray("data").length(), "last page is short");
         if (out.has("next")) throw new AssertionError("last page must not advertise next");
     }
 
     private static void blankTokenStartsAtZero() throws Exception {
-        JSONObject out = SatoriHub.pagedList(rows(5), new JSONObject().put("limit", 3), 200);
+        JSONObject out = Json.page(rows(5), new JSONObject().put("limit", 3), 200);
         eq(0, out.getJSONArray("data").optJSONObject(0).optInt("i"), "slice starts at zero");
     }
 
     private static void invalidTokensFailInsteadOfRestarting() throws Exception {
         for (String token : new String[] {"oops", "-1", "1.5", "9223372036854775808"}) {
             try {
-                SatoriHub.pagedList(rows(5), new JSONObject().put("next", token), 200);
+                Json.page(rows(5), new JSONObject().put("next", token), 200);
                 throw new AssertionError("invalid cursor accepted: " + token);
             } catch (RuntimeException expected) {
                 if (!expected.getMessage().contains("invalid next token"))
@@ -58,17 +58,17 @@ public final class SatoriListTest {
 
     private static void muteAcceptsBothShapes() throws Exception {
         long month = 30L * 24 * 3600 * 1000;
-        eq(0L, SatoriHub.resolveChannelMuteMs(new JSONObject().put("duration", 0)),
+        eq(0L, GroupOps.muteDurationMs(new JSONObject().put("duration", 0)),
                 "duration 0 unmutes");
-        eq(600_000L, SatoriHub.resolveChannelMuteMs(new JSONObject().put("duration", 600_000)),
+        eq(600_000L, GroupOps.muteDurationMs(new JSONObject().put("duration", 600_000)),
                 "duration is milliseconds");
-        eq(0L, SatoriHub.resolveChannelMuteMs(new JSONObject().put("enable", false)),
+        eq(0L, GroupOps.muteDurationMs(new JSONObject().put("enable", false)),
                 "enable false unmutes");
-        eq(month, SatoriHub.resolveChannelMuteMs(new JSONObject().put("enable", true)),
+        eq(month, GroupOps.muteDurationMs(new JSONObject().put("enable", true)),
                 "enable true mutes until turned off");
-        eq(month, SatoriHub.resolveChannelMuteMs(new JSONObject()),
+        eq(month, GroupOps.muteDurationMs(new JSONObject()),
                 "bare mute uses the default window");
-        eq(1000L, SatoriHub.resolveChannelMuteMs(
+        eq(1000L, GroupOps.muteDurationMs(
                         new JSONObject().put("duration", 1000).put("enable", false)),
                 "explicit duration wins over enable");
     }

@@ -1,6 +1,5 @@
 package com.satori.qq.qq;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**

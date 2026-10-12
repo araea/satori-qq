@@ -882,13 +882,9 @@ public final class Convert {
             if (group) {
                 JSONObject banXml = Notices.banFromXml(xml, selfUin, time, peerUin);
                 if (banXml != null) {
+                    // 谁是成员、谁是管理员，Notices.banPeople 已按行文分好；这里只把 uid 换成号码。
                     long member = resolvePerson(banXml.optString("member_uid"));
                     long admin = resolvePerson(banXml.optString("admin_uid"));
-                    if (member == selfUin && admin != 0 && admin != selfUin) {
-                        long tmp = member;
-                        member = admin;
-                        admin = tmp;
-                    }
                     if (member != 0) banXml.put("user_id", member);
                     if (admin != 0) banXml.put("operator_id", admin);
                     banXml.remove("member_uid");

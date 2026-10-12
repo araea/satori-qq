@@ -55,8 +55,9 @@ public final class NoticesTest {
         eq("u_a", x.getString("sender_uid"), "xml poke sender");
         eq("u_b", x.getString("target_uid"), "xml poke target");
 
-        String banXml = "<gtip align=\"center\"><qq uin=\"u_op\" col=\"1\" nm=\"\"/>"
-                + "<nor txt=\"将\"/><qq uin=\"u_mb\" col=\"1\" nm=\"\"/>"
+        // QQ 的句式是「成员 被管理员 管理员 禁言 N」：被禁言的在前（真机 2026-10-12 实测）。
+        String banXml = "<gtip align=\"center\"><qq uin=\"u_mb\" col=\"1\" nm=\"\"/>"
+                + "<nor txt=\"被管理员\"/><qq uin=\"u_op\" col=\"1\" nm=\"\"/>"
                 + "<nor txt=\"禁言10秒\"/></gtip>";
         JSONObject b = Notices.banFromXml(banXml, 1, 50, 280183116L);
         check(b != null, "xml ban parsed");
@@ -64,6 +65,24 @@ public final class NoticesTest {
         eq(10, b.getLong("duration"), "xml ban duration");
         eq("u_op", b.getString("admin_uid"), "xml ban admin");
         eq("u_mb", b.getString("member_uid"), "xml ban member");
+        // 句式换成「管理员 将 成员 禁言」「管理员 解除了 成员 的禁言」时按行文认，不按先后
+        String[] swapped = Notices.banPeople("<gtip><qq uin=\"u_op\"/><nor txt=\"将\"/><qq uin=\"u_mb\"/>"
+                + "<nor txt=\"禁言10分钟\"/></gtip>");
+        eq("u_mb", swapped[0], "wording 将: member");
+        eq("u_op", swapped[1], "wording 将: admin");
+        String[] liftWording = Notices.banPeople("<gtip><qq uin=\"u_op\"/><nor txt=\"解除了\"/><qq uin=\"u_mb\"/>"
+                + "<nor txt=\"的禁言\"/></gtip>");
+        eq("u_mb", liftWording[0], "wording 解除了: member");
+        eq("u_op", liftWording[1], "wording 解除了: admin");
+        String[] owner = Notices.banPeople("<gtip><qq uin=\"u_mb\"/><nor txt=\"被群主\"/><qq uin=\"u_op\"/>"
+                + "<nor txt=\"禁言1小时\"/></gtip>");
+        eq("u_mb", owner[0], "wording 被群主: member");
+        eq("u_op", owner[1], "wording 被群主: admin");
+        String[] lone = Notices.banPeople("<gtip><qq uin=\"u_mb\"/><nor txt=\"被禁言\"/></gtip>");
+        eq("u_mb", lone[0], "single uin is the member");
+        eq("", lone[1], "single uin has no admin");
+        eq("", Notices.banPeople("<gtip><nor txt=\"全员禁言\"/></gtip>")[0], "no uin, no member");
+        check(Notices.lastBanTip().contains("<nor"), "last ban tip is kept for diagnostics");
         // 数字与单位被拆在相邻节点里、复合写法、「分」简写
         eq(600, Notices.parseBanDuration("<gtip><nor txt=\"被管理员禁言\"/><nor txt=\"10\"/><nor txt=\"分钟\"/></gtip>"),
                 "split node duration");
@@ -82,10 +101,12 @@ public final class NoticesTest {
                 "diagnostic tip is redacted");
         check(Notices.unreadBanTip().contains("被管理员禁言"), "diagnostic tip keeps the wording");
         JSONObject lift = Notices.banFromXml(
-                "<gtip><qq uin=\"u_op\"/><nor txt=\"解除禁言\"/><qq uin=\"u_mb\"/></gtip>",
+                "<gtip><qq uin=\"u_mb\"/><nor txt=\"被管理员\"/><qq uin=\"u_op\"/><nor txt=\"解除禁言\"/></gtip>",
                 1, 50, 280183116L);
         check(lift != null, "xml lift parsed");
         eq("lift_ban", lift.getString("sub_type"), "xml lift sub");
+        eq("u_mb", lift.getString("member_uid"), "xml lift member");
+        eq("u_op", lift.getString("admin_uid"), "xml lift admin");
     }
 
     private static void testGroupMember() throws Exception {

@@ -78,7 +78,8 @@ final class Inbound implements QQClient.Listener {
                 .put("emitted", emit.get())
                 .put("notices", notice.get())
                 .put("manual_self", manualSelf.get())
-                .put("unread_ban_tip", Notices.unreadBanTip());
+                .put("unread_ban_tip", Notices.unreadBanTip())
+                .put("last_ban_tip", Notices.lastBanTip());
     }
 
     /** 在 QQ 界面里手打的「自己的消息」以什么身份递给客户端；缺省用一个稳定的、非 QQ 的 id。 */

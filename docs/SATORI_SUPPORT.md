@@ -120,7 +120,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | `message-created` / `message-deleted` | 收到、发出或撤回消息 |
 | `guild-added` / `guild-updated` / `guild-removed` | 加群、群资料变化或退群 |
 | `channel-added` / `channel-updated` / `channel-removed` | 对应群的单频道变化 |
-| `guild-member-added` / `guild-member-updated` / `guild-member-removed` | 成员加入、禁言或离开。禁言走 `guild-member-updated` + `_type=satori-qq/mute`，`_data.duration` 为毫秒、`0` 是解除；灰条里读不出时长时不带 `duration`，改带 `_data.duration_unknown=true` |
+| `guild-member-added` / `guild-member-updated` / `guild-member-removed` | 成员加入、禁言或离开。禁言走 `guild-member-updated` + `_type=satori-qq/mute`，`_data.duration` 为毫秒、`0` 是解除；灰条里读不出时长时不带 `duration`，改带 `_data.duration_unknown=true`。`user` 是被禁言的成员，`operator` 是动手的管理员（灰条里只有一个人时没有 `operator`） |
 | `reaction-added` / `reaction-removed` | 消息表态计数变化；QQ 回调不提供操作者 |
 | `friend-request` / `guild-member-request` / `guild-request` | 好友申请、加群申请或群邀请 |
 | `internal`，`_type=satori-qq/poke` | 戳一戳 |

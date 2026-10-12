@@ -14,9 +14,14 @@ public final class Notices {
     /** 最近一条读不出时长的禁言灰条（已去掉账号与昵称），进 healthz 的 inbound 诊断。 */
     private static volatile String unreadBanTip = "";
 
+    /** 最近一条禁言灰条（同样去掉账号与昵称）：核对 QQ 实际的句式、两个人的先后用。 */
+    private static volatile String lastBanTip = "";
+
     private Notices() {}
 
     public static String unreadBanTip() { return unreadBanTip; }
+
+    public static String lastBanTip() { return lastBanTip; }
 
     public static JSONObject recall(long self, long time, boolean group, long peer,
                                     long userId, long operatorId, int messageId) throws Exception {
@@ -94,17 +99,42 @@ public final class Notices {
         if (lower.contains("nudgeaction") || lower.contains("nudge")) return null;
         boolean lift = xml.contains("解除禁言") || xml.contains("取消禁言");
         if (!lift && !xml.contains("禁言")) return null;
-        ArrayList<String> uids = xmlUids(xml);
         long duration = lift ? 0 : parseBanDuration(xml);
-        if (duration == UNKNOWN_DURATION) unreadBanTip = redact(xml);
+        lastBanTip = redact(xml);
+        if (duration == UNKNOWN_DURATION) unreadBanTip = lastBanTip;
         JSONObject n = groupBan(self, time, groupId, 0, 0, duration);
-        if (uids.size() >= 2) {
-            n.put("admin_uid", uids.get(0));
-            n.put("member_uid", uids.get(1));
-        } else if (uids.size() == 1) {
-            n.put("member_uid", uids.get(0));
-        }
+        String[] people = banPeople(xml);
+        if (!people[0].isEmpty()) n.put("member_uid", people[0]);
+        if (!people[1].isEmpty()) n.put("admin_uid", people[1]);
         return n;
+    }
+
+    /**
+     * 禁言灰条里的两个人：{被禁言的成员, 动手的管理员}，没有的是空串。
+     * QQ 写作「成员 被管理员 管理员 禁言 10分钟」——**被禁言的人在前**（真机 2026-10-12 实测，
+     * 此前按「管理员 将 成员 禁言」反着认，榜上列的全是管理员）。以防别的版本换了句式，
+     * 两个人之间的文字里有「被」就是成员在前，有「将」「把」或「了」（解除了…的禁言）就是管理员在前，都没有按成员在前。
+     */
+    public static String[] banPeople(String xml) {
+        Matcher m = Pattern.compile("uin=\"([^\"]*)\"|txt=\"([^\"]*)\"").matcher(xml);
+        ArrayList<String> uids = new ArrayList<>();
+        StringBuilder between = new StringBuilder();
+        while (m.find()) {
+            String uid = m.group(1);
+            if (uid != null) {
+                if (!uid.trim().isEmpty()) uids.add(uid.trim());
+            } else if (uids.size() == 1) {
+                between.append(m.group(2));
+            }
+        }
+        if (uids.isEmpty()) return new String[]{"", ""};
+        if (uids.size() == 1) return new String[]{uids.get(0), ""};
+        String gap = between.toString();
+        boolean adminFirst = !gap.contains("被")
+                && (gap.contains("将") || gap.contains("把") || gap.contains("了"));
+        return adminFirst
+                ? new String[]{uids.get(1), uids.get(0)}
+                : new String[]{uids.get(0), uids.get(1)};
     }
 
     static ArrayList<String> xmlUids(String xml) {

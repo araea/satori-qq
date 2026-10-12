@@ -8,7 +8,15 @@ import org.json.JSONObject;
 
 /** Notice JSON builders. No QQ kernel types — Convert/Hub fill uin from uid. */
 public final class Notices {
+    /** 灰条里读不出禁言时长。0 是「解除」，所以未知另用负数，不能混。 */
+    public static final long UNKNOWN_DURATION = -1;
+
+    /** 最近一条读不出时长的禁言灰条（已去掉账号与昵称），进 healthz 的 inbound 诊断。 */
+    private static volatile String unreadBanTip = "";
+
     private Notices() {}
+
+    public static String unreadBanTip() { return unreadBanTip; }
 
     public static JSONObject recall(long self, long time, boolean group, long peer,
                                     long userId, long operatorId, int messageId) throws Exception {
@@ -88,6 +96,7 @@ public final class Notices {
         if (!lift && !xml.contains("禁言")) return null;
         ArrayList<String> uids = xmlUids(xml);
         long duration = lift ? 0 : parseBanDuration(xml);
+        if (duration == UNKNOWN_DURATION) unreadBanTip = redact(xml);
         JSONObject n = groupBan(self, time, groupId, 0, 0, duration);
         if (uids.size() >= 2) {
             n.put("admin_uid", uids.get(0));
@@ -114,16 +123,40 @@ public final class Notices {
         return uids;
     }
 
-    static long parseBanDuration(String xml) {
-        Matcher m = Pattern
-                .compile("(\\d+)\\s*(秒|分钟|小时|天)").matcher(xml);
-        if (!m.find()) return 1;
-        long n = Long.parseLong(m.group(1));
-        String unit = m.group(2);
-        if ("分钟".equals(unit)) return n * 60;
-        if ("小时".equals(unit)) return n * 3600;
-        if ("天".equals(unit)) return n * 86400;
-        return n;
+    private static final Pattern TXT = Pattern.compile("txt=\"([^\"]*)\"");
+    private static final Pattern DURATION_PART =
+            Pattern.compile("(\\d+)\\s*(秒钟|秒|分钟|分|小时|时|天)");
+
+    /**
+     * 灰条里的禁言时长，秒；读不出来是 {@link #UNKNOWN_DURATION}，不再编一个 1 秒。
+     * 先把所有 {@code txt="…"} 按序接成一句话（数字和单位被拆在相邻节点里也读得到），
+     * 只看「禁言」之后的部分，免得把昵称里的「3天」当时长；「1天2小时」这样的复合写法累加。
+     */
+    public static long parseBanDuration(String xml) {
+        Matcher parts = TXT.matcher(xml);
+        StringBuilder sentence = new StringBuilder();
+        while (parts.find()) sentence.append(parts.group(1));
+        String text = sentence.toString();
+        int at = text.indexOf("禁言");
+        Matcher m = DURATION_PART.matcher(at >= 0 ? text.substring(at) : text);
+        long total = 0;
+        boolean found = false;
+        while (m.find()) {
+            long n = Long.parseLong(m.group(1));
+            String unit = m.group(2);
+            if (unit.startsWith("分")) n *= 60;
+            else if (unit.startsWith("小时") || unit.equals("时")) n *= 3600;
+            else if (unit.equals("天")) n *= 86400;
+            total += n;
+            found = true;
+        }
+        return found ? total : UNKNOWN_DURATION;
+    }
+
+    /** 诊断用的灰条原文：去掉账号与昵称，只留结构与文字。 */
+    static String redact(String xml) {
+        String s = xml.replaceAll("(uin|nm)=\"[^\"]*\"", "$1=\"*\"");
+        return s.length() > 400 ? s.substring(0, 400) : s;
     }
 
     /** Join/leave/kick gray tips on Android QQNT are XML subType 12. */

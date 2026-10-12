@@ -708,7 +708,11 @@ public final class Codec {
             putUser(ev, "operator", ob.optLong("operator_id"));
             ev.put("member", new JSONObject().put("user", ev.optJSONObject("user")));
             ev.put("_type", "satori-qq/mute");
-            ev.put("_data", new JSONObject().put("duration", ob.optLong("duration") * 1000));
+            // 读不出时长时不带 duration（而不是写 0——0 在这里是「解除」）。
+            long seconds = ob.optLong("duration");
+            ev.put("_data", seconds < 0
+                    ? new JSONObject().put("duration_unknown", true)
+                    : new JSONObject().put("duration", seconds * 1000));
             return ev;
         }
         return null;

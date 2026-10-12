@@ -64,6 +64,23 @@ public final class NoticesTest {
         eq(10, b.getLong("duration"), "xml ban duration");
         eq("u_op", b.getString("admin_uid"), "xml ban admin");
         eq("u_mb", b.getString("member_uid"), "xml ban member");
+        // 数字与单位被拆在相邻节点里、复合写法、「分」简写
+        eq(600, Notices.parseBanDuration("<gtip><nor txt=\"被管理员禁言\"/><nor txt=\"10\"/><nor txt=\"分钟\"/></gtip>"),
+                "split node duration");
+        eq(93600, Notices.parseBanDuration("<gtip><nor txt=\"禁言1天2小时\"/></gtip>"), "compound duration");
+        eq(1800, Notices.parseBanDuration("<gtip><nor txt=\"禁言30分\"/></gtip>"), "short minute unit");
+        // 昵称里的「3天」不是时长：只看「禁言」之后
+        eq(60, Notices.parseBanDuration("<gtip><nor txt=\"3天打鱼被管理员禁言1分钟\"/></gtip>"), "nick digits ignored");
+        // 读不出就是未知，不是 1 秒，更不是 0（0 是解除）
+        eq(Notices.UNKNOWN_DURATION, Notices.parseBanDuration("<gtip><nor txt=\"被管理员禁言\"/></gtip>"),
+                "unreadable duration");
+        JSONObject unread = Notices.banFromXml(
+                "<gtip><qq uin=\"u_mb\" nm=\"某某\"/><nor txt=\"被管理员禁言\"/></gtip>", 1, 50, 280183116L);
+        eq("ban", unread.getString("sub_type"), "unreadable ban is still a ban");
+        eq(Notices.UNKNOWN_DURATION, unread.getLong("duration"), "unreadable ban duration");
+        check(Notices.unreadBanTip().contains("u_mb") == false && Notices.unreadBanTip().contains("某某") == false,
+                "diagnostic tip is redacted");
+        check(Notices.unreadBanTip().contains("被管理员禁言"), "diagnostic tip keeps the wording");
         JSONObject lift = Notices.banFromXml(
                 "<gtip><qq uin=\"u_op\"/><nor txt=\"解除禁言\"/><qq uin=\"u_mb\"/></gtip>",
                 1, 50, 280183116L);

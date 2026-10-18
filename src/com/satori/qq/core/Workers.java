@@ -15,6 +15,7 @@ final class Workers {
     static final String BOOTSTRAP = "pool-4-bootstrap";
     static final String STATUS_MONITOR = "pool-5-thread-1";
     static final String RESTART = "pool-5-thread-2";
+    static final String FOREGROUND_RELEASE = "pool-4-thread-4";
     static final String IDENTIFY_TIMEOUT = "pool-5-thread-3";
     static final String CHANNEL_UNMUTE = "pool-9-thread-1";
 

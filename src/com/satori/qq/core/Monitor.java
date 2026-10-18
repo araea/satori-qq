@@ -113,7 +113,36 @@ final class Monitor {
         if (n != null) n.cancel();
         WakeLockCtl w = gate.wakeLock();
         if (w != null) w.off();
+        try {
+            qq.sustainKernel(false);
+        } catch (Throwable ignore) {
+            // A wedged kernel call must not keep the switch from turning the rest off.
+        }
+        releaseKernelForeground();
         L.i("master switch off: listener, notice, wake lock and keepalive stopped");
+    }
+
+    /**
+     * QQ's kernel-foreground lease is ref-counted by in-flight sends: the first call may defer the
+     * release. Retry briefly in the background so turning the switch off really restores the
+     * background state, without waiting for a monitor tick that no longer exists.
+     */
+    private void releaseKernelForeground() {
+        Workers.start(Workers.FOREGROUND_RELEASE, () -> {
+            for (int attempt = 0; attempt < 60; attempt++) {
+                try {
+                    qq.sustainKernel(false);
+                } catch (Throwable ignore) {
+                    // keep trying; the next pass may succeed
+                }
+                if ("idle".equals(qq.kernelForegroundDiag())) return;
+                try {
+                    Thread.sleep(1000L);
+                } catch (InterruptedException stop) {
+                    return;
+                }
+            }
+        });
     }
 
     private void watchSwitch() {

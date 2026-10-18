@@ -9,6 +9,7 @@
     <item type="id" name="hero_action" />
     <item type="id" name="loading" />
     <item type="id" name="endpoint" />
+    <item type="id" name="module_switch" />
     <item type="id" name="guard_switch" />
     <item type="id" name="guard_kill" />
     <item type="id" name="guard_relaunch" />

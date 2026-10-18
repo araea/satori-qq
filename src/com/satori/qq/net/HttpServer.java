@@ -154,14 +154,30 @@ public final class HttpServer {
     private final Handler handler;
     private volatile ServerSocket server;
     private volatile boolean running;
+    /** Set by {@link #stop()}; the accept loop must not start another listener afterwards. */
+    private volatile boolean stopped = true;
     private final Set<WsConn> conns = new CopyOnWriteArraySet<>();
 
     public HttpServer(Cfg cfg, Handler handler) { this.cfg = cfg; this.handler = handler; }
 
     public void start() {
+        stopped = false;
         Thread t = new Thread(this::acceptLoop, "pool-4-thread-1");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * Closes the listener and every attached WebSocket. The hub calls this when the master switch
+     * is turned off; the port must disappear, not keep answering on a half-closed loop.
+     */
+    public void stop() {
+        stopped = true;
+        running = false;
+        ServerSocket s = server;
+        if (s != null) try { s.close(); } catch (Throwable ignore) {}
+        for (WsConn c : conns) c.close();
+        conns.clear();
     }
 
     public int connectionCount() { return conns.size(); }
@@ -177,8 +193,9 @@ public final class HttpServer {
     }
 
     private void acceptLoop() {
-        while (true) {
+        while (!stopped) {
             try {
+                if (stopped) return;
                 server = new ServerSocket();
                 server.setReuseAddress(true);
                 server.bind(new InetSocketAddress(cfg.host, cfg.port));
@@ -191,6 +208,7 @@ public final class HttpServer {
                     ct.start();
                 }
             } catch (Throwable e) {
+                if (stopped) return;
                 L.e("accept loop error, retry in 3s", e);
                 try { if (server != null) server.close(); } catch (Throwable ignore) {}
                 try { Thread.sleep(3000); } catch (InterruptedException ie) { return; }

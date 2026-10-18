@@ -68,7 +68,7 @@ public final class StatusTest {
         // ---- 诊断：值齐全、不泄露隐私、版本不一致时提示 ----
         JSONObject leaky = health(true, true, 1).put("version", "0.26.1").put("self_id", "PRIVATE_ID")
                 .put("token", "SECRET").put("compat", new JSONObject().put("passed", 203).put("total", 204));
-        String[][] rows = Status.diagnostics(leaky, "0.27.0", null);
+        String[][] rows = Status.diagnostics(leaky, "0.27.0", null, true);
         StringBuilder all = new StringBuilder();
         for (String[] row : rows) {
             eq(2, row.length, "每行一个标签一个值");
@@ -78,7 +78,7 @@ public final class StatusTest {
         check(!all.toString().contains("PRIVATE_ID") && !all.toString().contains("SECRET"), "诊断不含隐私字段");
         check(all.toString().contains("重启手机"), "运行版本与应用不同时提示");
         check(all.toString().contains("缺 1 项"), "接口缺失时写出数量");
-        for (String[] row : Status.diagnostics(null, "0.27.0", null)) {
+        for (String[] row : Status.diagnostics(null, "0.27.0", null, true)) {
             check(!row[1].contains("已显示") && !row[1].contains("全部可用"), "连不上时不给出正面结论");
         }
 

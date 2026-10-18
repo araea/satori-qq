@@ -17,6 +17,16 @@ public final class ControlBridge {
     public static String status() { return status; }
     public static long revision() { return revision; }
 
+    /** Reads only the master switch, for the live watcher. Never applies the rest of the config. */
+    public static boolean readEnabled(Context context, boolean fallback) {
+        try {
+            Bundle result = context.getContentResolver().call(ControlProvider.URI, "switch", null, null);
+            return result == null ? fallback : result.getBoolean("enabled", fallback);
+        } catch (Throwable error) {
+            return fallback;
+        }
+    }
+
     /**
      * 读一次管理页设置并回报运行状态。
      *

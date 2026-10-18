@@ -30,6 +30,11 @@ public final class ManagedConfig {
             if (!(value instanceof Boolean)) throw new IllegalArgumentException("缺少设置：" + key);
             clean.put(key, value);
         }
+        // The master switch is controlled from the home page, not the settings form, but it
+        // travels in the same overrides document. Missing means on (file/default behaviour).
+        Object enabled = raw.opt("enabled");
+        if (enabled != null && !(enabled instanceof Boolean)) throw new IllegalArgumentException("模块开关须为布尔值");
+        clean.put("enabled", enabled == null || (Boolean) enabled);
         return clean;
     }
 
@@ -37,6 +42,7 @@ public final class ManagedConfig {
         JSONObject value = validate(raw); // Validate everything before mutating a live config.
         cfg.port = value.getInt("port");
         cfg.token = value.getString("token");
+        cfg.enabled = value.getBoolean("enabled");
         cfg.statusNotification = value.getBoolean("status_notification");
         cfg.manualSelfMessages = value.getBoolean("manual_self_messages");
         cfg.wakeLockAuto = value.getBoolean("wake_lock_auto");
@@ -45,6 +51,7 @@ public final class ManagedConfig {
 
     public static JSONObject snapshot(Cfg cfg) throws Exception {
         return new JSONObject().put("port", cfg.port).put("token", cfg.token)
+                .put("enabled", cfg.enabled)
                 .put("status_notification", cfg.statusNotification)
                 .put("manual_self_messages", cfg.manualSelfMessages)
 

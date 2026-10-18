@@ -184,6 +184,16 @@ public final class WakeLockCtl {
         }
     }
 
+    /** Drop every reason to hold a lock. Used when the master switch turns the module off. */
+    public void off() {
+        synchronized (lock) {
+            userWants = false;
+            autoDepth = 0;
+            sustainWifi = false;
+            apply();
+        }
+    }
+
     /** Bring the OS locks in line with the three reasons we might want them. Caller holds {@link #lock}. */
     private void apply() {
         boolean wantCpu = userWants || autoDepth > 0;

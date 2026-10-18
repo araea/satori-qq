@@ -54,8 +54,16 @@ public final class ControlStore {
         return config == null ? 3001 : config.optInt("port", 3001);
     }
     public void save(JSONObject value) throws Exception {
-        JSONObject clean = ManagedConfig.validate(value);
-        synchronized (LOCK) { JSONObject all = snapshot(); all.put("overrides", clean).put("revision", all.optLong("revision", 0) + 1); write(all); }
+        synchronized (LOCK) {
+            JSONObject all = snapshot();
+            JSONObject merged = new JSONObject(value.toString());
+            // The settings form does not carry the master switch. Saving it must not silently turn
+            // the module back on: keep whatever the home page last chose.
+            if (!merged.has("enabled")) merged.put("enabled", editable(all).optBoolean("enabled", true));
+            JSONObject clean = ManagedConfig.validate(merged);
+            all.put("overrides", clean).put("revision", all.optLong("revision", 0) + 1);
+            write(all);
+        }
     }
     public void useFile() {
         synchronized (LOCK) {

@@ -25,6 +25,8 @@ public final class Status {
     public static final int NOT_LISTENING = 2;
     public static final int LOGGED_OUT = 3;
     public static final int READY = 4;
+    /** 模块主开关关闭：端口、通知与保活全部停下。 */
+    public static final int DISABLED = 5;
 
     // ---- 链路每一环 ----
     public static final int STEP_OK = 0;
@@ -46,6 +48,11 @@ public final class Status {
     }
 
     public static int state(JSONObject health, boolean checked) {
+        return state(health, checked, true);
+    }
+
+    public static int state(JSONObject health, boolean checked, boolean enabled) {
+        if (!enabled) return DISABLED;
         if (!checked) return CHECKING;
         if (health == null) return UNREACHABLE;
         if (!health.optBoolean("listening")) return NOT_LISTENING;
@@ -63,6 +70,8 @@ public final class Status {
                 return new Line(WARNING, "服务待恢复", "模块已经加载，但本机端口还没有就绪。重新启动 QQ 通常可以恢复。");
             case LOGGED_OUT:
                 return new Line(WARNING, "等待登录", "本机服务已就绪。在 QQ 里登录账号后，客户端就能收发消息。");
+            case DISABLED:
+                return new Line(NEUTRAL, "已关闭", "模块开关已关闭：不监听端口、不显示通知、不保活，和没有安装时一样。");
             default:
                 int clients = health == null ? 0 : health.optInt("connections");
                 return new Line(SUCCESS, "连接就绪", clients == 0
@@ -76,8 +85,13 @@ public final class Status {
         return state == UNREACHABLE || state == NOT_LISTENING || state == LOGGED_OUT;
     }
 
+    public static boolean disabled(int state) {
+        return state == DISABLED;
+    }
+
     /** 连接链路：QQ 账号 → 本机服务 → Satori 客户端。每环一个状态与一句值。 */
     public static int[] steps(int state, JSONObject health) {
+        if (state == DISABLED) return new int[]{STEP_UNKNOWN, STEP_UNKNOWN, STEP_UNKNOWN};
         if (state == CHECKING || health == null) {
             return new int[]{STEP_UNKNOWN, state == CHECKING ? STEP_UNKNOWN : STEP_FAIL, STEP_UNKNOWN};
         }
@@ -89,6 +103,7 @@ public final class Status {
     }
 
     public static String[] stepValues(int state, JSONObject health, int port) {
+        if (state == DISABLED) return new String[]{"—", "模块已关闭", "—"};
         if (state == CHECKING) return new String[]{"检查中", "检查中", "检查中"};
         if (health == null) return new String[]{"未知", "未连接", "未知"};
         int clients = health.optInt("connections");
@@ -136,7 +151,8 @@ public final class Status {
     }
 
     /** 诊断的定义列表：标签与值一一对应，只含状态与计数。 */
-    public static String[][] diagnostics(JSONObject health, String appVersion, GuardCommand.Result guard) {
+    public static String[][] diagnostics(JSONObject health, String appVersion, GuardCommand.Result guard,
+                                         boolean enabled) {
         String running, qq, compat, notice, failures, sessionErrors;
         if (health == null) {
             running = "未连接";
@@ -164,6 +180,7 @@ public final class Status {
         else keeper = (guard.armed() ? "保活中" : "已暂停") + " · 1 小时内重启 "
                 + (guard.status == null ? 0 : guard.status.optInt("restarts_1h")) + " 次";
         return new String[][]{
+                {"模块开关", enabled ? "开启" : "已关闭"},
                 {"知弦版本", appVersion == null || appVersion.isEmpty() ? "未知" : appVersion},
                 {"运行中的模块", running},
                 {"QQ 版本", qq},

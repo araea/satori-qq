@@ -26,6 +26,7 @@ final class HomePage {
         void openSettings();
         void openQQ();
         void copyEndpoint();
+        void setEnabled(boolean on);
         void guard(boolean arm);
         void stopQQ();
         void relaunchQQ();
@@ -40,6 +41,8 @@ final class HomePage {
         boolean probing;
         int port = 3001;
         boolean tokenSet;
+        boolean enabled = true;
+        boolean enabledBusy;
         GuardCommand.Result guard;
         String guardBusy;
         String appVersion = "";
@@ -61,7 +64,7 @@ final class HomePage {
     private final TextView clients, uptime;
     private final Item[] chain = new Item[3];
     private final Item endpoint, token;
-    private final Item guardSwitch, relaunch, kill;
+    private final Item guardSwitch, relaunch, kill, moduleSwitch;
     private final Ui.Group guardGroup;
     private final TextView[] data;
     private final ImageButton refresh;
@@ -211,6 +214,15 @@ final class HomePage {
         token.setOnClickListener(v -> actions.openSettings());
         content.addView(connect, Ui.stack(0));
 
+        // ---- 模块开关 ----
+        content.addView(ui.sectionTitle("模块"), Ui.stack(t.space2xl));
+        Ui.Group moduleGroup = ui.group();
+        moduleSwitch = moduleGroup.add(new Item(t, Item.SWITCH, "模块开关",
+                "关闭后不监听端口、不显示通知、不保活，和没有安装时一样；随时可以再打开。"));
+        moduleSwitch.setId(R.id.module_switch);
+        moduleSwitch.setOnToggle((item, on) -> actions.setEnabled(on));
+        content.addView(moduleGroup, Ui.stack(0));
+
         // ---- 常驻守护 ----
         content.addView(ui.sectionTitle("常驻守护"), Ui.stack(t.space2xl));
         guardGroup = ui.group();
@@ -235,7 +247,7 @@ final class HomePage {
         panel.setId(R.id.diagnostics);
         panel.setPadding(t.spaceLg, t.spaceLg + t.spaceXs, t.spaceLg, t.spaceLg + t.spaceXs);
         panel.setBackground(Shape.smooth(t.surfaceContainer, t.shapeXl));
-        String[][] rows = Status.diagnostics(null, "", null);
+        String[][] rows = Status.diagnostics(null, "", null, true);
         data = new TextView[rows.length];
         for (int i = 0; i < rows.length; i++) data[i] = ui.dataRow(panel, rows[i][0], i == 0);
         content.addView(panel, Ui.stack(0));
@@ -253,7 +265,7 @@ final class HomePage {
     }
 
     void render(Model m) {
-        int state = Status.state(m.health, m.checked);
+        int state = Status.state(m.health, m.checked, m.enabled);
         Status.Line line = Status.hero(state, m.health);
         loading.setVisibility(m.probing && !m.checked ? View.VISIBLE : View.GONE);
         refresh.setEnabled(!m.probing);
@@ -305,8 +317,13 @@ final class HomePage {
         endpoint.setHeadline("http://127.0.0.1:" + m.port);
         token.setSupporting(m.tokenSet ? "已设置，客户端须填写相同令牌" : "未设置，客户端无需令牌");
 
+        moduleSwitch.setChecked(m.enabled, false);
+        moduleSwitch.setSupporting(m.enabledBusy ? "正在切换…"
+                : m.enabled ? "开启：服务、通知与保活都在运行" : "已关闭：端口、通知与保活都已停下");
+        moduleSwitch.setEnabled(!m.enabledBusy);
+
         GuardCommand.Result g = m.guard;
-        boolean available = g != null && g.ok;
+        boolean available = g != null && g.ok && m.enabled;
         if (m.guardBusy != null) {
             guardSwitch.setSupporting(m.guardBusy);
         } else {
@@ -318,7 +335,7 @@ final class HomePage {
         relaunch.setEnabled(available && idle);
         kill.setEnabled(available && idle);
 
-        String[][] rows = Status.diagnostics(m.health, m.appVersion, g);
+        String[][] rows = Status.diagnostics(m.health, m.appVersion, g, m.enabled);
         for (int i = 0; i < rows.length; i++) Ui.set(data[i], rows[i][1]);
     }
 }

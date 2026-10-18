@@ -38,6 +38,11 @@ final class Monitor {
     private final Runnable clearAccountState;
     private volatile HttpServer server;
     private volatile StatusNotice notice;
+    /** True while the master switch is on and the listener/status loop are supposed to run. */
+    private volatile boolean serving;
+    /** Bumped on every on/off transition so a loop from the previous generation exits. */
+    private volatile long generation;
+    private volatile boolean watching;
 
     private volatile JSONObject compatCache;
     private volatile String compatCacheVersion = "";
@@ -77,11 +82,61 @@ final class Monitor {
                 context = qq.appContext();
             }
             if (contextReady(context)) ControlBridge.bootstrap(context, cfg, SatoriHub.APP_VERSION);
-            httpServer.start();
-            refreshNotice();
-            Workers.start(Workers.STATUS_MONITOR, this::loop);
+            if (cfg.enabled) startServing(); else enterStandby();
+            watchSwitch();
         });
         new Handler(Looper.getMainLooper()).post(bootstrap::start);
+    }
+
+    /**
+     * 主开关：关掉时不监听端口、不发常驻通知、不持唤醒锁、不重启 QQ 的核心服务；打开时逐项恢复。
+     * 开关值由知弦应用写进 Provider，这里每秒读一次，所以拨动后一两秒内生效，不用重启 QQ。
+     */
+    private synchronized void startServing() {
+        if (serving) return;
+        serving = true;
+        final long gen = ++generation;
+        Keepalive.setEnabled(true);
+        HttpServer s = server;
+        if (s != null) s.start();
+        refreshNotice();
+        Workers.start(Workers.STATUS_MONITOR, () -> loop(gen));
+    }
+
+    private synchronized void enterStandby() {
+        serving = false;
+        ++generation;
+        HttpServer s = server;
+        if (s != null) s.stop();
+        Keepalive.setEnabled(false);
+        StatusNotice n = notice;
+        if (n != null) n.cancel();
+        WakeLockCtl w = gate.wakeLock();
+        if (w != null) w.off();
+        L.i("master switch off: listener, notice, wake lock and keepalive stopped");
+    }
+
+    private void watchSwitch() {
+        if (watching) return;
+        watching = true;
+        Thread t = new Thread(() -> {
+            for (;;) {
+                try {
+                    Thread.sleep(1200L);
+                } catch (InterruptedException stop) {
+                    return;
+                }
+                Context ctx = qq.appContext();
+                if (ctx == null) continue;
+                boolean on = ControlBridge.readEnabled(ctx, cfg.enabled);
+                if (on == cfg.enabled) continue;
+                cfg.enabled = on;
+                L.i("master switch -> " + (on ? "on" : "off"));
+                if (on) startServing(); else enterStandby();
+            }
+        }, "pool-4-thread-3");
+        t.setDaemon(true);
+        t.start();
     }
 
     private static boolean contextReady(Context context) {
@@ -101,14 +156,15 @@ final class Monitor {
 
     // ------------------------------------------------------------------ 状态循环
 
-    private void loop() {
+    private void loop(long gen) {
         boolean previous = qq.isOnline();
         gate.onlineSince(previous ? System.currentTimeMillis() : 0);
         long interval = Math.max(1000L, cfg.heartbeatMs);
         long nextHeartbeat = System.currentTimeMillis() + interval;
-        while (true) {
+        while (serving && gen == generation) {
             try {
                 Thread.sleep(1000);
+                if (!serving || gen != generation) return;
                 boolean online = qq.isOnline();
                 qq.sustainKernel(cfg.kernelForeground && online && events.hasClients());
                 long now = System.currentTimeMillis();
@@ -224,6 +280,7 @@ final class Monitor {
      * ready yet, so we keep retrying each monitor tick until it is.
      */
     private void refreshNotice() {
+        if (!serving) return;
         if (!cfg.statusNotification) {
             // Radio sustain is independent of whether a notification is requested.
             driveWifiSustain(qq.isOnline(), listening());
@@ -347,6 +404,7 @@ final class Monitor {
         return new JSONObject()
                 .put("name", SatoriHub.APP_NAME)
                 .put("version", SatoriHub.APP_VERSION)
+                .put("enabled", cfg.enabled)
                 .put("config_revision", ControlBridge.revision())
                 .put("config_status", ControlBridge.status())
                 .put("online", qq.isOnline())
@@ -377,6 +435,7 @@ final class Monitor {
     }
 
     private String noticeDiag() {
+        if (!cfg.enabled) return "off";
         if (!cfg.statusNotification) return "off";
         StatusNotice n = notice;
         if (n == null) return "pending-context";
@@ -402,6 +461,7 @@ final class Monitor {
     JSONObject status() throws Exception {
         boolean online = qq.isOnline();
         return new JSONObject()
+                .put("enabled", cfg.enabled)
                 .put("online", online)
                 .put("good", online)
                 .put("online_since_epoch_ms", gate.onlineSinceMs())

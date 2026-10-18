@@ -23,7 +23,9 @@ HTTP 服务、消息监听与保活只在主进程运行，APK 里不含 native 
 
 `ui.MainActivity` 与 `control.ControlProvider` 在应用自身进程。Provider 只允许模块自身 UID 与当前安装的 `com.tencent.mobileqq` UID 调用，其余调用方含 shell 抛 `SecurityException`。Provider 只支持读配置与运行快照，不接受文件路径、命令或 HTTP 写设置。
 
-`Main` 尽早安装 QQ hooks。`SatoriHub.start()` 交给 `Monitor.start`，在独立工作线程等 Application 基础 Context attach，至多 10 秒。Provider 短暂不可用时重试至多 1.2 秒。从 Provider 读到端口、令牌与四个运行偏好并应用后才绑定 HTTP 端口，其余高级配置不被覆盖。Provider 不可用时保留原文件或默认行为。`/healthz.config_revision` 是本进程读到的配置修订号，用来区分已保存与已生效。
+`Main` 尽早安装 QQ hooks。`SatoriHub.start()` 交给 `Monitor.start`，在独立工作线程等 Application 基础 Context attach，至多 10 秒。Provider 短暂不可用时重试至多 1.2 秒。从 Provider 读到端口、令牌、模块总开关与四个运行偏好并应用后才绑定 HTTP 端口，其余高级配置不被覆盖。Provider 不可用时保留原文件或默认行为。`/healthz.config_revision` 是本进程读到的配置修订号，用来区分已保存与已生效。
+
+模块总开关（`enabled`）也走同一份设置，但由 `Monitor` 的看门线程每秒读一次 Provider 的 `switch` 方法。关闭时 `Monitor` 关闭监听端口、取消常驻通知、释放唤醒锁并让 `Keepalive` 停踢；打开时按原配置重新绑定端口与状态循环。开关切换不需要重启 QQ。守护由应用侧同步暂停/恢复，不归模块进程管。
 
 运行快照写进 `noBackupFilesDir/zhixian-control.json`，用 AtomicFile 原子更新，不用 SharedPreferences。首页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口。
 

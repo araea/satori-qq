@@ -34,6 +34,12 @@ public final class ControlProvider extends ContentProvider {
             result.putLong("revision", values.optLong("revision", 0));
             return result;
         }
+        if ("switch".equals(method)) {
+            JSONObject values = store.snapshot();
+            result.putBoolean("enabled", ControlStore.editable(values).optBoolean("enabled", true));
+            result.putLong("revision", values.optLong("revision", 0));
+            return result;
+        }
         if ("runtime".equals(method)) {
             String value = extras == null ? "" : extras.getString("value", "");
             if (value.length() > 8192) throw new IllegalArgumentException("Runtime too large");

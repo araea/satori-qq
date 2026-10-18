@@ -8,6 +8,7 @@ import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Insets;
 import android.os.Build;
 import android.os.Bundle;
@@ -414,6 +415,7 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
                 model.port = port;
                 JSONObject editable = ControlStore.editable(all);
                 model.tokenSet = !editable.optString("token", "").isEmpty();
+                model.enabled = editable.optBoolean("enabled", true);
                 if (settings != null) settings.load(editable, all.optJSONObject("overrides") != null, false);
                 renderAll();
                 if (resumed) main.postDelayed(poll, result == null ? POLL_OFFLINE : POLL_ONLINE);
@@ -470,6 +472,62 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
 
     @Override public void copyEndpoint() {
         copy("连接地址", "http://127.0.0.1:" + model.port, false);
+    }
+
+    @Override public void setEnabled(boolean on) {
+        if (model.enabledBusy) return;
+        model.enabledBusy = true;
+        home.render(model);
+        worker.execute(() -> {
+            boolean saved = true;
+            try {
+                JSONObject all = store.snapshot();
+                JSONObject editable = ControlStore.editable(all);
+                editable.put("enabled", on);
+                store.save(editable);
+            } catch (Exception error) {
+                saved = false;
+            }
+            String guardError = null;
+            if (saved) {
+                if (!on) {
+                    GuardCommand.Result before = GuardCommand.status();
+                    if (before.ok && before.armed()) {
+                        prefs().edit().putBoolean("guard_resume", true).apply();
+                        GuardCommand.Result paused = GuardCommand.pause();
+                        if (!paused.ok) guardError = paused.error;
+                    } else {
+                        prefs().edit().putBoolean("guard_resume", false).apply();
+                    }
+                } else if (prefs().getBoolean("guard_resume", false)) {
+                    GuardCommand.Result armed = GuardCommand.arm();
+                    if (!armed.ok) guardError = armed.error;
+                    else prefs().edit().putBoolean("guard_resume", false).apply();
+                }
+            }
+            final boolean done = saved;
+            final String warning = guardError;
+            main.post(() -> {
+                if (isDestroyed()) return;
+                model.enabledBusy = false;
+                if (done) model.enabled = on;
+                if (!done) {
+                    snackbar.show("开关没有保存成功，请重试", null, null);
+                } else if (warning != null) {
+                    snackbar.show((on ? "模块已开启" : "模块已关闭") + "；守护状态没有同步：" + warning, null, null);
+                } else {
+                    snackbar.show(on ? "模块已开启" : "模块已关闭", null, null);
+                }
+                guardAt = 0;
+                refreshGuard();
+                refresh();
+            });
+        });
+    }
+
+    /** 模块开关关闭时记下守护原本是否保活，重新开启时恢复；这个偏好只属于界面进程。 */
+    private SharedPreferences prefs() {
+        return getSharedPreferences("zhixian", MODE_PRIVATE);
     }
 
     @Override public void guard(boolean arm) {

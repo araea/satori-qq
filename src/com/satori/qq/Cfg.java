@@ -14,6 +14,9 @@ public final class Cfg {
     public volatile String token = "";        // empty => no auth required
     public volatile boolean heartbeat = true;
     public volatile int heartbeatMs = 15000;
+    /** Master switch. Off means no listener, no resident notification, no wake locks and no
+     *  in-process keepalive — the module is present but behaves as if it were not installed. */
+    public volatile boolean enabled = true;
     /** Post a resident status notification (in QQ's notification shade) while the service runs. */
     public volatile boolean statusNotification = true;
     /** One-time cooperative request for Doze battery-optimization exemption (system dialog). */
@@ -74,6 +77,7 @@ public final class Cfg {
                 c.token = o.optString("token", c.token);
                 c.heartbeat = o.optBoolean("heartbeat", c.heartbeat);
                 c.heartbeatMs = o.optInt("heartbeat_ms", c.heartbeatMs);
+                c.enabled = o.optBoolean("enabled", c.enabled);
                 c.statusNotification = o.optBoolean("status_notification", c.statusNotification);
                 c.requestBatteryExemption = o.optBoolean("request_battery_exemption", c.requestBatteryExemption);
                 c.wakeLockControl = o.optBoolean("wake_lock_control", c.wakeLockControl);

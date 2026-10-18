@@ -105,8 +105,12 @@ public final class StatusNotice {
         return !alive;
     }
 
+    /**
+     * Re-created before every post, not once per process: WeChat (and some ROMs) delete the channel
+     * while clearing its own notifications, and posting to a deleted id is silently dropped.
+     */
     private void ensureChannel() {
-        if (channelReady || nm == null) return;
+        if (nm == null) return;
         try {
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW);
@@ -125,6 +129,8 @@ public final class StatusNotice {
     private static final class View {
         String title, text, big, key;
         int color;
+        boolean timer;
+        long since;
     }
 
     private View render(boolean online, boolean listening, String uin, String nick,
@@ -148,15 +154,15 @@ public final class StatusNotice {
             v.color = COLOR_DEGRADED;
         }
         if (v.big == null) v.big = v.text;
-        String coarse = "";
+        // The uptime is the system's own chronometer: SystemUI ticks it, so no minute-by-minute
+        // rebuild and no stale "已在线" line after a freeze. Same as the WeChat implementation.
         if (online && listening && onlineSinceMs > 0) {
-            long up = System.currentTimeMillis() - onlineSinceMs;
-            coarse = String.valueOf(up / 60000L); // minute granularity for dedupe
-            v.big += "\n已在线 " + humanUptime(up);
+            v.timer = true;
+            v.since = onlineSinceMs;
         }
         WakeLockCtl w = wake;
         String wk = w == null ? "w-" : (w.held() ? "w1" : "w0");
-        v.key = v.title + '|' + v.text + '|' + uin + '|' + nick + '|' + coarse + '|' + wk;
+        v.key = v.title + '|' + v.text + '|' + uin + '|' + nick + '|' + wk;
         return v;
     }
 
@@ -168,9 +174,13 @@ public final class StatusNotice {
                 .setStyle(new Notification.BigTextStyle().bigText(v.big))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .setShowWhen(false)
+                .setShowWhen(v.timer)
                 .setCategory(Notification.CATEGORY_SERVICE)
                 .setColor(v.color);
+        if (v.timer) {
+            b.setWhen(v.since);
+            b.setUsesChronometer(true);
+        }
         PendingIntent open = openAppIntent();
         if (open != null) b.setContentIntent(open);
         addWakeAction(b);

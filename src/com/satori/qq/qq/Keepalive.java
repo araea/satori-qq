@@ -40,6 +40,8 @@ public final class Keepalive {
     private static volatile Context ctx;
     private static volatile String last = "not-attempted";
     private static volatile long lastAt;
+    /** Master switch mirrored from the hub; false means the thread stays parked and never kicks. */
+    private static volatile boolean enabled = true;
 
     private Keepalive() {}
 
@@ -63,8 +65,15 @@ public final class Keepalive {
         t.start();
     }
 
+    /** Turn the periodic core-service restart on or off without touching the host process. */
+    public static void setEnabled(boolean on) {
+        enabled = on;
+        last = on ? "armed" : "disabled";
+    }
+
     private static void kick() {
         Context c = ctx;
+        if (!enabled) { last = "disabled"; return; }
         if (c == null) { last = "no-context"; return; }
         for (String cls : SERVICES) {
             try {

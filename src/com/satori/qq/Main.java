@@ -3,6 +3,7 @@ package com.satori.qq;
 import com.satori.qq.core.MsgStore;
 import com.satori.qq.core.SatoriHub;
 import com.satori.qq.qq.EnvProbe;
+import com.satori.qq.qq.Keepalive;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.xp.Xp;
 
@@ -43,6 +44,7 @@ public final class Main {
             }
 
             EnvProbe.hold(host);
+            Keepalive.setEnabled(cfg.enabled);
             L.i("bridge loading in process " + process);
             MsgStore store = new MsgStore();
             QQClient qq = new QQClient(host, true);

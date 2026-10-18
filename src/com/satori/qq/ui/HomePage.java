@@ -317,7 +317,8 @@ final class HomePage {
         endpoint.setHeadline("http://127.0.0.1:" + m.port);
         token.setSupporting(m.tokenSet ? "已设置，客户端须填写相同令牌" : "未设置，客户端无需令牌");
 
-        moduleSwitch.setChecked(m.enabled, false);
+        // 切换过程中不要用旧值把用户刚拨过去的开关拨回来；结果回来后再按真实值画。
+        if (!m.enabledBusy) moduleSwitch.setChecked(m.enabled, false);
         moduleSwitch.setSupporting(m.enabledBusy ? "正在切换…"
                 : m.enabled ? "开启：服务、通知与保活都在运行" : "已关闭：端口、通知与保活都已停下");
         moduleSwitch.setEnabled(!m.enabledBusy);

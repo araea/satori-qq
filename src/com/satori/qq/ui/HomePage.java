@@ -11,6 +11,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import com.satori.qq.R;
 import com.satori.qq.guard.GuardCommand;
+import com.satori.qq.update.Updater;
 import java.util.Arrays;
 import org.json.JSONObject;
 
@@ -32,6 +33,9 @@ final class HomePage {
         void relaunchQQ();
         void copyReport();
         void shareReport();
+        void updateAction(int action);
+        void checkUpdate();
+        void setAutoUpdate(boolean on);
     }
 
     /** 首页渲染需要的全部输入。 */
@@ -46,6 +50,8 @@ final class HomePage {
         GuardCommand.Result guard;
         String guardBusy;
         String appVersion = "";
+        Updater.State update;
+        boolean autoUpdate = true;
     }
 
     final LinearLayout root;
@@ -65,6 +71,8 @@ final class HomePage {
     private final Item[] chain = new Item[3];
     private final Item endpoint, token;
     private final Item guardSwitch, relaunch, kill, moduleSwitch;
+    private final Item checkRow, autoRow;
+    private final UpdateCard updateCard, rebootCard;
     private final Ui.Group guardGroup;
     private final TextView[] data;
     private final ImageButton refresh;
@@ -107,6 +115,14 @@ final class HomePage {
         content.addView(brand, Ui.stack(t.spaceSm));
         content.addView(ui.text("QQ 的 Satori 服务", Tokens.BODY_LARGE, t.onSurfaceVariant), Ui.stack(t.spaceXs));
         bar.follow(scroll, brand);
+
+        // ---- 更新：重启卡在上（模块没生效是眼前的事），更新卡在下 ----
+        rebootCard = new UpdateCard(ui, actions::updateAction);
+        rebootCard.setId(R.id.reboot_card);
+        content.addView(rebootCard, Ui.stack(t.spaceXl));
+        updateCard = new UpdateCard(ui, actions::updateAction);
+        updateCard.setId(R.id.update_card);
+        content.addView(updateCard, Ui.stack(t.spaceMd));
 
         // ---- 状态卡片 ----
         hero = ui.column();
@@ -223,6 +239,20 @@ final class HomePage {
         moduleSwitch.setOnToggle((item, on) -> actions.setEnabled(on));
         content.addView(moduleGroup, Ui.stack(0));
 
+        // ---- 更新 ----
+        content.addView(ui.sectionTitle("更新"), Ui.stack(t.space2xl));
+        Ui.Group updateGroup = ui.group();
+        checkRow = updateGroup.add(new Item(t, Item.ACTION, "检查更新", "").leading(Icon.DOWNLOAD, t.onSurfaceVariant));
+        checkRow.setId(R.id.check_update);
+        checkRow.setOnClickListener(v -> actions.checkUpdate());
+        autoRow = updateGroup.add(new Item(t, Item.SWITCH, "自动检查更新",
+                "打开知弦时检查，并每天在后台检查一次；有新版本时发出通知。"));
+        autoRow.setId(R.id.auto_update);
+        autoRow.setOnToggle((item, on) -> actions.setAutoUpdate(on));
+        content.addView(updateGroup, Ui.stack(0));
+        content.addView(ui.text("更新来自 GitHub 发布页，下载后会校验。模块更新需要重启手机才会生效。",
+                Tokens.BODY_SMALL, t.onSurfaceVariant), Pages.note(t));
+
         // ---- 常驻守护 ----
         content.addView(ui.sectionTitle("常驻守护"), Ui.stack(t.space2xl));
         guardGroup = ui.group();
@@ -338,5 +368,18 @@ final class HomePage {
 
         String[][] rows = Status.diagnostics(m.health, m.appVersion, g, m.enabled);
         for (int i = 0; i < rows.length; i++) Ui.set(data[i], rows[i][1]);
+
+        Updater.State u = m.update;
+        if (u == null) {
+            updateCard.show(null);
+            rebootCard.show(null);
+        } else {
+            String running = m.health == null ? "" : m.health.optString("version");
+            updateCard.show(UpdateFaces.update(u, "知弦", m.appVersion));
+            rebootCard.show(UpdateFaces.reboot(u, "知弦", running));
+            checkRow.setSupporting(UpdateFaces.row(u, m.appVersion, System.currentTimeMillis()));
+            checkRow.setEnabled(!u.checking && !u.working());
+        }
+        autoRow.setChecked(m.autoUpdate, false);
     }
 }

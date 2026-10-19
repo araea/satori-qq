@@ -38,10 +38,11 @@ final class Icon extends Drawable {
     static final int WARNING = 17;
     static final int RESTART = 18;
     static final int FILE = 19;
+    static final int DOWNLOAD = 20;
 
-    private static final Path[] STROKES = new Path[20];
-    private static final Path[] FILLS = new Path[20];
-    private static final boolean[] MIRRORED = new boolean[20];
+    private static final Path[] STROKES = new Path[21];
+    private static final Path[] FILLS = new Path[21];
+    private static final boolean[] MIRRORED = new boolean[21];
 
     static {
         for (int i = 0; i < STROKES.length; i++) {
@@ -213,6 +214,15 @@ final class Icon extends Drawable {
         p.lineTo(15.5f, 13);
         p.moveTo(8.5f, 16.5f);
         p.lineTo(13, 16.5f);
+
+        p = STROKES[DOWNLOAD];
+        p.moveTo(12, 4);
+        p.lineTo(12, 15);
+        p.moveTo(7.5f, 11);
+        p.lineTo(12, 15.5f);
+        p.lineTo(16.5f, 11);
+        p.moveTo(5, 20);
+        p.lineTo(19, 20);
     }
 
     private final int kind;

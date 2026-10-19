@@ -1,14 +1,17 @@
 package com.satori.qq.ui;
 
+import android.Manifest;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.os.Build;
 import android.os.Bundle;
@@ -30,6 +33,10 @@ import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 import com.satori.qq.control.ControlStore;
 import com.satori.qq.guard.GuardCommand;
+import com.satori.qq.update.Notes;
+import com.satori.qq.update.Release;
+import com.satori.qq.update.UpdateJob;
+import com.satori.qq.update.Updater;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONObject;
@@ -74,6 +81,12 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
     private boolean backRegistered;
     private int insetTop, insetBottom, insetIme, insetLeft, insetRight;
     private final Runnable poll = () -> { if (resumed) refresh(); };
+    private Updater updater;
+    private boolean awaitingCheck;
+    private boolean sawChecking;
+    private boolean askedNotifications;
+    private long updateProbeAt;
+    private final Updater.Listener updateListener = this::onUpdateState;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -83,6 +96,9 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
         twoPane = layout.twoPane();
         store = new ControlStore(this);
         model.appVersion = appVersion();
+        updater = Updater.get(this);
+        model.autoUpdate = updater.auto();
+        UpdateJob.schedule(this, model.autoUpdate);
 
         frame = new FrameLayout(this);
         frame.setBackgroundColor(t.surface);
@@ -114,6 +130,8 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
         showPage(page, false);
         home.render(model);
         if (Build.VERSION.SDK_INT >= 33) setupBack();
+        String updated = updater.takeJust();
+        if (!updated.isEmpty()) frame.post(() -> snackbar.show(updated, null, null));
     }
 
     // ------------------------------------------------------------------ 窗口与安全区
@@ -367,10 +385,17 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
         resumed = true;
         refresh();
         if (System.currentTimeMillis() - guardAt > GUARD_STALE) refreshGuard();
+        updater.listen(updateListener);
+        if (System.currentTimeMillis() - updateProbeAt > GUARD_STALE) {
+            updateProbeAt = System.currentTimeMillis();
+            updater.refresh();
+        }
+        updater.check(false);
     }
 
     @Override protected void onPause() {
         resumed = false;
+        updater.unlisten(updateListener);
         main.removeCallbacks(poll);
         if (settings != null) settings.reveal(false);
         super.onPause();
@@ -410,6 +435,7 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
                 if (isDestroyed()) return;
                 storeSnapshot = all;
                 model.health = result;
+                updater.setRunning(result == null ? "" : result.optString("version"));
                 model.checked = true;
                 model.probing = false;
                 model.port = port;
@@ -598,6 +624,117 @@ public final class MainActivity extends Activity implements HomePage.Actions, Se
                 + "，1h 重启 " + (g.status == null ? 0 : g.status.optInt("restarts_1h"))
                 + " 次，连续失败 " + (g.status == null ? 0 : g.status.optInt("consec_fail")) + " 次")).append('\n');
         return out.toString();
+    }
+
+    // ------------------------------------------------------------------ 更新
+
+    private void onUpdateState(Updater.State state) {
+        if (isDestroyed()) return;
+        model.update = state;
+        home.render(model);
+        if (state.checking) sawChecking = true;
+        if (awaitingCheck && sawChecking && !state.checking) {
+            awaitingCheck = false;
+            sawChecking = false;
+            if (!state.checkError.isEmpty()) snackbar.show("检查失败：" + state.checkError, null, null);
+            else if (state.plan.any() && state.release != null) snackbar.show("发现新版本 " + state.release.headline(), null, null);
+            else snackbar.show("已是最新版本", null, null);
+        }
+        if (state.plan.any() && resumed) askNotifications();
+    }
+
+    /** Android 13 起通知要运行时授权。只在第一次发现新版本、且开着自动检查时问一次。 */
+    private void askNotifications() {
+        if (Build.VERSION.SDK_INT < 33 || askedNotifications || !updater.shouldAskNotifications()) return;
+        askedNotifications = true;
+        updater.markAsked();
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return;
+        requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
+    }
+
+    @Override public void updateAction(int action) {
+        Updater.State state = updater.state();
+        switch (action) {
+            case UpdateFaces.UPDATE:
+                snackbar.dismiss();
+                updater.update();
+                break;
+            case UpdateFaces.NOTES:
+                showNotes(state);
+                break;
+            case UpdateFaces.OPEN_MODULE:
+                openExport(state, true);
+                break;
+            case UpdateFaces.OPEN_APP:
+                openExport(state, false);
+                break;
+            case UpdateFaces.REBOOT:
+                Dialogs.show(ui, "现在重启手机？",
+                        "手机会立即重启，QQ 和其他应用都会关闭。重启后新模块生效，QQ 里的知弦服务会自动恢复。",
+                        new Dialogs.Action("取消", Btn.TEXT, null),
+                        new Dialogs.Action("重启", Btn.DANGER, () -> {
+                            updater.reboot();
+                            snackbar.show("正在重启手机…", null, null);
+                        }));
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void showNotes(Updater.State state) {
+        Release release = state.release;
+        if (release == null) return;
+        String notes = Notes.plain(release.notes);
+        String message = notes.isEmpty() ? "这次发布没有附更新说明。" : notes;
+        String title = "知弦 " + release.headline() + " 更新内容";
+        if (state.plan.any() && !state.working()) {
+            Dialogs.show(ui, title, message,
+                    new Dialogs.Action("关闭", Btn.TEXT, null),
+                    new Dialogs.Action("更新", Btn.TEXT, () -> updateAction(UpdateFaces.UPDATE)));
+        } else {
+            Dialogs.show(ui, title, message, new Dialogs.Action("关闭", Btn.TEXT, null));
+        }
+    }
+
+    private void openExport(Updater.State state, boolean module) {
+        Updater.Export target = null;
+        for (Updater.Export export : state.exports) if (export.module() == module) target = export;
+        if (target == null) return;
+        if (!module) {
+            Intent permission = updater.installPermissionIntent();
+            if (permission != null) {
+                snackbar.show("先允许知弦安装应用，再回来点一次", null, null);
+                try {
+                    startActivity(permission);
+                } catch (ActivityNotFoundException ignored) {
+                    snackbar.show("请在系统设置里允许知弦安装应用", null, null);
+                }
+                return;
+            }
+        }
+        Intent view = updater.viewIntent(target);
+        try {
+            if (view == null) throw new ActivityNotFoundException();
+            startActivity(view);
+        } catch (ActivityNotFoundException error) {
+            snackbar.show(module ? "没有能打开它的应用，请在 root 管理器的模块页里选择「下载」文件夹里的 " + target.name
+                    : "没有能安装它的应用，请在文件管理器里点开「下载」文件夹里的 " + target.name, null, null);
+        }
+    }
+
+    @Override public void checkUpdate() {
+        awaitingCheck = true;
+        sawChecking = false;
+        updater.check(true);
+    }
+
+    @Override public void setAutoUpdate(boolean on) {
+        updater.setAuto(on);
+        model.autoUpdate = on;
+        home.render(model);
+        if (on) askNotifications();
+        snackbar.show(on ? "已开启自动检查更新" : "已关闭自动检查更新", null, null);
     }
 
     // ------------------------------------------------------------------ 设置页动作

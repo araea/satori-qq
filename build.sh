@@ -102,6 +102,7 @@ version=$VER_NAME
 versionCode=$VER_CODE
 author=araea
 description=QQ 的 Satori v1 实现端（Zygisk 注入，纯 JNI 层，不挂钩子引擎）。
+updateJson=https://github.com/araea/satori-qq/releases/latest/download/update.json
 EOF
 # Zygisk Next 只认模块目录里这张表；缺它不会加载（踩过）。
 printf 'name=com.tencent.mobileqq zygisk/arm64-v8a.so\n' > $MODULE/zn_modules.txt

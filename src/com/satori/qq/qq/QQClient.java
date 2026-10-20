@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Bridge into the Android QQ NT kernel: capture session, send, register listeners and identity. */
 public final class QQClient {
-    // ---- QQ 9.3.50 class names, reverified on 9.3.60 ----
+    // ---- QQ 9.3.50 class names, reverified on 9.3.75 ----
     public static final String SESSION_CPP     = "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
     public static final String MSG_LISTENER    = "com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener";
     public static final String CONTACT         = "com.tencent.qqnt.kernelpublic.nativeinterface.Contact";
@@ -2460,43 +2460,16 @@ public final class QQClient {
 
 
     public OpResult setIdentityTitleInfo(long groupCode, boolean show) {
-        String reqName = "com.tencent.qqnt.kernel.nativeinterface.SetIdentityTitleInfoReq";
-        if (ref.clsOrNull(reqName) == null) {
-            OpResult missing = new OpResult();
-            missing.msg = "SetIdentityTitleInfoReq missing";
-            return missing;
-        }
         return awaitGroup(OPERATE_CB, "setIdentityTitleInfo", (gs, cb) -> {
-            Object req = ref.neu(reqName);
-            int flag = show ? 1 : 0;
-            for (Field f : req.getClass().getDeclaredFields()) {
-                String n = f.getName();
-                Class<?> t = f.getType();
-                try {
-                    if (n.toLowerCase().contains("group") && (t == long.class || t == Long.class))
-                        ref.put(req, n, groupCode);
-                    else if ((n.toLowerCase().contains("show") || n.toLowerCase().contains("flag")
-                            || n.toLowerCase().contains("switch") || n.toLowerCase().contains("title")
-                            || n.toLowerCase().contains("rank") || n.toLowerCase().contains("open"))
-                            && (t == int.class || t == Integer.class || t == byte.class || t == Byte.class))
-                        ref.put(req, n, flag);
-                    else if (n.equals("groupCode") || n.equals("group_code"))
-                        ref.put(req, n, groupCode);
-                } catch (Throwable ignore) {}
-            }
+            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.SetIdentityTitleInfoReq");
+            ref.put(req, "groupId", groupCode);
+            ref.put(req, "titleId", show ? 1 : 0);
             ref.call(gs, "setIdentityTitleInfo", req, cb);
         });
     }
 
     public OpResult setGroupIdentityLevelInfo(long groupCode, boolean show) {
         OpResult r = new OpResult();
-        String reqName = "com.tencent.qqnt.kernel.nativeinterface.GIMSetGroupLevelInfoReq";
-        String cbName = "com.tencent.qqnt.kernel.nativeinterface.ISetGroupIdentityLevelInfoCallback";
-        if (ref.clsOrNull(reqName) == null) {
-            r.msg = "GIMSetGroupLevelInfoReq missing";
-            return r;
-        }
-        if (ref.clsOrNull(cbName) == null) cbName = OPERATE_CB;
         Object gs = getGroupService();
         if (gs == null) {
             r.msg = "group service not ready";
@@ -2506,7 +2479,8 @@ public final class QQClient {
             final CountDownLatch latch = new CountDownLatch(1);
             final int[] code = new int[]{-1};
             final String[] wording = new String[]{""};
-            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls(cbName)}, (p, m, args) -> {
+            Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{ref.cls("com.tencent.qqnt.kernel.nativeinterface.ISetGroupIdentityLevelInfoCallback")},
+                    (p, m, args) -> {
                 if (args != null && args.length >= 1) {
                     code[0] = Ref.asInt(args[0]);
                     if (args.length >= 2) wording[0] = Ref.asStr(args[1]);
@@ -2523,7 +2497,7 @@ public final class QQClient {
                 }
                 return defOf(m.getReturnType());
             });
-            Object req = ref.neu(reqName);
+            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GIMSetGroupLevelInfoReq");
             ref.put(req, "groupCode", groupCode);
             ref.put(req, "levelFlag", show ? 1 : 0);
             ref.put(req, "levelNewFlag", show ? 0 : 1);
@@ -2651,23 +2625,13 @@ public final class QQClient {
     }
 
     public OpResult setGroupEssence(long groupCode, long msgSeq, long msgRandom, boolean add) {
-        String digestReq = "com.tencent.qqnt.kernel.nativeinterface.DigestReq";
-        String digestCb = "com.tencent.qqnt.kernel.nativeinterface.IDigestCallback";
-        if (ref.clsOrNull(digestReq) == null)
-            digestReq = "com.tencent.qqnt.kernelpublic.nativeinterface.DigestReq";
-        if (ref.clsOrNull(digestCb) == null)
-            digestCb = "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
-        String cbClass = digestCb;
-        String reqName = digestReq;
-        return awaitGroup(cbClass, add ? "addGroupEssence" : "removeGroupEssence", (gs, cb) -> {
-            Object req = ref.neu(reqName);
-            try { ref.put(req, "groupCode", String.valueOf(groupCode)); }
-            catch (Throwable ignore) { ref.put(req, "groupCode", groupCode); }
-            try { ref.put(req, "msgSeq", (int) msgSeq); }
-            catch (Throwable ignore) { ref.put(req, "msgSeq", msgSeq); }
-            try { ref.put(req, "msgRandom", (int) msgRandom); }
-            catch (Throwable ignore) { ref.put(req, "msgRandom", msgRandom); }
-            ref.call(gs, add ? "addGroupEssence" : "removeGroupEssence", req, cb);
+        String method = add ? "addGroupEssence" : "removeGroupEssence";
+        return awaitGroup("com.tencent.qqnt.kernel.nativeinterface.IDigestCallback", method, (gs, cb) -> {
+            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.DigestReq");
+            ref.put(req, "groupCode", groupCode);
+            ref.put(req, "msgSeq", (int) msgSeq);
+            ref.put(req, "msgRandom", (int) msgRandom);
+            ref.call(gs, method, req, cb);
         });
     }
 

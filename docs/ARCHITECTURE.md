@@ -1,6 +1,6 @@
 # 架构
 
-模块结构、QQ 接口与升级检查项。按 QQ 9.3.70（NT，versionCode 16410）核验。
+模块结构、QQ 接口与升级检查项。按 QQ 9.3.75（NT，versionCode 16580）核验。
 
 ## 进程与组件
 
@@ -138,7 +138,13 @@ ColorOS 会把通知小图标换成发通知那个应用的 launcher 图标。`O
 
 ## QQ 升级检查
 
-升级 QQ 后先跑一次自检：
+升级前先拿新旧两个 `base.apk` 比一遍签名（只读安装包，几秒出结果，手机上还是旧版也能跑）：
+
+```sh
+scripts/dex-diff.py <旧 base.apk> <新 base.apk>
+```
+
+它列出源码点名的类在新版里没了的、nativeinterface 包的增删，以及源码提到的类里成员的增删（参数类型变了算一增一删）。升级后再跑一次自检：
 
 ```sh
 curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'
@@ -146,10 +152,10 @@ curl -s -X POST http://127.0.0.1:3001/v1/internal/compat -d '{}'
 
 `internal/compat` 用反射核对模块依赖的内核接口面，不发任何内核请求，几毫秒出结果：
 
-- `static.types`：模块引用到的 128 个内核类在不在。表由源码里的类名字面量生成，重新生成的办法写在 `qq/Compat` 的注释里
+- `static.types`：模块引用到的 83 个内核类在不在。表由源码里的类名字面量生成（`scripts/compat-table.py --write`），`test.sh` 会核对表与源码一致
 - `static.services`：会话上 7 个服务入口与它们必须实现的接口
-- `static.structs`：模块会写入的结构体字段名。字段改名是静默失败，`Ref.put` 找不到字段就退化，服务端只回参数错误
-- `static.callbacks`：回调接口有没有 `on*` 方法，参数个数按「至少」算
+- `static.structs`：模块会写入的 27 个结构体的字段名。字段改名是静默失败，`Ref.put` 找不到字段就退化，服务端只回参数错误
+- `static.callbacks`：36 个回调接口有没有 `on*` 方法，参数个数按「至少」算
 - `observed`：`ExtraSvc.call` 记录的每次内核调用结果，按 label 分列
 
 `static.ok` 为 `false` 时 `missing` 逐条给出断点。`/healthz` 里的 `compat` 是同一份报告的摘要，按 QQ 版本缓存 10 分钟。`internal/compat` 传 `force=true` 可强制重算。

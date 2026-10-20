@@ -25,6 +25,9 @@ fi
 echo "== 0. import 规范 =="
 python3 "$R/scripts/java-imports.py" --check $(find "$R/src" "$R/tests" -name '*.java')
 
+echo "== 0a. Compat 表与源码 =="
+python3 "$R/scripts/compat-table.py" --check
+
 echo "== 0b. aapt R.java =="
 AAPT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools/aapt
 rm -rf "$OUT/test-gen" && mkdir -p "$OUT/test-gen"

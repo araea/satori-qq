@@ -39,12 +39,8 @@ su -c 'qqguard once'      # 只跑一轮探针，不动 QQ
 su -c 'qqguard log 50'    # 最近 50 行日志
 ```
 
-Android 快捷设置里另有两个磁贴：
 
-- **知弦守护**：单击切换 ON / OFF。关闭只暂停保护，不关 QQ。
-- **停止保活并关闭 QQ**：先暂停 watchdog，再强停 QQ。
-
-磁贴与知弦首页的「常驻守护」分组都通过 `su -c` 调用 root 侧的 `qqguard status --json`，显示的是看守的真实状态。
+模块管理页的「常驻守护」分组通过 `ctl.sh` 调用 root 侧的 `qqguard status --json`，显示的是看守的真实状态；「停止保活并关闭 QQ」对应 `qqguard kill`。
 
 ## 状态模型
 

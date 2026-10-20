@@ -2,12 +2,12 @@
 """生成发布附带的 update.json。
 
 同一份文件有两个读者：Magisk / KernelSU / APatch 的模块页（认顶层的 version、versionCode、zipUrl、
-changelog，module.prop 里的 updateJson 指向它）和管理应用（另认 tag、notes、page、模块包的 sha256 / size，
-以及 app 一节）。版本号从安装包本身读，不靠手填，所以清单永远与上传的文件一致。
+changelog，module.prop 里的 updateJson 指向它）和模块管理页（另认 tag、notes、page、模块包的 sha256 / size；
+--apk 生成的 app 一节如今没有读者，留作可选）。版本号从安装包本身读，不靠手填，所以清单永远与上传的文件一致。
 
 用法：
     release-manifest.py --repo araea/satori-qq --tag 154-0.34.0 --notes NOTES.md \
-        --module build/SatoriQQ-module.zip --apk build/SatoriQQ.apk --out build/update.json
+        --module build/SatoriQQ-module.zip --out build/update.json
     --base URL    下载地址的前缀，默认是该 tag 的 GitHub 发布页；本机验收时指到本地服务器
 satori-qq 与 satori-wx 共用同一份。
 """

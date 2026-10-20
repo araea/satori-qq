@@ -15,21 +15,17 @@ QQ 的 Satori 实现端：通过 Zygisk 注入把 QQ NT 内核暴露为统一 Sa
 
 步骤：
 
-1. 安装管理应用 `SatoriQQ.apk`。
-2. 将 `SatoriQQ-module.zip` 刷入 Magisk / KernelSU，或解压到 `/data/adb/modules/satori_qq/`。
-3. 安装或更新模块后重启设备。重启 QQ 或热重载不能替代整机重启。
-4. 打开「知弦」，在首页确认 QQ 账号、服务和客户端的连接状态。
+1. 将 `SatoriQQ-module.zip` 刷入 KernelSU / APatch / Magisk。
+2. 安装或更新模块后重启设备。重启 QQ 或热重载不能替代整机重启。
+3. 在 KernelSU / APatch 的模块列表里点知弦，打开管理页，确认 QQ 账号、服务和客户端的连接状态。
+
+不需要另装应用：管理页是模块自带的网页（`webroot/`），由 root 管理器打开。页面的每个 root 动作都是模块自带 `ctl.sh` 的一条子命令（`ctl.sh probe` 可以直接在终端里跑）；Magisk 没有模块网页界面，可以直接用 `ctl.sh`。
 
 ## 更新
 
-知弦会自己检查更新：打开应用时检查，并每天在后台再查一次。发现新版本时，首页顶部出现「更新」卡，点「更新」即可——先装模块、后装应用，应用装好后自动重新打开；模块更新要重启手机才生效，装好后首页会给出「立即重启」。
+管理页会检查更新：打开时检查（成功后 6 小时、失败后 30 分钟内不重复，可以关掉），也可以手动「检查更新」。有新版本时页首出现「更新」卡，点「更新」由 `ctl.sh` 下载、核对 SHA-256，再交给 root 管理器自己的安装命令（`ksud` / `apd` / `magisk`）；`config.json` 由 `customize.sh` 原样保留。模块更新要重启手机才生效，装好后页首给出「立即重启」。模块的 `module.prop` 带 `updateJson`，root 管理器的模块列表本身也会提示更新。
 
-- 更新来自本仓库的 GitHub 发布页（附带 `update.json`），下载后核对 SHA-256，APK 还要核对签名与当前应用一致。
-- 需要 Root 授权才能一键安装。没有授权、找不到模块安装命令或安装器报错时，更新包会放进「下载」文件夹，按卡片提示在 Magisk / KernelSU / APatch 里安装即可。
-- 模块的 `module.prop` 带 `updateJson`，root 管理器的模块页里同样会显示知弦的更新。
-- 「更新」区块可以关闭自动检查（同时取消后台检查与通知），也可以手动「检查更新」。
-
-发布时用 `scripts/release.sh`（先 `./build.sh`）：核对版本、生成 `update.json`、创建 GitHub release。
+发布时用 `scripts/release.sh`（先 `./build.sh`）：核对版本、生成 `update.json`、创建 GitHub release。版本只写在 `module.prop`（`SatoriHub.APP_VERSION` 要与它一致，构建时核对）。
 
 ## 快速使用
 
@@ -50,13 +46,13 @@ plugins:
 
 ## 模块开关
 
-首页的「模块开关」是总开关，关闭后不监听端口、不显示常驻通知、不持唤醒锁、不重启 QQ 的核心服务，也不保活；效果与没有安装模块一样。开关值由知弦应用保存，模块每秒读一次，拨动后一两秒内生效，不用重启 QQ。关闭时会把 root 看守一并暂停；重新开启时恢复原来的保活意图。
+管理页的「模块开关」是总开关，关闭后不监听端口、不显示常驻通知、不持唤醒锁、不重启 QQ 的核心服务，也不保活；效果与没有安装模块一样。开关值写在 QQ 数据目录的 `files/satori-qq/enabled`（`1` / `0`），模块每秒读一次，拨动后一两秒内生效，不用重启 QQ。关闭时会把 root 看守一并暂停；重新开启时恢复原来的保活意图。
 
-开关只写在应用私有设置里，不对外暴露端口或控制通道。
+开关不对外暴露端口或控制通道，只有 root 能写。
 
 ## 配置
 
-优先在知弦的「连接设置」中配置端口、令牌、状态通知和唤醒锁。其余设置读取首个有效配置文件：
+优先在管理页的「连接设置」中配置端口、令牌、状态通知和唤醒锁。管理页把设置写进模块目录的 `config.json`（root 0600，模块升级时保留），Zygisk 在 QQ 启动时（`preAppSpecialize`，那时还拿得到模块目录）读出交给 Java，所以保存后要重新启动 QQ 才生效；`config.json` 里也可以手写下面的任何高级键，管理页保存时原样保留。`config.json` 读不出来时服务保持关闭（不会带着无令牌的默认值跑起来）。没有 `config.json` 时读取首个有效配置文件：
 
 ```text
 /sdcard/Android/data/com.tencent.mobileqq/files/satori-qq.json

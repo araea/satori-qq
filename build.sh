@@ -1,5 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# 知弦的构建：Java dex → Zygisk 原生模块（纯 JNI 层，无 ART hook 引擎）→ APK + Magisk 模块包。
+# 知弦的构建：Java dex → Zygisk 原生模块（纯 JNI 层，无 ART hook 引擎）→ 模块包（带管理页 webroot/）。
+# 版本只在 module.prop 里写一处（另有 SatoriHub.APP_VERSION，构建时核对两者一致）。
 #
 # 0.23.0 起不再依赖 libxposed，也不再带 ART hook 引擎：模块由 Zygisk Next 注入，全部能力走 JNI 层
 # （引导用 ActivityThread.currentApplication 轮询，回包用 RegisterNatives 换 native_onSendSSOReply）。
@@ -11,40 +12,25 @@ set -e
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 R=${SATORI_QQ_ROOT:-$SCRIPT_DIR}
 ANDROID_JAR=/data/data/com.termux/files/home/android/platform/android-35/android.jar
-BT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools
-AAPT=$BT/aapt
-ZIPALIGN=$BT/zipalign
 R8=$R/libs/r8.jar
-FRAMEWORK=/system/framework/framework-res.apk
-KS=$R/build/satori.keystore
 OUT=${SATORI_QQ_OUT:-$R/build}
-APK_UNSIGNED=$OUT/satori-qq.unsigned.apk
-APK=$OUT/SatoriQQ.apk
 MODULE=$OUT/module
 
-echo "== 0. aapt R.java =="
-# 资源令牌经生成的 R 类引用：名字拼错在编译期失败，而不是在真机上按名字查不到。
-rm -rf $OUT/gen && mkdir -p $OUT/gen
-$AAPT package -f -m -J $OUT/gen -M $R/AndroidManifest.xml -I $FRAMEWORK -S $R/res
+VER_NAME=$(sed -n 's/^version=//p' $R/module.prop)
+VER_CODE=$(sed -n 's/^versionCode=//p' $R/module.prop)
+grep -q "APP_VERSION = \"$VER_NAME\"" $R/src/com/satori/qq/core/SatoriHub.java \
+  || { echo "SatoriHub.APP_VERSION 与 module.prop 的 version=$VER_NAME 不一致" >&2; exit 1; }
 
 echo "== 1. javac =="
 rm -rf $OUT/classes && mkdir -p $OUT/classes
-find $R/src $OUT/gen -name '*.java' > $OUT/sources.txt
+find $R/src -name '*.java' > $OUT/sources.txt
 javac --release 17 -classpath $ANDROID_JAR:$R/libs/json.jar -encoding UTF-8 \
   -Xlint:all,-deprecation,-serial,-rawtypes -d $OUT/classes @$OUT/sources.txt
 echo "   compiled $(find $OUT/classes -name '*.class' | wc -l) classes"
 
 echo "== 2. d8 -> dex =="
-rm -rf $OUT/dex && mkdir -p $OUT/dex
-find $OUT/classes -name '*.class' > $OUT/classlist.txt
-java -cp $R8 com.android.tools.r8.D8 --release --min-api 26 \
-  --lib $ANDROID_JAR --output $OUT/dex @$OUT/classlist.txt
-echo "   dex: $(ls -la $OUT/dex/classes.dex | awk '{print $5}') bytes"
-# 注入 QQ 的那份 dex 不带管理界面（ui/）、root 桥（guard/）与资源 R：QQ 进程从不加载它们，
-# 带进去只会白占 QQ 的内存与 .so 体积。
 rm -rf $OUT/module-dex && mkdir -p $OUT/module-dex
-grep -v -e '/com/satori/qq/ui/' -e '/com/satori/qq/guard/' -e '/com/satori/qq/R\.class$' -e '/com/satori/qq/R\$' \
-  $OUT/classlist.txt > $OUT/module-classlist.txt
+find $OUT/classes -name '*.class' > $OUT/module-classlist.txt
 java -cp $R8 com.android.tools.r8.D8 --release --min-api 26 \
   --lib $ANDROID_JAR --output $OUT/module-dex @$OUT/module-classlist.txt
 echo "   module dex: $(ls -la $OUT/module-dex/classes.dex | awk '{print $5}') bytes"
@@ -72,38 +58,12 @@ if [ -n "$NEEDED" ]; then
   echo "   FAIL unexpected dependencies:"; echo "$NEEDED"; exit 1
 fi
 
-echo "== 3. aapt package =="
-rm -f $APK_UNSIGNED $OUT/satori-qq.aligned.apk
-$AAPT package -f -M $R/AndroidManifest.xml -I $FRAMEWORK -S $R/res -F $APK_UNSIGNED
-( cd $OUT/dex && $AAPT add $APK_UNSIGNED classes.dex >/dev/null )
-
-echo "== 4. keystore (generate once) =="
-if [ ! -f $KS ]; then
-  keytool -genkeypair -keystore $KS -alias satori -storepass satori123 -keypass satori123 \
-    -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SatoriQQ" >/dev/null 2>&1
-  echo "   generated keystore"
-fi
-
-echo "== 5. zipalign + sign =="
-rm -f $APK
-$ZIPALIGN -f -p 4 $APK_UNSIGNED $OUT/satori-qq.aligned.apk
-apksigner sign --ks $KS --ks-pass pass:satori123 --key-pass pass:satori123 \
-  --out $APK $OUT/satori-qq.aligned.apk
-
-echo "== 6. Magisk 模块包 =="
-VER_NAME=$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' $R/AndroidManifest.xml | head -1)
-VER_CODE=$(sed -n 's/.*android:versionCode="\([^"]*\)".*/\1/p' $R/AndroidManifest.xml | head -1)
+echo "== 3. 模块包 =="
 rm -rf $MODULE && mkdir -p $MODULE/zygisk
 cp $OUT/libsatori.so $MODULE/zygisk/arm64-v8a.so
-cat > $MODULE/module.prop <<EOF
-id=satori_qq
-name=知弦
-version=$VER_NAME
-versionCode=$VER_CODE
-author=araea
-description=QQ 的 Satori v1 实现端（Zygisk 注入，纯 JNI 层，不挂钩子引擎）。
-updateJson=https://github.com/araea/satori-qq/releases/latest/download/update.json
-EOF
+cp $R/module.prop $R/customize.sh $R/ctl.sh $MODULE/
+# 模块管理页：KernelSU / APatch 在模块列表里直接打开 webroot/index.html。
+cp -r $R/webroot $MODULE/webroot
 # Zygisk Next 只认模块目录里这张表；缺它不会加载（踩过）。
 printf 'name=com.tencent.mobileqq zygisk/arm64-v8a.so\n' > $MODULE/zn_modules.txt
 
@@ -134,11 +94,11 @@ cat > $MODULE/uninstall.sh <<'EOF'
 # 卸载模块时先暂停 watchdog，别留下一个还在动 QQ 的看守。
 [ -x /data/adb/satori-qq/qqguard.sh ] && /data/adb/satori-qq/qqguard.sh stop
 EOF
-chmod 0755 $MODULE/service.sh $MODULE/action.sh $MODULE/uninstall.sh
+chmod 0755 $MODULE/service.sh $MODULE/action.sh $MODULE/uninstall.sh $MODULE/ctl.sh
 
 rm -f $OUT/SatoriQQ-module.zip
 # 刷机包要求 module.prop 在 zip 根目录（Magisk / KernelSU 都按根目录读）。
 ( cd $MODULE && zip -qr $OUT/SatoriQQ-module.zip . )
 echo "   module zip: $(ls -la $OUT/SatoriQQ-module.zip | awk '{print $5}') bytes"
 echo "== DONE =="
-ls -la $APK $OUT/SatoriQQ-module.zip
+ls -la $OUT/SatoriQQ-module.zip

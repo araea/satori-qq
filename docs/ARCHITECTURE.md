@@ -7,29 +7,22 @@
 | 组件 | 职责 |
 | --- | --- |
 | `Main` | 只在 QQ 主进程启动 Satori 服务，其他进程不加载模块代码 |
-| `Cfg` / `L` | 文件配置与日志，详细日志默认关闭 |
-| `ui` | 知弦管理界面与两个快捷设置磁贴，在应用自身进程运行，前台只读探测状态 |
-| `guard` | App → root `qqguard` 的调用桥：只拼写死的 `su -c` 命令，不接收任何界面 / 网络输入 |
-| `control` | 私有设置、UID 校验的 Provider、启动时配置同步 |
+| `Cfg` / `L` | 配置（模块目录的 `config.json`，退回旧 JSON 文件与默认值）与日志，详细日志默认关闭 |
 | `net` | HTTP 与事件 WebSocket，只监听 `127.0.0.1` |
 | `core` | Satori 服务本体：HTTP 路由与方法分发、事件广播、消息与文件标识管理（部件见下） |
 | `satori` | Satori 元素与数据结构转换 |
 | `qq` | NT 会话、消息、媒体与保活 |
 | `packet` | OIDB 与合并转发封包 |
 
-HTTP 服务、消息监听与保活只在主进程运行，APK 里不含 native 库。
+HTTP 服务、消息监听与保活只在主进程运行。没有单独的管理应用：管理页是模块自带的 `webroot/`。
 
-## 管理通道
+## 管理页与配置
 
-`ui.MainActivity` 与 `control.ControlProvider` 在应用自身进程。Provider 只允许模块自身 UID 与当前安装的 `com.tencent.mobileqq` UID 调用，其余调用方含 shell 抛 `SecurityException`。Provider 只支持读配置与运行快照，不接受文件路径、命令或 HTTP 写设置。
+管理页是 KernelSU / APatch 的模块网页界面（`webroot/`，原生 ES 模块，不打包；`kit.css`、`kit.js`、`icons.js` 与 satori-wx 逐字相同）。页面只负责展示，root 动作都经模块自带的 `ctl.sh`：`probe` 读模块、`config.json`、开关文件、QQ 进程与冻结状态、`qqguard status --json` 与 `/healthz`（3 秒超时；先问设置里的端口，再问 3001）；其余子命令写设置、写开关、开关看守、重新启动 QQ、检查与安装更新。`ctl.sh` 不在全局挂载命名空间时用 `nsenter -t 1 -m` 换过去，否则看不到 QQ 的数据目录。
 
-`Main` 尽早安装 QQ hooks。`SatoriHub.start()` 交给 `Monitor.start`，在独立工作线程等 Application 基础 Context attach，至多 10 秒。Provider 短暂不可用时重试至多 1.2 秒。从 Provider 读到端口、令牌、模块总开关与四个运行偏好并应用后才绑定 HTTP 端口，其余高级配置不被覆盖。Provider 不可用时保留原文件或默认行为。`/healthz.config_revision` 是本进程读到的配置修订号，用来区分已保存与已生效。
+设置在模块目录的 `config.json`（root 0600）。注入后进程已在 QQ 的沙箱里读不到 `/data/adb`，所以 `native/satori.cpp` 在 `preAppSpecialize` 里经 `getModuleDir()` 读它（上限 16 KB），作为 `Boot.start` 的第三个参数交给 Java，`Cfg.load` 解析。没有这个文件时退回旧的 JSON 文件路径与默认值；文件坏了服务保持关闭（`config_status=module-invalid`）。`/healthz` 的 `config_revision` 是读到的修订号（管理页每保存一次加一），`config_status` 是来源（`module` / `file:<路径>` / `default`），页面据此区分已保存与已生效。
 
-模块总开关（`enabled`）也走同一份设置，但由 `Monitor` 的看门线程每秒读一次 Provider 的 `switch` 方法。关闭时 `Monitor` 关闭监听端口、取消常驻通知、释放唤醒锁并让 `Keepalive` 停踢；打开时按原配置重新绑定端口与状态循环。开关切换不需要重启 QQ。守护由应用侧同步暂停/恢复，不归模块进程管。
-
-运行快照写进 `noBackupFilesDir/zhixian-control.json`，用 AtomicFile 原子更新，不用 SharedPreferences。首页读现有 `/healthz`，限定回环地址、超时与响应大小，不跟随重定向。诊断报告按字段白名单构造，排除账号、令牌与消息。保存配置不强停 QQ，也不热切换端口。
-
-ColorOS 的关联启动策略可能拒绝冷启动 Provider。桥接重试失败后回退原文件配置，并通过 `config_status` 暴露不含敏感信息的原因。设置页给出系统设置里的路径（应用 → 关联启动）。引导线程在 QQ 主线程初始化任务之后启动，不阻塞 Application 创建。
+模块总开关是 QQ 数据目录里的 `files/satori-qq/enabled`，由 `ctl.sh set-enabled` 以 QQ 的 uid 与 SELinux 上下文写入，`Monitor` 的看门线程每秒读一次；没有文件或读不到（开机还没解锁）时沿用当前值。关闭时 `Monitor` 关闭监听端口、取消常驻通知、释放唤醒锁并让 `Keepalive` 停踢；打开时按原配置重新绑定端口与状态循环。开关切换不需要重启 QQ。看守由 `ctl.sh` 同步暂停 / 恢复，不归模块进程管。
 
 ## core 的部件
 
@@ -173,7 +166,7 @@ curl -fsSL -o libs/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 ./test.sh
 ```
 
-产物为 `build/SatoriQQ.apk` 与 `build/SatoriQQ-module.zip`。模块不含第三方原生依赖：`native/satori.cpp` 用 Termux 的 clang 编译，不含界面代码的 dex 用 `.incbin` 内嵌进 `.so`，NEEDED 只有 `liblog/libdl/libm/libc`。
+产物为 `build/SatoriQQ-module.zip`。模块不含第三方原生依赖：`native/satori.cpp` 用 Termux 的 clang 编译，dex 用 `.incbin` 内嵌进 `.so`，NEEDED 只有 `liblog/libdl/libm/libc`。
 
 `test.sh` 跑 JVM 单测，含 `Reflect` 反射层的语义测试，开头先查 import 规范。Zygisk 把线上那份钉在内存里，改了 Java 层又不想重启手机时，
 `tests/art/run.sh`（root）在真 ART 的 `app_process` 里起一个没有 QQ 内核的 `SatoriHub`，再用黑盒探针 `tests/conformance.py` 打它：

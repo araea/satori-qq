@@ -28,15 +28,9 @@ python3 "$R/scripts/java-imports.py" --check $(find "$R/src" "$R/tests" -name '*
 echo "== 0a. Compat 表与源码 =="
 python3 "$R/scripts/compat-table.py" --check
 
-echo "== 0b. aapt R.java =="
-AAPT=/data/data/com.termux/files/home/android/android-sdk-tools/build-tools/aapt
-rm -rf "$OUT/test-gen" && mkdir -p "$OUT/test-gen"
-"$AAPT" package -f -m -J "$OUT/test-gen" -M "$R/AndroidManifest.xml" \
-  -I /system/framework/framework-res.apk -S "$R/res"
-
 echo "== 1. javac =="
 rm -rf "$CLASSES" && mkdir -p "$CLASSES"
-find "$R/src" "$R/tests" "$OUT/test-gen" -name '*.java' -not -path "$R/tests/ui/*" > "$OUT/test-sources.txt"
+find "$R/src" "$R/tests" -name '*.java' > "$OUT/test-sources.txt"
 javac --release 17 -classpath "$JSON_JAR:$ANDROID_JAR" -encoding UTF-8 -nowarn \
   -d "$CLASSES" @"$OUT/test-sources.txt"
 echo "   compiled $(find "$CLASSES" -name '*.class' | wc -l) classes"

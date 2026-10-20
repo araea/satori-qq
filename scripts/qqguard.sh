@@ -45,7 +45,9 @@ CONF=${QQGUARD_CONF:-$DIR/guard.conf}
 [ -r "$CONF" ] && . "$CONF"
 
 PKG=${QQGUARD_PKG:-com.tencent.mobileqq}
-PORT=${QQGUARD_PORT:-3001}
+# 端口跟着模块管理页写的 config.json 走（它是 JSON，这里只取 "port" 一个数字）。
+CFG_PORT=$(sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' /data/adb/modules/satori_qq/config.json 2>/dev/null | head -n 1)
+PORT=${QQGUARD_PORT:-${CFG_PORT:-3001}}
 INTERVAL=${QQGUARD_INTERVAL:-30}
 MIN_GAP=${QQGUARD_MIN_GAP:-120}
 MAX_RESTARTS=${QQGUARD_MAX_RESTARTS:-4}

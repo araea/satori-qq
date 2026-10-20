@@ -22,6 +22,7 @@
 // 没有 STL、没有第三方依赖：NEEDED 只有 liblog/libdl/libm/libc。
 #include <jni.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <stdint.h>
@@ -58,6 +59,9 @@ static jmethodID g_callback_method = nullptr;
 static void *g_orig_sso_reply = nullptr;
 static char g_process[256] = {0};
 static bool g_bootstrap_started = false;
+// 模块目录里的 config.json（模块管理页写的设置）。只能在 preAppSpecialize 里读：那时还拿得到模块目录的句柄，
+// 特化之后进程已在 QQ 的沙箱里，/data/adb 下什么都读不了。
+static char g_config[16384] = {0};
 static char g_hook_info[256] = "not-attempted";
 static unsigned long g_sso_calls = 0;    // 进过我们替换实现的次数
 static unsigned long g_sso_consumed = 0; // 其中被本模块消费掉的次数
@@ -475,9 +479,9 @@ static bool StartJava(JNIEnv *env, jobject loader, jobject host, const char *pro
         LOGE("com.satori.qq.Boot not found in the embedded dex");
         return false;
     }
-    jmethodID start = env->GetStaticMethodID(boot, "start", "(Ljava/lang/String;Ljava/lang/ClassLoader;)V");
+    jmethodID start = env->GetStaticMethodID(boot, "start", "(Ljava/lang/String;Ljava/lang/ClassLoader;Ljava/lang/String;)V");
     if (start == nullptr) {
-        LOGE("Boot.start(String, ClassLoader) not found");
+        LOGE("Boot.start(String, ClassLoader, String) not found");
         return false;
     }
 
@@ -498,8 +502,10 @@ static bool StartJava(JNIEnv *env, jobject loader, jobject host, const char *pro
     }
 
     jstring proc = env->NewStringUTF(process);
-    env->CallStaticVoidMethod(boot, start, proc, host);
+    jstring config = g_config[0] ? env->NewStringUTF(g_config) : nullptr;
+    env->CallStaticVoidMethod(boot, start, proc, host, config);
     env->DeleteLocalRef(proc);
+    if (config != nullptr) env->DeleteLocalRef(config);
     if (env->ExceptionCheck()) {
         env->ExceptionDescribe();
         env->ExceptionClear();
@@ -554,7 +560,7 @@ static void *BootstrapThread(void *) {
 class SatoriModule : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
-        (void)api;
+        api_ = api;
         env_ = env;
         env->GetJavaVM(&g_vm);
     }
@@ -567,6 +573,7 @@ public:
             strncpy(g_process, name, sizeof(g_process) - 1);
         }
         env_->ReleaseStringUTFChars(args->nice_name, name);
+        if (g_process[0] != '\0') ReadModuleConfig();
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
@@ -582,6 +589,24 @@ public:
     }
 
 private:
+    /** 读模块目录里的 config.json；没有、读不全或超过缓冲区都当没有（Java 侧退回旧的配置路径与默认值）。 */
+    void ReadModuleConfig() {
+        const int dir = api_ == nullptr ? -1 : api_->getModuleDir();
+        const int fd = dir >= 0 ? openat(dir, "config.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) : -1;
+        size_t used = 0;
+        bool ok = fd >= 0;
+        while (ok) {
+            ssize_t n = read(fd, g_config + used, sizeof(g_config) - 1 - used);
+            if (n < 0) ok = false;
+            else if (n == 0) break;
+            else if ((used += static_cast<size_t>(n)) >= sizeof(g_config) - 1) ok = false;
+        }
+        g_config[ok ? used : 0] = '\0';
+        if (fd >= 0) close(fd);
+        if (dir >= 0) close(dir);
+    }
+
+    zygisk::Api *api_ = nullptr;
     JNIEnv *env_ = nullptr;
 };
 

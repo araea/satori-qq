@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN" data-module="satori_qq">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>知弦</title>
+  <!-- 管理器提供的窗口安全区（--window-inset-top / --window-inset-bottom）。 -->
+  <link rel="stylesheet" href="/internal/insets.css">
+  <style>
+    /* 配色：M3 基线紫（#6750A4），与原知弦应用的 tokens.xml 相同。 */
+    :root {
+      --primary: #6750A4; --on-primary: #FFFFFF; --primary-container: #EADDFF; --on-primary-container: #21005D;
+      --secondary-container: #E8DEF8; --on-secondary-container: #1D192B;
+      --error: #B3261E; --on-error: #FFFFFF; --error-container: #F9DEDC; --on-error-container: #410E0B;
+      --success: #1F6B3B; --success-container: #B8F0BF; --on-success-container: #00210E;
+      --warning: #7A5900; --warning-container: #FFDF9E; --on-warning-container: #261A00;
+      --surface: #FEF7FF; --surface-container: #F3EDF7; --surface-container-high: #ECE6F0; --surface-container-highest: #E6E0E9;
+      --on-surface: #1D1B20; --on-surface-variant: #49454F; --outline: #79747E; --outline-variant: #CAC4D0;
+      --inverse-surface: #322F35; --inverse-on-surface: #F5EFF7; --state: rgb(29 27 32 / .1);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --primary: #D0BCFF; --on-primary: #381E72; --primary-container: #4F378B; --on-primary-container: #EADDFF;
+        --secondary-container: #4A4458; --on-secondary-container: #E8DEF8;
+        --error: #F2B8B5; --on-error: #601410; --error-container: #8C1D18; --on-error-container: #F9DEDC;
+        --success: #9CD6A5; --success-container: #0B5227; --on-success-container: #B8F0BF;
+        --warning: #E9C349; --warning-container: #5C4300; --on-warning-container: #FFDF9E;
+        --surface: #141218; --surface-container: #211F26; --surface-container-high: #2B2930; --surface-container-highest: #36343B;
+        --on-surface: #E6E0E9; --on-surface-variant: #CAC4D0; --outline: #938F99; --outline-variant: #49454F;
+        --inverse-surface: #E6E0E9; --inverse-on-surface: #322F35; --state: rgb(230 224 233 / .1);
+      }
+    }
+  </style>
+  <link rel="stylesheet" href="kit.css">
+  <script>
+    // APatch 把同一套接口挂在 window.apatch 上。
+    if (window.apatch && !window.ksu) window.ksu = window.apatch;
+  </script>
+  <script type="module" src="app.js"></script>
+</head>
+<body></body>
+</html>

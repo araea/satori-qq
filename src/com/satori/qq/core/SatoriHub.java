@@ -20,7 +20,7 @@ import com.satori.qq.qq.QQClient;
  */
 public final class SatoriHub implements HttpServer.Handler {
     public static final String APP_NAME = "satori-qq";
-    public static final String APP_VERSION = "0.35.0";
+    public static final String APP_VERSION = "0.36.0";
 
     private final Cfg cfg;
     private final QQClient qq;

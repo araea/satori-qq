@@ -6,7 +6,6 @@ import android.os.Handler;
 import android.os.Looper;
 import com.satori.qq.Cfg;
 import com.satori.qq.L;
-import com.satori.qq.control.ControlBridge;
 import com.satori.qq.net.HttpServer;
 import com.satori.qq.packet.PacketSvc;
 import com.satori.qq.qq.Compat;
@@ -15,6 +14,8 @@ import com.satori.qq.qq.Keepalive;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.WakeLockCtl;
 import com.satori.qq.xp.Xp;
+import java.io.File;
+import java.io.FileInputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -81,7 +82,7 @@ final class Monitor {
                 }
                 context = qq.appContext();
             }
-            if (contextReady(context)) ControlBridge.bootstrap(context, cfg, SatoriHub.APP_VERSION);
+            if (contextReady(context)) cfg.enabled = readEnabled(context, cfg.enabled);
             if (cfg.enabled) startServing(); else enterStandby();
             watchSwitch();
         });
@@ -90,10 +91,16 @@ final class Monitor {
 
     /**
      * 主开关：关掉时不监听端口、不发常驻通知、不持唤醒锁、不重启 QQ 的核心服务；打开时逐项恢复。
-     * 开关值由知弦应用写进 Provider，这里每秒读一次，所以拨动后一两秒内生效，不用重启 QQ。
+     * 开关值由模块管理页（ctl.sh set-enabled）写进 QQ 数据目录的 files/satori-qq/enabled，这里每秒多读一次，
+     * 所以拨动后一两秒内生效，不用重启 QQ。
      */
     private synchronized void startServing() {
         if (serving) return;
+        // 管理页写坏的配置不能让服务带着默认值（无令牌）跑起来：保持关闭，等配置修好、重启 QQ。
+        if ("module-invalid".equals(cfg.source)) {
+            L.w("module config invalid; staying off");
+            return;
+        }
         serving = true;
         final long gen = ++generation;
         Keepalive.setEnabled(true);
@@ -157,7 +164,7 @@ final class Monitor {
                 }
                 Context ctx = qq.appContext();
                 if (ctx == null) continue;
-                boolean on = ControlBridge.readEnabled(ctx, cfg.enabled);
+                boolean on = readEnabled(ctx, cfg.enabled);
                 if (on == cfg.enabled) continue;
                 cfg.enabled = on;
                 L.i("master switch -> " + (on ? "on" : "off"));
@@ -166,6 +173,19 @@ final class Monitor {
         }, "pool-4-thread-3");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * 读主开关文件（{@code 1} / {@code 0}）。没有文件（从没拨过）或读不到（开机还没解锁、凭据加密存储没挂上）
+     * 时沿用当前值，解锁后下一轮自然读到。
+     */
+    static boolean readEnabled(Context context, boolean fallback) {
+        try (FileInputStream in = new FileInputStream(new File(context.getFilesDir(), "satori-qq/enabled"))) {
+            int c = in.read();
+            return c < 0 ? fallback : c != '0';
+        } catch (Throwable unreadable) {
+            return fallback;
+        }
     }
 
     private static boolean contextReady(Context context) {
@@ -434,8 +454,8 @@ final class Monitor {
                 .put("name", SatoriHub.APP_NAME)
                 .put("version", SatoriHub.APP_VERSION)
                 .put("enabled", cfg.enabled)
-                .put("config_revision", ControlBridge.revision())
-                .put("config_status", ControlBridge.status())
+                .put("config_revision", cfg.revision)
+                .put("config_status", cfg.source)
                 .put("online", qq.isOnline())
                 .put("listening", listening())
                 .put("self_id", identity.selfUin())

@@ -7,7 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 注入后的引导入口：native 侧在轮询到宿主的 Application 之后调用 {@link #start(String, ClassLoader)}。
+ * 注入后的引导入口：native 侧在轮询到宿主的 Application 之后调用 {@link #start(String, ClassLoader, String)}。
  *
  * <p>0.22.0 时这里还要钩 {@code Instrumentation.callApplicationOnCreate} 才能拿到宿主
  * classloader；0.23.0 起 native 直接轮询 {@code ActivityThread.currentApplication()}，这一层
@@ -22,7 +22,7 @@ public final class Boot {
     private Boot() {}
 
     /** 由 native 在内嵌 dex 加载完成、且拿到宿主 classloader 之后调用。 */
-    public static void start(String process, ClassLoader host) {
+    public static void start(String process, ClassLoader host, String config) {
         if (started) return;
         started = true;
         if (host == null) {
@@ -33,7 +33,7 @@ public final class Boot {
         L.i("zygisk bootstrap in " + process);
         awaitApplicationBound();
         try {
-            Main.onHostReady(host, process);
+            Main.onHostReady(host, process, config);
         } catch (Throwable t) {
             L.e("bootstrap failed in " + process, t);
         }

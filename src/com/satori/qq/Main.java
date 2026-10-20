@@ -25,14 +25,15 @@ public final class Main {
      *
      * @param host    QQ 的 classloader（查它的混淆类要用）
      * @param process 进程名，主进程就是包名本身
+     * @param config  模块目录里 config.json 的原文（native 读出）；没有时为 null
      */
-    public static void onHostReady(ClassLoader host, String process) {
+    public static void onHostReady(ClassLoader host, String process, String config) {
         if (started) return;
         started = true;
 
         boolean mainProcess = QQ_PKG.equals(process);
         try {
-            Cfg cfg = Cfg.load();
+            Cfg cfg = Cfg.load(config);
             L.configure(cfg.verboseLogs);
             if (!mainProcess) {
                 L.i("bridge skipped in process " + process);

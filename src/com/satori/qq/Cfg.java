@@ -52,6 +52,11 @@ public final class Cfg {
      *  scaffolding only), "fake" (SsoSendLongMsg card only — QQNT viewers may fail to open). */
     public volatile String forwardMode = "auto";
 
+    /** 模块管理页每保存一次加一；healthz 原样回报，页面据此判断「已保存、重启 QQ 后生效」。 */
+    public volatile long revision = 0;
+    /** 配置从哪来：module（模块目录的 config.json）、file:<路径&gt;、default；配置坏了时带 invalid。 */
+    public volatile String source = "default";
+
     private static final String[] PATHS = new String[]{
         // QQ can always read its own external files dir under scoped storage
         "/sdcard/Android/data/com.tencent.mobileqq/files/satori-qq.json",
@@ -60,8 +65,27 @@ public final class Cfg {
         "/storage/emulated/0/satori-qq.json",
     };
 
-    public static Cfg load() {
+    /**
+     * @param moduleConfig 模块目录里 config.json 的原文：Zygisk 在 preAppSpecialize 里（还有 root 级的模块目录句柄时）
+     *                     读出来交给 Java；没有这个文件时为 null 或空串，退回旧的 JSON 文件路径与默认值。
+     */
+    public static Cfg load(String moduleConfig) {
         Cfg c = new Cfg();
+        if (moduleConfig != null && !moduleConfig.isEmpty()) {
+            try {
+                apply(c, new JSONObject(moduleConfig));
+                c.source = "module";
+                L.i("Config loaded from module (port=" + c.port + ", auth=" + (c.token.isEmpty()?"off":"on") + ", revision=" + c.revision + ")");
+                return c;
+            } catch (Throwable t) {
+                // 坏掉的管理页配置不能让服务带着默认值（无令牌）跑起来：不监听，等用户在管理页修好。
+                L.w("Invalid module config: " + t);
+                Cfg off = new Cfg();
+                off.enabled = false;
+                off.source = "module-invalid";
+                return off;
+            }
+        }
         for (String p : PATHS) {
             try {
                 File f = new File(p);
@@ -71,33 +95,8 @@ public final class Cfg {
                 byte[] buf = new byte[4096]; int n;
                 while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
                 in.close();
-                JSONObject o = new JSONObject(bo.toString("UTF-8"));
-                c.port = o.optInt("port", c.port);
-                c.host = o.optString("host", c.host);
-                c.token = o.optString("token", c.token);
-                c.heartbeat = o.optBoolean("heartbeat", c.heartbeat);
-                c.heartbeatMs = o.optInt("heartbeat_ms", c.heartbeatMs);
-                c.enabled = o.optBoolean("enabled", c.enabled);
-                c.statusNotification = o.optBoolean("status_notification", c.statusNotification);
-                c.requestBatteryExemption = o.optBoolean("request_battery_exemption", c.requestBatteryExemption);
-                c.wakeLockControl = o.optBoolean("wake_lock_control", c.wakeLockControl);
-                c.wakeLockAuto = o.optBoolean("wake_lock_auto", c.wakeLockAuto);
-                c.wifiSustain = o.optBoolean("wifi_sustain", c.wifiSustain);
-                c.kernelForeground = o.optBoolean("kernel_foreground", c.kernelForeground);
-                c.verboseLogs = o.optBoolean("verbose_logs", c.verboseLogs);
-                c.outboundMinIntervalMs = bounded(o.optInt("outbound_min_interval_ms", c.outboundMinIntervalMs), 0, 60000);
-                c.outboundQueueTimeoutMs = bounded(o.optInt("outbound_queue_timeout_ms", c.outboundQueueTimeoutMs), 1000, 120000);
-                c.outboundMaxQueued = bounded(o.optInt("outbound_max_queued", c.outboundMaxQueued), 1, 128);
-                c.onlineStabilizeMs = bounded(o.optInt("online_stabilize_ms", c.onlineStabilizeMs), 0, 300000);
-                c.outboundMaxPerMinute = bounded(o.optInt("outbound_max_per_minute", c.outboundMaxPerMinute), 1, 600);
-                c.outboundFailureThreshold = bounded(o.optInt("outbound_failure_threshold", c.outboundFailureThreshold), 1, 20);
-                c.mediaRetryAttempts = bounded(o.optInt("media_retry_attempts", c.mediaRetryAttempts), 0, 5);
-                c.mediaRetryBackoffMs = bounded(o.optInt("media_retry_backoff_ms", c.mediaRetryBackoffMs), 0, 60000);
-                c.mediaRetryBudgetMs = bounded(o.optInt("media_retry_budget_ms", c.mediaRetryBudgetMs), 0, 300000);
-                c.outboundCircuitOpenMs = bounded(o.optInt("outbound_circuit_open_ms", c.outboundCircuitOpenMs), 1000, 1800000);
-                c.manualSelfMessages = o.optBoolean("manual_self_messages", c.manualSelfMessages);
-                c.manualSelfUserId = o.optString("manual_self_user_id", c.manualSelfUserId).trim();
-                c.forwardMode = normalizeForwardMode(o.optString("forward_mode", c.forwardMode));
+                apply(c, new JSONObject(bo.toString("UTF-8")));
+                c.source = "file:" + p;
                 L.i("Config loaded from " + p + " (port=" + c.port + ", auth=" + (c.token.isEmpty()?"off":"on") + ")");
                 return c;
             } catch (Throwable t) {
@@ -106,6 +105,36 @@ public final class Cfg {
         }
         L.i("No config file found; using defaults (port=" + c.port + ", no auth)");
         return c;
+    }
+
+    private static void apply(Cfg c, JSONObject o) {
+        c.port = o.optInt("port", c.port);
+        c.host = o.optString("host", c.host);
+        c.token = o.optString("token", c.token);
+        c.revision = o.optLong("revision", c.revision);
+        c.heartbeat = o.optBoolean("heartbeat", c.heartbeat);
+        c.heartbeatMs = o.optInt("heartbeat_ms", c.heartbeatMs);
+        c.enabled = o.optBoolean("enabled", c.enabled);
+        c.statusNotification = o.optBoolean("status_notification", c.statusNotification);
+        c.requestBatteryExemption = o.optBoolean("request_battery_exemption", c.requestBatteryExemption);
+        c.wakeLockControl = o.optBoolean("wake_lock_control", c.wakeLockControl);
+        c.wakeLockAuto = o.optBoolean("wake_lock_auto", c.wakeLockAuto);
+        c.wifiSustain = o.optBoolean("wifi_sustain", c.wifiSustain);
+        c.kernelForeground = o.optBoolean("kernel_foreground", c.kernelForeground);
+        c.verboseLogs = o.optBoolean("verbose_logs", c.verboseLogs);
+        c.outboundMinIntervalMs = bounded(o.optInt("outbound_min_interval_ms", c.outboundMinIntervalMs), 0, 60000);
+        c.outboundQueueTimeoutMs = bounded(o.optInt("outbound_queue_timeout_ms", c.outboundQueueTimeoutMs), 1000, 120000);
+        c.outboundMaxQueued = bounded(o.optInt("outbound_max_queued", c.outboundMaxQueued), 1, 128);
+        c.onlineStabilizeMs = bounded(o.optInt("online_stabilize_ms", c.onlineStabilizeMs), 0, 300000);
+        c.outboundMaxPerMinute = bounded(o.optInt("outbound_max_per_minute", c.outboundMaxPerMinute), 1, 600);
+        c.outboundFailureThreshold = bounded(o.optInt("outbound_failure_threshold", c.outboundFailureThreshold), 1, 20);
+        c.mediaRetryAttempts = bounded(o.optInt("media_retry_attempts", c.mediaRetryAttempts), 0, 5);
+        c.mediaRetryBackoffMs = bounded(o.optInt("media_retry_backoff_ms", c.mediaRetryBackoffMs), 0, 60000);
+        c.mediaRetryBudgetMs = bounded(o.optInt("media_retry_budget_ms", c.mediaRetryBudgetMs), 0, 300000);
+        c.outboundCircuitOpenMs = bounded(o.optInt("outbound_circuit_open_ms", c.outboundCircuitOpenMs), 1000, 1800000);
+        c.manualSelfMessages = o.optBoolean("manual_self_messages", c.manualSelfMessages);
+        c.manualSelfUserId = o.optString("manual_self_user_id", c.manualSelfUserId).trim();
+        c.forwardMode = normalizeForwardMode(o.optString("forward_mode", c.forwardMode));
     }
 
     private static int bounded(int value, int min, int max) {

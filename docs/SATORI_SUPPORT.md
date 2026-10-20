@@ -104,11 +104,13 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 域 | 方法（部分带别名，见 `capabilities`） |
 | --- | --- |
 | 消息 | `typing`、`mark_read`、`mark_read_seq`、`mark_all_read`、`message_abstract`、`click_inline_keyboard`、`reedit_recall`、`image_ocr`、`ocr_data`、`ocr_by_aio` |
-| 群管理 | `group_shut_up_list`、`group_join_link`、`group_essence_list`、`group_essence_latest`、`group_essence_cached`、`group_remark`、`group_quit`、`group_join`、`group_join_info`、`group_join_noverify`、`group_bulletin_publish`、`group_bulletin_delete`、`group_bulletin_upload_pic`、`group_bulletin_get`、`group_ext_list`、`group_member_level`、`group_identity_list`、`group_member_card`、`group_profile_card` |
+| 群管理 | `group_shut_up_list`、`group_join_link`、`group_essence_list`、`group_essence_latest`、`group_essence_cached`、`group_remark`、`group_quit`、`group_join`、`group_join_info`、`group_join_noverify`、`group_bulletin_publish`、`group_bulletin_delete`、`group_bulletin_get`、`group_ext_list`、`group_member_level`、`group_identity_list`、`group_member_card`、`group_profile_card` |
 | 群文件 | `group_file_count`、`group_file_folder_create`、`group_file_folder_delete`、`group_file_folder_rename`、`group_file_delete`、`group_file_rename`、`group_file_move`、`group_file_trans` |
 | 头衔 / 身份原语 | `identity_title_info`、`identity_level_info`：`setIdentityTitleInfo` / `setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
 | 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add` |
 | 其它 | `online_file_list`、`online_file_refuse`、`temp_chat_info` |
+
+**群公告**（0.37.0 起）：`POST /v1/internal/group_bulletin_publish`，参数 `guild_id, text, pinned?, image?`。`image` 接受本地路径、`file:`、`data:`、`http(s):` 与 `internal:`，先经 `uploadGroupBulletinPic` 换成配图信息再发布。p_skey 由本端经 `IKernelTipOffService.getPskey(['qun.qq.com'])` 自取，调用方不必（也不该）再传；`text` 由本端做 `encodeURI` 之后交给内核。账号须是群主或管理员。`group_bulletin_delete` 同样自取 p_skey。
 
 `group_remark`、`group_shut_up_list`、`user_detail`、`mark_read` 走反射内核服务这一条 JNI 通道，不发新的原始封包。批量查询与管理类的参数结构体字段名随 QQ 版本变化的风险比核心动作更高，调用前先用 `capabilities` 核对。
 

@@ -5,6 +5,7 @@ import android.os.Looper;
 import com.satori.qq.L;
 import com.satori.qq.satori.Codec;
 import java.lang.reflect.Proxy;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -635,32 +636,43 @@ public final class ExtraSvc {
                 });
 
         // publishGroupBulletin(long groupCode, String psKey, GroupBulletinPublishReq, IOperateCallback)
-        // GroupBulletinPublishReq: text(String) pinned(int) oldFeedsId(String) picInfo(GroupBulletinPicInfo)
-        // psKey 由调用方给：本模块没有 WebAPI 通道，取不到 pskey 时这条多半失败。
+        // GroupBulletinPublishReq: text(String) pinned(int) oldFeedsId(String?) picInfo(GroupBulletinPicInfo?)
+        // text 要先做 encodeURI（NapCat 同一条内核路径的注释：「text 是 content 内容 url 编码」），
+        // 原文直接塞进去，群里看到的是被服务端解码坏的乱码。psKey 不给就向内核要一份 qun.qq.com 的。
+        // 配图先 uploadGroupBulletinPic 换成 picInfo；image_path 由 Dispatcher 从 image 解析好。
         reg("group_bulletin_publish", new String[]{"publish_group_bulletin"}, true,
-                "guild_id, text, pskey, pinned?",
+                "guild_id, text, pinned?, image?（本地路径、file:、data:、http(s) 或 internal:）",
                 (s, p) -> {
+                    final long group = groupOf(p);
+                    final String text = p.optString("text", "").trim();
+                    if (group == 0 || text.isEmpty()) {
+                        throw new IllegalArgumentException("guild_id and text are required");
+                    }
+                    final String pskey = s.pskey(p, "qun.qq.com");
                     Object req = s.neu(NS + "GroupBulletinPublishReq");
-                    s.put(req, "text", p.optString("text", ""));
-                    s.put(req, "pinned", p.optInt("pinned", 0));
+                    s.put(req, "text", encodeUri(text));
+                    s.put(req, "pinned", p.optBoolean("pinned", false) || p.optInt("pinned", 0) == 1 ? 1 : 0);
                     if (p.has("old_feeds_id")) s.put(req, "oldFeedsId", p.optString("old_feeds_id", ""));
+                    final String image = p.optString("image_path", "");
+                    if (!image.isEmpty()) {
+                        Result pic = s.call(s.svc("group"), BULLETIN_PIC_CB, "uploadGroupBulletinPic",
+                                (svc2, cb) -> s.ref.call(svc2, "uploadGroupBulletinPic", group, pskey, image, cb));
+                        if (!pic.ok() || pic.payload == null) return pic;
+                        s.put(req, "picInfo", pic.payload);
+                    }
                     return s.call(s.svc("group"), OPERATE_CB, "publishGroupBulletin",
-                            (svc2, cb) -> s.ref.call(svc2, "publishGroupBulletin",
-                                    groupOf(p), p.optString("pskey", ""), req, cb));
+                            (svc2, cb) -> s.ref.call(svc2, "publishGroupBulletin", group, pskey, req, cb));
                 });
 
         // deleteGroupBulletin(long groupCode, String psKey, String feedsId, IOperateCallback)
         reg("group_bulletin_delete", new String[]{"delete_group_bulletin"}, true,
-                "guild_id, feeds_id, pskey",
-                (s, p) -> s.call(s.svc("group"), OPERATE_CB, "deleteGroupBulletin",
-                        (svc2, cb) -> s.ref.call(svc2, "deleteGroupBulletin", groupOf(p),
-                                p.optString("pskey", ""), p.optString("feeds_id", ""), cb)));
-
-        // uploadGroupBulletinPic(long groupCode, String psKey, String path, IUploadGroupBulletinPicCallback)
-        reg("group_bulletin_upload_pic", NONE, true, "guild_id, path, pskey",
-                (s, p) -> s.call(s.svc("group"), BULLETIN_PIC_CB, "uploadGroupBulletinPic",
-                        (svc2, cb) -> s.ref.call(svc2, "uploadGroupBulletinPic", groupOf(p),
-                                p.optString("pskey", ""), p.optString("path", ""), cb)));
+                "guild_id, feeds_id",
+                (s, p) -> {
+                    final String pskey = s.pskey(p, "qun.qq.com");
+                    return s.call(s.svc("group"), OPERATE_CB, "deleteGroupBulletin",
+                            (svc2, cb) -> s.ref.call(svc2, "deleteGroupBulletin", groupOf(p),
+                                    pskey, p.optString("feeds_id", ""), cb));
+                });
 
         // getGroupBulletin(long groupCode, IOperateCallback) —— 回调只有 (code, msg)，拿不到正文。
         reg("group_bulletin_get", new String[]{"get_group_bulletin"}, false, "guild_id",
@@ -936,6 +948,43 @@ public final class ExtraSvc {
             if (uid != null && !uid.isEmpty()) return uid;
         } catch (Throwable ignore) {}
         return String.valueOf(uin);
+    }
+
+    private static final String PSKEY_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.IGetPskeyCallback";
+
+    /**
+     * 群公告这类 web 入口要的 p_skey。调用方给了就用它的；没给就向内核要
+     * （{@code IKernelTipOffService.getPskey(domains, cacheFirst, cb)}，回调第三参是 域名→pskey 的表）。
+     */
+    private String pskey(JSONObject p, String domain) throws Exception {
+        String given = p.optString("pskey", "");
+        if (!given.isEmpty()) return given;
+        ArrayList<String> domains = new ArrayList<>(Collections.singletonList(domain));
+        Result r = call(qq.getTipOffService(), PSKEY_CB, "getPskey",
+                (svc, cb) -> ref.call(svc, "getPskey", domains, true, cb));
+        if (r.ok() && r.payload instanceof Map<?, ?> map) {
+            Object value = map.get(domain);
+            if (value != null && !String.valueOf(value).isEmpty()) return String.valueOf(value);
+        }
+        throw new IllegalStateException("pskey for " + domain + " unavailable: " + r.describe());
+    }
+
+    /** 与 JavaScript 的 {@code encodeURI} 相同：保留 URI 结构字符，其余按 UTF-8 百分号编码。 */
+    static String encodeUri(String text) {
+        final String keep = ";,/?:@&=+$-_.!~*'()#";
+        StringBuilder out = new StringBuilder(text.length() * 2);
+        for (byte b : text.getBytes(StandardCharsets.UTF_8)) {
+            int c = b & 0xff;
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || (c < 0x80 && keep.indexOf(c) >= 0)) {
+                out.append((char) c);
+            } else {
+                out.append('%').append(Character.toUpperCase(Character.forDigit(c >> 4, 16)))
+                        .append(Character.toUpperCase(Character.forDigit(c & 15, 16)));
+            }
+        }
+        return out.toString();
     }
 
     private Object svc(String key) {

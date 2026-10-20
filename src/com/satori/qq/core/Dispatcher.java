@@ -161,6 +161,11 @@ final class Dispatcher {
             case "sign", "clock_in", "group_sign" -> gate.guarded("internal.sign", () -> groupOps.sign(p));
             case "essence", "set_essence" -> write("internal.essence", () -> groupOps.essence(p));
             case "invite" -> write("internal.invite", () -> groupOps.invite(p));
+            // 公告配图：调用方给的是链接或 internal:，内核要本地路径，先在这里解析好。
+            case "group_bulletin_publish", "publish_group_bulletin" -> {
+                if (!p.optString("image", "").isEmpty()) p.put("image_path", groupOps.localImage(p.optString("image")));
+                yield extension(name, p);
+            }
             case "dice" -> gate.guarded("internal.dice", () -> groupOps.specialFace(p, Codec.DICE_FACE, "dice"));
             case "rps", "rock_paper_scissors" ->
                     gate.guarded("internal.rps", () -> groupOps.specialFace(p, Codec.RPS_FACE, "rps"));

@@ -54,7 +54,7 @@
 
 | 功能 | 落点 | 状态 |
 | --- | --- | --- |
-| 群公告收发 | `publishGroupBulletin` `deleteGroupBulletin` `getGroupBulletinList` `uploadGroupBulletinPic` | 已接 `group_bulletin_publish` / `group_bulletin_delete` / `group_bulletin_get` / `group_bulletin_upload_pic`，写入口要 pskey |
+| 群公告收发 | `publishGroupBulletin` `deleteGroupBulletin` `getGroupBulletinList` `uploadGroupBulletinPic` | 已接 `group_bulletin_publish`（含配图上传）/ `group_bulletin_delete` / `group_bulletin_get`；写入口的 pskey 由 `IKernelTipOffService.getPskey` 自取 |
 | 群精华读取 | `fetchGroupEssenceList` `getGroupLatestEssenceList` `queryCachedEssenceMsg` | 已接 `group_essence_list` / `group_essence_latest` / `group_essence_cached`。本端已用写侧的 `essence`。真机结果：`group_essence_list` 不回调，`group_essence_latest` 回 `code=2 system error!`，`group_essence_cached` 未测 |
 | 群禁言名单 | `getGroupShutUpMemberList` | 已接 `group_shut_up_list`。真机不回调 |
 | 群邀请链接 | `getJoinGroupLink` | 已接 `group_join_link` |
@@ -131,7 +131,7 @@ WebAPI 通道的前置件，本身不产生聊天动作。
 | 功能 | 落点 | 状态 |
 | --- | --- | --- |
 | clientkey | `IKernelTicketService.forceFetchClientKey`、`IClientKeyCallback` | 入口在，方法体反编译为空，未核 |
-| pskey | `IKernelTipOffService.getPskey` | 同上，未核 |
+| pskey | `IKernelTipOffService.getPskey` | 0.37.0 起群公告用它取 `qun.qq.com` 的 p_skey，不对外暴露 |
 | cookies | 桌面端 `UserApi.getCookies` | Android 无对应入口，未核 |
 
 ## 未接入（可达但不做）

@@ -50,6 +50,11 @@ final class GroupOps {
         this.gate = gate;
     }
 
+    /** 图片入参（路径、file:、data:、http(s)、internal:）解析成本地文件的绝对路径。 */
+    String localImage(String spec) throws Exception {
+        return resources.resolveImage(spec).getAbsolutePath();
+    }
+
     private static long group(JSONObject p) { return p.optLong("guild_id", p.optLong("group_id", 0)); }
 
     private static long user(JSONObject p) { return Ids.parse(p.optString("user_id", "")); }

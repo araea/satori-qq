@@ -80,6 +80,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
 | 互动 | `poke` / `invite` | 戳一戳、邀请入群；poke 支持 `channel_id`（群号或 `private:QQ号`） |
+| 提及 | `at_all_quota` | 本号此刻能否在该群 @全体成员、今天还剩几次，见下 |
 | 表态 | `reaction_summary` / `reaction_clear` | 消息的回应计数与自己是否回应；仅清除自己的回应 |
 | 群成员 | `special_title` / `card` | 设置群头衔或群名片；`special_title` 只设头衔，不带显示开关参数 |
 | 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关；不带 `show` / `enable` 时只读当前状态，不写 |
@@ -140,6 +141,18 @@ QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，
 | --- | --- |
 | 发送 | `text` `at` `sharp` `quote` `emoji` `a` `br` `p` `img` `audio` `video` `file`、修饰元素与 `<message>`；另接受 `face` `json` `mface` `poke` |
 | 接收 | `text` `at` `quote` `emoji` `face` `img` `audio` `video` `file` `json` `mface`；合并转发为 `<message forward id="resid"/>` |
+
+### @全体成员
+
+收发都用标准写法 `<at type="all"/>`：发送时 `type="all"`（以及 `id="all"`、只有 `role="all"`）都编成 QQ 的 `atType=1`；收到的 @全体成员 一律给出 `<at type="all"/>`。`type="here"`（在线成员）QQ 没有对应物，按文字「@在线成员」发出。
+
+QQ 只让群主、管理员 @全体成员，并按天限次。发之前可以先问 `POST /v1/internal/at_all_quota`（参数 `channel_id` 或 `guild_id`），返回
+
+```json
+{"allowed": true, "remaining": 9, "group_remaining": 19, "reason": ""}
+```
+
+`remaining` 是本号今天还剩的次数，`group_remaining` 是全群的，`reason` 是不能发时 QQ 给的说法。数据来自内核 `getGroupRemainAtTimes`，也就是 QQ 自己在输入框打出 @ 时去问的那一条；只在真要发之前问，别轮询。satori-wx 有同名同形的方法，微信不限次，两个次数写 `null`。
 
 ### 入站元素类型
 

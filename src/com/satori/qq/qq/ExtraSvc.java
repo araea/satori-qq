@@ -399,6 +399,8 @@ public final class ExtraSvc {
             "com.tencent.qqnt.kernel.nativeinterface.ISearchOcrDataCallback";
     private static final String OCR_GET_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IGetOcrDataCallback";
+    private static final String AT_ALL_TIMES_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupRemainAtAllTimesOperateCallback";
 
     static {
         final String NS = "com.tencent.qqnt.kernel.nativeinterface.";
@@ -502,6 +504,29 @@ public final class ExtraSvc {
                 });
 
         // -------------------------------------------------------------- 群
+
+        // getGroupRemainAtTimes(groupCode, IGetGroupRemainAtAllTimesOperateCallback)
+        //   -> GroupAtInfo: canAtAll RemainAtAllCountForUin RemainAtAllCountForGroup canNotAtAllMsg
+        // QQ 自己在输入框里打出 @ 时问的就是这个（面板上「@全体成员 剩余 N 次」）。
+        // 与 satori-wx 同名同形：{allowed, remaining, group_remaining, reason}，没有上限的写 null。
+        reg("at_all_quota", NONE, false, "channel_id|guild_id",
+                (s, p) -> {
+                    long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing channel_id");
+                    Result r = s.call(s.svc("group"), AT_ALL_TIMES_CB, "getGroupRemainAtTimes",
+                            (svc2, cb) -> s.ref.call(svc2, "getGroupRemainAtTimes", g, cb));
+                    if (!r.ok() || r.payload == null)
+                        throw new IllegalStateException("at_all_quota: " + r.describe());
+                    Object info = r.payload;
+                    Object can = s.ref.get(info, "canAtAll");
+                    boolean allowed = can instanceof Boolean b ? b : Ref.asInt(can) != 0;
+                    String reason = allowed ? "" : Ref.asStr(s.ref.get(info, "canNotAtAllMsg"));
+                    return new JSONObject()
+                            .put("allowed", allowed)
+                            .put("remaining", Ref.asInt(s.ref.get(info, "RemainAtAllCountForUin")))
+                            .put("group_remaining", Ref.asInt(s.ref.get(info, "RemainAtAllCountForGroup")))
+                            .put("reason", reason == null ? "" : reason);
+                });
 
         reg("group_shut_up_list", new String[]{"group_mute_list"}, false, "guild_id",
                 (s, p) -> s.call(s.svc("group"), OPERATE_CB, "getGroupShutUpMemberList",

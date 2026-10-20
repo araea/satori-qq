@@ -29,6 +29,12 @@ QQ 的 Satori 实现端：通过 Zygisk 注入把 QQ NT 内核暴露为统一 Sa
 
 ## 快速使用
 
+想直接用机器人，装 [知微（acumen）](https://github.com/araea/acumen)：在 Termux 里运行下面一行，它会跟随本模块的端口与令牌自动连上，无需配置。
+
+```sh
+curl -fsSL https://github.com/araea/acumen/releases/latest/download/install.sh | bash
+```
+
 本机 Koishi 用 `adapter-satori` 连接：
 
 ```yaml

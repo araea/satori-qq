@@ -301,7 +301,7 @@ final class Inbound implements QQClient.Listener {
     }
 
     /**
-     * Android 9.3.50: onMsgRecall(chatType, peerUid, msgSeqOrMsgId).
+     * Android 9.3.50: onMsgRecall(chatType, peerUid, msgSeq).
      * Desktop NapCat uses the same shape. JSON info is still accepted if present.
      */
     private void recalled(int type, String info, long third) throws Exception {
@@ -319,12 +319,16 @@ final class Inbound implements QQClient.Listener {
             if (peer == 0 && !uid.isEmpty()) peer = Ids.parse(uid);
             if (j.has("chatType")) group = j.optInt("chatType") == QQClient.CT_GROUP;
         } else {
+            // 9.3.x 这里给的是序号（群里是群序号、私聊是会话序号），不是 19 位的 msgId；
+            // 按序号认回收消息时登记的那条，才发得出和 message-created 同一个 id。
             msgSeq = third;
-            msgId = third;
             peer = Ids.parse(info);
         }
         MsgStore.Rec rec = msgId != 0 ? store.getByMsgId(msgId) : null;
         if (rec == null) rec = store.findByPeerSeq(type, peer, info, msgSeq);
+        if (rec != null && rec.msgId != 0) msgId = rec.msgId;
+        // 认不出来（进程重启前收的）：沿用回调给的号，至少让下游知道有一条被撤回了。
+        if (msgId == 0) msgId = third;
         int storeId = rec != null ? rec.id : store.idOfMsgId(msgId);
         if (rec != null) {
             if (peer == 0) peer = rec.peerUin;

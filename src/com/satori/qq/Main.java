@@ -40,7 +40,12 @@ public final class Main {
                 return;
             }
             // 痕迹层：旧开关先搬进 files/.svc，再删掉 files/ 下所有带模块名的旧条目。
-            Paths.prepare();
+            // 清理失败绝不能挡住桥接启动：它是收尾工作，不是前置条件。
+            try {
+                Paths.prepare();
+            } catch (Throwable t) {
+                L.e("footprint cleanup failed", t);
+            }
             if (!Xp.attached()) {
                 L.e("hook runtime not attached in " + process, null);
                 return;

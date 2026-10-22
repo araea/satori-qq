@@ -17,38 +17,43 @@ import java.io.FileOutputStream;
 public final class Paths {
 
     private static final File FILES = new File("/data/data/com.tencent.mobileqq/files");
-    private static final File DIR = new File(FILES, ".svc");
+    private static final String DIR_NAME = ".svc";
     /** files/ 下这些名字都是我们留下的（旧版本的开关、日志与审计文件）。 */
     private static final String[] LEGACY = {"satori-", "qk_sso.log"};
 
     private Paths() {}
 
-    public static File dir() { return DIR; }
+    public static File dir() { return new File(FILES, DIR_NAME); }
 
-    public static File of(String name) { return new File(DIR, name); }
+    public static File of(String name) { return new File(dir(), name); }
 
     public static String str(String name) { return of(name).getAbsolutePath(); }
 
-    public static void ensure() {
-        if (DIR.isDirectory()) return;
-        DIR.mkdirs();
-        DIR.setReadable(true, true);
-        DIR.setWritable(true, true);
-        DIR.setExecutable(true, true);
+    public static void ensure() { ensure(dir()); }
+
+    public static void prepare() { prepare(FILES); }
+
+    /** 对给定的 files 目录做一遍迁移与清理；{@link #prepare()} 与测试共用这一份逻辑。 */
+    static void prepare(File files) {
+        File dir = new File(files, DIR_NAME);
+        ensure(dir);
+        migrateFlag(files, dir);
+        dropLegacy(files);
     }
 
-    /** 只在主进程启动时调一次，早于任何会写文件的部件。 */
-    public static void prepare() {
-        ensure();
-        migrateFlag();
-        dropLegacy();
+    private static void ensure(File dir) {
+        if (dir.isDirectory()) return;
+        dir.mkdirs();
+        dir.setReadable(true, true);
+        dir.setWritable(true, true);
+        dir.setExecutable(true, true);
     }
 
     /** 旧开关的值搬到新位置；新位置已经有值时以新的为准（用户可能在管理页改过）。 */
-    private static void migrateFlag() {
-        File flag = of("enabled");
+    private static void migrateFlag(File files, File dir) {
+        File flag = new File(dir, "enabled");
         if (flag.exists()) return;
-        File legacy = new File(new File(FILES, "satori-qq"), "enabled");
+        File legacy = new File(new File(files, "satori-qq"), "enabled");
         if (!legacy.isFile()) return;
         try (FileInputStream in = new FileInputStream(legacy)) {
             int value = in.read();
@@ -61,19 +66,17 @@ public final class Paths {
         }
     }
 
-    private static void dropLegacy() {
-        File[] entries = FILES.listFiles();
+    private static void dropLegacy(File files) {
+        File[] entries = files.listFiles();
         if (entries == null) return;
         for (File entry : entries) {
             String name = entry.getName();
-            boolean ours = false;
             for (String prefix : LEGACY) {
                 if (name.startsWith(prefix)) {
-                    ours = true;
+                    deleteTree(entry);
                     break;
                 }
             }
-            if (ours) deleteTree(entry);
         }
     }
 

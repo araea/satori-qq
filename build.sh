@@ -91,8 +91,13 @@ GUARD=/data/adb/satori-qq/qqguard.sh
 EOF
 cat > $MODULE/uninstall.sh <<'EOF'
 #!/system/bin/sh
-# 卸载模块时先暂停 watchdog，别留下一个还在动 QQ 的看守。
+# 卸载模块时先暂停 watchdog，别留下一个还在动 QQ 的看守；再把 QQ 目录里属于模块的
+# 东西清掉（files/.svc 与旧条目）。卸载之后模块就没有机会自己清了，这是最后一次。
 [ -x /data/adb/satori-qq/qqguard.sh ] && /data/adb/satori-qq/qqguard.sh stop
+MODDIR=${0%/*}
+case $MODDIR in /*) ;; *) MODDIR=$(cd "$MODDIR" && pwd) ;; esac
+[ -f "$MODDIR/ctl.sh" ] && /system/bin/sh "$MODDIR/ctl.sh" purge >/dev/null 2>&1
+exit 0
 EOF
 chmod 0755 $MODULE/service.sh $MODULE/action.sh $MODULE/uninstall.sh $MODULE/ctl.sh
 

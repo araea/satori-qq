@@ -33,7 +33,7 @@ QQ 数据目录下只有一个隐藏目录 `files/.svc`（0700，Java 侧 `Paths
 - 模块的 `.so` 怎么映射由 Zygisk Next 决定（它按 memfd 装载并隐藏路径），模块不额外处理；root 侧的痕迹（`/data/adb`）由 KernelSU 与管理器负责。
 - 安装包 `com.satori.qq` 若已装在机器上，QQ 用 `QUERY_ALL_PACKAGES` 能列出来。那是用户自己的应用，模块不改包名也不隐藏它。
 
-卸载模块之前跑一次 `ctl.sh purge`：它删掉 `files/.svc` 与 `files/` 下早前版本留下的条目。卸载之后模块就没有机会自己清了。
+卸载模块时 `uninstall.sh` 会停掉看守并删掉 `files/.svc` 与 `files/` 下早前版本留下的条目。绕过模块卸载（直接删模块目录）时手动跑一次 `ctl.sh purge`，否则卸载之后模块就没有机会自己清了。
 
 ## 自查
 

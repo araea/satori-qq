@@ -2,6 +2,7 @@ package com.satori.qq.packet;
 
 import android.os.Looper;
 import com.satori.qq.L;
+import com.satori.qq.Paths;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
 import com.satori.qq.xp.Xp;
@@ -265,15 +266,15 @@ public final class PacketSvc {
             while (SSO_LOG.size() > SSO_LOG_MAX) SSO_LOG.removeLast();
         }
         L.e("PacketSvc: " + line, null);
-        appendPrivate("/data/data/com.tencent.mobileqq/files", "qk_sso.log", line);
+        appendPrivate("sso.log", line);
     }
 
-    /** 追加一行到 app 私有目录，超 64KB 只留尾部 32KB。 */
-    private static void appendPrivate(String dir, String name, String line) {
+    /** 追加一行到 files/.svc，超 64KB 只留尾部 32KB。 */
+    private static void appendPrivate(String name, String line) {
         try {
-            File d = new File(dir);
+            File d = Paths.dir();
             if (!d.isDirectory()) return;
-            File f = new File(d, name);
+            File f = Paths.of(name);
             if (f.length() > 65536L) {
                 RandomAccessFile raf = new RandomAccessFile(f, "rw");
                 byte[] tail = new byte[(int) Math.min(32768L, f.length())];

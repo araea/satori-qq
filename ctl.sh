@@ -7,6 +7,7 @@
 #   ctl.sh guard start|stop|kill    常驻守护：保活 / 暂停 / 暂停并关闭 QQ
 #   ctl.sh open | relaunch          打开 QQ / 重新启动 QQ（保持看守原来的模式）
 #   ctl.sh update-check | update-install <url> <sha256> | reboot
+#   ctl.sh purge                    清掉 QQ 目录里属于模块的东西（卸载模块前用）
 #
 # 输出是 key=value 行，任意文本走 base64。参数都由界面生成，这里仍逐一校验。
 MODDIR=${0%/*}
@@ -26,7 +27,9 @@ PKG=com.tencent.mobileqq
 M=/data/adb/modules/$ID
 U=/data/adb/modules_update/$ID
 DATA=/data/user/0/$PKG
-FLAG=$DATA/files/satori-qq/enabled
+# 宿主私有目录里的落盘根，不带模块名（见 src/com/satori/qq/Paths.java）。
+STATE_DIR=$DATA/files/.svc
+FLAG=$STATE_DIR/enabled
 G=/data/adb/satori-qq
 CONF=$M/config.json
 
@@ -164,6 +167,16 @@ update_install() {
     echo ok=1
 }
 
+# 清掉 QQ 目录里属于模块的东西：隐藏目录（开关、日志、缓存）与旧版本留下的条目。
+# 升级不需要它——模块自己会在启动时清旧路径；这里给「卸载模块前」用。
+purge() {
+    rm -rf "$STATE_DIR"
+    for p in "$DATA"/files/satori-* "$DATA"/files/qk_sso.log; do
+        [ -e "$p" ] && rm -rf "$p"
+    done
+    echo ok=1
+}
+
 case $1 in
     probe) probe ;;
     write-config) write_config "$2" ;;
@@ -174,5 +187,6 @@ case $1 in
     update-check) update_check ;;
     update-install) update_install "$2" "$3" ;;
     reboot) svc power reboot 2>/dev/null || reboot ;;
-    *) echo "usage: ctl.sh probe|write-config|set-enabled|guard|open|relaunch|update-check|update-install|reboot" >&2; exit 2 ;;
+    purge) purge ;;
+    *) echo "usage: ctl.sh probe|write-config|set-enabled|guard|open|relaunch|update-check|update-install|purge|reboot" >&2; exit 2 ;;
 esac

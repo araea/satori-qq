@@ -27,7 +27,9 @@ import com.satori.qq.qq.WakeLockCtl;
  * and cached — this notification is rebuilt on every monitor tick.
  */
 public final class StatusNotice {
-    private static final String CHANNEL_ID = "satori-qq-status";
+    // 渠道 id 宿主能枚举（dumpsys / NotificationManager 里看得到），按 QQ 自己的命名风格取，
+    // 不带模块名；显示名仍是「知弦服务状态」，那是给用户看的。
+    private static final String CHANNEL_ID = "svc_status_channel";
     private static final String CHANNEL_NAME = "知弦服务状态";
     // Stable id so every update() replaces the same entry in place, and so startForeground()
     // and notify() address one and the same notification.

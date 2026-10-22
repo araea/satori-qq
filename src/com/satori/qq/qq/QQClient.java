@@ -5,6 +5,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import com.satori.qq.L;
+import com.satori.qq.Paths;
 import com.satori.qq.packet.PacketSvc;
 import java.io.BufferedReader;
 import java.io.File;
@@ -908,6 +909,7 @@ public final class QQClient {
                 // Android/data 下那个路径，那个目录一旦不可写就每次发消息抛一次
                 // FileNotFoundException（logcat 里连着整串栈），既是噪声也是暴露面。
                 if (L.verbose()) {
+                    Paths.ensure();
                     try (FileWriter w = new FileWriter(LAST_SEND_DUMP, false)) {
                         w.write("PRE\n" + pre);
                     }
@@ -944,8 +946,7 @@ public final class QQClient {
         return r;
     }
 
-    private static final String LAST_SEND_DUMP =
-            "/data/data/com.tencent.mobileqq/files/satori-last-send.txt";
+    private static final File LAST_SEND_DUMP = Paths.of("last-send.txt");
 
     /** Write kernel-stored element types/pic fields after send (no peer identifiers). */
     public void dumpSent(int chatType, String peerUid, long msgId) {
@@ -977,7 +978,7 @@ public final class QQClient {
         if (!L.verbose()) return;
         try {
             String pre = "";
-            File dump = new File(LAST_SEND_DUMP);
+            File dump = LAST_SEND_DUMP;
             if (dump.isFile()) {
                 byte[] raw = Files.readAllBytes(dump.toPath());
                 pre = new String(raw, StandardCharsets.UTF_8);
@@ -1696,8 +1697,7 @@ public final class QQClient {
         L.e(r.trace, null);
         // Same reasoning as dumpSent: the trace belongs in logcat, not in a file in Android/data.
         if (L.verbose()) try {
-            File f = new File(
-                    "/data/data/com.tencent.mobileqq/files/satori-history.txt");
+            File f = Paths.of("history.txt");
             try (FileWriter w = new FileWriter(f, false)) { w.write(r.trace); }
         } catch (Throwable ignore) {}
         return r;
@@ -2303,8 +2303,7 @@ public final class QQClient {
                 (gs, cb) -> ref.call(gs, "modifyGroupName", groupCode, name, isNormalMember, cb));
     }
 
-    private static final String AUDIT_FILE =
-            "/data/data/com.tencent.mobileqq/files/satori-writes.log";
+    private static final File AUDIT_FILE = Paths.of("writes.log");
 
     /**
      * 会改群资料的写操作记一行。
@@ -2314,7 +2313,8 @@ public final class QQClient {
      */
     private static void audit(String line) {
         try {
-            File f = new File(AUDIT_FILE);
+            File f = AUDIT_FILE;
+            Paths.ensure();
             if (f.exists() && f.length() > 256 * 1024) f.delete();
             FileWriter w = new FileWriter(f, true);
             w.write(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
@@ -2656,8 +2656,7 @@ public final class QQClient {
     private volatile boolean groupNamesLoaded;
     private volatile long groupNamesSavedAt;
 
-    private static final String GROUP_NAMES_FILE =
-            "/data/data/com.tencent.mobileqq/files/satori-group-names.tsv";
+    private static final File GROUP_NAMES_FILE = Paths.of("group-names.tsv");
 
     public void rememberGroupName(long groupCode, String name) {
         if (groupCode == 0 || name == null || name.isEmpty()) return;
@@ -2671,7 +2670,7 @@ public final class QQClient {
         if (groupNamesLoaded) return;
         groupNamesLoaded = true;
         try {
-            File f = new File(GROUP_NAMES_FILE);
+            File f = GROUP_NAMES_FILE;
             if (!f.exists()) return;
             BufferedReader r = new BufferedReader(new FileReader(f));
             try {
@@ -2701,6 +2700,7 @@ public final class QQClient {
             for (Map.Entry<Long, String> e : knownGroupNames.entrySet()) {
                 sb.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
             }
+            Paths.ensure();
             FileWriter w = new FileWriter(GROUP_NAMES_FILE, false);
             try {
                 w.write(sb.toString());

@@ -29,6 +29,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <android/log.h>
 
 #include "zygisk.hpp"
@@ -41,7 +42,9 @@
 extern "C" const uint8_t satori_dex_start[];
 extern "C" const uint8_t satori_dex_end[];
 
-static const char *kNLogFile = "/data/data/com.tencent.mobileqq/files/satori-native.log";
+// 同一份落盘都在 files/.svc 下（不带模块名，0700），见 src/com/satori/qq/Paths.java。
+static const char *kNLogDir = "/data/data/com.tencent.mobileqq/files/.svc";
+static const char *kNLogFile = "/data/data/com.tencent.mobileqq/files/.svc/native.log";
 static const char *kTarget = "com.tencent.mobileqq";
 static const char *kXpClass = "com.satori.qq.xp.Xp";
 static const char *kSsoClass = "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
@@ -79,6 +82,15 @@ static void NLog(const char *fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     __android_log_print(ANDROID_LOG_INFO, TAG, "%s", buf);
+    // 第一次写之前建目录，并把超过 256 KiB 的旧日志丢掉：这条文件只服务上一次启动的事后翻查，
+    // 无上限地长下去本身就是宿主目录里最显眼的那一件东西。
+    static bool prepared = false;
+    if (!prepared) {
+        prepared = true;
+        mkdir(kNLogDir, 0700);
+        struct stat info{};
+        if (!stat(kNLogFile, &info) && info.st_size > 256 * 1024) unlink(kNLogFile);
+    }
     FILE *f = fopen(kNLogFile, "ae");
     if (f == nullptr) return;
     fprintf(f, "%s\n", buf);
@@ -516,6 +528,8 @@ static bool StartJava(JNIEnv *env, jobject loader, jobject host, const char *pro
 }
 
 static void *BootstrapThread(void *) {
+    // 线程名从 /proc/<pid>/task/*/comm 读得到；不取默认名（会继承 zygote），用宿主里遍地都是的池名。
+    pthread_setname_np(pthread_self(), "pool-4-thread-5");
     bool attached = false;
     JNIEnv *env = GetEnv(&attached);
     if (env == nullptr) {

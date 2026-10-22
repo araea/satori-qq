@@ -22,7 +22,7 @@ HTTP 服务、消息监听与保活只在主进程运行。没有单独的管理
 
 设置在模块目录的 `config.json`（root 0600）。注入后进程已在 QQ 的沙箱里读不到 `/data/adb`，所以 `native/satori.cpp` 在 `preAppSpecialize` 里经 `getModuleDir()` 读它（上限 16 KB），作为 `Boot.start` 的第三个参数交给 Java，`Cfg.load` 解析。没有这个文件时退回旧的 JSON 文件路径与默认值；文件坏了服务保持关闭（`config_status=module-invalid`）。`/healthz` 的 `config_revision` 是读到的修订号（管理页每保存一次加一），`config_status` 是来源（`module` / `file:<路径>` / `default`），页面据此区分已保存与已生效。
 
-模块总开关是 QQ 数据目录里的 `files/satori-qq/enabled`，由 `ctl.sh set-enabled` 以 QQ 的 uid 与 SELinux 上下文写入，`Monitor` 的看门线程每秒读一次；没有文件或读不到（开机还没解锁）时沿用当前值。关闭时 `Monitor` 关闭监听端口、取消常驻通知、释放唤醒锁并让 `Keepalive` 停踢；打开时按原配置重新绑定端口与状态循环。开关切换不需要重启 QQ。看守由 `ctl.sh` 同步暂停 / 恢复，不归模块进程管。
+模块总开关是 QQ 数据目录里的 `files/.svc/enabled`，由 `ctl.sh set-enabled` 以 QQ 的 uid 与 SELinux 上下文写入，`Monitor` 的看门线程每秒读一次；没有文件或读不到（开机还没解锁）时沿用当前值。关闭时 `Monitor` 关闭监听端口、取消常驻通知、释放唤醒锁并让 `Keepalive` 停踢；打开时按原配置重新绑定端口与状态循环。开关切换不需要重启 QQ。看守由 `ctl.sh` 同步暂停 / 恢复，不归模块进程管。
 
 ## core 的部件
 

@@ -6,6 +6,7 @@ import android.os.Handler;
 import android.os.Looper;
 import com.satori.qq.Cfg;
 import com.satori.qq.L;
+import com.satori.qq.Paths;
 import com.satori.qq.net.HttpServer;
 import com.satori.qq.packet.PacketSvc;
 import com.satori.qq.qq.Compat;
@@ -14,7 +15,6 @@ import com.satori.qq.qq.Keepalive;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.WakeLockCtl;
 import com.satori.qq.xp.Xp;
-import java.io.File;
 import java.io.FileInputStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -91,7 +91,7 @@ final class Monitor {
 
     /**
      * 主开关：关掉时不监听端口、不发常驻通知、不持唤醒锁、不重启 QQ 的核心服务；打开时逐项恢复。
-     * 开关值由模块管理页（ctl.sh set-enabled）写进 QQ 数据目录的 files/satori-qq/enabled，这里每秒多读一次，
+     * 开关值由模块管理页（ctl.sh set-enabled）写进 QQ 数据目录的 files/.svc/enabled，这里每秒多读一次，
      * 所以拨动后一两秒内生效，不用重启 QQ。
      */
     private synchronized void startServing() {
@@ -180,7 +180,7 @@ final class Monitor {
      * 时沿用当前值，解锁后下一轮自然读到。
      */
     static boolean readEnabled(Context context, boolean fallback) {
-        try (FileInputStream in = new FileInputStream(new File(context.getFilesDir(), "satori-qq/enabled"))) {
+        try (FileInputStream in = new FileInputStream(Paths.of("enabled"))) {
             int c = in.read();
             return c < 0 ? fallback : c != '0';
         } catch (Throwable unreadable) {

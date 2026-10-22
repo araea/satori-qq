@@ -39,6 +39,8 @@ public final class Main {
                 L.i("bridge skipped in process " + process);
                 return;
             }
+            // 痕迹层：旧开关先搬进 files/.svc，再删掉 files/ 下所有带模块名的旧条目。
+            Paths.prepare();
             if (!Xp.attached()) {
                 L.e("hook runtime not attached in " + process, null);
                 return;

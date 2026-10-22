@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 命名，QQ 自己也有若干 `pool-N-thread-M`。
  */
 final class Workers {
-    static final String BOOTSTRAP = "pool-4-bootstrap";
+    static final String BOOTSTRAP = "pool-4-thread-3";
     static final String STATUS_MONITOR = "pool-5-thread-1";
     static final String RESTART = "pool-5-thread-2";
     static final String FOREGROUND_RELEASE = "pool-4-thread-4";

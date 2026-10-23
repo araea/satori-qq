@@ -194,8 +194,8 @@ async function main() {
   });
 
   // ---- 0.29.0 回归的扩展动作：正向各打一遍 ----
-  // group_remark（有状态写、无读回）与 group_shut_up_list（9.3.70 真机不回调，见
-  // docs/JNI_CAPABILITIES.md 群禁言名单）不在默认巡检里。
+  // group_remark（有状态写、无读回）与 group_shut_up_list（9.3.70 真机不回调，属群禁言
+  // 名单）不在默认巡检里。
   await check('internal/user_detail_by_uin', async () => {
     const u = await client.callOk('internal/user_detail_by_uin', { user_id: selfId });
     if (!u) throw new Error('空响应');

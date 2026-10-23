@@ -223,7 +223,7 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 刻意不同的：
 
 - **缺 6 个方法**：`channel.create`、`channel.delete`、`guild.role.create|update|delete`、`message.update`。QQ 的群就是频道、没有自定义角色、也不支持改消息，回 404，能力表里也不列。
-- **`channel.update` 的改名只有一条写入路径**：只调内核的 `modifyGroupName`，不做二次写入，也不回读校验。空名字一律拒绝。实现见 [`ARCHITECTURE.md`](ARCHITECTURE.md#群资料写入)。
+- **`channel.update` 的改名只有一条写入路径**：只调内核的 `modifyGroupName`，不做二次写入，也不回读校验。空名字一律拒绝。
 - **`reaction-removed`**：事件名是 `reaction-removed`。严格照协议包的客户端要兼容 `reaction-deleted` 别名。
 - **`login-updated`**：不在协议包的 `EventName` 里，官方客户端的 WS 分支显式处理它，换号时靠它通知客户端重连。
 - **列表分页**：不带 `next` / `limit` 一次给完，指定分页后按 `next` 继续读取。
@@ -231,13 +231,12 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 
 对照可以直接跑：`python3 tests/conformance.py --base http://127.0.0.1:3001`，只读黑盒探针，不发聊天消息。`--listen 60` 再核对实时事件的形状。
 
-## 与 Acumen 的协作约定
+## 客户端约定
 
-以 [Satori 事件规范](https://satori.chat/zh-CN/protocol/events.html)、[表态规范](https://satori.chat/zh-CN/resources/reaction.html) 和 [扩展规范](https://satori.chat/zh-CN/advanced/internal.html) 为准：
+以 [Satori 事件规范](https://satori.chat/zh-CN/protocol/events.html)、[表态规范](https://satori.chat/zh-CN/resources/reaction.html) 和 [扩展规范](https://satori.chat/zh-CN/advanced/internal.html) 为准。
 
-- READY、历史回放和实时事件在同一把投递锁内串行完成。所有广播事件在投递时统一分配 sn。重复 IDENTIFY 不重新回放。
-- 恢复连接不重复投递待审批申请。登录事件不进历史缓冲。换号清除回放与表态缓存。
-- READY 附加 `satori_qq.session_id` 与 `satori_qq.sn`，供 Acumen 识别模块进程重启。带旧 `sn` 的 IDENTIFY 永远得到 READY。sn 从当前毫秒时间起算，缓冲为当前进程最近 4096 条。
+- 恢复连接不重复投递待审批申请。登录事件不进历史回放。
+- `READY` 附加 `satori_qq.session_id` 与 `satori_qq.sn`。两者变化说明模块进程重启过。带旧 `sn` 的 `IDENTIFY` 照样回 `READY`。
 - `reaction.clear` 从 features 移除并返回 404。只清自己的非标准行为在 `POST /v1/internal/reaction_clear`，参数 `channel_id, message_id, emoji_id?`，返回 `{cleared, scope:"self"}`。无自己表态时返回 0，部分失败明确报错。
 - `POST /v1/internal/reaction_summary` 参数 `channel_id, message_id`，返回 `{message_id, data:[{emoji_id,count,self}], source:"kernel_cache", observed_at}`。count 来自 QQ 本地缓存，self 优先使用本模块已确认的动作，两者更新时间可能不同。
 - 表态事件的 `_type=satori-qq/reaction`、`_data={before,count,delta}` 解释数量变化。没有可靠操作者时不填写 user。

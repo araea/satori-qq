@@ -84,7 +84,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 表态 | `reaction_summary` / `reaction_clear` | 消息的回应计数与自己是否回应；仅清除自己的回应 |
 | 群成员 | `special_title` / `card` | 设置群头衔或群名片；`special_title` 只设头衔，不带显示开关参数 |
 | 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关；不带 `show` / `enable` 时只读当前状态，不写 |
-| 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息 |
+| 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息。`essence` 附带 `guild_id` 时，本进程没缓存过的旧消息也能由内核补取 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳（超级表情） |
 | 消息读取 | `get_forward` / `chat_screenshot` | `chat_screenshot` 的范围渲染见下；`get_forward` 读取合并转发。`id` 是转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取 |
 | 能力查询 | `capabilities` / `help` / `compat` | `capabilities` 与 satori-wx 共用一份口径：`adapter`、`version`、`platform`、`standard_methods`（与 `login.features` 同源）、`unsupported`、`event_types`、`message_elements`（`message.create` 接受的元素）、`limits`（`upload_bytes`：`upload.create` 单个文件的字节上限，acumen 取片时按它收窄），再加本实现端的扩展动作清单（`actions`、`params`、`removed`）；`compat` 是内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |

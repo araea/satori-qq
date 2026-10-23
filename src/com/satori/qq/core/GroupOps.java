@@ -287,7 +287,14 @@ final class GroupOps {
         boolean add = !"remove".equals(p.optString("op", "add")) && !p.optBoolean("remove", false);
         long g = group(p);
         if (g == 0) g = Codec.channelPeer(p.optString("channel_id", ""));
-        MsgStore.Rec rec = lookup.require(p.optString("message_id", ""), p);
+        // 群频道号就是群号。调用方常只给 guild_id（智能体把一条旧消息加精时就是这样），
+        // 补上 channel_id，Lookup 才会去内核把不在本进程缓存里的消息捞回来；
+        // 否则一条没经本进程推送过的消息只能回 404。
+        JSONObject lookupParams = p;
+        if (g != 0 && Json.blank(p.optString("channel_id", ""))) {
+            lookupParams = Json.copy(p).put("channel_id", String.valueOf(g));
+        }
+        MsgStore.Rec rec = lookup.require(p.optString("message_id", ""), lookupParams);
         if (g == 0) g = rec.peerUin;
         long seq = rec.msgSeq;
         long random = 0;

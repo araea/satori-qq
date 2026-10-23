@@ -138,7 +138,7 @@ WebAPI 通道的前置件，本身不产生聊天动作。
 
 一批 QQ 内核查询与本地会话状态接口未接入。`capabilities.removed` 会逐条报出版本与原因，客户端据此记入不可用名单。
 
-未接入的动作名：`group_overview` `group_extra` `member_info` `group_member_search` `recent_contacts` `contact_search` `friend_relation` `group_remark` `profile_self` `group_honor` `group_shut_up_list` `group_active` `group_anniversary` `group_detail` `group_statistic` `user_detail` `voice_to_text` `message_context` `message_search` `group_file` `get_resource` `mark_read` `session_top` `group_msg_mask` `qzone.publish` `offline`。
+未接入的动作名：`group_overview` `group_extra` `member_info` `group_member_search` `recent_contacts` `contact_search` `friend_relation` `group_remark` `profile_self` `group_honor` `group_shut_up_list` `group_active` `group_anniversary` `group_detail` `group_statistic` `user_detail` `voice_to_text` `message_context` `message_search` `group_file` `get_resource` `session_top` `group_msg_mask` `qzone.publish` `offline`。（`mark_read` 已在 0.29.0 接入，见上表。）
 
 ## 受限
 

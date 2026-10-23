@@ -195,7 +195,8 @@ final class Dispatcher {
     private Object extension(String name, JSONObject p) throws Exception {
         ExtraSvc.Spec spec = ExtraSvc.find(name);
         if (spec != null) {
-            return spec.write ? gate.guarded("internal." + spec.name, () -> run(spec, p)) : run(spec, p);
+            if (!spec.write || !spec.gated) return run(spec, p);
+            return gate.guarded("internal." + spec.name, () -> run(spec, p));
         }
         String since = Capabilities.removedSince(name);
         if (since != null) throw ApiError.removed("internal/" + name, since, Capabilities.removedWhy(name));

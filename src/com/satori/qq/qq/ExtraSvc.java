@@ -284,11 +284,14 @@ public final class ExtraSvc {
     public static final class Spec {
         public final String name;
         public final String[] alias;
+        /** 会改 QQ 那边的状态（capabilities 里归入写动作，失败要抛给调用方）。 */
         public final boolean write;
+        /** 出站动作要不要排进 OutboundGate（限频、串行、熔断）。 */
+        public final boolean gated;
         public final String params;
         public final Fn fn;
-        Spec(String name, String[] alias, boolean write, String params, Fn fn) {
-            this.name = name; this.alias = alias; this.write = write;
+        Spec(String name, String[] alias, boolean write, boolean gated, String params, Fn fn) {
+            this.name = name; this.alias = alias; this.write = write; this.gated = gated;
             this.params = params; this.fn = fn;
         }
     }
@@ -296,7 +299,12 @@ public final class ExtraSvc {
     private static final List<Spec> ACTIONS = new ArrayList<>();
 
     private static void reg(String name, String[] alias, boolean write, String params, Fn fn) {
-        ACTIONS.add(new Spec(name, alias, write, params, fn));
+        reg(name, alias, write, write, params, fn);
+    }
+
+    /** 写入但不必排出站队列的少数动作（见 typing）：写语义照旧，只是不占发送名额。 */
+    private static void reg(String name, String[] alias, boolean write, boolean gated, String params, Fn fn) {
+        ACTIONS.add(new Spec(name, alias, write, gated, params, fn));
     }
 
     public static List<Spec> actions() {
@@ -409,7 +417,11 @@ public final class ExtraSvc {
         // ------------------------------------------------------------ 消息
 
         // sendShowInputStatusReq(int chatType, int eventType, String peerUid, cb)
-        reg("typing", new String[]{"input_status", "set_input_status"}, true,
+        //
+        // 输入状态不是消息：它没有内容、没有回执意义、重复发也不会多出一条，所以不过
+        // OutboundGate。过闸反而有害——每次「正在输入」都占一个出站名额（默认每秒一个、
+        // 每分钟二十个），真话就得排在它后面，一串多气泡回复会被自己的输入状态拖慢。
+        reg("typing", new String[]{"input_status", "set_input_status"}, true, false,
                 "channel_id|guild_id|user_id, event_type?",
                 (s, p) -> {
                     long g = groupOf(p);

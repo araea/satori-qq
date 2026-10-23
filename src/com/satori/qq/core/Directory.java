@@ -150,9 +150,9 @@ final class Directory {
         throw ApiError.notFound("member " + userId + " not found in group " + groupId);
     }
 
-    private JSONArray groupMemberList(long groupId) throws Exception {
+    private JSONArray groupMemberList(long groupId, boolean refresh) throws Exception {
         if (groupId == 0) throw ApiError.badRequest("missing group_id");
-        Map<String, Object> members = qq.getAllMembers(groupId);
+        Map<String, Object> members = qq.getAllMembers(groupId, refresh);
         if (members == null) throw ApiError.failed("cannot fetch group members");
         JSONArray arr = new JSONArray();
         for (Object member : members.values()) arr.put(memberJson(groupId, member));
@@ -258,8 +258,13 @@ final class Directory {
         return memberShape(groupMemberInfo(guildId(p), Ids.parse(p.optString("user_id", ""))));
     }
 
+    /**
+     * 带 {@code refresh: true} 时先向服务器重拉一遍名单（只在第一页，翻页沿用这份），
+     * 否则用 QQ 本地缓存——缓存里的「最后发言」可能停在上次打开成员列表的时候。
+     */
     JSONArray members(JSONObject p) throws Exception {
-        JSONArray src = groupMemberList(guildId(p));
+        boolean refresh = p.optBoolean("refresh", false) && p.optString("next", "").isEmpty();
+        JSONArray src = groupMemberList(guildId(p), refresh);
         JSONArray data = new JSONArray();
         for (int i = 0; i < src.length(); i++) {
             JSONObject m = src.optJSONObject(i);
@@ -288,6 +293,11 @@ final class Directory {
         if (titleExpire != 0) out.put("title_expire_time", titleExpire);
         long joined = m.optLong("join_time", 0);
         if (joined > 0) out.put("joined_at", joined * 1000);
+        // 扩展字段：QQ 服务器记的最后发言时刻（毫秒，0 = 进群后没说过话）与群等级。
+        // 机器人离线期间的发言它也记着，清理潜水不必只靠自己收到的消息。
+        out.put("last_sent_at", Math.max(0, m.optLong("last_sent_time", 0)) * 1000);
+        long level = Ids.parse(m.optString("level", "0"));
+        if (level > 0) out.put("level", level);
         return out;
     }
 

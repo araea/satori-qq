@@ -541,7 +541,7 @@ public final class ExtraSvc {
                     ? "你是群主，但 QQ 这次没有接受" + label + "；检查一下头衔长度（最多六字）或稍后再试。"
                     : "你在这个群是" + ("admin".equals(role) ? "管理员" : "普通成员")
                             + "，QQ 只让群主写专属头衔。想显示" + label
-                            + "，让群主用「设置专属头衔」给你写；群主写好后用「假头衔 列表」就能看到并戴上。";
+                            + "，让群主用「设置专属头衔」给你写；写好后用 title_list 就能看到并戴上。";
             case "not_available" -> "本群身份目录里没有" + label
                     + "。普通成员只能戴已经获得的身份头衔（群等级、群主授予的专属头衔）；群主 / 管理员身份要真的拥有对应角色。";
             case "kernel_refused" -> "QQ 拒绝了" + label + " 的上报。普通成员戴不上群主 / 管理员身份，换一枚目录里已有的头衔试试。";
@@ -562,7 +562,7 @@ public final class ExtraSvc {
 
     /**
      * 写自己的专属头衔（0x8FC_2）。只有群主能做，写成功后身份目录里会多出一枚 302，
-     * 名字就是这段文字；它比身份目录里的 300/301 更适合“假头衔”，因为不要求真的拥有角色。
+     * 名字就是这段文字；写成功后可以在 title_list 里看到并戴上。
      */
     private PacketSvc.Result setSpecialTitle(long groupCode, long targetUin, String title) throws Exception {
         String uid = uidFor(groupCode, targetUin);
@@ -1314,6 +1314,54 @@ public final class ExtraSvc {
 
         reg("identity_level_info", new String[]{"set_identity_level_info"}, true, "guild_id, show?",
                 (s, p) -> s.opJson(s.qq.setGroupIdentityLevelInfo(groupOf(p), p.optBoolean("show", true))));
+
+        // --- 群身份实验动作：普通成员能不能从别的入口把文字送到“头衔”位置 ---
+        // 读群身份的完整管理设置（等级名、各展示开关）。
+        reg("identity_manage", NONE, false, "guild_id",
+                (s, p) -> {
+                    Object req = s.neu(NS + "GIMGetManageSettingReq");
+                    s.put(req, "groupCode", groupOf(p));
+                    return s.call(s.svc("group"),
+                            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupIdentityManageSettingCallback",
+                            "getGroupIdentityManageSetting",
+                            (svc2, cb) -> s.ref.call(svc2, "getGroupIdentityManageSetting", req, cb));
+                });
+
+        // setGroupIdentityLevelInfo(GIMSetGroupLevelInfoReq, cb)
+        // Req: {groupCode, levelFlag, levelNames: ArrayList<GIMLevelName>, levelNewFlag, useNewLevel}
+        reg("identity_level_names", NONE, true, "guild_id, level_names[], level_flag?, level_new_flag?, use_new_level?",
+                (s, p) -> {
+                    Object req = s.neu(NS + "GIMSetGroupLevelInfoReq");
+                    s.put(req, "groupCode", groupOf(p));
+                    s.put(req, "levelFlag", p.optInt("level_flag", 1));
+                    s.put(req, "levelNewFlag", p.optInt("level_new_flag", 1));
+                    s.put(req, "useNewLevel", p.optInt("use_new_level", 0));
+                    // levelNames 是 ArrayList<GIMLevelName>，不是字符串数组。之前直接塞
+                    // ArrayList<String>，native 侧按对象字段取值时直接崩，所以“设等级名”
+                    // 一直失败。这里按官方的 {level:int, name:string} 形状构造。
+                    JSONArray names = p.optJSONArray("level_names");
+                    ArrayList<Object> levelNames = new ArrayList<>();
+                    if (names != null) {
+                        for (int i = 0; i < names.length(); i++) {
+                            Object item = names.opt(i);
+                            Object ln = s.neu(NS + "GIMLevelName");
+                            if (item instanceof JSONObject obj) {
+                                s.put(ln, "level", obj.optInt("level", i + 1));
+                                s.put(ln, "name", obj.optString("name", ""));
+                            } else {
+                                s.put(ln, "level", i + 1);
+                                s.put(ln, "name", item == null ? "" : String.valueOf(item));
+                            }
+                            levelNames.add(ln);
+                        }
+                    }
+                    s.put(req, "levelNames", levelNames);
+                    return s.call(s.svc("group"),
+                            "com.tencent.qqnt.kernel.nativeinterface.ISetGroupIdentityLevelInfoCallback",
+                            "setGroupIdentityLevelInfo",
+                            (svc2, cb) -> s.ref.call(svc2, "setGroupIdentityLevelInfo", req, cb));
+                });
+
 
         // ------------------------------------------------------- 资料与好友
 

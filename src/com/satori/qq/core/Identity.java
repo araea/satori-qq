@@ -19,7 +19,7 @@ final class Identity {
      * 本实现端提供的标准 Satori 方法。{@code login.features} 与 {@code internal/capabilities} 的
      * {@code standard_methods} 都从这一份来，客户端按它决定能调什么。
      */
-    private static final List<String> STANDARD_METHODS = List.of(
+    static final List<String> STANDARD_METHODS = List.of(
             "login.get", "message.create", "message.get", "message.delete", "message.list",
             "channel.get", "channel.list", "channel.update", "channel.mute", "user.channel.create",
             "guild.get", "guild.list", "guild.member.get", "guild.member.list", "guild.member.kick",

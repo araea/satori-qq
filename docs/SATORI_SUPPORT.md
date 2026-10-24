@@ -77,6 +77,31 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 
 `POST /v1/internal/{name}`。写操作按顺序执行，受限频与熔断保护。
 
+### 能力目录（`catalog`）
+
+`internal/capabilities` 的返回里有 `catalog`，一条能力一行：
+
+```json
+{"name":"group_remark","kind":"write","params":"guild_id, remark","mutating":true,
+ "aliases":["set_group_remark"],"note":"QQ 内核扩展动作"}
+```
+
+- `kind`：`read`（只看，重复调用没有副作用）、`write`（会改 QQ 那边的状态）、`manage`（落在别人头上：踢、禁言、删别人的文件、发公告、开全员通知）。客户端按它决定要不要额外的授权与额度。
+- `params`：参数说明，与老字段 `params` 同一份文字。`aliases` 是等价的别名。
+- 标准方法、核心内部动作与 `ExtraSvc` 注册表全在同一张表里，由各自的唯一注册表生成。内核多接一个动作，这里就有它，客户端不必等一次发版；acumen 1.37 起把它原样交给模型（`satori_action` 的 `action: capability`）。
+
+### 幂等调用信封
+
+`POST /v1/internal/call`，body：`{"action":"group_file_upload","params":{…},"key":"…"}`。
+
+- `action` 取 `catalog` 里任何一个名字（标准方法也认），`params` 原样转给那条动作，`key` 可省。
+- 给了 `key` 时**同一把钥匙只真正执行一次**：重发拿回第一次那份回执，多一个 `"replayed": true`。回执丢在半路（超时、连接被掐、客户端重启）时重发是安全的。
+- 成功回 `{"ok":true,"action":…,"replayed":false,"result":…}`；失败仍是统一的 `{code,message}`，HTTP 状态照旧。
+- 只有「调用方该知道的失败」（参数不对、对象不存在）会被记住并原样回放；限流（429）与内核离线（503）不记账，重发就真的再试一次。
+- 账本只留 5 分钟、最多 128 条：它是给「刚刚那一下」补的，不是长期历史。
+
+动作名从来不存在时回 `404 code=unknown_action`；移除过的动作仍是 `404 code=removed_action`（带版本与原因）。
+
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
 | 互动 | `poke` / `invite` | 戳一戳、邀请入群；poke 支持 `channel_id`（群号或 `private:QQ号`） |
@@ -87,7 +112,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息。`essence` 附带 `guild_id` 时，本进程没缓存过的旧消息也能由内核补取 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳（超级表情） |
 | 消息读取 | `get_forward` / `chat_screenshot` | `chat_screenshot` 的范围渲染见下；`get_forward` 读取合并转发。`id` 是转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取 |
-| 能力查询 | `capabilities` / `help` / `compat` | `capabilities` 与 satori-wx 共用一份口径：`adapter`、`version`、`platform`、`standard_methods`（与 `login.features` 同源）、`unsupported`、`event_types`、`message_elements`（`message.create` 接受的元素）、`limits`（`upload_bytes`：`upload.create` 单个文件的字节上限，acumen 取片时按它收窄），再加本实现端的扩展动作清单（`actions`、`params`、`removed`）；`compat` 是内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
+| 能力查询 | `capabilities` / `help` / `compat` | `capabilities` 与 satori-wx 共用一份口径（另见下面的能力目录与幂等信封）：`adapter`、`version`、`platform`、`standard_methods`（与 `login.features` 同源）、`unsupported`、`event_types`、`message_elements`（`message.create` 接受的元素）、`limits`（`upload_bytes`：`upload.create` 单个文件的字节上限，acumen 取片时按它收窄），再加本实现端的扩展动作清单（`actions`、`params`、`removed`）；`compat` 是内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
 | 状态查询 | `status` / `version` | 健康状态或版本 |
 | 维护 | `restart` / `clean_cache` | 退出 QQ 进程、清理临时文件 |
 

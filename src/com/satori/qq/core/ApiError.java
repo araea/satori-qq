@@ -78,6 +78,15 @@ final class ApiError extends RuntimeException {
     }
 
     /**
+     * 这个动作从来不存在（或者名字拼错了）。与「移除过」分开报：后者有版本与原因，
+     * 客户端会把两者都标成不可用，但运维想知道的是完全不同的两件事。
+     */
+    static ApiError unknownAction(String name) {
+        return new ApiError(1404, "unknown_action",
+                "no such action: " + name + "（清单见 internal/capabilities 的 catalog）", 0);
+    }
+
+    /**
      * 曾经提供、后来移除的动作。
      *
      * <p>必须和「从来没这个方法」分开报：客户端要靠这个把能力标成不可用，而不是每轮重试

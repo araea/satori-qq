@@ -32,6 +32,8 @@ final class Dispatcher {
     private final Requests requests;
     private final Forwards forwards;
     private final Monitor monitor;
+    /** 幂等信封的账本（见 {@link CallLedger}）。 */
+    private final CallLedger ledger = new CallLedger();
 
     Dispatcher(QQClient qq, Identity identity, OutboundGate gate, Directory directory, Messages messages,
                History history, Reactions reactions, GroupOps groupOps, Requests requests, Forwards forwards,
@@ -151,6 +153,8 @@ final class Dispatcher {
     Object internal(String rawName, JSONObject params) throws Exception {
         JSONObject p = params == null ? new JSONObject() : params;
         String name = normalize(rawName);
+        // 幂等信封：{action, params, key?} 一次调一条能力，重发同一个 key 拿回同一份回执。
+        if ("call".equals(name)) return callEnvelope(p);
         return switch (name) {
             case "reaction_summary" -> reactions.summary(p);
             case "reaction_clear" -> gate.guarded("internal.reaction_clear", () -> reactions.clearOwn(p));
@@ -211,6 +215,42 @@ final class Dispatcher {
             case "version" -> monitor.version();
             default -> extension(name, p);
         };
+    }
+
+    /**
+     * 幂等信封：客户端把「动作 + 参数 + 一把钥匙」一起交过来，本端保证同一把钥匙只真正
+     * 执行一次。
+     *
+     * <p>回执可能丢在半路上——超时、连接被掐、客户端自己重启。客户端这时只知道「结果未知」，
+     * 重发是最自然的补救，但对上传文件、发公告这类动作，重发就是再做一遍。有了这把钥匙，
+     * 重发拿回的是第一次那份结果（{@code replayed:true}），既不必担心重复，也不必自己
+     * 判断「这个动作能不能重试」。
+     *
+     * <p>{@code key} 可以省略：那就只是一次普通调用（与直接打 {@code internal/<name>} 一样）。
+     * 动作名与 {@code internal/capabilities} 的 catalog 同一份名单，标准方法也认。
+     */
+    Object callEnvelope(JSONObject p) throws Exception {
+        String action = p.optString("action", "").trim();
+        if (action.isEmpty()) throw ApiError.badRequest("action is required");
+        JSONObject params = p.optJSONObject("params");
+        String key = p.optString("key", "").trim();
+        Object cached = ledger.replay(key);
+        if (cached != null) {
+            if (cached instanceof ApiError failure) throw failure;
+            return new JSONObject().put("ok", true).put("action", action)
+                    .put("replayed", true).put("result", cached);
+        }
+        if (!Capabilities.declares(action)) throw ApiError.unknownAction(action);
+        try {
+            Object result = Identity.serves(action) ? call(action, params) : internal(action, params);
+            ledger.done(key, result);
+            return new JSONObject().put("ok", true).put("action", action)
+                    .put("replayed", false)
+                    .put("result", result == null ? JSONObject.NULL : result);
+        } catch (ApiError failure) {
+            ledger.failed(key, failure);
+            throw failure;
+        }
     }
 
     /**

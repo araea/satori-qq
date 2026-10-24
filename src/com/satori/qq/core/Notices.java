@@ -43,6 +43,7 @@ public final class Notices {
             n.put("message_id", storeId);
         }
         if (group) n.put("group_id", peer);
+        else n.put("peer_id", peer);
         return n;
     }
 

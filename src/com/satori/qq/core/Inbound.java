@@ -18,9 +18,11 @@ import org.json.JSONObject;
 /** QQ 内核推来的回调 → Satori 事件：消息、撤回、成员变动、申请、群列表变化。 */
 final class Inbound implements QQClient.Listener {
     /** 一条记录走完投递流程的结果。 */
-    private enum Outcome { EMITTED, ECHO, DUPLICATE, EMPTY, UNREADABLE }
+    private enum Outcome { EMITTED, ECHO, DUPLICATE, DEFERRED, EMPTY, UNREADABLE }
 
     private static final long[] SELF_SEND_RETRY_MS = {100, 250, 500, 1000, 2000, 4000};
+    /** 快速撤回时，原消息回调与本地落库可能晚于撤回回调。 */
+    private static final long[] RECALL_RETRY_MS = {120, 350, 800, 1600, 3000};
 
     private final Cfg cfg;
     private final QQClient qq;
@@ -38,6 +40,7 @@ final class Inbound implements QQClient.Listener {
     private final Set<Long> emitted = ConcurrentHashMap.newKeySet();
     private final Set<String> seenMemberChanges = ConcurrentHashMap.newKeySet();
     private final Set<Long> selfSendPolling = ConcurrentHashMap.newKeySet();
+    private final Set<String> pendingRecalls = ConcurrentHashMap.newKeySet();
 
     // 入站侧的计数。事件收不到时先看这几个：能区分「记录压根没进来」（回调计数不动）、
     // 「进来了但没转成事件」（有计数没有 emit）与「转了但客户端没消费」（有 emit）。
@@ -67,6 +70,7 @@ final class Inbound implements QQClient.Listener {
     void reset() {
         emitted.clear();
         seenMemberChanges.clear();
+        pendingRecalls.clear();
     }
 
     JSONObject stats() throws Exception {
@@ -183,9 +187,13 @@ final class Inbound implements QQClient.Listener {
 
             String noticeType = ev.optString("notice_type", "");
             if ("group_recall".equals(noticeType) || "friend_recall".equals(noticeType)) {
-                long mid = ev.optLong("qq_msg_id", 0);
-                if (mid == 0) mid = ev.optLong("message_id", 0);
-                if (mid != 0 && !events.firstRecall(mid)) return Outcome.DUPLICATE;
+                // 灰条与 onMsgRecall 走同一条恢复路径。尤其不能把灰条自己的 msgId
+                // 当成被撤消息的 id，也不能让撤回事件抢到原消息事件前面。
+                RecallHint hint = RecallHint.fromNotice(ev, Ref.asStr(field(rec, "peerUid")));
+                if (hint != null) {
+                    beginRecall(hint);
+                    return Outcome.DEFERRED;
+                }
             }
             if (msgId != 0) {
                 emitted.add(msgId);
@@ -300,53 +308,199 @@ final class Inbound implements QQClient.Listener {
         }
     }
 
+    /** 一次撤回到手时已知的信息；序号与 msgId 在恢复过程中可以互相补齐。 */
+    private static final class RecallHint {
+        int chatType;
+        boolean group;
+        String peerUid = "";
+        long peer;
+        long user;
+        long operator;
+        long msgId;
+        long msgSeq;
+        String dedupe;
+
+        String identityKey() {
+            if (msgId != 0) return "m:" + msgId;
+            return "s:" + chatType + ':' + peer + ':' + peerUid + ':' + msgSeq;
+        }
+
+        static RecallHint fromNotice(JSONObject ev, String peerUid) {
+            String kind = ev.optString("notice_type", "");
+            boolean group = "group_recall".equals(kind);
+            if (!group && !"friend_recall".equals(kind)) return null;
+            RecallHint h = new RecallHint();
+            h.group = group;
+            h.chatType = group ? QQClient.CT_GROUP : QQClient.CT_C2C;
+            h.peer = group ? ev.optLong("group_id", 0)
+                    : ev.optLong("peer_id", ev.optLong("user_id", 0));
+            h.peerUid = peerUid == null ? "" : peerUid;
+            if (h.peerUid.isEmpty() && h.peer != 0) h.peerUid = String.valueOf(h.peer);
+            h.user = ev.optLong("user_id", 0);
+            h.operator = ev.optLong("operator_id", 0);
+            // message_id 也可能是旧的 int store id；只有 qq_msg_id 一定是公开身份。
+            h.msgId = ev.optLong("qq_msg_id", 0);
+            h.msgSeq = ev.optLong("message_seq", 0);
+            return h;
+        }
+    }
+
+    private static final class Recovered {
+        final Object record;
+        final QQClient.MsgListResult history;
+        Recovered(Object record, QQClient.MsgListResult history) {
+            this.record = record;
+            this.history = history;
+        }
+    }
+
     /**
      * Android 9.3.50: onMsgRecall(chatType, peerUid, msgSeq).
      * Desktop NapCat uses the same shape. JSON info is still accepted if present.
      */
     private void recalled(int type, String info, long third) throws Exception {
         if (info == null || info.isEmpty()) return;
-        long msgId = 0, peer = 0, user = 0, operator = 0, msgSeq = 0;
-        boolean group = type == QQClient.CT_GROUP;
+        RecallHint h = new RecallHint();
+        h.chatType = type;
+        h.group = type == QQClient.CT_GROUP;
+        h.peerUid = info;
         if (info.charAt(0) == '{') {
             JSONObject j = new JSONObject(info);
-            msgId = j.optLong("msgId", j.optLong("msg_id", 0));
-            msgSeq = j.optLong("msgSeq", j.optLong("msg_seq", 0));
-            peer = j.optLong("peerUin", j.optLong("groupCode", j.optLong("group_id", 0)));
-            user = j.optLong("senderUin", j.optLong("user_id", 0));
-            operator = j.optLong("operatorUin", j.optLong("operator_id", 0));
-            String uid = j.optString("peerUid", j.optString("operatorUid", ""));
-            if (peer == 0 && !uid.isEmpty()) peer = Ids.parse(uid);
-            if (j.has("chatType")) group = j.optInt("chatType") == QQClient.CT_GROUP;
+            h.msgId = j.optLong("msgId", j.optLong("msg_id", 0));
+            h.msgSeq = j.optLong("msgSeq", j.optLong("msg_seq", 0));
+            h.peer = j.optLong("peerUin", j.optLong("groupCode", j.optLong("group_id", 0)));
+            h.user = j.optLong("senderUin", j.optLong("user_id", 0));
+            h.operator = j.optLong("operatorUin", j.optLong("operator_id", 0));
+            h.peerUid = j.optString("peerUid", j.optString("operatorUid", ""));
+            if (h.peer == 0 && !h.peerUid.isEmpty()) h.peer = Ids.parse(h.peerUid);
+            if (j.has("chatType")) {
+                h.chatType = j.optInt("chatType");
+                h.group = h.chatType == QQClient.CT_GROUP;
+            }
         } else {
-            // 9.3.x 这里给的是序号（群里是群序号、私聊是会话序号），不是 19 位的 msgId；
-            // 按序号认回收消息时登记的那条，才发得出和 message-created 同一个 id。
-            msgSeq = third;
-            peer = Ids.parse(info);
+            // 9.3.x 的第三个参数是序号，不是 19 位 msgId。先按序号找回原消息，
+            // 认不出时才在最后一条兜底事件里沿用序号，绝不提前写入 MsgStore 污染映射。
+            h.msgSeq = third;
+            h.peer = Ids.parse(info);
         }
-        MsgStore.Rec rec = msgId != 0 ? store.getByMsgId(msgId) : null;
-        if (rec == null) rec = store.findByPeerSeq(type, peer, info, msgSeq);
-        if (rec != null && rec.msgId != 0) msgId = rec.msgId;
-        // 认不出来（进程重启前收的）：沿用回调给的号，至少让下游知道有一条被撤回了。
-        if (msgId == 0) msgId = third;
-        int storeId = rec != null ? rec.id : store.idOfMsgId(msgId);
-        if (rec != null) {
-            if (peer == 0) peer = rec.peerUin;
-            if (user == 0) user = rec.senderUin;
-            group = rec.chatType == QQClient.CT_GROUP;
+        if (h.msgSeq == 0) h.msgSeq = third;
+        if (h.peerUid.isEmpty() && h.peer != 0) h.peerUid = String.valueOf(h.peer);
+        beginRecall(h);
+    }
+
+    private void beginRecall(RecallHint h) {
+        if (h.dedupe == null) h.dedupe = h.identityKey();
+        if (!pendingRecalls.add(h.dedupe)) return;
+        resolveRecall(h, 0);
+    }
+
+    private MsgStore.Rec findRecalled(RecallHint h) {
+        MsgStore.Rec rec = h.msgId != 0 ? store.getByMsgId(h.msgId) : null;
+        if (rec == null) {
+            rec = store.findByPeerSeq(h.chatType, h.peer, h.peerUid, h.msgSeq);
         }
-        if (storeId == 0 && msgId == 0 && peer == 0) return;
-        if (storeId == 0 && msgId != 0) {
-            MsgStore.Rec stub = new MsgStore.Rec();
-            stub.chatType = group ? QQClient.CT_GROUP : QQClient.CT_C2C;
-            stub.peerUin = peer;
-            stub.peerUid = info;
-            stub.msgId = msgId;
-            stub.msgSeq = msgSeq;
-            stub.senderUin = user;
-            storeId = store.put(stub);
+        return rec;
+    }
+
+    private void fillRecall(RecallHint h, MsgStore.Rec rec) {
+        if (rec == null) return;
+        if (rec.msgId != 0) h.msgId = rec.msgId;
+        if (h.msgSeq == 0) h.msgSeq = rec.msgSeq;
+        if (h.peer == 0) h.peer = rec.peerUin;
+        if (h.peerUid.isEmpty() && rec.peerUid != null) h.peerUid = rec.peerUid;
+        if (h.user == 0) h.user = rec.senderUin;
+        h.chatType = rec.chatType;
+        h.group = rec.chatType == QQClient.CT_GROUP;
+    }
+
+    /** 已登记不等于已投递：Convert 先写 MsgStore，随后才 emit message-created。 */
+    private boolean originalDelivered(RecallHint h) {
+        return h.msgId != 0 && (emitted.contains(h.msgId) || sender.isEcho(h.msgId));
+    }
+
+    private void resolveRecall(RecallHint h, int attempt) {
+        try {
+            MsgStore.Rec rec = findRecalled(h);
+            fillRecall(h, rec);
+            if ((rec != null && rec.msgId == 0) || originalDelivered(h)) {
+                finishRecall(h);
+                return;
+            }
+
+            // 正常回调只差一个 emit，先给它让路；恢复尝试只在撤回早于登记时
+            // 主动查内核，避免每条撤回都增加一次历史查询。
+            if ((attempt == 1 || attempt == 3) && rec == null) {
+                Recovered recovered = recoverRecalled(h);
+                if (recovered != null) {
+                    Outcome outcome = deliver(recovered.record, recovered.history);
+                    if (!retryable(outcome)) {
+                        fillRecall(h, findRecalled(h));
+                        finishRecall(h);
+                        return;
+                    }
+                }
+            }
+
+            if (attempt >= RECALL_RETRY_MS.length) {
+                // 原记录已经在手上但常规回调迟迟没投：最后一试由这里先投原文，
+                // 再发删除事件，保证客户端看到的因果顺序仍然正确。
+                if (rec != null && rec.msgRecord != null && !originalDelivered(h)) {
+                    deliver(rec.msgRecord, null);
+                }
+                finishRecall(h);
+                return;
+            }
+            Workers.scheduler().schedule(() -> resolveRecall(h, attempt + 1),
+                    RECALL_RETRY_MS[attempt], TimeUnit.MILLISECONDS);
+        } catch (Throwable t) {
+            L.e("resolveRecall", t);
+            if (attempt >= RECALL_RETRY_MS.length) {
+                finishRecall(h);
+            } else {
+                Workers.scheduler().schedule(() -> resolveRecall(h, attempt + 1),
+                        RECALL_RETRY_MS[attempt], TimeUnit.MILLISECONDS);
+            }
         }
-        events.recalled(group, peer, user, operator == 0 ? user : operator, storeId, msgId);
+    }
+
+    /** 撤回先于登记时，从本地 NT 历史按 msgId 或精确 msgSeq 找原记录。 */
+    private Recovered recoverRecalled(RecallHint h) {
+        String peer = h.peerUid.isEmpty() ? String.valueOf(h.peer) : h.peerUid;
+        if (h.msgId != 0) {
+            Object record = qq.fetchRecord(h.chatType, peer, h.msgId);
+            return record == null ? null : new Recovered(record, null);
+        }
+        if (h.msgSeq == 0) return null;
+        for (boolean queryOrder : new boolean[]{true, false}) {
+            QQClient.MsgListResult history = qq.getHistory(h.chatType, peer, h.msgSeq, 20, queryOrder);
+            if (history == null || history.records == null) continue;
+            for (Object candidate : history.records) {
+                Object inner = Convert.unwrapRecord(candidate);
+                if (inner != null && Ref.asLong(qq.ref.get(inner, "msgSeq")) == h.msgSeq) {
+                    return new Recovered(candidate, history);
+                }
+            }
+        }
+        return null;
+    }
+
+    private void finishRecall(RecallHint h) {
+        try {
+            MsgStore.Rec rec = findRecalled(h);
+            fillRecall(h, rec);
+            long msgId = rec != null && rec.msgId != 0 ? rec.msgId : h.msgId;
+            int storeId = rec != null ? rec.id : store.idOfMsgId(msgId);
+            // 所有恢复路径都落空仍要保留下游通知；只有这时才用序号兜底。
+            if (msgId == 0 && rec == null) msgId = h.msgSeq;
+            // 什么都没有（既无 msgId 也无序号、也没有记录）时发不出可核对的号，宁可沉默。
+            if (storeId == 0 && msgId == 0) return;
+            events.recalled(h.group, h.peer, h.user,
+                    h.operator == 0 ? h.user : h.operator, storeId, msgId);
+            emit.incrementAndGet();
+            notice.incrementAndGet();
+        } finally {
+            if (h.dedupe != null) pendingRecalls.remove(h.dedupe);
+        }
     }
 
     // ------------------------------------------------------------------ 申请、成员、群

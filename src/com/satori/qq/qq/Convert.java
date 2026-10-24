@@ -368,7 +368,13 @@ public final class Convert {
         JSONObject notice = noticeFromRecord(rec, selfUin, chatType, peerUin, peerUid,
                 senderUin, senderUid, msgId, msgSeq, msgTime);
         if (notice != null) {
-            if (msgId != 0) try { notice.put("qq_msg_id", msgId); } catch (Exception ignore) {}
+            String kind = notice.optString("notice_type", "");
+            boolean recall = "group_recall".equals(kind) || "friend_recall".equals(kind);
+            // 撤回通知里的 qq_msg_id 属于被撤原消息，不能被灰条记录自己的
+            // msgId 覆盖；否则防撤回拿着一个永远不存在的 id 找原文。
+            if (msgId != 0 && !recall && !notice.has("qq_msg_id")) {
+                try { notice.put("qq_msg_id", msgId); } catch (Exception ignore) {}
+            }
             return notice;
         }
         // Unparsed gray tip / empty system record must not become message-created.
@@ -837,7 +843,9 @@ public final class Convert {
                 long s = Ref.asLong(ref.getOrNull(rev, "msgSeq"));
                 if (s != 0) revSeq = s;
             }
-            long pubId = recalled != 0 ? recalled : msgId;
+            // 读不到原 msgId 时保持未知，由 Inbound 按 revSeq 短退避恢复。
+            // 灰条自己的 msgId 是另一条记录，绝不能拿来冒充被撤消息。
+            long pubId = recalled;
             MsgStore.Rec known = pubId != 0 ? store.getByMsgId(pubId) : null;
             if (known == null && revSeq != 0)
                 known = store.findByPeerSeq(chatType, peerUin, null, revSeq);
@@ -845,8 +853,8 @@ public final class Convert {
                 if (known.msgId != 0) pubId = known.msgId;
                 if (known.senderUin != 0) senderUin = known.senderUin;
             }
-            int obId = store.idOfMsgId(pubId);
-            if (obId == 0) {
+            int obId = pubId != 0 ? store.idOfMsgId(pubId) : 0;
+            if (obId == 0 && pubId != 0) {
                 MsgStore.Rec sr = new MsgStore.Rec();
                 sr.chatType = chatType;
                 sr.peerUin = peerUin;
@@ -856,7 +864,10 @@ public final class Convert {
                 sr.senderUid = senderUid;
                 obId = store.put(sr);
             }
-            return Notices.recall(selfUin, time, group, peerUin, senderUin, operator, obId, pubId);
+            JSONObject notice = Notices.recall(selfUin, time, group, peerUin, senderUin, operator, obId, pubId);
+            notice.put("message_seq", revSeq);
+            notice.put("peer_id", peerUin);
+            return notice;
         }
 
         Object js = ref.get(gray, "jsonGrayTipElement");

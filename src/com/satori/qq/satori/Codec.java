@@ -667,7 +667,8 @@ public final class Codec {
     private static JSONObject noticeEvent(JSONObject ob, JSONObject ev) throws Exception {
         String nt = ob.optString("notice_type", "");
         boolean group = ob.has("group_id") && ob.optLong("group_id") != 0;
-        long peer = group ? ob.optLong("group_id") : ob.optLong("user_id");
+        long peer = group ? ob.optLong("group_id")
+                : ob.optLong("peer_id", ob.optLong("user_id", 0));
         ev.put("channel", channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, ""));
         if (group) ev.put("guild", guild(peer, ""));
         if ("group_recall".equals(nt) || "friend_recall".equals(nt)) {

@@ -6,6 +6,8 @@
 #
 # 上传的三个文件：SatoriQQ-module.zip、update.json（模块管理页与 root 管理器的模块列表读它）、
 # CHANGELOG.md（模块列表的更新说明）。tag 为 <versionCode>-<versionName>，与历史一致。
+# 发布成功后还会调用 scripts/share.sh，把模块包复制到共享存储下载目录（可用
+# SATORI_QQ_SHARE_DIR 指定目标目录；失败只提示，不影响发布）。
 set -euo pipefail
 R=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$R"
@@ -39,3 +41,5 @@ if [ "$DRY" = 1 ]; then echo "dry-run：不创建 release（tag $TAG）"; exit 0
 gh release create "$TAG" build/SatoriQQ-module.zip build/update.json build/CHANGELOG.md \
   --repo araea/satori-qq --target master --title "知弦 $NAME" --notes-file "$NOTES"
 echo "已发布 $TAG"
+# 发布成功后顺手放一份到共享存储下载目录（best-effort，失败不影响已完成的发布）。
+scripts/share.sh

@@ -105,5 +105,9 @@ rm -f $OUT/SatoriQQ-module.zip
 # 刷机包要求 module.prop 在 zip 根目录（Magisk / KernelSU 都按根目录读）。
 ( cd $MODULE && zip -qr $OUT/SatoriQQ-module.zip . )
 echo "   module zip: $(ls -la $OUT/SatoriQQ-module.zip | awk '{print $5}') bytes"
+
+# 每次构建顺带在共享存储下载目录留一份（scripts/release.sh 发布时也会再刷一次），
+# 方便直接分享；不在 Android / 没存储权限时只提示，不让构建失败。
+"$R/scripts/share.sh" || true
 echo "== DONE =="
 ls -la $OUT/SatoriQQ-module.zip

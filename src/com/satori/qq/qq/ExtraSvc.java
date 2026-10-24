@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -568,16 +569,30 @@ public final class ExtraSvc {
                             (svc2, cb) -> s.ref.call(svc2, "getJoinGroupLink", req, cb));
                 });
 
-        // fetchGroupEssenceList(FetchGroupEssenceListReq, String, IFetchGroupEssenceListCallback)
-        // FetchGroupEssenceListReq: groupCode(long) pageStart(int) pageLimit(int)
-        reg("group_essence_list", NONE, false, "guild_id, page_start?, page_limit?",
+        // fetchGroupEssenceList(FetchGroupEssenceListReq, String pskey, IFetchGroupEssenceListCallback)
+        //   -> onResult(code, msg, FetchGroupEssenceListRsp{list: ArrayList<FetchEssenceMsgInfo>})
+        // 第二个参数是 qun.qq.com 的 pskey：0.29.0 起传空串，内核从不回调；带上真 pskey 才有回包。
+        // V2 是无 pskey 的另一条入口，作为兜底。条目本身只有标识与加精人，正文由本地历史按 seq 补。
+        reg("group_essence_list", NONE, false, "guild_id, page_start?, page_limit?, pskey?",
                 (s, p) -> {
+                    long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    String pskey = s.pskey(p, "qun.qq.com");
                     Object req = s.neu(NS + "FetchGroupEssenceListReq");
-                    s.put(req, "groupCode", groupOf(p));
+                    s.put(req, "groupCode", g);
                     s.put(req, "pageStart", p.optInt("page_start", 0));
                     s.put(req, "pageLimit", p.optInt("page_limit", 20));
-                    return s.call(s.svc("group"), GROUP_ESSENCE_CB, "fetchGroupEssenceList",
-                            (svc2, cb) -> s.ref.call(svc2, "fetchGroupEssenceList", req, "", cb));
+                    Result r = s.call(s.svc("group"), GROUP_ESSENCE_CB, "fetchGroupEssenceList",
+                            (svc2, cb) -> s.ref.call(svc2, "fetchGroupEssenceList", req, pskey, cb));
+                    if (!r.ok() || r.payload == null) {
+                        Result v2 = s.call(s.svc("group"), GROUP_ESSENCE_CB, "fetchGroupEssenceListV2",
+                                (svc2, cb) -> s.ref.call(svc2, "fetchGroupEssenceListV2", req, cb));
+                        if (v2.ok() && v2.payload != null) r = v2;
+                    }
+                    if (r.ok() && r.payload != null) {
+                        s.attachEssenceContent(g, r.payload, p.optInt("page_limit", 20));
+                    }
+                    return r;
                 });
 
         // getGroupLatestEssenceList(GetGroupLatestEssenceListReq, IGetGroupLatestEssenceListCallback)
@@ -695,10 +710,12 @@ public final class ExtraSvc {
                                     pskey, p.optString("feeds_id", ""), cb));
                 });
 
-        // getGroupBulletin(long groupCode, IOperateCallback) —— 回调只有 (code, msg)，拿不到正文。
-        reg("group_bulletin_get", new String[]{"get_group_bulletin"}, false, "guild_id",
-                (s, p) -> s.call(s.svc("group"), OPERATE_CB, "getGroupBulletin",
-                        (svc2, cb) -> s.ref.call(svc2, "getGroupBulletin", groupOf(p), cb)));
+        // getGroupBulletin(long, IOperateCallback) 的回调只有 (code, msg)，拿不到正文；
+        // 真读走 getGroupBulletinList(groupCode, pskey, "", req, IOperateCallback)，
+        // 列表内容从 IKernelGroupListener.onGetGroupBulletinListResult(groupCode, wording, result) 回来。
+        reg("group_bulletin_get", new String[]{"get_group_bulletin"}, false,
+                "guild_id, count?, pskey?",
+                (s, p) -> s.readGroupBulletins(groupOf(p), p.optInt("count", 10)));
 
         reg("group_ext_list", NONE, false, "force?",
                 (s, p) -> s.call(s.svc("group"), OPERATE_CB, "getGroupExtList",
@@ -1268,6 +1285,106 @@ public final class ExtraSvc {
             }
         }
         return out;
+    }
+
+    // -------------------------------------------------------- 群公告 / 群精华的读
+
+    /**
+     * 群公告列表：登记按群号等的监听器，再发起 {@code getGroupBulletinList}；
+     * 正文在 {@code onGetGroupBulletinListResult} 里回来。发布者昵称按 uin 对上。
+     */
+    private Object readGroupBulletins(long group, int count) throws Exception {
+        if (group == 0) throw new IllegalArgumentException("missing guild_id");
+        Object svc = svc("group");
+        if (svc == null) throw new IllegalStateException("group bulletin: service not ready");
+        final Object[] box = new Object[1];
+        final CountDownLatch done = new CountDownLatch(1);
+        qq.awaitGroupBulletin(group, result -> {
+            if (box[0] == null) box[0] = result;
+            done.countDown();
+            return true;
+        });
+        try {
+            String pskey = pskey(new JSONObject(), "qun.qq.com");
+            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupBulletinListReq");
+            ref.put(req, "startIndex", 0);
+            ref.put(req, "num", Math.min(20, Math.max(1, count)));
+            ref.put(req, "needPublisherInfo", 1);
+            ref.put(req, "needInstructionsForJoinGroup", 0);
+            call(svc, OPERATE_CB, "getGroupBulletinList",
+                    (svc2, cb) -> ref.call(svc2, "getGroupBulletinList", group, pskey, "", req, cb));
+            if (!done.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                throw new IllegalStateException("group bulletin: no list result (listener silent)");
+            }
+            Object result = box[0];
+            Object feeds = ref.get(result, "feeds");
+            Map<Long, String> nicks = new HashMap<>();
+            Object publishers = ref.get(result, "publisherInfos");
+            if (publishers instanceof Collection<?> rows) {
+                for (Object row : rows) {
+                    long uin = Ref.asLong(ref.get(row, "uin"));
+                    String nick = Ref.asStr(ref.get(row, "nick"));
+                    if (uin != 0 && !nick.isEmpty()) nicks.put(uin, nick);
+                }
+            }
+            JSONArray items = new JSONArray();
+            if (feeds instanceof Collection<?> rows) {
+                for (Object feed : rows) {
+                    Object msg = ref.get(feed, "msg");
+                    long uin = Ref.asLong(ref.get(feed, "uin"));
+                    JSONObject item = new JSONObject();
+                    item.put("feed_id", Ref.asStr(ref.get(feed, "feedId")));
+                    item.put("uin", uin);
+                    item.put("publisher", nicks.getOrDefault(uin, ""));
+                    item.put("publish_time", Ref.asLong(ref.get(feed, "publishTime")));
+                    item.put("pinned", Ref.asLong(ref.get(feed, "pinned")) != 0);
+                    if (msg != null) {
+                        item.put("title", Ref.asStr(ref.get(msg, "title")));
+                        item.put("text", Ref.asStr(ref.get(msg, "text")));
+                        Object pics = ref.get(msg, "pics");
+                        if (pics instanceof Collection<?> list && !list.isEmpty()) {
+                            JSONArray arr = new JSONArray();
+                            for (Object pic : list) arr.put(reflectItem(pic));
+                            item.put("pics", arr);
+                        }
+                    }
+                    items.put(item);
+                }
+            }
+            return new JSONObject().put("ok", true).put("group", group)
+                    .put("count", items.length()).put("bulletins", items);
+        } finally {
+            // 等待方已登记：超时也要撤下来，免得下一次读对上旧回包。
+            qq.awaitGroupBulletin(group, r -> true);
+        }
+    }
+
+    /**
+     * 精华条目只有 seq / random / 加精人，正文由本地历史按 seq 补（补不上就留空，
+     * 不把这当成失败——列表本身已经是内核的真实回包）。
+     */
+    private void attachEssenceContent(long group, Object rsp, int limit) {
+        try {
+            Object list = ref.get(rsp, "list");
+            if (!(list instanceof Collection<?> rows) || rows.isEmpty()) return;
+            String peer = String.valueOf(group);
+            int resolved = 0;
+            for (Object item : rows) {
+                if (resolved >= Math.min(20, Math.max(1, limit))) break;
+                long seq = Ref.asLong(ref.get(item, "msgSeq"));
+                if (seq <= 0) continue;
+                QQClient.MsgListResult msgs = qq.getMsgs(QQClient.CT_GROUP, peer, seq, 1);
+                if (!msgs.ok() || msgs.records.isEmpty()) continue;
+                for (Object rec : msgs.records) {
+                    if (Ref.asLong(ref.get(rec, "msgSeq")) != seq) continue;
+                    ref.put(item, "content", Ref.asStr(ref.get(rec, "content")));
+                    resolved++;
+                    break;
+                }
+            }
+        } catch (Throwable t) {
+            L.e("ExtraSvc essence content", t);
+        }
     }
 
     /** 内核调用一律投到主 Looper 发起（服务是主线程亲和的），本线程继续等。 */

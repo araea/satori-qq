@@ -107,12 +107,14 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 群管理 | `group_shut_up_list`、`group_join_link`、`group_essence_list`、`group_essence_latest`、`group_essence_cached`、`group_remark`、`group_quit`、`group_join`、`group_join_info`、`group_join_noverify`、`group_bulletin_publish`、`group_bulletin_delete`、`group_bulletin_get`、`group_ext_list`、`group_member_level`、`group_identity_list`、`group_member_card`、`group_profile_card` |
 | 群文件 | `group_file_count`、`group_file_list`、`group_file_get`、`group_file_search`、`group_file_folder_create`、`group_file_folder_delete`、`group_file_folder_rename`、`group_file_delete`、`group_file_rename`、`group_file_move`、`group_file_trans`、`group_file_download`、`group_file_upload` |
 | 头衔 / 身份原语 | `identity_title_info`、`identity_level_info`：`setIdentityTitleInfo` / `setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
-| 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`（别名 `signature`）、`nick`（QQ 昵称）、`avatar`（QQ 头像）、`pskey`、`feed_publish`（QQ 空间说说）、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add` |
+| 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`（别名 `signature`）、`nick`（QQ 昵称）、`avatar`（QQ 头像）、`pskey`、`feed_publish`（QQ 空间说说）、`group_bulletin_get`（读群公告）、`group_essence_list`（读群精华）、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add` |
 | 其它 | `online_file_list`、`online_file_refuse`、`temp_chat_info` |
 
 **群公告**（0.37.0 起）：`POST /v1/internal/group_bulletin_publish`，参数 `guild_id, text, pinned?, image?`。`image` 接受本地路径、`file:`、`data:`、`http(s):` 与 `internal:`，先经 `uploadGroupBulletinPic` 换成配图信息再发布。p_skey 由本端经 `IKernelTipOffService.getPskey(['qun.qq.com'])` 自取，调用方不必（也不该）再传；`text` 由本端做 `encodeURI` 之后交给内核。账号须是群主或管理员。`group_bulletin_delete` 同样自取 p_skey。
 
 **账号级动作**（0.40.0 起）：`nick`（QQ 昵称，内核 `setNickName`）、`avatar`（QQ 头像，内核 `setHeader`，入参同群公告 `image`）、`long_nick`（个性签名，别名 `signature`）都只写不回读。`feed_publish` 发 QQ 空间说说：凭据走空间域 `p_skey`（内核自取）与 `g_tk`，请求是空间 H5 的 `emotion_cgi_publish_v6`，只支持文本（`text`），可选 `auto_sig` / `to_sign` / `qzonetoken`；失败时回包带空间 CGI 的原始 `raw`。
+
+**群公告 / 群精华的读**（0.41.0 起）：`group_bulletin_get` 走 `getGroupBulletinList`（qun.qq.com 的 p_skey 本端自取），列表从 `IKernelGroupListener.onGetGroupBulletinListResult` 回来后按群号对上，正文（title/text）与发布者、置顶一并返回。`group_essence_list` 修正为带 qun.qq.com 的 p_skey 调 `fetchGroupEssenceList`（0.29.0 起传空串导致内核从不回调），回调仍不来时退 `fetchGroupEssenceListV2`；条目只有标识与加精人，正文由本端按 msgSeq 从本地历史补（补不上的留空）。此前 0.17.0 收掉的「内核查询」里，这两条读以注册表动作的形式回来，其余仍然没有。
 
 **群文件读写**（0.40.0 起）：`group_file_list` 按 `folder_id` 翻页列出（内核结果从 `onGroupFileInfoUpdate` 回来，本端替调用方等到回包）；`group_file_get` 单文件详情；`group_file_search` 按名搜索；`group_file_download` 用 `onlyDownloadFile` 落盘（完成通知按 `file_id` 对上，等不到时以 `getGroupFileInfo` 的本地路径兜底），成功回执带 `url`（`internal:` 资源，字节经 `GET /v1/internal/red/{selfId}/_tmp/{id}` 取走）；`group_file_upload` 把本地路径或直链的文件经 `onlyUploadFile` 传进群文件（上传完成通知按文件名对上，等不到时标 `assumed`）。
 

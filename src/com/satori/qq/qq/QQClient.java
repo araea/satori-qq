@@ -169,24 +169,6 @@ public final class QQClient {
         fileListWaits.put(groupCode, sink);
     }
 
-    /**
-     * getGroupBulletinList 的结果从 IKernelGroupListener.onGetGroupBulletinListResult 回来，
-     * 第一个参数是群号；返回 true 表示等待方收货了。
-     */
-    public interface BulletinSink {
-        boolean accept(Object result);
-    }
-
-    private final ConcurrentHashMap<Long, BulletinSink> bulletinWaits = new ConcurrentHashMap<>();
-
-    public void awaitGroupBulletin(long groupCode, BulletinSink sink) {
-        bulletinWaits.put(groupCode, sink);
-    }
-
-    private void deliverGroupBulletin(long groupCode, Object result) {
-        BulletinSink sink = bulletinWaits.get(groupCode);
-        if (sink != null && sink.accept(result)) bulletinWaits.remove(groupCode);
-    }
 
     private void deliverGroupFileList(Object result) {
         try {
@@ -540,6 +522,10 @@ public final class QQClient {
     public Object getTipOffService() {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getTipOffService"); } catch (Throwable t) { return null; }
+    }
+    public Object getLoginService() {
+        Object s = session; if (s == null) return null;
+        try { return ref.call(s, "getLoginService"); } catch (Throwable t) { return null; }
     }
     public Object getCollectionService() {
         Object s = session; if (s == null) return null;
@@ -2061,10 +2047,6 @@ public final class QQClient {
                                 groupInfoCache.remove(code);
                             else groupInfoCache.put(code, mergeGroupInfo(groupInfoCache.get(code), gi));
                         }
-                    }
-                    if ("onGetGroupBulletinListResult".equals(name) && args != null
-                            && args.length >= 3 && args[2] != null) {
-                        deliverGroupBulletin(Ref.asLong(args[0]), args[2]);
                     }
                     Listener l = listener;
                     if (l != null && args != null) {

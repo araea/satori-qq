@@ -569,30 +569,19 @@ public final class ExtraSvc {
                             (svc2, cb) -> s.ref.call(svc2, "getJoinGroupLink", req, cb));
                 });
 
-        // fetchGroupEssenceList(FetchGroupEssenceListReq, String pskey, IFetchGroupEssenceListCallback)
-        //   -> onResult(code, msg, FetchGroupEssenceListRsp{list: ArrayList<FetchEssenceMsgInfo>})
-        // 第二个参数是 qun.qq.com 的 pskey：0.29.0 起传空串，内核从不回调；带上真 pskey 才有回包。
-        // V2 是无 pskey 的另一条入口，作为兜底。条目本身只有标识与加精人，正文由本地历史按 seq 补。
-        reg("group_essence_list", NONE, false, "guild_id, page_start?, page_limit?, pskey?",
+        // 群精华列表：内核 fetchGroupEssenceList 在本机 9.3.75 上同样调用即段错误，
+        // 改走精华 H5 页自己的数据接口（QunWeb.essenceList）。
+        reg("group_essence_list", NONE, false, "guild_id, pskey?",
                 (s, p) -> {
                     long g = groupOf(p);
                     if (g == 0) throw new IllegalArgumentException("missing guild_id");
                     String pskey = s.pskey(p, "qun.qq.com");
-                    Object req = s.neu(NS + "FetchGroupEssenceListReq");
-                    s.put(req, "groupCode", g);
-                    s.put(req, "pageStart", p.optInt("page_start", 0));
-                    s.put(req, "pageLimit", p.optInt("page_limit", 20));
-                    Result r = s.call(s.svc("group"), GROUP_ESSENCE_CB, "fetchGroupEssenceList",
-                            (svc2, cb) -> s.ref.call(svc2, "fetchGroupEssenceList", req, pskey, cb));
-                    if (!r.ok() || r.payload == null) {
-                        Result v2 = s.call(s.svc("group"), GROUP_ESSENCE_CB, "fetchGroupEssenceListV2",
-                                (svc2, cb) -> s.ref.call(svc2, "fetchGroupEssenceListV2", req, cb));
-                        if (v2.ok() && v2.payload != null) r = v2;
-                    }
-                    if (r.ok() && r.payload != null) {
-                        s.attachEssenceContent(g, r.payload, p.optInt("page_limit", 20));
-                    }
-                    return r;
+                    JSONObject rsp = QunWeb.essenceList(s.qq.selfUin(), pskey, g);
+                    JSONArray items = rsp.optJSONArray("essences");
+                    if (items == null) items = new JSONArray();
+                    return new JSONObject().put("ok", rsp.optBoolean("ok", false)).put("group", g)
+                            .put("count", items.length()).put("essences", items)
+                            .put("raw", rsp);
                 });
 
         // getGroupLatestEssenceList(GetGroupLatestEssenceListReq, IGetGroupLatestEssenceListCallback)
@@ -891,19 +880,15 @@ public final class ExtraSvc {
         // getPskey(ArrayList<String> domains, boolean force, IGetPskeyCallback)
         //   -> onFetchPskey(code, msg, HashMap<domain, pskey>)
         // QZone 等网页业务靠它拿空间域的 p_skey；空结果再强制刷一次。
-        reg("pskey", NONE, false, "domains[]（默认 qzone.qq.com）, force?",
+        reg("pskey", NONE, false, "domains[]（默认 qzone.qq.com）",
                 (s, p) -> {
                     ArrayList<String> domains = strings(p.optJSONArray("domains"));
                     if (domains.isEmpty()) domains.add("qzone.qq.com");
-                    final boolean force = p.optBoolean("force", false);
-                    Result r = s.call(s.svc("tipoff"), PSKEY_CB, "getPskey",
-                            (svc2, cb) -> s.ref.call(svc2, "getPskey", domains, force, cb));
-                    if (r.ok() && (r.payload == null
-                            || ((Map<?, ?>) r.payload).isEmpty()) && !force) {
-                        r = s.call(s.svc("tipoff"), PSKEY_CB, "getPskey",
-                                (svc2, cb) -> s.ref.call(svc2, "getPskey", domains, true, cb));
-                    }
-                    return r;
+                    Map<?, ?> map = s.fetchPskeyMap(domains);
+                    JSONObject out = new JSONObject();
+                    for (Map.Entry<?, ?> e : map.entrySet())
+                        out.put(String.valueOf(e.getKey()), String.valueOf(e.getValue()));
+                    return out;
                 });
 
         // QZone 动态（说说）：H5 CGI + 空间域 p_skey，见 Qzone。
@@ -1168,13 +1153,38 @@ public final class ExtraSvc {
         String given = p.optString("pskey", "");
         if (!given.isEmpty()) return given;
         ArrayList<String> domains = new ArrayList<>(Collections.singletonList(domain));
-        Result r = call(qq.getTipOffService(), PSKEY_CB, "getPskey",
-                (svc, cb) -> ref.call(svc, "getPskey", domains, true, cb));
-        if (r.ok() && r.payload instanceof Map<?, ?> map) {
-            Object value = map.get(domain);
-            if (value != null && !String.valueOf(value).isEmpty()) return String.valueOf(value);
+        Map<?, ?> map = fetchPskeyMap(domains);
+        Object value = map.get(domain);
+        if (value != null && !String.valueOf(value).isEmpty()) return String.valueOf(value);
+        throw new IllegalStateException("pskey for " + domain + " unavailable");
+    }
+
+    /**
+     * 拉指定域的 p_skey 表。9.3.75 起会话的 TipOff 服务拿不到了（getTipOffService 回 null），
+     * 退到登录服务的 {@code guestA2ToPskey(uin, domains, cb)}：访客签发，同域同票，
+     * 公告与空间的网页 CGI 都认它。
+     */
+    private Map<?, ?> fetchPskeyMap(ArrayList<String> domains) throws Exception {
+        Object tip = qq.getTipOffService();
+        if (tip != null) {
+            Result r = call(tip, PSKEY_CB, "getPskey",
+                    (svc, cb) -> ref.call(svc, "getPskey", domains, true, cb));
+            if (r.ok() && r.payload instanceof Map<?, ?> map && !map.isEmpty()) return map;
         }
-        throw new IllegalStateException("pskey for " + domain + " unavailable: " + r.describe());
+        Object login = qq.getLoginService();
+        if (login == null) throw new IllegalStateException("no pskey service (tipoff and login both unavailable)");
+        Result r = call(login, PSKEY_CB, "guestA2ToPskey",
+                (svc, cb) -> ref.call(svc, "guestA2ToPskey", parseUin(qq.selfUin()), domains, cb));
+        if (r.ok() && r.payload instanceof Collection<?> keys) {
+            Map<String, String> map = new HashMap<>();
+            for (Object item : keys) {
+                String domain = Ref.asStr(ref.get(item, "domain"));
+                String key = Ref.asStr(ref.get(item, "key"));
+                if (!domain.isEmpty() && !key.isEmpty()) map.put(domain, key);
+            }
+            if (!map.isEmpty()) return map;
+        }
+        throw new IllegalStateException("pskey unavailable: " + r.describe());
     }
 
     /** 与 JavaScript 的 {@code encodeURI} 相同：保留 URI 结构字符，其余按 UTF-8 百分号编码。 */
@@ -1290,101 +1300,18 @@ public final class ExtraSvc {
     // -------------------------------------------------------- 群公告 / 群精华的读
 
     /**
-     * 群公告列表：登记按群号等的监听器，再发起 {@code getGroupBulletinList}；
-     * 正文在 {@code onGetGroupBulletinListResult} 里回来。发布者昵称按 uin 对上。
+     * 群公告列表：内核 {@code getGroupBulletinList} 在本机 9.3.75 上调用即段错误，改走
+     * 客户端公告页自己的网页 CGI（web.qun.qq.com/announce/get_t_list），p_skey 本端自取。
      */
     private Object readGroupBulletins(long group, int count) throws Exception {
         if (group == 0) throw new IllegalArgumentException("missing guild_id");
-        Object svc = svc("group");
-        if (svc == null) throw new IllegalStateException("group bulletin: service not ready");
-        final Object[] box = new Object[1];
-        final CountDownLatch done = new CountDownLatch(1);
-        qq.awaitGroupBulletin(group, result -> {
-            if (box[0] == null) box[0] = result;
-            done.countDown();
-            return true;
-        });
-        try {
-            String pskey = pskey(new JSONObject(), "qun.qq.com");
-            Object req = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupBulletinListReq");
-            ref.put(req, "startIndex", 0);
-            ref.put(req, "num", Math.min(20, Math.max(1, count)));
-            ref.put(req, "needPublisherInfo", 1);
-            ref.put(req, "needInstructionsForJoinGroup", 0);
-            call(svc, OPERATE_CB, "getGroupBulletinList",
-                    (svc2, cb) -> ref.call(svc2, "getGroupBulletinList", group, pskey, "", req, cb));
-            if (!done.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                throw new IllegalStateException("group bulletin: no list result (listener silent)");
-            }
-            Object result = box[0];
-            Object feeds = ref.get(result, "feeds");
-            Map<Long, String> nicks = new HashMap<>();
-            Object publishers = ref.get(result, "publisherInfos");
-            if (publishers instanceof Collection<?> rows) {
-                for (Object row : rows) {
-                    long uin = Ref.asLong(ref.get(row, "uin"));
-                    String nick = Ref.asStr(ref.get(row, "nick"));
-                    if (uin != 0 && !nick.isEmpty()) nicks.put(uin, nick);
-                }
-            }
-            JSONArray items = new JSONArray();
-            if (feeds instanceof Collection<?> rows) {
-                for (Object feed : rows) {
-                    Object msg = ref.get(feed, "msg");
-                    long uin = Ref.asLong(ref.get(feed, "uin"));
-                    JSONObject item = new JSONObject();
-                    item.put("feed_id", Ref.asStr(ref.get(feed, "feedId")));
-                    item.put("uin", uin);
-                    item.put("publisher", nicks.getOrDefault(uin, ""));
-                    item.put("publish_time", Ref.asLong(ref.get(feed, "publishTime")));
-                    item.put("pinned", Ref.asLong(ref.get(feed, "pinned")) != 0);
-                    if (msg != null) {
-                        item.put("title", Ref.asStr(ref.get(msg, "title")));
-                        item.put("text", Ref.asStr(ref.get(msg, "text")));
-                        Object pics = ref.get(msg, "pics");
-                        if (pics instanceof Collection<?> list && !list.isEmpty()) {
-                            JSONArray arr = new JSONArray();
-                            for (Object pic : list) arr.put(reflectItem(pic));
-                            item.put("pics", arr);
-                        }
-                    }
-                    items.put(item);
-                }
-            }
-            return new JSONObject().put("ok", true).put("group", group)
-                    .put("count", items.length()).put("bulletins", items);
-        } finally {
-            // 等待方已登记：超时也要撤下来，免得下一次读对上旧回包。
-            qq.awaitGroupBulletin(group, r -> true);
-        }
-    }
-
-    /**
-     * 精华条目只有 seq / random / 加精人，正文由本地历史按 seq 补（补不上就留空，
-     * 不把这当成失败——列表本身已经是内核的真实回包）。
-     */
-    private void attachEssenceContent(long group, Object rsp, int limit) {
-        try {
-            Object list = ref.get(rsp, "list");
-            if (!(list instanceof Collection<?> rows) || rows.isEmpty()) return;
-            String peer = String.valueOf(group);
-            int resolved = 0;
-            for (Object item : rows) {
-                if (resolved >= Math.min(20, Math.max(1, limit))) break;
-                long seq = Ref.asLong(ref.get(item, "msgSeq"));
-                if (seq <= 0) continue;
-                QQClient.MsgListResult msgs = qq.getMsgs(QQClient.CT_GROUP, peer, seq, 1);
-                if (!msgs.ok() || msgs.records.isEmpty()) continue;
-                for (Object rec : msgs.records) {
-                    if (Ref.asLong(ref.get(rec, "msgSeq")) != seq) continue;
-                    ref.put(item, "content", Ref.asStr(ref.get(rec, "content")));
-                    resolved++;
-                    break;
-                }
-            }
-        } catch (Throwable t) {
-            L.e("ExtraSvc essence content", t);
-        }
+        String pskey = pskey(new JSONObject(), "qun.qq.com");
+        JSONObject rsp = QunWeb.bulletinList(qq.selfUin(), pskey, group);
+        JSONArray items = rsp.optJSONArray("bulletins");
+        if (items == null) items = new JSONArray();
+        return new JSONObject().put("ok", rsp.optBoolean("ok", false)).put("group", group)
+                .put("count", items.length()).put("bulletins", items)
+                .put("raw", rsp);
     }
 
     /** 内核调用一律投到主 Looper 发起（服务是主线程亲和的），本线程继续等。 */

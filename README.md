@@ -57,6 +57,6 @@ HTTP 请求带 `Authorization: Bearer <token>`。缺失令牌返回 401，令牌
 ## 链接
 
 - [Satori v1 接口](docs/SATORI_SUPPORT.md)
-- 群身份头衔：`internal/title_list` 读目录，`internal/title_wear` 给自己佩戴（群主 300 / 管理员 301，普通成员也能上报）
+- 群身份头衔：`internal/title_list` 读目录与角色，`internal/title_wear` 给自己佩戴身份头衔，或由群主写一枚「群主 / 管理员」专属头衔
 - [Satori 协议](https://satori.chat/zh-CN/protocol/api.html)
 - [MIT](LICENSE-MIT) / [Apache-2.0](LICENSE-APACHE)

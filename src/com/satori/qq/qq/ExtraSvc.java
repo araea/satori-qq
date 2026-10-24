@@ -657,6 +657,7 @@ public final class ExtraSvc {
                 accepted = r.ok();
                 source = accepted ? "identity" : "";
                 display = titleName(titles, def);
+                if (accepted) titleId = def;
                 if (!accepted) reason = failureReason(r.describe());
             } else {
                 accepted = true;
@@ -707,7 +708,7 @@ public final class ExtraSvc {
                 .put("ok", true);
 
         boolean worn = accepted;
-        int wornId = titleId;
+        int wornId = titleId > 0 ? titleId : 0;
         String wornName = display == null ? "" : display;
         if (verify && accepted) {
             if (settle > 0) Thread.sleep(settle);

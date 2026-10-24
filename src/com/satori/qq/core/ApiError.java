@@ -8,7 +8,7 @@ import java.util.Locale;
  * 1429 → 429，1503 → 503，其余 500。{@code slug} 进响应体的 {@code code}（缺省按状态取），
  * {@code retryAfter} 秒数大于 0 时带 {@code Retry-After}。
  */
-final class ApiError extends RuntimeException {
+public final class ApiError extends RuntimeException {
     final int code;
     final String slug;
     final int retryAfter;
@@ -33,7 +33,7 @@ final class ApiError extends RuntimeException {
     }
 
     /** 参数缺失或不合法。 */
-    static ApiError badRequest(String message) { return new ApiError(1400, null, message, 0); }
+    public static ApiError badRequest(String message) { return new ApiError(1400, null, message, 0); }
 
     /** 请求点名的登录不是本实现端的登录。 */
     static ApiError loginNotFound(String message) { return new ApiError(1403, "login_not_found", message, 0); }
@@ -45,7 +45,7 @@ final class ApiError extends RuntimeException {
     static ApiError tooLarge(String message) { return new ApiError(1413, "payload_too_large", message, 0); }
 
     /** 进了 QQ 内核之后失败。 */
-    static ApiError failed(String message) { return new ApiError(1500, null, message, 0); }
+    public static ApiError failed(String message) { return new ApiError(1500, null, message, 0); }
 
     /** 群管类操作的统一收口：内核没答应就是失败。 */
     static void require(QQClient.OpResult result) {

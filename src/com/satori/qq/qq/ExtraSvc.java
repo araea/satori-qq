@@ -3,6 +3,9 @@ package com.satori.qq.qq;
 import android.os.Handler;
 import android.os.Looper;
 import com.satori.qq.L;
+import com.satori.qq.core.ApiError;
+import com.satori.qq.packet.PacketSvc;
+import com.satori.qq.packet.Pb;
 import com.satori.qq.satori.Codec;
 import java.io.File;
 import java.lang.reflect.Field;
@@ -33,6 +36,7 @@ import org.json.JSONObject;
  * this class never hooks anything.</p>
  */
 public final class ExtraSvc {
+    private static final String NS = "com.tencent.qqnt.kernel.nativeinterface.";
     private static final String OPERATE_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback";
     private static final String GROUP_INFO_SOURCE =
@@ -275,6 +279,264 @@ public final class ExtraSvc {
     // --------------------------------------------------------- recent contacts
 
     // ------------------------------------------------------------------- robot
+
+    // ------------------------------------------------------------ group identity
+
+    /** 群主 / 管理员身份头衔的内置 id（QQ 的群身份目录固定给这两枚）。 */
+    static final int TITLE_OWNER = 300;
+    static final int TITLE_ADMIN = 301;
+    /** 群等级头衔的内置 id：同一 id 在不同群里显示不同的等级名（青铜、彗星……）。 */
+    static final int TITLE_LEVEL = 315;
+
+    /** 读一次内核 getIdentityList：群头衔、互动标签、群等级都在里面。 */
+    public ExtraSvc.Result identityList(long groupCode, long memberUin) {
+        if (groupCode == 0) throw new IllegalArgumentException("missing guild_id");
+        Object req = neu(NS + "GetIdentityListReq");
+        put(req, "groupCode", groupCode);
+        put(req, "memberUin", memberUin);
+        return call(svc("group"), IDENTITY_LIST_CB, "getIdentityList",
+                (svc2, cb) -> ref.call(svc2, "getIdentityList", req, true, cb));
+    }
+
+    /** 把 getIdentityList 的回包整理成调用方看得懂的样子。 */
+    JSONObject titleListJson(long groupCode, long memberUin) throws Exception {
+        ExtraSvc.Result r = identityList(groupCode, memberUin);
+        if (!r.ok()) throw ApiError.failed("getIdentityList: " + r.describe());
+        JSONObject out = new JSONObject()
+                .put("guild_id", String.valueOf(groupCode))
+                .put("user_id", String.valueOf(memberUin))
+                .put("role_title_ids", new JSONObject()
+                        .put("owner", TITLE_OWNER).put("admin", TITLE_ADMIN).put("level", TITLE_LEVEL));
+        JSONArray titles = new JSONArray();
+        Object list = r.payload == null ? null : ref.get(r.payload, "titles");
+        if (list instanceof Collection<?> items) {
+            for (Object t : items) {
+                if (t == null) continue;
+                titles.put(new JSONObject()
+                        .put("title_id", intField(ref.get(t, "titleId")))
+                        .put("name", Ref.asStr(ref.get(t, "name")))
+                        .put("worn", Ref.asBool(ref.get(t, "isSet")))
+                        .put("pop_text", Ref.asStr(ref.get(t, "popText")))
+                        .put("spec_value", Ref.asInt(ref.get(t, "specValue"))));
+            }
+        }
+        out.put("titles", titles);
+        String worn = "";
+        for (int i = 0; i < titles.length(); i++) {
+            JSONObject t = titles.optJSONObject(i);
+            if (t != null && t.optBoolean("worn")) { worn = t.optString("name", ""); break; }
+        }
+        out.put("worn", worn);
+        Object level = r.payload == null ? null : ref.get(r.payload, "level");
+        if (level != null) {
+            out.put("level", new JSONObject()
+                    .put("cur", Ref.asInt(ref.get(level, "curLevel")))
+                    .put("name", Ref.asStr(ref.get(level, "name")))
+                    .put("progress", Ref.asInt(ref.get(level, "progress"))));
+        }
+        return out;
+    }
+
+    /** 内核把 id 写成 String（"300"）的情况很常见，别直接 Number 强转。 */
+    private static int intField(Object value) {
+        if (value instanceof Number n) return n.intValue();
+        if (value == null) return 0;
+        try { return Integer.parseInt(String.valueOf(value).trim()); }
+        catch (NumberFormatException e) { return 0; }
+    }
+
+    private static JSONObject attempt(String strategy, boolean ok, String msg) throws Exception {
+        return new JSONObject().put("strategy", strategy).put("ok", ok).put("msg", msg == null ? "" : msg);
+    }
+
+    private static String attemptsText(JSONArray attempts) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < attempts.length(); i++) {
+            JSONObject a = attempts.optJSONObject(i);
+            if (a == null) continue;
+            if (out.length() > 0) out.append("; ");
+            out.append(a.optString("strategy", "?"));
+            if (a.optBoolean("ok")) out.append(" ok");
+            else out.append(" failed ").append(a.optString("msg", ""));
+        }
+        return out.toString();
+    }
+
+    /** 按 role / name / title_id 解析要戴哪一枚头衔。 */
+    private static int resolveTitleId(JSONArray titles, int explicit, String role, String name) {
+        if (explicit >= 0) return explicit;
+        String r = role == null ? "" : role.trim().toLowerCase(java.util.Locale.ROOT);
+        if (r.equals("off") || r.equals("none") || r.equals("clear") || r.equals("摘") || r.equals("取消")) return 0;
+        if (r.equals("owner") || r.equals("群主")) return TITLE_OWNER;
+        if (r.equals("admin") || r.equals("管理员")) return TITLE_ADMIN;
+        if (r.equals("level") || r.equals("群等级") || r.equals("等级")) {
+            for (int i = 0; i < titles.length(); i++) {
+                JSONObject t = titles.optJSONObject(i);
+                if (t == null) continue;
+                int id = t.optInt("title_id");
+                if (id > 0 && id != TITLE_OWNER && id != TITLE_ADMIN) return id;
+            }
+            return TITLE_LEVEL;
+        }
+        String wanted = name == null ? "" : name.trim();
+        if (!wanted.isEmpty()) {
+            for (int i = 0; i < titles.length(); i++) {
+                JSONObject t = titles.optJSONObject(i);
+                if (t != null && wanted.equals(t.optString("name"))) return t.optInt("title_id");
+            }
+            if (wanted.equals("群主")) return TITLE_OWNER;
+            if (wanted.equals("管理员")) return TITLE_ADMIN;
+        }
+        // 没点名要哪一枚：给了自定义文字就走名片通道，否则默认管理员。
+        if (name == null || name.trim().isEmpty()) {
+            return isCustomOnly(explicit, role) ? -1 : TITLE_ADMIN;
+        }
+        return TITLE_ADMIN;
+    }
+
+    private static boolean isCustomOnly(int explicit, String role) {
+        return explicit < 0 && (role == null || role.trim().isEmpty());
+    }
+
+    private static String titleName(JSONArray titles, int titleId) {
+        for (int i = 0; i < titles.length(); i++) {
+            JSONObject t = titles.optJSONObject(i);
+            if (t != null && t.optInt("title_id") == titleId) return t.optString("name", "");
+        }
+        return "";
+    }
+
+    /** 内核佩戴头衔：只发 groupId + titleId，回包确认后再读一次身份列表。 */
+    private ExtraSvc.Result wearByKernel(long groupCode, int titleId) {
+        Object req = neu(NS + "SetIdentityTitleInfoReq");
+        put(req, "groupId", groupCode);
+        put(req, "titleId", titleId);
+        return call(svc("group"), OPERATE_CB, "setIdentityTitleInfo",
+                (svc2, cb) -> ref.call(svc2, "setIdentityTitleInfo", req, cb));
+    }
+
+    /**
+     * 0x8FC_3 是「改自己的群名片」，普通成员也有权；MemberInfo 里同时带上头衔字段，
+     * 万一服务器只校验名片权限、不单独校验头衔，就会顺手把专属头衔写进去。这是
+     * 假头衔的第二条路，作为内核通道失败时的兜底。
+     */
+    private PacketSvc.Result wearByCard(long groupCode, String uid, String card, String title) {
+        Pb.Writer member = Pb.w().string(1, uid);
+        if (card != null && !card.isEmpty()) member.string(8, card);
+        if (title != null && !title.isEmpty()) {
+            member.string(5, title).varint(6, -1L).string(7, title);
+        }
+        byte[] body = Pb.w().varint(1, groupCode).varint(2, 1).message(3, member).toByteArray();
+        return qq.packets().sendOidb(0x8FC, 3, body);
+    }
+
+    /** 读自己的群名片与 uid；card 兜底通道要用。 */
+    private String[] selfCardAndUid(long groupCode) {
+        String uid = "";
+        String card = "";
+        long self = parseUin(qq.selfUin());
+        for (boolean force : new boolean[]{false, true}) {
+            try {
+                Map<String, Object> members = qq.getAllMembers(groupCode, force);
+                if (members == null) continue;
+                for (Object member : members.values()) {
+                    if (member == null) continue;
+                    if (Ref.asLong(ref.get(member, "uin")) != self) continue;
+                    uid = Ref.asStr(ref.get(member, "uid"));
+                    card = Ref.asStr(ref.get(member, "cardName"));
+                    break;
+                }
+            } catch (Throwable ignore) {}
+            if (!uid.isEmpty()) break;
+        }
+        if (uid.isEmpty()) {
+            try { uid = qq.resolveUid(self); } catch (Throwable ignore) {}
+        }
+        return new String[]{uid, card};
+    }
+
+    private Object titleList(JSONObject p) throws Exception {
+        long g = groupOf(p);
+        if (g == 0) throw ApiError.badRequest("missing guild_id");
+        long u = parseUin(p.optString("user_id", ""));
+        if (u == 0) u = parseUin(qq.selfUin());
+        return titleListJson(g, u);
+    }
+
+    private Object wearTitle(JSONObject p) throws Exception {
+        long g = groupOf(p);
+        if (g == 0) throw ApiError.badRequest("missing guild_id");
+        long self = parseUin(qq.selfUin());
+        String role = p.optString("role", "");
+        String wantedName = p.optString("name", "");
+        String customText = p.optString("title", "");
+        int explicit = p.has("title_id") ? p.optInt("title_id", -1) : -1;
+        String strategy = p.optString("strategy", "auto");
+        boolean verify = p.optBoolean("verify", true);
+        long settle = Math.max(0, Math.min(3000, p.optLong("settle_ms", 450)));
+
+        JSONObject before = titleListJson(g, self);
+        JSONArray titles = before.optJSONArray("titles");
+        int titleId = resolveTitleId(titles, explicit, role, wantedName);
+        String display = titleId == TITLE_OWNER ? "群主"
+                : titleId == TITLE_ADMIN ? "管理员"
+                : !wantedName.isEmpty() ? wantedName
+                : !customText.isEmpty() ? customText
+                : titleName(titles, titleId);
+        JSONArray attempts = new JSONArray();
+        boolean ok = false;
+        boolean canWear = titleId >= 0;
+
+        if (canWear && ("wear".equals(strategy) || "auto".equals(strategy))) {
+            ExtraSvc.Result r = wearByKernel(g, titleId);
+            attempts.put(attempt("wear", r.ok(), r.describe()));
+            ok = r.ok();
+        }
+        // 摘头衔（titleId=0）只走内核；名片通道没有可写的头衔，硬发反而会把群名片清空。
+        if (!ok && titleId != 0 && ("card".equals(strategy) || "auto".equals(strategy))) {
+            String[] selfBits = selfCardAndUid(g);
+            String text = customText.isEmpty() ? display : customText;
+            if (text == null) text = "";
+            if (text.isEmpty() && selfBits[1].isEmpty()) {
+                attempts.put(attempt("card", false, "no card or title to write"));
+            } else {
+                PacketSvc.Result r = wearByCard(g, selfBits[0], selfBits[1], text);
+                attempts.put(attempt("card", r.ok(), r.describe()));
+                ok = r.ok();
+            }
+        }
+
+        JSONObject out = new JSONObject()
+                .put("guild_id", String.valueOf(g))
+                .put("title_id", titleId)
+                .put("title", display == null ? "" : display)
+                .put("accepted", ok)
+                .put("attempts", attempts)
+                .put("msg", attemptsText(attempts));
+
+        if (verify) {
+            if (settle > 0) Thread.sleep(settle);
+            JSONObject after = titleListJson(g, self);
+            boolean worn = false;
+            String wornName = "";
+            JSONArray list = after.optJSONArray("titles");
+            for (int i = 0; i < list.length(); i++) {
+                JSONObject t = list.optJSONObject(i);
+                if (t != null && t.optBoolean("worn")) {
+                    wornName = t.optString("name", "");
+                    if (t.optInt("title_id") == titleId) worn = true;
+                }
+            }
+            out.put("worn", worn).put("worn_title_id", titleId).put("worn_name", wornName)
+                    .put("titles", list);
+            // 服务器接受但身份列表没认，说明只是「上报成功」，实际显示要看客户端刷新；
+            // accepted 与 worn 分开给，调用方自己决定怎么说。
+            out.put("ok", ok || worn);
+        } else {
+            out.put("ok", ok);
+        }
+        return out;
+    }
 
     // ========================================================== 扩展动作注册表
     //
@@ -727,6 +989,18 @@ public final class ExtraSvc {
                     return s.call(s.svc("group"), IDENTITY_LIST_CB, "getIdentityList",
                             (svc2, cb) -> s.ref.call(svc2, "getIdentityList", req, true, cb));
                 });
+
+        // getIdentityList 的整理版：群头衔（含「群主」「管理员」两枚身份头衔）与互动标签。
+        reg("title_list", new String[]{"group_titles", "identity_titles"}, false,
+                "guild_id, user_id?",
+                (s, p) -> s.titleList(p));
+
+        // 戴/换/摘群头衔。普通成员给自己「上报」一个头衔，就是所谓假头衔的入口：
+        // 内核 setIdentityTitleInfo 只带 groupId + titleId，没有角色校验，标题由服务器
+        // 的群头衔目录解析。300=群主、301=管理员，其余是群等级头衔与用户获得的样式。
+        reg("title_wear", new String[]{"group_title_wear", "fake_title", "wear_title", "identity_title_wear", "群头衔"}, true,
+                "guild_id, title_id?|role?|name?, title?, strategy?（wear|card|auto）, verify?",
+                (s, p) -> s.wearTitle(p));
 
         // getGroupMemberCardInfo(GroupMemberCardInfoReq, IGetGroupMemberCardInfoCallback)
         // GroupMemberCardInfoReq: groupCode(long) memberUin(long)

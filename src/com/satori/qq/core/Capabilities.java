@@ -138,6 +138,7 @@ final class Capabilities {
             case "card" -> "guild_id, user_id?, card";
             case "special_title" -> "guild_id, user_id, title";
             case "title_display" -> "guild_id, show?";
+            case "title_wear" -> "guild_id, title_id?|role?（owner/admin/level/off）|name?，strategy?（wear/card/auto），verify?";
             case "honor_display" -> "guild_id, show?";
             case "sign" -> "guild_id";
             case "essence" -> "guild_id, message_id, remove?";

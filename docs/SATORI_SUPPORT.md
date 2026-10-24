@@ -108,6 +108,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 提及 | `at_all_quota` | 本号此刻能否在该群 @全体成员、今天还剩几次，见下 |
 | 表态 | `reaction_summary` / `reaction_clear` | 消息的回应计数与自己是否回应；仅清除自己的回应 |
 | 群成员 | `special_title` / `card` | 设置群头衔或群名片；`special_title` 只设头衔，不带显示开关参数 |
+| 群身份 | `title_list` / `title_wear` | 读群身份目录（群主 300、管理员 301、群等级），或给自己佩戴 / 更换 / 摘下群身份头衔。`title_wear` 的 `role` 认 `owner`/`admin`/`level`/`off` 与中文，`strategy` 认 `wear`（内核）/`card`（0x8FC_3 兜底）/`auto`，`verify` 回读确认。这是「自己戴」的动作，不检查群角色 |
 | 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关；不带 `show` / `enable` 时只读当前状态，不写 |
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息。`essence` 附带 `guild_id` 时，本进程没缓存过的旧消息也能由内核补取 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳（超级表情） |

@@ -43,8 +43,10 @@ public final class ExtraSvc {
             "com.tencent.qqnt.kernel.nativeinterface.IGetIdentityListCallback";
     private static final String DETAIL_BY_UIN_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IDetailInfoByUinCallback";
-    private static final String PSKEY_CB =
-            "com.tencent.qqnt.kernel.nativeinterface.IGetPskeyCallback";
+    // guestA2ToPskey 要的是 IGuestPskeyCallback（onResult(int, String, ArrayList<GuestPskey>)）。
+    // 拿 IGetPskeyCallback 去接会让内核按错误的接口回调，段错误直接把 QQ 带走。
+    private static final String GUEST_PSKEY_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.IGuestPskeyCallback";
 
     // --- 0.8.9.39: kernel types used by the extended group/message/media/profile actions ---
     private static final String JOIN_LINK_CB =
@@ -569,7 +571,7 @@ public final class ExtraSvc {
                             (svc2, cb) -> s.ref.call(svc2, "getJoinGroupLink", req, cb));
                 });
 
-        // 群精华列表：内核 fetchGroupEssenceList 在本机 9.3.75 上同样调用即段错误，
+        // 群精华列表：内核 fetchGroupEssenceList 在本机 9.3.75/9.3.80 上调用即段错误，
         // 改走精华 H5 页自己的数据接口（QunWeb.essenceList）。
         reg("group_essence_list", NONE, false, "guild_id, pskey?",
                 (s, p) -> {
@@ -1160,20 +1162,18 @@ public final class ExtraSvc {
     }
 
     /**
-     * 拉指定域的 p_skey 表。9.3.75 起会话的 TipOff 服务拿不到了（getTipOffService 回 null），
-     * 退到登录服务的 {@code guestA2ToPskey(uin, domains, cb)}：访客签发，同域同票，
-     * 公告与空间的网页 CGI 都认它。
+     * 拉指定域的 p_skey 表。走登录服务的 {@code guestA2ToPskey(uin, domains, cb)}：访客签发，
+     * 同域同票，公告与空间的网页 CGI 都认它。回调类型必须是 IGuestPskeyCallback。
+     *
+     * <p>不再走会话的 {@code IKernelTipOffService.getPskey}：9.3.75 上该服务为 null，
+     * 9.3.80 上能取到对象但调用即段错误（libkernel.so+0x192f918）。
      */
     private Map<?, ?> fetchPskeyMap(ArrayList<String> domains) throws Exception {
-        Object tip = qq.getTipOffService();
-        if (tip != null) {
-            Result r = call(tip, PSKEY_CB, "getPskey",
-                    (svc, cb) -> ref.call(svc, "getPskey", domains, true, cb));
-            if (r.ok() && r.payload instanceof Map<?, ?> map && !map.isEmpty()) return map;
-        }
+        // 9.3.80：会话的 TipOff 服务能取到对象，但 getPskey 的 native 入口必段错误
+        // （libkernel.so+0x192f918，CrashDefend 吞掉 signal 11 后 QQ 重启）。所以不走 TipOff。
         Object login = qq.getLoginService();
-        if (login == null) throw new IllegalStateException("no pskey service (tipoff and login both unavailable)");
-        Result r = call(login, PSKEY_CB, "guestA2ToPskey",
+        if (login == null) throw new IllegalStateException("no pskey service (login unavailable)");
+        Result r = call(login, GUEST_PSKEY_CB, "guestA2ToPskey",
                 (svc, cb) -> ref.call(svc, "guestA2ToPskey", parseUin(qq.selfUin()), domains, cb));
         if (r.ok() && r.payload instanceof Collection<?> keys) {
             Map<String, String> map = new HashMap<>();
@@ -1300,7 +1300,7 @@ public final class ExtraSvc {
     // -------------------------------------------------------- 群公告 / 群精华的读
 
     /**
-     * 群公告列表：内核 {@code getGroupBulletinList} 在本机 9.3.75 上调用即段错误，改走
+     * 群公告列表：内核 {@code getGroupBulletinList} 在本机 9.3.75/9.3.80 上调用即段错误，改走
      * 客户端公告页自己的网页 CGI（web.qun.qq.com/announce/get_t_list），p_skey 本端自取。
      */
     private Object readGroupBulletins(long group, int count) throws Exception {

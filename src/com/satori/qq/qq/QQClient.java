@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Bridge into the Android QQ NT kernel: capture session, send, register listeners and identity. */
 public final class QQClient {
-    // ---- QQ 9.3.50 class names, reverified on 9.3.75 ----
+    // ---- QQ 9.3.50 class names, reverified on 9.3.80 ----
     public static final String SESSION_CPP     = "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession$CppProxy";
     public static final String MSG_LISTENER    = "com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener";
     public static final String CONTACT         = "com.tencent.qqnt.kernelpublic.nativeinterface.Contact";
@@ -519,13 +519,10 @@ public final class QQClient {
         Object s = session; if (s == null) return null;
         try { return ref.call(s, "getSearchService"); } catch (Throwable t) { return null; }
     }
-    public Object getTipOffService() {
-        Object s = session; if (s == null) return null;
-        try { return ref.call(s, "getTipOffService"); } catch (Throwable t) { return null; }
-    }
+    /** IKernelLoginService.getLoginService() 是接口上的静态入口，不在会话上。 */
     public Object getLoginService() {
-        Object s = session; if (s == null) return null;
-        try { return ref.call(s, "getLoginService"); } catch (Throwable t) { return null; }
+        try { return ref.callS("com.tencent.qqnt.kernel.nativeinterface.IKernelLoginService", "getLoginService"); }
+        catch (Throwable t) { return null; }
     }
     public Object getCollectionService() {
         Object s = session; if (s == null) return null;

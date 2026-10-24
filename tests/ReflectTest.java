@@ -5,6 +5,11 @@ import com.satori.qq.xp.Reflect;
 /** Reflect 的实参类型推断：Class 实参必须按 Class 类型去匹配形参，不能当成类型提示。 */
 public final class ReflectTest {
 
+    /** 模拟 QQ 的 IKernelLoginService.getLoginService()：接口上的静态入口。 */
+    private interface StaticEntry {
+        static String getLoginService() { return "login"; }
+    }
+
     private static final class Target {
         public String pick(Class<?> type, String tag) { return type.getName() + ":" + tag; }
         public String one(Class<?> type) { return type.getName(); }
@@ -19,6 +24,8 @@ public final class ReflectTest {
         check("java.lang.Integer".equals(one), "单参重载: " + one);
         Integer boxed = (Integer) Reflect.callMethod(t, "boxed", 7);
         check(boxed == 7, "装箱值按原始类型匹配: " + boxed);
+        String login = (String) Reflect.callStaticMethod(StaticEntry.class, "getLoginService");
+        check("login".equals(login), "接口静态方法可解析: " + login);
         System.out.println("   ok   ReflectTest");
     }
 

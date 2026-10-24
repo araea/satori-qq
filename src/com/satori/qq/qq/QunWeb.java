@@ -11,7 +11,7 @@ import org.json.JSONObject;
 
 /**
  * 群公告与群精华的读走 qun.qq.com 的网页 CGI，不从 QQNT 内核走：内核的
- * {@code getGroupBulletinList} / {@code fetchGroupEssenceList} 在本机 9.3.75 上调用即段错误
+ * {@code getGroupBulletinList} / {@code fetchGroupEssenceList} 在本机 9.3.75/9.3.80 上调用即段错误
  * （CrashDefend 吞掉 signal 11，连接直接断），而客户端自己的公告页与精华页本来就是 H5，
  * 网页侧的 CGI 是它们的数据源，凭据同样是空间系的 p_skey + bkn。
  */

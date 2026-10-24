@@ -133,6 +133,85 @@ public final class QQClient {
         volatile String errorMessage = "";
     }
 
+    // -------------------------------------------------------- 群文件与传输等待
+
+    /** 一次群文件传输（下载 / 上传）的等待句柄；完成通知按 fileId 唤醒。 */
+    public static final class TransWait {
+        final CountDownLatch latch = new CountDownLatch(1);
+        volatile String path = "";
+        volatile long errorCode = -1;
+        volatile String errorMessage = "";
+        /** 最多等到什么时候；超时后由等待方自行放弃。 */
+        final long deadline = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(3);
+        boolean expired() { return System.currentTimeMillis() > deadline; }
+    }
+
+    private final ConcurrentHashMap<String, TransWait> transWaits = new ConcurrentHashMap<>();
+
+    /** 登记一个按 fileId 等完成通知的等待句柄。 */
+    public TransWait newTransWait(String fileId) {
+        TransWait wait = new TransWait();
+        transWaits.put(fileId, wait);
+        return wait;
+    }
+
+    /**
+     * getGroupFileList 的结果从 IKernelMsgListener.onGroupFileInfoUpdate 回来，
+     * 按 GroupItem.peerId（群号）分发给等待方；返回 true 表示等待方收货了。
+     */
+    public interface FileListSink {
+        boolean accept(Object result);
+    }
+
+    private final ConcurrentHashMap<Long, FileListSink> fileListWaits = new ConcurrentHashMap<>();
+
+    public void awaitGroupFileList(long groupCode, FileListSink sink) {
+        fileListWaits.put(groupCode, sink);
+    }
+
+    private void deliverGroupFileList(Object result) {
+        try {
+            Object items = ref.get(result, "item");
+            if (!(items instanceof List<?> list) || list.isEmpty()) return;
+            long peer = Ref.asLong(ref.get(list.get(0), "peerId"));
+            if (peer == 0) return;
+            FileListSink sink = fileListWaits.get(peer);
+            if (sink != null && sink.accept(result)) fileListWaits.remove(peer);
+        } catch (Throwable t) {
+            L.e("group file list delivery", t);
+        }
+    }
+
+    private void onRichMediaUploadComplete(Object info) {
+        if (info == null) return;
+        try {
+            completeTransWait(info);
+        } catch (Throwable t) {
+            L.e("rich media upload completion", t);
+        }
+    }
+
+    private void completeTransWait(Object info) {
+        String fileId = Ref.asStr(ref.get(info, "fileId"));
+        String filePath = Ref.asStr(ref.get(info, "filePath"));
+        TransWait wait = fileId.isEmpty() ? null : transWaits.get(fileId);
+        if (wait == null) {
+            // 上传完成通知里的 fileId 不一定是登记用的那个键；按文件名尾段再对一次。
+            String tail = filePath.contains("/") ? filePath.substring(filePath.lastIndexOf('/') + 1) : filePath;
+            for (Map.Entry<String, TransWait> entry : transWaits.entrySet()) {
+                if (tail.isEmpty() || entry.getKey().endsWith(tail) || tail.endsWith(entry.getKey())) {
+                    wait = entry.getValue();
+                    break;
+                }
+            }
+        }
+        if (wait == null) return;
+        wait.path = filePath;
+        wait.errorCode = Ref.asLong(ref.get(info, "fileErrCode"));
+        wait.errorMessage = Ref.asStr(ref.get(info, "fileErrMsg"));
+        wait.latch.countDown();
+    }
+
     public QQClient(ClassLoader cl, boolean mainProcess) {
         this.ref = new Ref(cl);
         this.mainProcess = mainProcess;
@@ -478,6 +557,14 @@ public final class QQClient {
                     onRichMediaDownloadComplete(args[0]);
                     return def(m);
                 }
+                if ("onRichMediaUploadComplete".equals(name) && args != null && args.length > 0) {
+                    onRichMediaUploadComplete(args[0]);
+                    return def(m);
+                }
+                if ("onGroupFileInfoUpdate".equals(name) && args != null && args.length > 0) {
+                    deliverGroupFileList(args[0]);
+                    return def(m);
+                }
                 Listener l = listener;
                 if (args != null && args.length > 0) {
                     if (("onMsgInfoListUpdate".equals(name) || "onMsgInfoListAdd".equals(name)
@@ -536,6 +623,7 @@ public final class QQClient {
     private void onRichMediaDownloadComplete(Object info) {
         if (info == null) return;
         try {
+            completeTransWait(info);
             long msgId = Ref.asLong(ref.get(info, "msgId"));
             long elementId = Ref.asLong(ref.get(info, "msgElementId"));
             MediaDownload pending = mediaDownloads.get(mediaDownloadKey(msgId, elementId));

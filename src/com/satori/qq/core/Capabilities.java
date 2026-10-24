@@ -22,8 +22,7 @@ final class Capabilities {
             "contact_search", "friend_relation", "profile_self", "group_honor",
             "group_active", "group_anniversary", "group_detail",
             "group_statistic", "voice_to_text", "message_context", "message_search",
-            "group_file", "get_resource", "session_top", "group_msg_mask",
-            "qzone.publish", "offline");
+            "get_resource", "session_top", "group_msg_mask", "offline");
 
     /** 0.23.0 收掉的：这些在旧实现里靠通用 Java hook 才成立。 */
     private static final Map<String, String> REMOVED_0_23 = Map.of(

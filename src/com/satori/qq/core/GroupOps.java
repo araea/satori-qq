@@ -55,6 +55,11 @@ final class GroupOps {
         return resources.resolveImage(spec).getAbsolutePath();
     }
 
+    /** 登记一个已落盘的文件，返回对外的 {@code internal:} 链接（群文件下载回执用）。 */
+    String publishFile(File file, String name) {
+        return resources.publish("file", file, name);
+    }
+
     private static long group(JSONObject p) { return p.optLong("guild_id", p.optLong("group_id", 0)); }
 
     private static long user(JSONObject p) { return Ids.parse(p.optString("user_id", "")); }

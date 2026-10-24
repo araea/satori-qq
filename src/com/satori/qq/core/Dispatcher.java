@@ -5,6 +5,7 @@ import com.satori.qq.qq.ExtraSvc;
 import com.satori.qq.qq.Media;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.satori.Codec;
+import java.io.File;
 import org.json.JSONObject;
 
 /**
@@ -166,9 +167,33 @@ final class Dispatcher {
                 if (!p.optString("image", "").isEmpty()) p.put("image_path", groupOps.localImage(p.optString("image")));
                 yield extension(name, p);
             }
+            // 头像与群文件上传同理：链接或 internal: 先解析成本地路径再进注册表。
+            case "avatar", "set_avatar" -> {
+                String spec = p.optString("image", p.optString("url", ""));
+                if (!spec.isEmpty()) p.put("image", groupOps.localImage(spec));
+                yield extension(name, p);
+            }
+            case "group_file_upload" -> {
+                String spec = p.optString("path", p.optString("file", ""));
+                if (!spec.isEmpty() && !new File(spec).isFile()) p.put("path", groupOps.localImage(spec));
+                yield extension(name, p);
+            }
             case "dice" -> gate.guarded("internal.dice", () -> groupOps.specialFace(p, Codec.DICE_FACE, "dice"));
             case "rps", "rock_paper_scissors" ->
                     gate.guarded("internal.rps", () -> groupOps.specialFace(p, Codec.RPS_FACE, "rps"));
+            // 下载落盘之后把文件登记成 internal: 资源，客户端才有路把字节取走。
+            case "group_file_download" -> {
+                Object result = extension(name, p);
+                if (result instanceof JSONObject o && o.optBoolean("ok", false)) {
+                    JSONObject data = o.optJSONObject("data");
+                    String path = data == null ? "" : data.optString("path", "");
+                    if (data != null && !path.isEmpty() && new File(path).isFile()) {
+                        o.put("url", groupOps.publishFile(new File(path),
+                                data.optString("file_name", new File(path).getName())));
+                    }
+                }
+                yield result;
+            }
             case "chat_screenshot" -> history.screenshot(p);
             // 合并转发在入站只有 `<message forward id="…"/>` 一个元素，没有正文，
             // 也没有第二条能取回它的路，所以这条解析保留。

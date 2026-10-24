@@ -4,6 +4,9 @@ import android.os.Handler;
 import android.os.Looper;
 import com.satori.qq.L;
 import com.satori.qq.satori.Codec;
+import java.io.File;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -39,6 +42,8 @@ public final class ExtraSvc {
             "com.tencent.qqnt.kernel.nativeinterface.IGetIdentityListCallback";
     private static final String DETAIL_BY_UIN_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IDetailInfoByUinCallback";
+    private static final String PSKEY_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.IGetPskeyCallback";
 
     // --- 0.8.9.39: kernel types used by the extended group/message/media/profile actions ---
     private static final String JOIN_LINK_CB =
@@ -410,6 +415,10 @@ public final class ExtraSvc {
             "com.tencent.qqnt.kernel.nativeinterface.IGetOcrDataCallback";
     private static final String AT_ALL_TIMES_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IGetGroupRemainAtAllTimesOperateCallback";
+    private static final String GROUP_FILE_INFO_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.IGroupFileInfoCallback";
+    private static final String SEARCH_GROUP_FILE_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.ISearchGroupFileCallback";
 
     static {
         final String NS = "com.tencent.qqnt.kernel.nativeinterface.";
@@ -840,9 +849,180 @@ public final class ExtraSvc {
                 });
 
         // setLongNick(String, IOperateCallback)
-        reg("long_nick", new String[]{"set_long_nick"}, true, "long_nick",
+        reg("long_nick", new String[]{"set_long_nick", "signature"}, true, "long_nick|text",
                 (s, p) -> s.call(s.svc("profile"), OPERATE_CB, "setLongNick",
-                        (svc2, cb) -> s.ref.call(svc2, "setLongNick", p.optString("long_nick", ""), cb)));
+                        (svc2, cb) -> s.ref.call(svc2, "setLongNick",
+                                p.optString("long_nick", p.optString("text", p.optString("signature", ""))), cb)));
+
+        // setNickName(String, IOperateCallback) —— QQ 昵称（账号级，不是群名片）。
+        reg("nick", new String[]{"set_nick", "nick_name"}, true, "nick",
+                (s, p) -> s.call(s.svc("profile"), OPERATE_CB, "setNickName",
+                        (svc2, cb) -> s.ref.call(svc2, "setNickName",
+                                p.optString("nick", p.optString("nickname", "")), cb)));
+
+        // setHeader(String path, IOperateCallback) —— QQ 头像，内核只收本地文件路径，
+        // 链接与 data: 由 Media.resolve 先落盘。
+        reg("avatar", new String[]{"set_avatar"}, true, "image（本地路径、http(s)、data:）",
+                (s, p) -> {
+                    File image = Media.resolve(p.optString("image", p.optString("url", "")), "");
+                    if (image == null || !image.isFile())
+                        throw new IllegalArgumentException("cannot resolve avatar image");
+                    return s.call(s.svc("profile"), OPERATE_CB, "setHeader",
+                            (svc2, cb) -> s.ref.call(svc2, "setHeader", image.getAbsolutePath(), cb));
+                });
+
+        // getPskey(ArrayList<String> domains, boolean force, IGetPskeyCallback)
+        //   -> onFetchPskey(code, msg, HashMap<domain, pskey>)
+        // QZone 等网页业务靠它拿空间域的 p_skey；空结果再强制刷一次。
+        reg("pskey", NONE, false, "domains[]（默认 qzone.qq.com）, force?",
+                (s, p) -> {
+                    ArrayList<String> domains = strings(p.optJSONArray("domains"));
+                    if (domains.isEmpty()) domains.add("qzone.qq.com");
+                    final boolean force = p.optBoolean("force", false);
+                    Result r = s.call(s.svc("tipoff"), PSKEY_CB, "getPskey",
+                            (svc2, cb) -> s.ref.call(svc2, "getPskey", domains, force, cb));
+                    if (r.ok() && (r.payload == null
+                            || ((Map<?, ?>) r.payload).isEmpty()) && !force) {
+                        r = s.call(s.svc("tipoff"), PSKEY_CB, "getPskey",
+                                (svc2, cb) -> s.ref.call(svc2, "getPskey", domains, true, cb));
+                    }
+                    return r;
+                });
+
+        // QZone 动态（说说）：H5 CGI + 空间域 p_skey，见 Qzone。
+        reg("feed_publish", new String[]{"publish_feed", "qzone_publish"}, true,
+                "text, auto_sig?, to_sign?, qzonetoken?",
+                (s, p) -> Qzone.publish(s.qq.selfUin(), s.pskey(p, "qzone.qq.com"), p));
+
+        // searchGroupFileByWord(ArrayList<Long> uins, ArrayList<Long> busIds, String word,
+        //     String folderId, int count, ISearchGroupFileCallback) —— 群文件按名搜索。
+        reg("group_file_search", NONE, false, "guild_id, word, count?",
+                (s, p) -> {
+                    ArrayList<Long> groups = new ArrayList<>();
+                    groups.add(groupOf(p));
+                    return s.call(s.svc("richmedia"), SEARCH_GROUP_FILE_CB, "searchGroupFileByWord",
+                            (svc2, cb) -> s.ref.call(svc2, "searchGroupFileByWord", groups,
+                                    new ArrayList<Long>(), p.optString("word", ""),
+                                    p.optString("folder_id", ""), p.optInt("count", 20), cb));
+                });
+
+        // getGroupFileInfo(groupCode, fileId, IGroupFileInfoCallback) —— 单个群文件的
+        // 详情（含已下载的本地路径）。
+        reg("group_file_get", NONE, false, "guild_id, file_id",
+                (s, p) -> s.call(s.svc("richmedia"), GROUP_FILE_INFO_CB, "getGroupFileInfo",
+                        (svc2, cb) -> s.ref.call(svc2, "getGroupFileInfo", groupOf(p),
+                                p.optString("file_id", ""), cb)));
+
+        // getGroupFileList(groupCode, GroupFileListForm) 的结果从
+        // IKernelMsgListener.onGroupFileInfoUpdate 回来，按 GroupItem.peerId 对上群号；
+        // 翻页循环在 listGroupFiles 里。
+        reg("group_file_list", new String[]{"group_files"}, false,
+                "guild_id, folder_id?, start_index?, limit?",
+                (s, p) -> s.listGroupFiles(groupOf(p), p.optString("folder_id", ""),
+                        p.optInt("start_index", 0), p.optInt("limit", 50)));
+
+        // onlyDownloadFile(Contact, ArrayList<DownloadGroupFileParams>) —— 下载群文件。
+        // 没有回调返回值，完成通知从 onRichMediaDownloadComplete 按 fileId 唤醒；
+        // 等不来就按 getGroupFileInfo 的本地路径兜底，再不行才报超时。
+        reg("group_file_download", NONE, true,
+                "guild_id, file_id, file_name?, file_model_id?, file_size?",
+                (s, p) -> {
+                    long g = groupOf(p);
+                    String fileId = p.optString("file_id", "");
+                    if (g == 0 || fileId.isEmpty())
+                        throw new IllegalArgumentException("missing guild_id/file_id");
+                    final long[] meta = {p.optLong("file_model_id", 0), p.optLong("file_size", 0)};
+                    final String[] name = {p.optString("file_name", "")};
+                    if (meta[0] == 0 || meta[1] == 0 || name[0].isEmpty()) {
+                        Result info = s.call(s.svc("richmedia"), GROUP_FILE_INFO_CB, "getGroupFileInfo",
+                                (svc2, cb) -> s.ref.call(svc2, "getGroupFileInfo", g, fileId, cb));
+                        if (info.ok() && info.payload != null) {
+                            Object fi = s.ref.get(info.payload, "fileInfo");
+                            if (fi == null) fi = info.payload;
+                            if (meta[0] == 0) meta[0] = Ref.asLong(s.ref.get(fi, "fileModelId"));
+                            if (meta[1] == 0) meta[1] = Ref.asLong(s.ref.get(fi, "fileSize"));
+                            if (name[0].isEmpty()) name[0] = Ref.asStr(s.ref.get(fi, "fileName"));
+                        }
+                    }
+                    QQClient.TransWait wait = s.qq.newTransWait(fileId);
+                    Object contact = s.contactOf(p);
+                    Object params = s.ref.neu("com.tencent.qqnt.kernel.nativeinterface.DownloadGroupFileParams");
+                    s.ref.put(params, "fileId", fileId);
+                    s.ref.put(params, "fileModelId", meta[0]);
+                    s.ref.put(params, "fileName", name[0]);
+                    s.ref.put(params, "fileSize", meta[1]);
+                    ArrayList<Object> one = new ArrayList<>();
+                    one.add(params);
+                    Object media = s.svc("richmedia");
+                    s.onMain(() -> {
+                        try {
+                            s.ref.call(media, "onlyDownloadFile", contact, one);
+                        } catch (Throwable t) {
+                            L.e("ExtraSvc group_file_download", t);
+                            wait.latch.countDown();
+                        }
+                    });
+                    boolean arrived = wait.latch.await(3, TimeUnit.MINUTES);
+                    String path = wait.path;
+                    long err = wait.errorCode;
+                    if (!arrived || err != 0 || path.isEmpty()) {
+                        // 完成通知没来（或没等满）：问一下本地路径，下载完的东西在那儿。
+                        Result info = s.call(s.svc("richmedia"), GROUP_FILE_INFO_CB, "getGroupFileInfo",
+                                (svc2, cb) -> s.ref.call(svc2, "getGroupFileInfo", g, fileId, cb));
+                        if (info.ok() && info.payload != null) {
+                            Object fi = s.ref.get(info.payload, "fileInfo");
+                            if (fi == null) fi = info.payload;
+                            String local = Ref.asStr(s.ref.get(fi, "localPath"));
+                            if (!local.isEmpty()) { path = local; err = 0; }
+                        }
+                    }
+                    JSONObject out = new JSONObject();
+                    out.put("ok", err == 0 && !path.isEmpty())
+                            .put("code", (int) err).put("msg", err == 0 ? "" : wait.errorMessage)
+                            .put("file_id", fileId).put("file_name", name[0])
+                            .put("file_size", meta[1]).put("path", path);
+                    if (!arrived) out.put("assumed", true);
+                    return out;
+                });
+
+        // onlyUploadFile(Contact, ArrayList<UploadGroupFileParams>) —— 上传群文件。
+        // 完成通知从 onRichMediaUploadComplete 按 filePath 尾段对回来；等不来标 assumed。
+        reg("group_file_upload", NONE, true, "guild_id, path（本地路径/http(s)/data:）, name?",
+                (s, p) -> {
+                    long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    File local = Media.resolve(p.optString("path", p.optString("file", "")), "");
+                    if (local == null || !local.isFile())
+                        throw new IllegalArgumentException("cannot resolve upload file");
+                    String name = p.optString("name", local.getName());
+                    QQClient.TransWait wait = s.qq.newTransWait(name);
+                    Object contact = s.contactOf(p);
+                    Object params = s.ref.neu("com.tencent.qqnt.kernel.nativeinterface.UploadGroupFileParams");
+                    s.ref.put(params, "fileModelId", 0L);
+                    s.ref.put(params, "fileName", name);
+                    s.ref.put(params, "filePath", local.getAbsolutePath());
+                    ArrayList<Object> one = new ArrayList<>();
+                    one.add(params);
+                    Object media = s.svc("richmedia");
+                    s.onMain(() -> {
+                        try {
+                            s.ref.call(media, "onlyUploadFile", contact, one);
+                        } catch (Throwable t) {
+                            L.e("ExtraSvc group_file_upload", t);
+                            wait.latch.countDown();
+                        }
+                    });
+                    boolean arrived = wait.latch.await(3, TimeUnit.MINUTES);
+                    JSONObject out = new JSONObject();
+                    out.put("ok", arrived ? wait.errorCode == 0 : true)
+                            .put("code", (int) wait.errorCode)
+                            .put("msg", wait.errorMessage)
+                            .put("file_name", name).put("file_size", local.length())
+                            .put("local_path", local.getAbsolutePath());
+                    if (arrived && !wait.path.isEmpty()) out.put("path", wait.path);
+                    if (!arrived) out.put("assumed", true);
+                    return out;
+                });
 
         // getBuddyRemark(ArrayList<String> uids) —— 同步读，回 HashMap<String,String>
         reg("friend_remark_get", NONE, false, "user_ids[]",
@@ -962,8 +1142,6 @@ public final class ExtraSvc {
         return String.valueOf(uin);
     }
 
-    private static final String PSKEY_CB =
-            "com.tencent.qqnt.kernel.nativeinterface.IGetPskeyCallback";
 
     /**
      * 群公告这类 web 入口要的 p_skey。调用方给了就用它的；没给就向内核要
@@ -997,6 +1175,126 @@ public final class ExtraSvc {
             }
         }
         return out.toString();
+    }
+
+    // ------------------------------------------------------------ 群文件列表
+
+    /**
+     * 群文件列表：内核 {@code getGroupFileList} 只回一个请求号，真正的条目从
+     * {@code IKernelMsgListener.onGroupFileInfoUpdate} 按 GroupItem.peerId 送回来。
+     * 翻页用返回里的 {@code nextIndex}，直到 {@code isEnd} 或攒够 {@code limit}。
+     */
+    private Object listGroupFiles(long group, String folderId, int startIndex, int limit)
+            throws Exception {
+        if (group == 0) throw new IllegalArgumentException("missing guild_id");
+        Object svc = svc("richmedia");
+        if (svc == null) throw new IllegalStateException("group file list: service not ready");
+        ArrayList<Object> items = new ArrayList<>();
+        int index = startIndex;
+        int allCount = -1;
+        boolean end = false;
+        int pages = 0;
+        while (!end && items.size() < Math.max(1, limit) && pages++ < 20) {
+            final Object[] box = new Object[1];
+            final CountDownLatch page = new CountDownLatch(1);
+            qq.awaitGroupFileList(group, result -> {
+                if (box[0] == null) box[0] = result;
+                page.countDown();
+                return true;
+            });
+            Object form = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupFileListForm");
+            ref.put(form, "folderId", folderId == null ? "" : folderId);
+            ref.put(form, "fileCount", Math.min(40, Math.max(10, limit - items.size())));
+            ref.put(form, "startIndex", index);
+            ref.put(form, "sortOrder", 0);
+            ref.put(form, "showOnlinedocFolder", 0);
+            int req = syncInt(svc, "getGroupFileList", group, form);
+            if (req < 0 || !page.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                end = req >= 0; // 请求发了但没回包：把已拿到的条目交出去
+                break;
+            }
+            Object result = box[0];
+            Object list = ref.get(result, "item");
+            if (list instanceof Collection<?> rows) {
+                items.addAll((Collection<Object>) rows);
+            }
+            allCount = Ref.asInt(ref.get(result, "allFileCount"));
+            end = Ref.asLong(ref.get(result, "isEnd")) != 0;
+            int next = Ref.asInt(ref.get(result, "nextIndex"));
+            if (next <= index) end = true;
+            index = next;
+        }
+        JSONObject out = new JSONObject();
+        out.put("group", group).put("folder_id", folderId)
+                .put("all_file_count", allCount).put("is_end", end).put("next_index", index);
+        JSONArray rows = new JSONArray();
+        for (Object item : items) {
+            Object info = ref.get(item, "fileInfo");
+            Object folder = ref.get(item, "folderInfo");
+            if (info != null) rows.put(reflectItem(info));
+            if (folder != null) rows.put(reflectItem(folder));
+        }
+        out.put("items", rows);
+        return out;
+    }
+
+    /** 单个内核对象的字段导出；嵌套一层为止。 */
+    private JSONObject reflectItem(Object o) throws Exception {
+        JSONObject out = new JSONObject();
+        for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Field f : c.getDeclaredFields()) {
+                if (Modifier.isStatic(f.getModifiers())) continue;
+                try {
+                    f.setAccessible(true);
+                    Object v = f.get(o);
+                    if (v == null || v instanceof String || v instanceof Number || v instanceof Boolean) {
+                        out.put(f.getName(), v == null ? null : v);
+                    } else if (v instanceof Collection<?> col) {
+                        out.put(f.getName(), new JSONArray(col.stream()
+                                .map(x -> x == null ? null : String.valueOf(x)).toArray()));
+                    } else if (v instanceof Map<?, ?> map) {
+                        JSONObject m = new JSONObject();
+                        for (Map.Entry<?, ?> e : map.entrySet()) {
+                            m.put(String.valueOf(e.getKey()),
+                                    e.getValue() == null ? null : String.valueOf(e.getValue()));
+                        }
+                        out.put(f.getName(), m);
+                    } else {
+                        out.put(f.getName(), String.valueOf(v));
+                    }
+                } catch (Throwable ignore) {
+                    // 读不出的字段不导出
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 内核调用一律投到主 Looper 发起（服务是主线程亲和的），本线程继续等。 */
+    private void onMain(Runnable task) {
+        Looper main = Looper.getMainLooper();
+        if (main != null && Looper.myLooper() != main) {
+            new Handler(main).post(task);
+        } else {
+            task.run();
+        }
+    }
+
+    /** 同步返回的内核方法（回调在别处的那些）：投到主线程调，等返回值。 */
+    private int syncInt(Object svc, String method, Object... args) throws Exception {
+        AtomicInteger out = new AtomicInteger(-1);
+        CountDownLatch done = new CountDownLatch(1);
+        onMain(() -> {
+            try {
+                out.set(Ref.asInt(ref.call(svc, method, args)));
+            } catch (Throwable t) {
+                L.e("ExtraSvc " + method, t);
+            } finally {
+                done.countDown();
+            }
+        });
+        done.await(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        return out.get();
     }
 
     private Object svc(String key) {

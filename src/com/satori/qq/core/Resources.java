@@ -3,6 +3,16 @@ package com.satori.qq.core;
 import com.satori.qq.qq.Media;
 import com.satori.qq.qq.QQClient;
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.json.JSONObject;
 
 /**
@@ -10,6 +20,14 @@ import org.json.JSONObject;
  * {@code internal:red/<uin>/_tmp/<id>} 链接对外；这里把链接、id 与磁盘上的文件对上。
  */
 final class Resources {
+    /** 图片预取的客户端通常等 30 秒；留 5 秒给 HTTP 回包，别让两条下载路径串行撞线。 */
+    private static final long IMAGE_FETCH_TIMEOUT_MS = 25_000;
+    private static final ExecutorService IMAGE_FETCHES = Executors.newFixedThreadPool(8, runnable -> {
+        Thread thread = new Thread(runnable, "satori-image-fetch");
+        thread.setDaemon(true);
+        return thread;
+    });
+
     private final QQClient qq;
     private final MsgStore store;
     private final Identity identity;
@@ -63,10 +81,20 @@ final class Resources {
             throw ApiError.badRequest("resource type is " + resource.type + ", expected " + expectedType);
         }
 
-        // Prefer an existing local file, then QQ's authenticated kernel downloader. Old qpic URLs
-        // frequently expire or stall, so direct HTTP is deliberately the final fallback.
+        // Prefer an existing local file. A received image has two independent sources: the fresh
+        // qpic URL and QQ's authenticated kernel downloader. Fetch both concurrently: putting the
+        // kernel's 30-second wait first used to consume the caller's whole timeout before the URL
+        // fallback even started. Other media keep the original sequential policy.
         File local = Media.resolve(resource.path, "");
-        if (local == null && resource.msgId != 0 && qq.isOnline()) {
+        boolean hasUrl = resource.url != null && !resource.url.isEmpty();
+        if (local == null && "image".equals(resource.type)) {
+            local = fetchImage(resource);
+            if (local != null) {
+                resource.path = local.getAbsolutePath();
+                resource.size = local.length();
+            }
+        }
+        if (local == null && !"image".equals(resource.type) && resource.msgId != 0 && qq.isOnline()) {
             String downloaded = qq.downloadRichMedia(resource.chatType, resource.peerUid, resource.msgId,
                     resource.elementId, resource.fileModelId);
             if (!downloaded.isEmpty()) {
@@ -83,8 +111,7 @@ final class Resources {
                 if (local != null) resource.size = local.length();
             }
         }
-        boolean hasUrl = resource.url != null && !resource.url.isEmpty();
-        if (local == null && hasUrl) local = Media.resolve("", resource.url);
+        if (local == null && hasUrl && !"image".equals(resource.type)) local = Media.resolve("", resource.url);
         if (local == null && !hasUrl) {
             String why = !registered ? "unregistered" : resource.msgId == 0 ? "no download context" : "download failed";
             throw ApiError.notFound("resource unavailable (" + why + ")");
@@ -110,5 +137,58 @@ final class Resources {
         out.put("file", local != null ? local.getAbsolutePath() : resource.url);
         if (hasUrl) out.put("url", resource.url);
         return out;
+    }
+
+    /**
+     * Race the public image URL against QQ's message-scoped downloader. The first non-empty file
+     * wins; if one source fails, the other still has the rest of the shared 25-second budget.
+     * Cancelling the loser also interrupts a kernel latch wait. A native download already started
+     * by QQ may finish in the background, which is harmless and can populate QQ's own cache.
+     */
+    private File fetchImage(MsgStore.Resource resource) {
+        String url = resource.url == null ? "" : resource.url;
+        boolean kernel = resource.msgId != 0 && qq.isOnline();
+        if (url.isEmpty() && !kernel) return null;
+
+        CompletableFuture<File> first = new CompletableFuture<>();
+        AtomicInteger remaining = new AtomicInteger((url.isEmpty() ? 0 : 1) + (kernel ? 1 : 0));
+        List<Future<?>> tasks = new ArrayList<>(2);
+        if (!url.isEmpty()) {
+            tasks.add(IMAGE_FETCHES.submit(() -> {
+                try {
+                    File file = Media.resolve("", url);
+                    if (usable(file)) first.complete(file);
+                } finally {
+                    if (remaining.decrementAndGet() == 0) first.complete(null);
+                }
+            }));
+        }
+        if (kernel) {
+            tasks.add(IMAGE_FETCHES.submit(() -> {
+                try {
+                    String path = qq.downloadRichMedia(resource.chatType, resource.peerUid, resource.msgId,
+                            resource.elementId, resource.fileModelId);
+                    File file = path.isEmpty() ? null : new File(path);
+                    if (usable(file)) first.complete(file);
+                } finally {
+                    if (remaining.decrementAndGet() == 0) first.complete(null);
+                }
+            }));
+        }
+        try {
+            File file = first.get(IMAGE_FETCH_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return usable(file) ? file : null;
+        } catch (TimeoutException | ExecutionException e) {
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } finally {
+            for (Future<?> task : tasks) task.cancel(true);
+        }
+    }
+
+    private static boolean usable(File file) {
+        return file != null && file.isFile() && file.length() > 0;
     }
 }

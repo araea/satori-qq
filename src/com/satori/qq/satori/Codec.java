@@ -669,8 +669,11 @@ public final class Codec {
         boolean group = ob.has("group_id") && ob.optLong("group_id") != 0;
         long peer = group ? ob.optLong("group_id")
                 : ob.optLong("peer_id", ob.optLong("user_id", 0));
-        ev.put("channel", channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, ""));
-        if (group) ev.put("guild", guild(peer, ""));
+        // 群名实现端其实知道（Events 发出前已经补进 ob），别再丢掉：客户端拿不到就要多问一次
+        // guild.get，入群欢迎这类「人一到就说一句」的场景全耗在那次往返上。
+        String gname = group ? ob.optString("group_name", "") : "";
+        ev.put("channel", channel(group ? QQClient.CT_GROUP : QQClient.CT_C2C, peer, gname));
+        if (group) ev.put("guild", guild(peer, gname));
         if ("group_recall".equals(nt) || "friend_recall".equals(nt)) {
             ev.put("type", "message-deleted");
             String mid = publicMessageId(ob);
@@ -690,24 +693,27 @@ public final class Codec {
             return ev;
         }
         if ("group_increase".equals(nt)) {
+            String name = ob.optString("member_name", "");
             ev.put("type", "guild-member-added");
-            ev.put("user", user(ob.optLong("user_id"), "", ""));
+            ev.put("user", user(ob.optLong("user_id"), name, name));
             putUser(ev, "operator", ob.optLong("operator_id"));
-            ev.put("member", new JSONObject().put("user", ev.optJSONObject("user")));
+            ev.put("member", memberOf(ev.optJSONObject("user"), name));
             return ev;
         }
         if ("group_decrease".equals(nt)) {
+            String name = ob.optString("member_name", "");
             ev.put("type", "guild-member-removed");
-            ev.put("user", user(ob.optLong("user_id"), "", ""));
+            ev.put("user", user(ob.optLong("user_id"), name, name));
             putUser(ev, "operator", ob.optLong("operator_id"));
-            ev.put("member", new JSONObject().put("user", ev.optJSONObject("user")));
+            ev.put("member", memberOf(ev.optJSONObject("user"), name));
             return ev;
         }
         if ("group_ban".equals(nt)) {
+            String name = ob.optString("member_name", "");
             ev.put("type", "guild-member-updated");
-            ev.put("user", user(ob.optLong("user_id"), "", ""));
+            ev.put("user", user(ob.optLong("user_id"), name, name));
             putUser(ev, "operator", ob.optLong("operator_id"));
-            ev.put("member", new JSONObject().put("user", ev.optJSONObject("user")));
+            ev.put("member", memberOf(ev.optJSONObject("user"), name));
             ev.put("_type", "satori-qq/mute");
             // 读不出时长时不带 duration（而不是写 0——0 在这里是「解除」）。
             long seconds = ob.optLong("duration");
@@ -717,6 +723,13 @@ public final class Codec {
             return ev;
         }
         return null;
+    }
+
+    /** 成员资源：{@code member.nick} 是群名片，和消息事件里的形状一致。 */
+    private static JSONObject memberOf(JSONObject user, String nick) throws Exception {
+        JSONObject member = new JSONObject().put("user", user);
+        if (nick != null && !nick.isEmpty()) member.put("name", nick).put("nick", nick);
+        return member;
     }
 
     private static JSONObject requestEvent(JSONObject ob, JSONObject ev) throws Exception {

@@ -2172,6 +2172,17 @@ public final class QQClient {
 
     @SuppressWarnings("unchecked")
     public Map<String, Object> getAllMembers(long groupCode, boolean force) {
+        return getAllMembers(groupCode, force, 15_000L);
+    }
+
+    /**
+     * 同 {@link #getAllMembers(long, boolean)}，但最多等 {@code waitMs} 毫秒。
+     *
+     * <p>单查一个人不该按「整份名单重拉」的耐心等：入群欢迎这类场景只想要一个昵称，
+     * 等 15 秒等于把欢迎拖到没人愿意看的时候。超时返回 null，调用方照「问不到」处理。</p>
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> getAllMembers(long groupCode, boolean force, long waitMs) {
         Object gs = getGroupService();
         if (gs == null) return null;
         try {
@@ -2185,7 +2196,7 @@ public final class QQClient {
                 return null;
             });
             ref.call(gs, "getAllMemberList", groupCode, force, cb);
-            latch.await(15, TimeUnit.SECONDS);
+            latch.await(Math.max(1, waitMs), TimeUnit.MILLISECONDS);
             Map<String, Object> result = (Map<String, Object>) holder[0];
             if (result != null) groupMemberCache.put(groupCode, result);
             return result;
@@ -2195,19 +2206,28 @@ public final class QQClient {
         }
     }
 
+    /**
+     * 成员表缓存里的这个人：只读内存，不等内核、不发请求；没有就是 null。
+     *
+     * <p>按 uid 找优先（内核就是这么索引的），没有 uid 或命中不了再按 uin 扫一遍。</p>
+     */
+    public Object cachedGroupMember(long groupCode, String uid, long uin) {
+        Map<String, Object> members = groupMemberCache.get(groupCode);
+        if (members == null) return null;
+        if (uid != null && !uid.isEmpty()) {
+            Object hit = members.get(uid);
+            if (hit != null) return hit;
+        }
+        if (uin == 0) return null;
+        for (Object candidate : members.values()) {
+            if (candidate != null && ref.getLong(candidate, "uin") == uin) return candidate;
+        }
+        return null;
+    }
+
     /** Resolve a message sender's role from an already fetched QQ member map, without blocking. */
     public String cachedGroupMemberRole(long groupCode, String uid, long uin) {
-        Map<String, Object> members = groupMemberCache.get(groupCode);
-        if (members == null) return "";
-        Object info = uid == null || uid.isEmpty() ? null : members.get(uid);
-        if (info == null && uin != 0) {
-            for (Object candidate : members.values()) {
-                if (candidate != null && ref.getLong(candidate, "uin") == uin) {
-                    info = candidate;
-                    break;
-                }
-            }
-        }
+        Object info = cachedGroupMember(groupCode, uid, uin);
         if (info == null) return "";
         Object role = ref.getOrNull(info, "role");
         String name = "";

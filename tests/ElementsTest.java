@@ -220,10 +220,23 @@ public final class ElementsTest {
 
         JSONObject join = new JSONObject()
                 .put("post_type", "notice").put("notice_type", "group_increase")
-                .put("group_id", 1).put("user_id", 2).put("operator_id", 3);
+                .put("group_id", 1).put("user_id", 2).put("operator_id", 3)
+                .put("group_name", "BOT测试群").put("member_name", "新人甲");
         JSONObject joined = Codec.promote(Codec.toSatoriEvent(join, login, 6, ""));
         eq("2", joined.getJSONObject("user").getString("id"), "join user at top");
         check(!joined.getJSONObject("member").has("user"), "join member has no user");
+        // 入群事件本来就带着群名与（能查到时）新人的名字：客户端不必为了 `{group}` `{name}`
+        // 再各走一次 guild.get / guild.member.get，欢迎就能立刻发。
+        eq("BOT测试群", joined.getJSONObject("guild").getString("name"), "join guild name");
+        eq("BOT测试群", joined.getJSONObject("channel").getString("name"), "join channel name");
+        eq("新人甲", joined.getJSONObject("user").getString("nick"), "join user nick");
+        eq("新人甲", joined.getJSONObject("member").getString("nick"), "join member nick");
+        // 名字查不到时形状不变，只是没有名字：客户端退回号码，不能整条事件作废。
+        JSONObject anon = Codec.toSatoriEvent(new JSONObject()
+                .put("post_type", "notice").put("notice_type", "group_increase")
+                .put("group_id", 1).put("user_id", 2), login, 7, "");
+        eq("2", anon.getJSONObject("user").getString("id"), "anonymous join user");
+        check(!anon.getJSONObject("user").has("nick"), "anonymous join has no nick");
         check(Codec.promote(null) == null, "promote(null)");
     }
 

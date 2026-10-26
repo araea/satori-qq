@@ -28,13 +28,59 @@ final class Directory {
     /** 事件与历史条目里补上群名（内核没带时用缓存里见过的）。 */
     void attachGroupName(JSONObject ob) {
         if (ob == null || !ob.has("group_id") || !ob.optString("group_name", "").isEmpty()) return;
-        String name = groupNames.get(ob.optLong("group_id"));
+        long groupId = ob.optLong("group_id");
+        String name = groupNames.get(groupId);
+        if (name == null || name.isEmpty()) {
+            // 部署以来见过的群名：内核会话列表（内存）优先，再退到落盘的那份。两条都不阻塞。
+            name = qq.groupName(groupId);
+            if (name == null || name.isEmpty()) name = qq.knownGroupName(groupId);
+            if (name != null && !name.isEmpty()) groupNames.put(groupId, name);
+        }
         if (name == null || name.isEmpty()) return;
         try {
             ob.put("group_name", name);
         } catch (Exception ignore) {
             // 补不上就不补
         }
+    }
+
+    /**
+     * 成员变动事件里补上当事人的名字：内核的灰条只给 uid / uin，名字得自己找。
+     *
+     * <p>只读已经取到的成员表，绝不等内核——入群欢迎这类「当事人一到就要说一句」的场景
+     * 不该为了一个昵称多等几秒；表里没有时退一步问资料服务（本地调用），仍没有就留空，
+     * 同时让成员表在后台补一份，下一次（含同一个人的其他事件）就有名字了。</p>
+     */
+    void attachMemberName(JSONObject ob) {
+        if (ob == null || !ob.has("group_id")) return;
+        String type = ob.optString("notice_type", "");
+        if (!("group_increase".equals(type) || "group_decrease".equals(type) || "group_ban".equals(type))) return;
+        long groupId = ob.optLong("group_id");
+        long uin = ob.optLong("user_id");
+        if (groupId == 0 || uin == 0) return;
+        Object member = qq.cachedGroupMember(groupId, null, uin);
+        String name = member == null ? "" : firstNonEmpty(
+                Ref.asStr(qq.ref.getOrNull(member, "cardName")),
+                Ref.asStr(qq.ref.getOrNull(member, "nick")));
+        if (name.isEmpty()) {
+            // 资料服务是本地缓存/库读，不是网络请求；新入群的人常常只在这里查得到昵称。
+            Object core = qq.getCoreInfo(uin);
+            if (core != null) name = Ref.asStr(qq.ref.getOrNull(core, "nick"));
+        }
+        if (name.isEmpty()) {
+            qq.warmGroupMembersAsync(groupId);
+            return;
+        }
+        try {
+            ob.put("member_name", name);
+        } catch (Exception ignore) {
+            // 补不上就不补
+        }
+    }
+
+    private static String firstNonEmpty(String a, String b) {
+        if (a != null && !a.isEmpty()) return a;
+        return b == null ? "" : b;
     }
 
     /** 点名一个群的请求参数：{@code guild_id}，退而求其次 {@code channel_id}。 */
@@ -140,9 +186,19 @@ final class Directory {
                 .put("login_days", 0);
     }
 
+    /**
+     * 单人查询最多等内核这么久。成员表缓存里没有这个人才向服务器重拉，而且不按整份名单的
+     * 15 秒耐心等：`guild.member.get` 常被放在「要先问出名字才能说话」的路上。
+     */
+    private static final long MEMBER_WAIT_MS = 4000;
+
     JSONObject groupMemberInfo(long groupId, long userId) throws Exception {
         if (groupId == 0 || userId == 0) throw ApiError.badRequest("missing group_id/user_id");
-        Map<String, Object> members = qq.getAllMembers(groupId, true);
+        // 先看已经取到的成员表：单查一个人不该把整份名单向服务器重拉一遍（内核那条路
+        // 最长会挂 15 秒）。新入群的人常常还不在表里，那时才刷新，等得也有限。
+        Object known = qq.cachedGroupMember(groupId, null, userId);
+        if (known != null) return memberJson(groupId, known);
+        Map<String, Object> members = qq.getAllMembers(groupId, true, MEMBER_WAIT_MS);
         if (members == null) throw ApiError.failed("cannot fetch group members");
         for (Object member : members.values()) {
             if (Ref.asLong(qq.ref.get(member, "uin")) == userId) return memberJson(groupId, member);

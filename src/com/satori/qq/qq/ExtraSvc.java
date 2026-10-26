@@ -17,6 +17,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -440,23 +441,23 @@ public final class ExtraSvc {
     }
 
     private static boolean isOff(String value) {
-        String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        String v = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return v.equals("off") || v.equals("none") || v.equals("clear") || v.equals("摘")
                 || v.equals("取消") || v.equals("下掉") || v.equals("关");
     }
 
     private static boolean isOwnerRole(String value) {
-        String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        String v = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return v.equals("owner") || v.equals("群主") || v.equals("主人");
     }
 
     private static boolean isAdminRole(String value) {
-        String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        String v = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return v.equals("admin") || v.equals("管理员") || v.equals("管理");
     }
 
     private static boolean isLevelRole(String value) {
-        String v = value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
+        String v = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return v.equals("level") || v.equals("等级") || v.equals("群等级");
     }
 
@@ -494,7 +495,7 @@ public final class ExtraSvc {
      */
     private static int resolveTitleId(JSONArray titles, int explicit, String role, String name) {
         if (explicit > 1) return explicit;
-        String r = role == null ? "" : role.trim().toLowerCase(java.util.Locale.ROOT);
+        String r = role == null ? "" : role.trim().toLowerCase(Locale.ROOT);
         String wanted = name == null ? "" : name.trim();
         if (isOff(r) || isOff(wanted)) return -2;
         if (isOwnerRole(r) || "群主".equals(wanted)) {
@@ -611,7 +612,7 @@ public final class ExtraSvc {
         String wantedName = p.optString("name", "").trim();
         String customText = p.optString("title", "").trim();
         int explicit = p.has("title_id") ? p.optInt("title_id", -1) : -1;
-        String strategy = p.optString("strategy", "auto").trim().toLowerCase(java.util.Locale.ROOT);
+        String strategy = p.optString("strategy", "auto").trim().toLowerCase(Locale.ROOT);
         boolean verify = p.optBoolean("verify", true);
         long settle = Math.max(0, Math.min(2000, p.optLong("settle_ms", 350)));
         if (explicit == 0 || explicit == 1) {
@@ -741,7 +742,7 @@ public final class ExtraSvc {
     }
 
     private static String failureReason(String detail) {
-        String text = detail == null ? "" : detail.toLowerCase(java.util.Locale.ROOT);
+        String text = detail == null ? "" : detail.toLowerCase(Locale.ROOT);
         if (text.contains("timeout")) return "timeout";
         if (text.contains("1013") || text.contains("20000") || text.contains("permission")
                 || text.contains("denied") || text.contains("not available")) return "owner_required";

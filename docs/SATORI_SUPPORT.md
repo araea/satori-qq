@@ -34,7 +34,7 @@ QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调�
 | `channel.mute` | 支持 | 全员禁言。`duration` 为毫秒，`0` 解除；也可只传 `enable`，`false` 解除、`true` 表示停到手动解除（按 30 天上限计时） |
 | `user.channel.create` | 支持 | 创建 `private:{uin}` 私聊频道 |
 | `guild.get` / `guild.list` | 支持 | 查询群 |
-| `guild.member.get` / `guild.member.list` | 支持 | 查询成员及 owner、admin、member 角色；扩展字段 `last_sent_at`（QQ 服务器记的最后发言，毫秒，0 = 进群后没说过话）与 `level`（群等级）。`guild.member.list` 带 `refresh: true` 先向服务器重拉名单 |
+| `guild.member.get` / `guild.member.list` | 支持 | 查询成员及 owner、admin、member 角色；扩展字段 `last_sent_at`（QQ 服务器记的最后发言，毫秒，0 = 进群后没说过话）与 `level`（群等级）。`guild.member.get` 先读本地成员表，表里没有才向服务器重拉一遍（最多等 4 秒）；`guild.member.list` 带 `refresh: true` 先向服务器重拉名单 |
 | `guild.member.kick` | 支持 | `permanent` 对应拒绝再次加群 |
 | `guild.member.mute` | 支持 | `duration` 单位为毫秒 |
 | `guild.member.role.set` / `unset` | 支持 | 仅支持 `role_id=admin` |
@@ -169,7 +169,7 @@ QQ 里「头衔」有三层，能做什么由账号在本群的角色决定：
 | `message-created` / `message-deleted` | 收到、发出或撤回消息 |
 | `guild-added` / `guild-updated` / `guild-removed` | 加群、群资料变化或退群 |
 | `channel-added` / `channel-updated` / `channel-removed` | 对应群的单频道变化 |
-| `guild-member-added` / `guild-member-updated` / `guild-member-removed` | 成员加入、禁言或离开。禁言走 `guild-member-updated` + `_type=satori-qq/mute`，`_data.duration` 为毫秒、`0` 是解除；灰条里读不出时长时不带 `duration`，改带 `_data.duration_unknown=true`。`user` 是被禁言的成员，`operator` 是动手的管理员（灰条里只有一个人时没有 `operator`） |
+| `guild-member-added` / `guild-member-updated` / `guild-member-removed` | 成员加入、禁言或离开。禁言走 `guild-member-updated` + `_type=satori-qq/mute`，`_data.duration` 为毫秒、`0` 是解除；灰条里读不出时长时不带 `duration`，改带 `_data.duration_unknown=true`。`user` 是被禁言的成员，`operator` 是动手的管理员（灰条里只有一个人时没有 `operator`）。这三类事件还带着群名（`guild.name`、`channel.name`）与当事人的名字（`user.nick`、`member.nick`，从本地成员表或资料服务里读，读不到就不带）——客户端渲染「谁进了哪个群」不必再各问一次 `guild.get` / `guild.member.get` |
 | `reaction-added` / `reaction-removed` | 消息表态计数变化；QQ 回调不提供操作者 |
 | `friend-request` / `guild-member-request` / `guild-request` | 好友申请、加群申请或群邀请 |
 | `internal`，`_type=satori-qq/poke` | 戳一戳 |

@@ -184,6 +184,7 @@ final class Events {
         synchronized (lock) {
             try {
                 directory.attachGroupName(ob);
+                directory.attachMemberName(ob);
                 JSONObject body = Codec.promote(Codec.toSatoriEvent(ob, identity.loginSlim(), 0, identity.assetBase()));
                 if (body != null) emitSatori(body);
             } catch (Throwable t) {

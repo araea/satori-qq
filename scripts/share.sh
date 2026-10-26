@@ -5,7 +5,8 @@
 #       scripts/share.sh --quiet  # 只在失败时输出（release.sh 用）
 #
 # 目标目录依次尝试：$SATORI_QQ_SHARE_DIR、/sdcard/Download、~/storage/downloads。
-# 复制是「尽力而为」：不在 Android / 没给存储权限时只提示，不影响构建或发布。
+# 当前包就位后只保留这一版，清掉同目录的旧版本模块包。
+# 复制与清理都是「尽力而为」：不在 Android / 没给存储权限时只提示，不影响构建或发布。
 set -u
 R=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 ZIP=$R/build/SatoriQQ-module.zip
@@ -25,8 +26,24 @@ done
 [ -n "$DEST_DIR" ] || { echo "share: 找不到可写的共享下载目录，跳过（不影响发布）" >&2; exit 0; }
 
 DEST=$DEST_DIR/SatoriQQ-$NAME-module.zip
+
+cleanup_old() {
+  local old
+  # 只碰知弦按版本命名的模块包；当前版本与其他文件都保留。
+  for old in "$DEST_DIR"/SatoriQQ-*-module.zip; do
+    [ -f "$old" ] || continue
+    [ "$old" = "$DEST" ] && continue
+    if rm -f -- "$old"; then
+      say "已清理旧模块包：$old"
+    else
+      echo "share: 清理旧模块包失败：$old（不影响构建或发布）" >&2
+    fi
+  done
+}
+
 if [ -f "$DEST" ] && cmp -s "$ZIP" "$DEST"; then
   say "下载目录里已是同一份：$DEST"
+  cleanup_old
   exit 0
 fi
 # 先写同目录临时文件再 rename：分享到一半时别人不会拿到半截 zip。
@@ -34,6 +51,8 @@ TMP=$DEST_DIR/.SatoriQQ-$NAME-module.zip.part.$$
 trap 'rm -f "$TMP"' EXIT
 if cp -f "$ZIP" "$TMP" && mv -f "$TMP" "$DEST"; then
   say "已复制模块包：$DEST（$(stat -c %s "$DEST" 2>/dev/null || echo '?') 字节）"
+  # 新包确实就位后才删旧包，复制失败时至少还留着之前的副本。
+  cleanup_old
 else
   echo "share: 复制到 $DEST 失败，跳过（不影响发布）" >&2
 fi

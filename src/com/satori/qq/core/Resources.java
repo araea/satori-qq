@@ -86,7 +86,6 @@ final class Resources {
         // kernel's 30-second wait first used to consume the caller's whole timeout before the URL
         // fallback even started. Other media keep the original sequential policy.
         File local = Media.resolve(resource.path, "");
-        boolean hasUrl = resource.url != null && !resource.url.isEmpty();
         if (local == null && "image".equals(resource.type)) {
             local = fetchImage(resource);
             if (local != null) {
@@ -111,6 +110,7 @@ final class Resources {
                 if (local != null) resource.size = local.length();
             }
         }
+        boolean hasUrl = resource.url != null && !resource.url.isEmpty();
         if (local == null && hasUrl && !"image".equals(resource.type)) local = Media.resolve("", resource.url);
         if (local == null && !hasUrl) {
             String why = !registered ? "unregistered" : resource.msgId == 0 ? "no download context" : "download failed";

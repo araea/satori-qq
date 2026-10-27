@@ -73,6 +73,41 @@ public final class Notices {
         return n;
     }
 
+    private static final Pattern LINK_UIN = Pattern.compile("(?:^|[?&])uin=(\\d+)(?:&|$)");
+
+    /**
+     * JSON 灰条的入群通知。QQ 9.3.80 用 busiId 1022（RELATION_GROUP_MEMBER_ADD），
+     * 不再是旧的 XML / groupElement；1015 / 1016 是同一语义的改名、欢迎变体。
+     *
+     * <p>可点击的成员片段带 uid（通常是 type=qq），同时带显示昵称。这里只产出待 Convert
+     * 解析的 member_uid，不在纯 JSON 层碰内核。认不出当事人时返回 null，让较慢的
+     * onMemberListChange 兜底，而不是发一条 user_id=0 的假事件。</p>
+     */
+    public static JSONObject memberIncreaseFromJson(String busi, String json, long self, long time,
+                                                     long groupId) throws Exception {
+        if (!("1022".equals(busi) || "1015".equals(busi) || "1016".equals(busi))) return null;
+        if (json == null || json.isEmpty()) return null;
+        JSONArray items = new JSONObject(json).optJSONArray("items");
+        if (items == null) return null;
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null) continue;
+            String person = item.optString("uid", "").trim();
+            if (person.isEmpty()) person = item.optString("uin", "").trim();
+            if (person.isEmpty()) {
+                Matcher link = LINK_UIN.matcher(item.optString("jp", ""));
+                if (link.find()) person = link.group(1);
+            }
+            if (person.isEmpty()) continue;
+            JSONObject n = groupIncrease(self, time, groupId, numericId(person), 0, "approve");
+            n.put("member_uid", person);
+            String name = item.optString("txt", item.optString("nm", "")).trim();
+            if (!name.isEmpty()) n.put("member_name", name);
+            return n;
+        }
+        return null;
+    }
+
     /** Android QQNT 9.3.50 poke gray tip is XML (subType 12), not JSON busiId 1061. */
     public static JSONObject pokeFromXml(String xml, long self, long time,
                                          boolean group, long peer) throws Exception {

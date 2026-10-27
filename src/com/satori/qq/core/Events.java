@@ -48,6 +48,8 @@ final class Events {
     private final String session = UUID.randomUUID().toString();
     private final ArrayDeque<JSONObject> recent = new ArrayDeque<>();
     private final Set<Long> seenRecalls = ConcurrentHashMap.newKeySet();
+    /** 当前已知的成员状态；即时灰条与较慢的成员列表回调共用，避免重复欢迎。 */
+    private final Set<String> seenMemberChanges = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> recentGuildChanges = new ConcurrentHashMap<>();
     private volatile Supplier<Collection<JSONObject>> pending = List::of;
 
@@ -186,7 +188,8 @@ final class Events {
                 directory.attachGroupName(ob);
                 directory.attachMemberName(ob);
                 JSONObject body = Codec.promote(Codec.toSatoriEvent(ob, identity.loginSlim(), 0, identity.assetBase()));
-                if (body != null) emitSatori(body);
+                // 转换真的成功后才登记去重，避免一次临时异常把后续兜底也吞掉。
+                if (body != null && firstMemberChange(ob)) emitSatori(body);
             } catch (Throwable t) {
                 L.e("emit event", t);
             }
@@ -222,6 +225,26 @@ final class Events {
                 L.e("pending request delivery", t);
             }
         }
+    }
+
+    /**
+     * 成员增减只按群、成员、方向去重，与事件来自哪条内核回调无关。
+     * 相反方向会解除旧状态，所以退群后再入群仍能收到新事件。
+     */
+    boolean firstMemberChange(JSONObject ob) {
+        if (ob == null) return true;
+        String type = ob.optString("notice_type", "");
+        boolean joined = "group_increase".equals(type);
+        if (!joined && !"group_decrease".equals(type)) return true;
+        long group = ob.optLong("group_id");
+        long user = ob.optLong("user_id");
+        if (group == 0 || user == 0) return true;
+        String prefix = group + ":" + user + ":";
+        String key = prefix + (joined ? "add" : "rm");
+        boolean first = seenMemberChanges.add(key);
+        if (first) seenMemberChanges.remove(prefix + (joined ? "rm" : "add"));
+        if (seenMemberChanges.size() > 8000) seenMemberChanges.clear();
+        return first;
     }
 
     /** 一次撤回的通知；同一条消息的撤回从多路回调进来，只推第一次。 */
@@ -295,6 +318,7 @@ final class Events {
                 recent.clear();
             }
             seenRecalls.clear();
+            seenMemberChanges.clear();
             recentGuildChanges.clear();
             clearOthers.run();
             loginUpdated();

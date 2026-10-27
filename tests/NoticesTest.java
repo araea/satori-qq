@@ -125,6 +125,26 @@ public final class NoticesTest {
                 1, 1, 280183116L);
         check(joinXml != null, "xml join parsed");
         eq("group_increase", joinXml.getString("notice_type"), "xml join type");
+
+        String joinJson = "{\"align\":\"center\",\"items\":["
+                + "{\"type\":\"qq\",\"uid\":\"u_new\",\"txt\":\"新成员\"},"
+                + "{\"type\":\"nor\",\"txt\":\" 加入了群聊\"}]}";
+        JSONObject joined = Notices.memberIncreaseFromJson("1022", joinJson, 1, 1, 280183116L);
+        check(joined != null, "QQ 9.3.80 JSON join parsed");
+        eq("group_increase", joined.getString("notice_type"), "JSON join type");
+        eq("approve", joined.getString("sub_type"), "JSON join approval");
+        eq("u_new", joined.getString("member_uid"), "JSON join member uid");
+        eq("新成员", joined.getString("member_name"), "JSON join nickname");
+        check(Notices.memberIncreaseFromJson("1061", joinJson, 1, 1, 280183116L) == null,
+                "join parser does not steal poke");
+        check(Notices.memberIncreaseFromJson("1022", "{\"items\":[]}", 1, 1, 280183116L) == null,
+                "memberless JSON has no fake user 0 event");
+        JSONObject linked = Notices.memberIncreaseFromJson("1016",
+                "{\"items\":[{\"type\":\"url\",\"txt\":\"新人\","
+                        + "\"jp\":\"mqqapi://card/show?uin=123456&source=external\"}]}",
+                1, 1, 280183116L);
+        check(linked != null && linked.getLong("user_id") == 123456, "link uin fallback");
+
         JSONObject ban = Notices.groupBan(1, 1, 280183116L, 2, 3, 600);
         eq("ban", ban.getString("sub_type"), "ban");
         eq(600, ban.getLong("duration"), "duration");

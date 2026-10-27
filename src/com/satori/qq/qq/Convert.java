@@ -829,7 +829,7 @@ public final class Convert {
 
     /**
      * Gray-tip MsgRecord → notice, or null if this is a normal chat message.
-     * elementType 8 = grayTip; sub 1 revoke / 4 group / 17 json (poke busiId 1061).
+     * elementType 8 = grayTip; sub 1 revoke / 4 group / 17 json (poke 1061, member join 1022).
      */
     public JSONObject noticeFromRecord(Object rec, long selfUin, int chatType, long peerUin,
                                        String peerUid, long senderUin, String senderUid,
@@ -919,6 +919,14 @@ public final class Convert {
             busi = Ref.asStr(ref.get(js, "busiId"));
             if (busi.isEmpty()) busi = String.valueOf(Ref.asLong(ref.get(js, "busiId")));
             jsonStr = Ref.asStr(ref.get(js, "jsonStr"));
+            if (group) {
+                JSONObject joined = Notices.memberIncreaseFromJson(busi, jsonStr, selfUin, time, peerUin);
+                if (joined != null) {
+                    applyMemberPeople(joined, selfUin);
+                    // uid 暂时换不成号码时宁可等成员列表兜底，不能欢迎一个 id=0 的人。
+                    return joined.optLong("user_id") == 0 ? null : joined;
+                }
+            }
             JSONObject poke = Notices.pokeFromJson(jsonStr, selfUin, time, group, peerUin);
             if (poke != null) {
                 fillPokePeople(poke, group);
@@ -948,7 +956,7 @@ public final class Convert {
                 }
                 JSONObject change = Notices.memberChangeFromXml(xml, selfUin, time, peerUin);
                 if (change != null) {
-                    applyXmlPeople(change, selfUin);
+                    applyMemberPeople(change, selfUin);
                     return change;
                 }
             }
@@ -1022,7 +1030,7 @@ public final class Convert {
         try { return qq.resolveUin(s); } catch (Throwable t) { return 0; }
     }
 
-    private void applyXmlPeople(JSONObject n, long selfUin) throws Exception {
+    private void applyMemberPeople(JSONObject n, long selfUin) throws Exception {
         String memberUid = n.optString("member_uid");
         String adminUid = n.optString("admin_uid");
         long member = resolvePerson(memberUid);

@@ -38,7 +38,6 @@ final class Inbound implements QQClient.Listener {
 
     /** 已成功投递的 msgId，防内核重复推送。 */
     private final Set<Long> emitted = ConcurrentHashMap.newKeySet();
-    private final Set<String> seenMemberChanges = ConcurrentHashMap.newKeySet();
     private final Set<Long> selfSendPolling = ConcurrentHashMap.newKeySet();
     private final Set<String> pendingRecalls = ConcurrentHashMap.newKeySet();
 
@@ -69,7 +68,6 @@ final class Inbound implements QQClient.Listener {
 
     void reset() {
         emitted.clear();
-        seenMemberChanges.clear();
         pendingRecalls.clear();
     }
 
@@ -548,8 +546,6 @@ final class Inbound implements QQClient.Listener {
                 String uid = Ref.asStr(qq.ref.get(member, "uid"));
                 if (uin == 0) continue;
                 if (!uid.isEmpty()) store.learnUid(uin, uid);
-                if (!seenMemberChanges.add(groupId + ":" + uin + ":" + (joined ? "add" : "rm"))) continue;
-                if (seenMemberChanges.size() > 8000) seenMemberChanges.clear();
                 events.emit(joined
                         ? Notices.groupIncrease(self, now, groupId, uin, self)
                         : Notices.groupDecrease(self, now, groupId, uin, self, true));

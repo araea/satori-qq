@@ -9,6 +9,7 @@ import com.satori.qq.packet.Pb;
 import com.satori.qq.satori.Codec;
 import java.io.File;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
@@ -19,6 +20,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,6 +52,8 @@ public final class ExtraSvc {
             "com.tencent.qqnt.kernel.nativeinterface.IDetailInfoByUinCallback";
     // guestA2ToPskey 要的是 IGuestPskeyCallback（onResult(int, String, ArrayList<GuestPskey>)）。
     // 拿 IGetPskeyCallback 去接会让内核按错误的接口回调，段错误直接把 QQ 带走。
+    /** QQ 网页业务取 p_skey 的运行时服务（见 {@link #runtimePskey}）。 */
+    private static final String PSKEY_MANAGER = "com.tencent.mobileqq.pskey.api.IPskeyManager";
     private static final String GUEST_PSKEY_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IGuestPskeyCallback";
 
@@ -1045,18 +1049,13 @@ public final class ExtraSvc {
                 });
 
         // 群精华列表：内核 fetchGroupEssenceList 在本机 9.3.75/9.3.80 上调用即段错误，
-        // 改走精华 H5 页自己的数据接口（QunWeb.essenceList）。
-        reg("group_essence_list", NONE, false, "guild_id, pskey?",
+        // 改走精华 H5 页自己的数据接口（QunWeb.essenceList），按页翻。
+        reg("group_essence_list", NONE, false, "guild_id, page?（从 0 起）, page_limit?（≤50）, pskey?",
                 (s, p) -> {
                     long g = groupOf(p);
                     if (g == 0) throw new IllegalArgumentException("missing guild_id");
-                    String pskey = s.pskey(p, "qun.qq.com");
-                    JSONObject rsp = QunWeb.essenceList(s.qq.selfUin(), pskey, g);
-                    JSONArray items = rsp.optJSONArray("essences");
-                    if (items == null) items = new JSONArray();
-                    return new JSONObject().put("ok", rsp.optBoolean("ok", false)).put("group", g)
-                            .put("count", items.length()).put("essences", items)
-                            .put("raw", rsp);
+                    return QunWeb.essenceList(s.webTicket(p), g, p.optInt("page", p.optInt("page_start", 0)),
+                            p.optInt("page_limit", p.optInt("limit", 20)));
                 });
 
         // getGroupLatestEssenceList(GetGroupLatestEssenceListReq, IGetGroupLatestEssenceListCallback)
@@ -1454,11 +1453,10 @@ public final class ExtraSvc {
                         (svc2, cb) -> s.ref.call(svc2, "getGroupFileInfo", groupOf(p),
                                 p.optString("file_id", ""), cb)));
 
-        // getGroupFileList(groupCode, GroupFileListForm) 的结果从
-        // IKernelMsgListener.onGroupFileInfoUpdate 回来，按 GroupItem.peerId 对上群号；
-        // 翻页循环在 listGroupFiles 里。
+        // 群文件列表：先走 OidbSvcTrpcTcp.0x6D8_1，回不来再走内核 getGroupFileList
+        // （结果从 onGroupFileInfoUpdate 按请求号取回）；翻页循环在 listGroupFiles 里。
         reg("group_file_list", new String[]{"group_files"}, false,
-                "guild_id, folder_id?, start_index?, limit?",
+                "guild_id, folder_id?（根目录 /）, start_index?, limit?（≤200）",
                 (s, p) -> s.listGroupFiles(groupOf(p), p.optString("folder_id", ""),
                         p.optInt("start_index", 0), p.optInt("limit", 50)));
 
@@ -1685,8 +1683,7 @@ public final class ExtraSvc {
 
 
     /**
-     * 群公告这类 web 入口要的 p_skey。调用方给了就用它的；没给就向内核要
-     * （{@code IKernelTipOffService.getPskey(domains, cacheFirst, cb)}，回调第三参是 域名→pskey 的表）。
+     * 网页入口要的 p_skey。调用方给了就用它的；没给就按 {@link #fetchPskeyMap} 的顺序向 QQ 要。
      */
     private String pskey(JSONObject p, String domain) throws Exception {
         String given = p.optString("pskey", "");
@@ -1698,30 +1695,149 @@ public final class ExtraSvc {
         throw new IllegalStateException("pskey for " + domain + " unavailable");
     }
 
+    /** qun.qq.com 网页 CGI 的整套凭据：p_skey 必须有，skey 能拿到就带上（bkn 优先按它算）。 */
+    QunWeb.Ticket webTicket(JSONObject p) throws Exception {
+        String uin = qq.selfUin();
+        String skey = "";
+        try {
+            Object tickets = ticketManager();
+            if (tickets != null) {
+                skey = Ref.asStr(ref.call(tickets, "getSkey", uin));
+                if (skey.isEmpty()) skey = Ref.asStr(ref.call(tickets, "getRealSkey", uin));
+            }
+        } catch (Throwable t) {
+            L.w("skey unavailable: " + t);
+        }
+        return new QunWeb.Ticket(uin, pskey(p, "qun.qq.com"), skey);
+    }
+
+    /** {@code AppRuntime.getManager(TICKET_MANAGER)}：mqq 的票据管理器（接口 mqq.manager.TicketManager）。 */
+    private Object ticketManager() {
+        Object runtime = qq.appRuntime();
+        if (runtime == null) return null;
+        int id = 2;
+        try {
+            id = Ref.asInt(ref.getStatic("mqq.app.AppRuntime", "TICKET_MANAGER"));
+        } catch (Throwable ignore) {
+            // 常量没了就按历来的值 2
+        }
+        return ref.call(runtime, "getManager", id);
+    }
+
     /**
-     * 拉指定域的 p_skey 表。走登录服务的 {@code guestA2ToPskey(uin, domains, cb)}：访客签发，
-     * 同域同票，公告与空间的网页 CGI 都认它。回调类型必须是 IGuestPskeyCallback。
+     * 拉指定域的 p_skey 表，三条路依次试：
      *
-     * <p>不再走会话的 {@code IKernelTipOffService.getPskey}：9.3.75 上该服务为 null，
+     * <ol>
+     *   <li>票据管理器的缓存 {@code TicketManager.getPskey(uin, domain)}：同步、不出网，
+     *       客户端自己开过对应网页就有；</li>
+     *   <li>{@code IPskeyManager.getPskey(String[], cb)}：QQ 自己的网页业务（公告页、精华页、
+     *       小程序）取票走的就是它，缓存没有时向服务器换；</li>
+     *   <li>登录服务的 {@code guestA2ToPskey}：0.41–0.50 唯一的一条，但它是给访客模式用的，
+     *       正常登录的账号回「no valid local guest ticket」，只留作最后的退路。</li>
+     * </ol>
+     *
+     * <p>不走会话的 {@code IKernelTipOffService.getPskey}：9.3.75 上该服务为 null，
      * 9.3.80 上能取到对象但调用即段错误（libkernel.so+0x192f918）。
      */
     private Map<?, ?> fetchPskeyMap(ArrayList<String> domains) throws Exception {
-        // 9.3.80：会话的 TipOff 服务能取到对象，但 getPskey 的 native 入口必段错误
-        // （libkernel.so+0x192f918，CrashDefend 吞掉 signal 11 后 QQ 重启）。所以不走 TipOff。
-        Object login = qq.getLoginService();
-        if (login == null) throw new IllegalStateException("no pskey service (login unavailable)");
-        Result r = call(login, GUEST_PSKEY_CB, "guestA2ToPskey",
-                (svc, cb) -> ref.call(svc, "guestA2ToPskey", parseUin(qq.selfUin()), domains, cb));
-        if (r.ok() && r.payload instanceof Collection<?> keys) {
-            Map<String, String> map = new HashMap<>();
-            for (Object item : keys) {
-                String domain = Ref.asStr(ref.get(item, "domain"));
-                String key = Ref.asStr(ref.get(item, "key"));
-                if (!domain.isEmpty() && !key.isEmpty()) map.put(domain, key);
+        StringBuilder why = new StringBuilder();
+        Map<String, String> map = new HashMap<>();
+        try {
+            Object tickets = ticketManager();
+            if (tickets != null) {
+                for (String domain : domains) {
+                    String key = Ref.asStr(ref.call(tickets, "getPskey", qq.selfUin(), domain));
+                    if (!key.isEmpty() && !"null".equals(key)) map.put(domain, key);
+                }
             }
-            if (!map.isEmpty()) return map;
+            if (map.keySet().containsAll(domains)) return map;
+            why.append("cache=miss; ");
+        } catch (Throwable t) {
+            why.append("cache=").append(t).append("; ");
         }
-        throw new IllegalStateException("pskey unavailable: " + r.describe());
+        try {
+            map.putAll(runtimePskey(domains));
+            if (map.keySet().containsAll(domains)) return map;
+            why.append("runtime=partial; ");
+        } catch (Throwable t) {
+            why.append("runtime=").append(t.getMessage() == null ? t.toString() : t.getMessage()).append("; ");
+        }
+        Object login = qq.getLoginService();
+        if (login != null) {
+            Result r = call(login, GUEST_PSKEY_CB, "guestA2ToPskey",
+                    (svc, cb) -> ref.call(svc, "guestA2ToPskey", parseUin(qq.selfUin()), domains, cb));
+            if (r.ok() && r.payload instanceof Collection<?> keys) {
+                for (Object item : keys) {
+                    String domain = Ref.asStr(ref.get(item, "domain"));
+                    String key = Ref.asStr(ref.get(item, "key"));
+                    if (!domain.isEmpty() && !key.isEmpty()) map.put(domain, key);
+                }
+            }
+            if (map.keySet().containsAll(domains)) return map;
+            why.append("guest=").append(r.describe());
+        }
+        if (!map.isEmpty()) return map;
+        throw new IllegalStateException("pskey unavailable: " + why);
+    }
+
+    /**
+     * {@code IPskeyManager}（运行时服务）的异步取票。回调接口是混淆名（9.3.80 上是 {@code oe2.a}），
+     * 所以不写死类名：从 {@code getPskey(String[], X)} 的第二个参数类型取，按参数形状认
+     * 成功（一张 Map）与失败（一句 String）。
+     */
+    private Map<String, String> runtimePskey(ArrayList<String> domains) throws Exception {
+        Object runtime = qq.appRuntime();
+        if (runtime == null) throw new IllegalStateException("AppRuntime not ready");
+        Class<?> api = ref.cls(PSKEY_MANAGER);
+        Object manager = null;
+        for (String process : new String[]{"all", ""}) {
+            try {
+                manager = ref.call(runtime, "getRuntimeService", api, process);
+            } catch (Throwable ignore) {
+                // 换一个进程名再试
+            }
+            if (manager != null) break;
+        }
+        if (manager == null) throw new IllegalStateException("IPskeyManager unavailable");
+        Method get = null;
+        for (Method m : api.getMethods()) {
+            if ("getPskey".equals(m.getName()) && m.getParameterCount() == 2
+                    && m.getParameterTypes()[0] == String[].class) {
+                get = m;
+            }
+        }
+        if (get == null) throw new IllegalStateException("IPskeyManager.getPskey(String[], cb) missing");
+        Map<String, String> out = new ConcurrentHashMap<>();
+        String[] failure = {""};
+        CountDownLatch done = new CountDownLatch(1);
+        Object cb = Proxy.newProxyInstance(ref.cl, new Class[]{get.getParameterTypes()[1]},
+                (proxy, method, args) -> {
+                    if (method.getDeclaringClass() == Object.class) {
+                        return switch (method.getName()) {
+                            case "hashCode" -> System.identityHashCode(proxy);
+                            case "equals" -> args != null && args.length == 1 && proxy == args[0];
+                            default -> "PskeyCallback";
+                        };
+                    }
+                    if (args != null && args.length == 1 && args[0] instanceof Map<?, ?> keys) {
+                        for (Map.Entry<?, ?> e : keys.entrySet()) {
+                            if (e.getKey() != null && e.getValue() != null) {
+                                out.put(String.valueOf(e.getKey()), String.valueOf(e.getValue()));
+                            }
+                        }
+                        done.countDown();
+                    } else if (args != null && args.length == 1
+                            && (args[0] == null || args[0] instanceof String)) {
+                        failure[0] = String.valueOf(args[0]);
+                        done.countDown();
+                    }
+                    return null;
+                });
+        get.invoke(manager, domains.toArray(new String[0]), cb);
+        if (!done.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw new IllegalStateException("getPskey timeout");
+        out.values().removeIf(String::isEmpty);
+        if (out.isEmpty()) throw new IllegalStateException("getPskey failed: " + failure[0]);
+        return out;
     }
 
     /** 与 JavaScript 的 {@code encodeURI} 相同：保留 URI 结构字符，其余按 UTF-8 百分号编码。 */
@@ -1743,63 +1859,155 @@ public final class ExtraSvc {
 
     // ------------------------------------------------------------ 群文件列表
 
+    private static final String FILE_SORT_TYPE = "com.tencent.qqnt.kernel.nativeinterface.GroupFileSortType";
+
     /**
-     * 群文件列表：内核 {@code getGroupFileList} 只回一个请求号，真正的条目从
-     * {@code IKernelMsgListener.onGroupFileInfoUpdate} 按 GroupItem.peerId 送回来。
-     * 翻页用返回里的 {@code nextIndex}，直到 {@code isEnd} 或攒够 {@code limit}。
+     * 群文件列表：一个文件夹里的文件与子文件夹，按上传时间从新到旧。
+     *
+     * <p>两条路：先发 {@code OidbSvcTrpcTcp.0x6D8_1}（QQ 群文件页自己的那条请求，一问一答、
+     * 不靠监听器），回不来或解不开再走内核 {@code getGroupFileList}。两条路的条目都规整成
+     * 内核 {@code GroupFileInfo} / {@code GroupFolderInfo} 的字段名，外加 {@code type}，
+     * 调用方不必分辨来路。根目录的 folder_id 是 {@code /}。
      */
     private Object listGroupFiles(long group, String folderId, int startIndex, int limit)
             throws Exception {
         if (group == 0) throw new IllegalArgumentException("missing guild_id");
+        String folder = folderId == null || folderId.isEmpty() ? "/" : folderId;
+        int want = Math.max(1, Math.min(limit <= 0 ? 50 : limit, 200));
+        int start = Math.max(0, startIndex);
+        StringBuilder why = new StringBuilder();
+        JSONObject viaOidb = null;
+        try {
+            viaOidb = listGroupFilesOidb(group, folder, start, want);
+            // 解出零条也可能是字段对不上：再问一次内核，内核也说没有才算真没有。
+            if (viaOidb.getJSONArray("items").length() > 0) return viaOidb;
+        } catch (Throwable t) {
+            why.append("oidb: ").append(t.getMessage() == null ? t.toString() : t.getMessage()).append("; ");
+        }
+        try {
+            return listGroupFilesKernel(group, folder, start, want);
+        } catch (Throwable t) {
+            if (viaOidb != null) return viaOidb;
+            why.append("kernel: ").append(t.getMessage() == null ? t.toString() : t.getMessage());
+            throw new IllegalStateException("group file list failed: " + why);
+        }
+    }
+
+    /**
+     * 0x6D8_1 的请求与回包（字段号与社区协议实现一致）：
+     * 请求 {1: {1 群号, 2 appid=7, 3 文件夹, 5 条数, 9 排序=1, 13 起点, 17 =2, 18 =0}}；
+     * 回包 {1: {1 retCode, 2 retMsg, 3 wording, 4 isEnd, 5 条目[]}}，条目 {1 类型（1 文件 2 文件夹）,
+     * 2 文件夹, 3 文件}。
+     */
+    private JSONObject listGroupFilesOidb(long group, String folder, int start, int want) throws Exception {
+        JSONArray rows = new JSONArray();
+        int index = start;
+        boolean end = false;
+        int pages = 0;
+        while (!end && rows.length() < want && pages++ < 10) {
+            int count = Math.min(50, Math.max(10, want - rows.length()));
+            byte[] list = Pb.w().varint(1, group).varint(2, 7).string(3, folder).varint(5, count)
+                    .varint(9, 1).varint(13, index).varint(17, 2).varint(18, 0).toByteArray();
+            PacketSvc.Result r = qq.packets().sendOidb(0x6D8, 1, Pb.w().message(1, list).toByteArray(), false);
+            if (!r.ok()) throw new IllegalStateException("0x6D8_1 " + r.describe());
+            Pb.Reader reply = new Pb.Reader(r.body).msg(1);
+            if (reply == null) throw new IllegalStateException("0x6D8_1 empty reply");
+            if (reply.num(1) != 0) {
+                throw new IllegalStateException("0x6D8_1 ret=" + reply.num(1) + " " + reply.str(2));
+            }
+            List<Object> items = reply.all(5);
+            int got = 0;
+            for (Object raw : items == null ? List.of() : items) {
+                Pb.Reader item = new Pb.Reader((byte[]) raw);
+                Pb.Reader file = item.msg(3);
+                Pb.Reader dir = item.msg(2);
+                if (file != null) {
+                    rows.put(new JSONObject().put("type", "file")
+                            .put("fileId", nz(file.str(1))).put("fileName", nz(file.str(2)))
+                            .put("fileSize", file.num(3)).put("busId", file.num(4))
+                            .put("uploadTime", file.num(6)).put("deadTime", file.num(7))
+                            .put("modifyTime", file.num(8)).put("downloadTimes", file.num(9))
+                            .put("uploaderName", nz(file.str(14))).put("uploaderUin", file.num(15))
+                            .put("parentFolderId", nz(file.str(16))));
+                } else if (dir != null) {
+                    rows.put(new JSONObject().put("type", "folder")
+                            .put("folderId", nz(dir.str(1))).put("parentFolderId", nz(dir.str(2)))
+                            .put("folderName", nz(dir.str(3))).put("createTime", dir.num(4))
+                            .put("modifyTime", dir.num(5)).put("createUin", dir.num(6))
+                            .put("creatorName", nz(dir.str(7))).put("totalFileCount", dir.num(8)));
+                }
+                got++;
+            }
+            index += got;
+            end = reply.num(4) != 0 || got == 0;
+        }
+        return new JSONObject().put("group", group).put("folder_id", folder).put("all_file_count", -1)
+                .put("is_end", end).put("next_index", index).put("items", rows).put("source", "oidb");
+    }
+
+    private static String nz(String text) {
+        return text == null ? "" : text;
+    }
+
+    /**
+     * 内核 {@code getGroupFileList} 只回一个请求号，条目从
+     * {@code IKernelMsgListener.onGroupFileInfoUpdate} 回来（{@link QQClient#takeGroupFileList}
+     * 按请求号取）。翻页用回包的 {@code nextIndex}，直到 {@code isEnd} 或攒够。
+     *
+     * <p>{@code sortType} 是枚举字段，0.50 以前没填（null 交给 native），内核一直没回包。
+     */
+    private JSONObject listGroupFilesKernel(long group, String folder, int start, int want) throws Exception {
         Object svc = svc("richmedia");
-        if (svc == null) throw new IllegalStateException("group file list: service not ready");
-        ArrayList<Object> items = new ArrayList<>();
-        int index = startIndex;
+        if (svc == null) throw new IllegalStateException("richmedia service not ready");
+        Object sortType = null;
+        try {
+            sortType = ref.callS(FILE_SORT_TYPE, "valueOf", "KSORTBYTIMESTAMP");
+        } catch (Throwable ignore) {
+            // 枚举改名了就不填，交给内核默认
+        }
+        JSONArray rows = new JSONArray();
+        int index = start;
         int allCount = -1;
         boolean end = false;
         int pages = 0;
-        while (!end && items.size() < Math.max(1, limit) && pages++ < 20) {
-            final Object[] box = new Object[1];
-            final CountDownLatch page = new CountDownLatch(1);
-            qq.awaitGroupFileList(group, result -> {
-                if (box[0] == null) box[0] = result;
-                page.countDown();
-                return true;
-            });
+        while (!end && rows.length() < want && pages++ < 20) {
             Object form = ref.neu("com.tencent.qqnt.kernel.nativeinterface.GroupFileListForm");
-            ref.put(form, "folderId", folderId == null ? "" : folderId);
-            ref.put(form, "fileCount", Math.min(40, Math.max(10, limit - items.size())));
+            ref.put(form, "folderId", folder);
+            ref.put(form, "fileCount", Math.min(50, Math.max(10, want - rows.length())));
             ref.put(form, "startIndex", index);
-            ref.put(form, "sortOrder", 0);
+            ref.put(form, "sortOrder", 2);
             ref.put(form, "showOnlinedocFolder", 0);
+            if (sortType != null) ref.put(form, "sortType", sortType);
             int req = syncInt(svc, "getGroupFileList", group, form);
-            if (req < 0 || !page.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                end = req >= 0; // 请求发了但没回包：把已拿到的条目交出去
-                break;
+            if (req < 0) throw new IllegalStateException("getGroupFileList rejected (" + req + ")");
+            Object result = qq.takeGroupFileList(req, group, TIMEOUT_MS);
+            if (result == null) {
+                if (rows.length() > 0) break; // 已拿到的先交出去
+                throw new IllegalStateException("getGroupFileList: no reply in " + TIMEOUT_MS / 1000 + "s");
             }
-            Object result = box[0];
+            int ret = Ref.asInt(ref.get(result, "retCode"));
+            if (ret != 0) {
+                throw new IllegalStateException("getGroupFileList retCode=" + ret + " "
+                        + Ref.asStr(ref.get(result, "retMsg")));
+            }
             Object list = ref.get(result, "item");
-            if (list instanceof Collection<?> rows) {
-                items.addAll((Collection<Object>) rows);
+            if (list instanceof Collection<?> items) {
+                for (Object item : items) {
+                    Object info = ref.get(item, "fileInfo");
+                    Object dir = ref.get(item, "folderInfo");
+                    if (info != null) rows.put(reflectItem(info).put("type", "file"));
+                    else if (dir != null) rows.put(reflectItem(dir).put("type", "folder"));
+                }
             }
             allCount = Ref.asInt(ref.get(result, "allFileCount"));
-            end = Ref.asLong(ref.get(result, "isEnd")) != 0;
+            end = Ref.asBool(ref.get(result, "isEnd"));
             int next = Ref.asInt(ref.get(result, "nextIndex"));
             if (next <= index) end = true;
             index = next;
         }
-        JSONObject out = new JSONObject();
-        out.put("group", group).put("folder_id", folderId)
-                .put("all_file_count", allCount).put("is_end", end).put("next_index", index);
-        JSONArray rows = new JSONArray();
-        for (Object item : items) {
-            Object info = ref.get(item, "fileInfo");
-            Object folder = ref.get(item, "folderInfo");
-            if (info != null) rows.put(reflectItem(info));
-            if (folder != null) rows.put(reflectItem(folder));
-        }
-        out.put("items", rows);
-        return out;
+        return new JSONObject().put("group", group).put("folder_id", folder)
+                .put("all_file_count", allCount).put("is_end", end).put("next_index", index)
+                .put("items", rows).put("source", "kernel");
     }
 
     /** 单个内核对象的字段导出；嵌套一层为止。 */
@@ -1838,17 +2046,11 @@ public final class ExtraSvc {
 
     /**
      * 群公告列表：内核 {@code getGroupBulletinList} 在本机 9.3.75/9.3.80 上调用即段错误，改走
-     * 客户端公告页自己的网页 CGI（web.qun.qq.com/announce/get_t_list），p_skey 本端自取。
+     * 客户端公告页自己的网页 CGI（web.qun.qq.com/announce/get_t_list），凭据本端自取。
      */
     private Object readGroupBulletins(long group, int count) throws Exception {
         if (group == 0) throw new IllegalArgumentException("missing guild_id");
-        String pskey = pskey(new JSONObject(), "qun.qq.com");
-        JSONObject rsp = QunWeb.bulletinList(qq.selfUin(), pskey, group);
-        JSONArray items = rsp.optJSONArray("bulletins");
-        if (items == null) items = new JSONArray();
-        return new JSONObject().put("ok", rsp.optBoolean("ok", false)).put("group", group)
-                .put("count", items.length()).put("bulletins", items)
-                .put("raw", rsp);
+        return QunWeb.bulletinList(webTicket(new JSONObject()), group, count);
     }
 
     /** 内核调用一律投到主 Looper 发起（服务是主线程亲和的），本线程继续等。 */

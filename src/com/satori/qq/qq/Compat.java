@@ -34,47 +34,48 @@ public final class Compat {
             "com.tencent.qqnt.kernel.nativeinterface.DelBuddyInfo", "com.tencent.qqnt.kernel.nativeinterface.DigestReq",
             "com.tencent.qqnt.kernel.nativeinterface.DownloadGroupFileParams", "com.tencent.qqnt.kernel.nativeinterface.FaceElement",
             "com.tencent.qqnt.kernel.nativeinterface.FileElement", "com.tencent.qqnt.kernel.nativeinterface.GIMSetGroupLevelInfoReq",
-            "com.tencent.qqnt.kernel.nativeinterface.GroupFileListForm", "com.tencent.qqnt.kernel.nativeinterface.GroupInfoSource",
-            "com.tencent.qqnt.kernel.nativeinterface.GroupMemberExtReq", "com.tencent.qqnt.kernel.nativeinterface.GroupMemberShutUpInfo",
-            "com.tencent.qqnt.kernel.nativeinterface.GroupModifyInfo", "com.tencent.qqnt.kernel.nativeinterface.GroupNotifyOperateMsg",
-            "com.tencent.qqnt.kernel.nativeinterface.GroupNotifyOperateType", "com.tencent.qqnt.kernel.nativeinterface.GroupNotifyTargetMsg",
-            "com.tencent.qqnt.kernel.nativeinterface.IBatchGroupFileCountCallback", "com.tencent.qqnt.kernel.nativeinterface.IClickInlineKeyboardButtonCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IDeleteGroupFileCallback", "com.tencent.qqnt.kernel.nativeinterface.IDetailInfoByUinCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IDigestCallback", "com.tencent.qqnt.kernel.nativeinterface.IFetchGroupEssenceListCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetAioFirstViewLatestMsgCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetDraftOperateCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupIdentityManageSettingCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupLatestEssenceListCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupMemberCardInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupProfileCardInfoCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupRemainAtAllTimesOperateCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetIdentityListCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetJoinGroupLinkCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetMsgAbstractsCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetMsgEmojiLikesListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetMultiMsgCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetOcrDataCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetTempChatInfoCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGroupFileCommonResultCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupFileInfoCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGroupInfoForJoinCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupItemCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberExtCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberListCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGuestPskeyCallback", "com.tencent.qqnt.kernel.nativeinterface.IJoinGroupCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IKernelBuddyListener", "com.tencent.qqnt.kernel.nativeinterface.IKernelGroupListener",
-            "com.tencent.qqnt.kernel.nativeinterface.IKernelLoginService", "com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener",
-            "com.tencent.qqnt.kernel.nativeinterface.IKickMemberOperateCallback", "com.tencent.qqnt.kernel.nativeinterface.IMoveGroupFileCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IMsgOperateCallback", "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession", "com.tencent.qqnt.kernel.nativeinterface.IQueryCachedEssenceCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IRenameGroupFileCallback", "com.tencent.qqnt.kernel.nativeinterface.ISearchGroupFileCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.ISearchOcrDataCallback", "com.tencent.qqnt.kernel.nativeinterface.ISetGroupIdentityLevelInfoCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.ISetMsgEmojiLikesCallback", "com.tencent.qqnt.kernel.nativeinterface.ITransGroupFileCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IUploadGroupBulletinPicCallback", "com.tencent.qqnt.kernel.nativeinterface.IVideoPlayUrlCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.LinkInfo", "com.tencent.qqnt.kernel.nativeinterface.MarketFaceElement",
-            "com.tencent.qqnt.kernel.nativeinterface.MemberExtInfoFilter", "com.tencent.qqnt.kernel.nativeinterface.MemberExtSourceType",
-            "com.tencent.qqnt.kernel.nativeinterface.MsgAttributeInfo", "com.tencent.qqnt.kernel.nativeinterface.MsgElement",
-            "com.tencent.qqnt.kernel.nativeinterface.MultiForwardMsgElement", "com.tencent.qqnt.kernel.nativeinterface.MultiMsgInfo",
-            "com.tencent.qqnt.kernel.nativeinterface.PicElement", "com.tencent.qqnt.kernel.nativeinterface.PttElement",
-            "com.tencent.qqnt.kernel.nativeinterface.QQNTWrapperUtil", "com.tencent.qqnt.kernel.nativeinterface.QueryMsgsParams",
-            "com.tencent.qqnt.kernel.nativeinterface.RMReqExParams", "com.tencent.qqnt.kernel.nativeinterface.ReplyElement",
-            "com.tencent.qqnt.kernel.nativeinterface.RichMediaElementGetReq", "com.tencent.qqnt.kernel.nativeinterface.RichMediaFilePathInfo",
-            "com.tencent.qqnt.kernel.nativeinterface.SendRequestParam", "com.tencent.qqnt.kernel.nativeinterface.SetIdentityTitleInfoReq",
-            "com.tencent.qqnt.kernel.nativeinterface.StructLongMsgElement", "com.tencent.qqnt.kernel.nativeinterface.TextElement",
-            "com.tencent.qqnt.kernel.nativeinterface.UploadGroupFileParams", "com.tencent.qqnt.kernel.nativeinterface.VASMsgBubble",
-            "com.tencent.qqnt.kernel.nativeinterface.VASMsgElement", "com.tencent.qqnt.kernel.nativeinterface.VASMsgFont",
-            "com.tencent.qqnt.kernel.nativeinterface.VideoCodecFormatType", "com.tencent.qqnt.kernel.nativeinterface.VideoElement",
-            "com.tencent.qqnt.kernelpublic.nativeinterface.Contact", "com.tencent.qqnt.kernelpublic.nativeinterface.MemberRole",
+            "com.tencent.qqnt.kernel.nativeinterface.GroupFileListForm", "com.tencent.qqnt.kernel.nativeinterface.GroupFileSortType",
+            "com.tencent.qqnt.kernel.nativeinterface.GroupInfoSource", "com.tencent.qqnt.kernel.nativeinterface.GroupMemberExtReq",
+            "com.tencent.qqnt.kernel.nativeinterface.GroupMemberShutUpInfo", "com.tencent.qqnt.kernel.nativeinterface.GroupModifyInfo",
+            "com.tencent.qqnt.kernel.nativeinterface.GroupNotifyOperateMsg", "com.tencent.qqnt.kernel.nativeinterface.GroupNotifyOperateType",
+            "com.tencent.qqnt.kernel.nativeinterface.GroupNotifyTargetMsg", "com.tencent.qqnt.kernel.nativeinterface.IBatchGroupFileCountCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IClickInlineKeyboardButtonCallback", "com.tencent.qqnt.kernel.nativeinterface.IDeleteGroupFileCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IDetailInfoByUinCallback", "com.tencent.qqnt.kernel.nativeinterface.IDigestCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IFetchGroupEssenceListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetAioFirstViewLatestMsgCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetDraftOperateCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupIdentityManageSettingCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupLatestEssenceListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupMemberCardInfoCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupProfileCardInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupRemainAtAllTimesOperateCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetIdentityListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetJoinGroupLinkCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetMsgAbstractsCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetMsgEmojiLikesListCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetMultiMsgCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetOcrDataCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetTempChatInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupFileCommonResultCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGroupFileInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupInfoForJoinCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGroupItemCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberExtCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGuestPskeyCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IJoinGroupCallback", "com.tencent.qqnt.kernel.nativeinterface.IKernelBuddyListener",
+            "com.tencent.qqnt.kernel.nativeinterface.IKernelGroupListener", "com.tencent.qqnt.kernel.nativeinterface.IKernelLoginService",
+            "com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener", "com.tencent.qqnt.kernel.nativeinterface.IKickMemberOperateCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IMoveGroupFileCallback", "com.tencent.qqnt.kernel.nativeinterface.IMsgOperateCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback", "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession",
+            "com.tencent.qqnt.kernel.nativeinterface.IQueryCachedEssenceCallback", "com.tencent.qqnt.kernel.nativeinterface.IRenameGroupFileCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.ISearchGroupFileCallback", "com.tencent.qqnt.kernel.nativeinterface.ISearchOcrDataCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.ISetGroupIdentityLevelInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.ISetMsgEmojiLikesCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.ITransGroupFileCallback", "com.tencent.qqnt.kernel.nativeinterface.IUploadGroupBulletinPicCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IVideoPlayUrlCallback", "com.tencent.qqnt.kernel.nativeinterface.LinkInfo",
+            "com.tencent.qqnt.kernel.nativeinterface.MarketFaceElement", "com.tencent.qqnt.kernel.nativeinterface.MemberExtInfoFilter",
+            "com.tencent.qqnt.kernel.nativeinterface.MemberExtSourceType", "com.tencent.qqnt.kernel.nativeinterface.MsgAttributeInfo",
+            "com.tencent.qqnt.kernel.nativeinterface.MsgElement", "com.tencent.qqnt.kernel.nativeinterface.MultiForwardMsgElement",
+            "com.tencent.qqnt.kernel.nativeinterface.MultiMsgInfo", "com.tencent.qqnt.kernel.nativeinterface.PicElement",
+            "com.tencent.qqnt.kernel.nativeinterface.PttElement", "com.tencent.qqnt.kernel.nativeinterface.QQNTWrapperUtil",
+            "com.tencent.qqnt.kernel.nativeinterface.QueryMsgsParams", "com.tencent.qqnt.kernel.nativeinterface.RMReqExParams",
+            "com.tencent.qqnt.kernel.nativeinterface.ReplyElement", "com.tencent.qqnt.kernel.nativeinterface.RichMediaElementGetReq",
+            "com.tencent.qqnt.kernel.nativeinterface.RichMediaFilePathInfo", "com.tencent.qqnt.kernel.nativeinterface.SendRequestParam",
+            "com.tencent.qqnt.kernel.nativeinterface.SetIdentityTitleInfoReq", "com.tencent.qqnt.kernel.nativeinterface.StructLongMsgElement",
+            "com.tencent.qqnt.kernel.nativeinterface.TextElement", "com.tencent.qqnt.kernel.nativeinterface.UploadGroupFileParams",
+            "com.tencent.qqnt.kernel.nativeinterface.VASMsgBubble", "com.tencent.qqnt.kernel.nativeinterface.VASMsgElement",
+            "com.tencent.qqnt.kernel.nativeinterface.VASMsgFont", "com.tencent.qqnt.kernel.nativeinterface.VideoCodecFormatType",
+            "com.tencent.qqnt.kernel.nativeinterface.VideoElement", "com.tencent.qqnt.kernelpublic.nativeinterface.Contact",
+            "com.tencent.qqnt.kernelpublic.nativeinterface.MemberRole",
     };
 
     /** 会话上的服务入口 → 该服务必须实现的接口。 */
@@ -201,14 +202,13 @@ public final class Compat {
         }
         JSONObject services = new JSONObject().put("ok", ok).put("total", SERVICES.length);
 
-        // pskey 的唯一入口：接口上的静态 getLoginService()，外加 guestA2ToPskey(long, ArrayList, cb)。
+        // pskey 的主入口：运行时服务 IPskeyManager.getPskey(String[], cb)（0.51.0 起），
+        // 退路是登录服务的 guestA2ToPskey——它只给访客模式发票，正常登录的账号拿不到。
         // 会话上的 getTipOffService 在 9.3.80 上能取到对象，但 getPskey 必段错误，已经不用了。
-        Class<?> loginService = ref.clsOrNull(NS + "IKernelLoginService");
-        boolean pskeyOk = loginService != null && hasMethodNamed(loginService, "getLoginService")
-                && hasMethod(loginService, "guestA2ToPskey", 3);
+        Class<?> pskeyManager = ref.clsOrNull("com.tencent.mobileqq.pskey.api.IPskeyManager");
+        boolean pskeyOk = pskeyManager != null && hasMethod(pskeyManager, "getPskey", 2);
         if (!pskeyOk) {
-            missing.put(new JSONObject().put("kind", "pskey")
-                    .put("name", "IKernelLoginService.getLoginService/guestA2ToPskey"));
+            missing.put(new JSONObject().put("kind", "pskey").put("name", "IPskeyManager.getPskey"));
         }
         JSONObject pskey = new JSONObject().put("ok", pskeyOk ? 1 : 0).put("total", 1);
 

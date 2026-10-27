@@ -18,11 +18,13 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -163,30 +165,55 @@ public final class QQClient {
     }
 
     /**
-     * getGroupFileList 的结果从 IKernelMsgListener.onGroupFileInfoUpdate 回来，
-     * 按 GroupItem.peerId（群号）分发给等待方；返回 true 表示等待方收货了。
+     * getGroupFileList 的回包从 IKernelMsgListener.onGroupFileInfoUpdate 回来。收进一个小信箱，
+     * 等待方按请求号（{@code reqId}）取；请求号对不上时退一步按群号认。
+     *
+     * <p>0.50 以前按「第一条目的 peerId」分发：空文件夹或出错的回包没有条目，永远送不到，
+     * 调用方只能等满超时、拿回一个空列表——看上去像「这个群没有文件」。
      */
-    public interface FileListSink {
-        boolean accept(Object result);
+    private final ArrayDeque<Object> fileLists = new ArrayDeque<>();
+
+    public Object takeGroupFileList(int reqId, long groupCode, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        synchronized (fileLists) {
+            while (true) {
+                for (Iterator<Object> it = fileLists.iterator(); it.hasNext(); ) {
+                    Object result = it.next();
+                    if (fileListReq(result) == reqId || fileListPeer(result) == groupCode) {
+                        it.remove();
+                        return result;
+                    }
+                }
+                long left = deadline - System.currentTimeMillis();
+                if (left <= 0) return null;
+                fileLists.wait(left);
+            }
+        }
     }
 
-    private final ConcurrentHashMap<Long, FileListSink> fileListWaits = new ConcurrentHashMap<>();
-
-    public void awaitGroupFileList(long groupCode, FileListSink sink) {
-        fileListWaits.put(groupCode, sink);
+    private int fileListReq(Object result) {
+        try {
+            return Ref.asInt(ref.get(result, "reqId"));
+        } catch (Throwable t) {
+            return Integer.MIN_VALUE;
+        }
     }
 
-
-    private void deliverGroupFileList(Object result) {
+    private long fileListPeer(Object result) {
         try {
             Object items = ref.get(result, "item");
-            if (!(items instanceof List<?> list) || list.isEmpty()) return;
-            long peer = Ref.asLong(ref.get(list.get(0), "peerId"));
-            if (peer == 0) return;
-            FileListSink sink = fileListWaits.get(peer);
-            if (sink != null && sink.accept(result)) fileListWaits.remove(peer);
-        } catch (Throwable t) {
-            L.e("group file list delivery", t);
+            if (items instanceof List<?> list && !list.isEmpty()) return Ref.asLong(ref.get(list.get(0), "peerId"));
+        } catch (Throwable ignore) {
+            // 没有条目就认不出群
+        }
+        return 0;
+    }
+
+    private void deliverGroupFileList(Object result) {
+        synchronized (fileLists) {
+            fileLists.addLast(result);
+            while (fileLists.size() > 16) fileLists.removeFirst();
+            fileLists.notifyAll();
         }
     }
 

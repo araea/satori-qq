@@ -517,6 +517,11 @@ public final class Convert {
     }
 
     private String senderRole(Object rec, long groupId, long senderUin) {
+        // 账号自己：群资料里的身份由内核推送维护，最准。
+        if (senderUin != 0 && String.valueOf(senderUin).equals(qq.selfUin())) {
+            String own = qq.ownRole(groupId);
+            if (!own.isEmpty()) return own;
+        }
         String cached = store.roleOf(groupId, senderUin);
         if (!cached.isEmpty()) return cached;
         // roleType/roleId in 9.3.60 describe guild/channel roles, not the sender's
@@ -537,10 +542,12 @@ public final class Convert {
             return mapped;
         }
         qq.warmGroupMembersAsync(groupId);
-        return "member";
+        // 成员表还没拉下来：说不准，不冒充「普通成员」（Codec 不带 roles，由接收方自己查）。
+        return "";
     }
 
-    static String mapRole(Object v) {
+    public static String mapRole(Object v) {
+        if (v == null) return "";
         if (v instanceof Number) {
             // Some older senderRole fields expose MemberRole by ordinal.
             int role = ((Number) v).intValue();

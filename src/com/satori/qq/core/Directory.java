@@ -1,5 +1,6 @@
 package com.satori.qq.core;
 
+import com.satori.qq.qq.Convert;
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
 import com.satori.qq.satori.Codec;
@@ -202,9 +203,19 @@ final class Directory {
         // 先看已经取到的成员表：单查一个人不该把整份名单向服务器重拉一遍（内核那条路
         // 最长会挂 15 秒）。新入群的人常常还不在表里，那时才刷新，等得也有限。
         Object known = qq.cachedGroupMember(groupId, null, userId);
-        if (known != null) return memberJson(groupId, known);
+        if (known != null) {
+            // 成员表拉了很久了：这次先用它，后台换一份新的（身份、名片都可能变过）。
+            if (qq.groupMembersStale(groupId)) qq.refreshGroupMembersAsync(groupId, true);
+            return memberJson(groupId, known);
+        }
         Map<String, Object> members = qq.getAllMembers(groupId, true, MEMBER_WAIT_MS);
-        if (members == null) throw ApiError.failed("cannot fetch group members");
+        if (members == null) {
+            // 问的是账号自己而成员表一时拉不下来：身份在群资料里就有，先答身份，名字留空。
+            // 调用方多半正要判断「罚不罚得动人」，这时报错只会让它当自己不是管理员。
+            String own = String.valueOf(userId).equals(qq.selfUin()) ? qq.ownRole(groupId) : "";
+            if (!own.isEmpty()) return selfOnly(groupId, userId, own);
+            throw ApiError.failed("cannot fetch group members");
+        }
         for (Object member : members.values()) {
             if (Ref.asLong(qq.ref.get(member, "uin")) == userId) return memberJson(groupId, member);
         }
@@ -220,9 +231,23 @@ final class Directory {
         return arr;
     }
 
+    private static JSONObject selfOnly(long groupId, long userId, String role) throws Exception {
+        return new JSONObject()
+                .put("group_id", groupId)
+                .put("user_id", userId)
+                .put("nickname", "")
+                .put("card", "")
+                .put("role", role);
+    }
+
     private JSONObject memberJson(long groupId, Object member) throws Exception {
         long uin = Ref.asLong(qq.ref.get(member, "uin"));
         String role = roleName(qq.ref.get(member, "role"));
+        // 账号自己：成员表里那一行可能是被设成管理员之前拉的，群资料里的身份才是最新的。
+        if (String.valueOf(uin).equals(qq.selfUin())) {
+            String own = qq.ownRole(groupId);
+            if (!own.isEmpty()) role = own;
+        }
         store.learnUid(uin, Ref.asStr(qq.ref.get(member, "uid")));
         store.learnRole(groupId, uin, role);
         return new JSONObject()
@@ -243,15 +268,10 @@ final class Directory {
                 .put("card_changeable", true);
     }
 
-    private String roleName(Object roleEnum) {
-        try {
-            String name = String.valueOf(qq.ref.call(roleEnum, "name")).toUpperCase();
-            if (name.contains("OWNER")) return "owner";
-            if (name.contains("ADMIN")) return "admin";
-        } catch (Throwable ignore) {
-            // 读不出角色就按普通成员算
-        }
-        return "member";
+    private static String roleName(Object roleEnum) {
+        String role = Convert.mapRole(roleEnum);
+        // 读不出角色就按普通成员算（成员资源总得带一个身份）
+        return role.isEmpty() ? "member" : role;
     }
 
     JSONObject groupInfo(long groupId) throws Exception {

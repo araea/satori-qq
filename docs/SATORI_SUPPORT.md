@@ -170,7 +170,7 @@ QQ 里「头衔」有三层，能做什么由账号在本群的角色决定：
 | `message-created` / `message-deleted` | 收到、发出或撤回消息 |
 | `guild-added` / `guild-updated` / `guild-removed` | 加群、群资料变化或退群 |
 | `channel-added` / `channel-updated` / `channel-removed` | 对应群的单频道变化 |
-| `guild-member-added` / `guild-member-updated` / `guild-member-removed` | 成员加入、禁言或离开。禁言走 `guild-member-updated` + `_type=satori-qq/mute`，`_data.duration` 为毫秒、`0` 是解除；灰条里读不出时长时不带 `duration`，改带 `_data.duration_unknown=true`。`user` 是被禁言的成员，`operator` 是动手的管理员（灰条里只有一个人时没有 `operator`）。这三类事件还带着群名（`guild.name`、`channel.name`）与当事人的名字（`user.nick`、`member.nick`，从本地成员表或资料服务里读，读不到就不带）——客户端渲染「谁进了哪个群」不必再各问一次 `guild.get` / `guild.member.get` |
+| `guild-member-added` / `guild-member-updated` / `guild-member-removed` | 成员加入、禁言或离开。禁言走 `guild-member-updated` + `_type=satori-qq/mute`，`_data.duration` 为毫秒、`0` 是解除；灰条里读不出时长时不带 `duration`，改带 `_data.duration_unknown=true`。`user` 是被禁言的成员，`operator` 是动手的管理员（灰条里只有一个人时没有 `operator`）。这三类事件还带着群名（`guild.name`、`channel.name`）与当事人的名字（`user.nick`、`member.nick`，从本地成员表或资料服务里读，读不到就不带）——客户端渲染「谁进了哪个群」不必再各问一次 `guild.get` / `guild.member.get`。身份变动（设为 / 取消管理员、转让群主）也走 `guild-member-updated`，带 `_type=satori-qq/role`、`_data.role`，`member.roles` 是新身份 |
 | `reaction-added` / `reaction-removed` | 消息表态计数变化；QQ 回调不提供操作者 |
 | `friend-request` / `guild-member-request` / `guild-request` | 好友申请、加群申请或群邀请 |
 | `internal`，`_type=satori-qq/poke` | 戳一戳 |

@@ -73,6 +73,8 @@ public final class QQClient {
         void onGroupNotifies(List<?> notifies);
         void onMemberListChange(Object change);
         void onGroupListUpdate(Object updateType, List<?> groups);
+        /** 某人在群里的身份变了（设为 / 取消管理员、转让群主）；role 是 owner / admin / member。 */
+        void onMemberRoleChange(long groupCode, long uin, String role);
     }
 
     public final Ref ref;
@@ -123,6 +125,11 @@ public final class QQClient {
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, Map<String, Object>>
             groupMemberCache = new ConcurrentHashMap<>();
+    /** 每个群的成员表是什么时候拉的（毫秒）：旧了就在后台换新，身份变动不至于一直报旧的。 */
+    private final ConcurrentHashMap<Long, Long> groupMemberFetchedAt = new ConcurrentHashMap<>();
+    /** 账号自己在各群的身份，取自群资料的 memberRole；用来发现「自己被设成 / 取消管理员」。 */
+    private final ConcurrentHashMap<Long, String> ownRoles = new ConcurrentHashMap<>();
+    public static final long MEMBER_CACHE_FRESH_MS = 10 * 60_000L;
     private final Set<Long> groupMemberWarmups =
             ConcurrentHashMap.newKeySet();
 
@@ -2056,8 +2063,16 @@ public final class QQClient {
                                     || update.contains("DEL") || update.contains("QUIT")
                                     || update.contains("EXIT"))
                                 groupInfoCache.remove(code);
-                            else groupInfoCache.put(code, mergeGroupInfo(groupInfoCache.get(code), gi));
+                            else {
+                                Object merged = mergeGroupInfo(groupInfoCache.get(code), gi);
+                                groupInfoCache.put(code, merged);
+                                noteOwnRole(code, merged);
+                            }
                         }
+                    }
+                    if ("onMemberInfoChange".equals(name) && args != null && args.length >= 3
+                            && args[2] instanceof Map<?, ?> changed) {
+                        memberInfoChanged(Ref.asLong(args[0]), changed);
                     }
                     Listener l = listener;
                     if (l != null && args != null) {
@@ -2212,7 +2227,11 @@ public final class QQClient {
             ref.call(gs, "getAllMemberList", groupCode, force, cb);
             latch.await(Math.max(1, waitMs), TimeUnit.MILLISECONDS);
             Map<String, Object> result = (Map<String, Object>) holder[0];
-            if (result != null) groupMemberCache.put(groupCode, result);
+            if (result != null) {
+                Map<String, Object> previous = groupMemberCache.put(groupCode, result);
+                groupMemberFetchedAt.put(groupCode, System.currentTimeMillis());
+                if (previous != null) compareRoles(groupCode, previous, result.values());
+            }
             return result;
         } catch (Throwable t) {
             L.e("getAllMembers " + groupCode, t);
@@ -2264,14 +2283,76 @@ public final class QQClient {
 
     /** Prime one group's member map off the kernel callback thread. */
     public void warmGroupMembersAsync(long groupCode) {
-        if (groupCode == 0 || groupMemberCache.containsKey(groupCode)
-                || !groupMemberWarmups.add(groupCode)) return;
+        if (groupCode == 0 || groupMemberCache.containsKey(groupCode)) return;
+        refreshGroupMembersAsync(groupCode, false);
+    }
+
+    /** 成员表拉了超过 {@link #MEMBER_CACHE_FRESH_MS}（或从没拉过）。 */
+    public boolean groupMembersStale(long groupCode) {
+        Long at = groupMemberFetchedAt.get(groupCode);
+        return at == null || System.currentTimeMillis() - at > MEMBER_CACHE_FRESH_MS;
+    }
+
+    /** 后台重拉一个群的成员表；同一个群同时只跑一次。force 时向服务器要最新的。 */
+    public void refreshGroupMembersAsync(long groupCode, boolean force) {
+        if (groupCode == 0 || !groupMemberWarmups.add(groupCode)) return;
         Thread t = new Thread(() -> {
-            try { getAllMembers(groupCode); }
+            try { getAllMembers(groupCode, force); }
             finally { groupMemberWarmups.remove(groupCode); }
         }, "pool-4-thread-2");
         t.setDaemon(true);
         t.start();
+    }
+
+    /**
+     * 账号自己在这个群的身份：群资料里的 memberRole。群资料由内核推送维护，被设成管理员时
+     * 会跟着变，比成员表里自己那一行（可能是几小时前拉的）可靠。读不出时为空串。
+     */
+    public String ownRole(long groupCode) {
+        Object info = groupInfo(groupCode);
+        if (info == null) return "";
+        return Convert.mapRole(ref.getOrNull(info, "memberRole"));
+    }
+
+    private void noteOwnRole(long groupCode, Object info) {
+        String role = Convert.mapRole(ref.getOrNull(info, "memberRole"));
+        if (role.isEmpty()) return;
+        String previous = ownRoles.put(groupCode, role);
+        if (previous == null || previous.equals(role)) return;
+        long self = 0;
+        try { self = Long.parseLong(selfUin()); } catch (Exception ignore) {}
+        L.i("own role in " + groupCode + ": " + previous + " -> " + role);
+        Listener l = listener;
+        if (l != null && self != 0) l.onMemberRoleChange(groupCode, self, role);
+    }
+
+    /** 内核推来的成员资料变更：并进成员表，身份变了的报出去。 */
+    private void memberInfoChanged(long groupCode, Map<?, ?> changed) {
+        if (groupCode == 0 || changed.isEmpty()) return;
+        Map<String, Object> members = groupMemberCache.get(groupCode);
+        if (members == null) return;
+        Map<String, Object> merged = new HashMap<>(members);
+        for (Map.Entry<?, ?> entry : changed.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) merged.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        groupMemberCache.put(groupCode, merged);
+        compareRoles(groupCode, members, changed.values());
+    }
+
+    private void compareRoles(long groupCode, Map<String, Object> before, Collection<?> after) {
+        Listener l = listener;
+        if (l == null) return;
+        for (Object member : after) {
+            if (member == null) continue;
+            String uid = Ref.asStr(ref.getOrNull(member, "uid"));
+            Object old = uid.isEmpty() ? null : before.get(uid);
+            if (old == null) continue;
+            String was = Convert.mapRole(ref.getOrNull(old, "role"));
+            String now = Convert.mapRole(ref.getOrNull(member, "role"));
+            if (was.isEmpty() || now.isEmpty() || was.equals(now)) continue;
+            long uin = ref.getLong(member, "uin");
+            if (uin != 0) l.onMemberRoleChange(groupCode, uin, now);
+        }
     }
 
     /** History conversion may wait once so its role metadata is correct on the first page. */

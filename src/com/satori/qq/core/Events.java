@@ -292,6 +292,27 @@ final class Events {
                 .put("channel", Codec.channel(QQClient.CT_GROUP, groupId, name).put("parent_id", String.valueOf(groupId))));
     }
 
+    /**
+     * 群里有人身份变了：{@code guild-member-updated}，成员资源里带着新身份。
+     * 接收方据此换掉记着的身份（acumen 的入群验证靠它判断罚不罚得动人）。
+     */
+    void memberRoleChanged(long groupId, long uin, String role) throws Exception {
+        JSONObject user = Codec.user(uin, "", "");
+        emitSatori(new JSONObject()
+                .put("sn", 0)
+                .put("type", "guild-member-updated")
+                .put("timestamp", System.currentTimeMillis())
+                .put("login", identity.loginSlim())
+                .put("guild", Codec.guild(groupId, ""))
+                .put("channel", Codec.channel(QQClient.CT_GROUP, groupId, "").put("parent_id", String.valueOf(groupId)))
+                .put("user", user)
+                .put("member", new JSONObject()
+                        .put("user", user)
+                        .put("roles", new JSONArray().put(new JSONObject().put("id", role).put("name", role))))
+                .put("_type", "satori-qq/role")
+                .put("_data", new JSONObject().put("role", role)));
+    }
+
     void loginUpdated() {
         synchronized (lock) {
             try {

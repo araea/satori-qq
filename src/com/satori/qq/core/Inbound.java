@@ -529,6 +529,15 @@ final class Inbound implements QQClient.Listener {
         }
     }
 
+    @Override public void onMemberRoleChange(long groupId, long uin, String role) {
+        store.learnRole(groupId, uin, role);
+        try {
+            events.memberRoleChanged(groupId, uin, role);
+        } catch (Throwable t) {
+            L.e("onMemberRoleChange", t);
+        }
+    }
+
     @Override public void onMemberListChange(Object change) {
         if (change == null) return;
         try {

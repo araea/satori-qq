@@ -644,10 +644,10 @@ public final class Codec {
                 member.put("nick", card);
             }
             String role = sender == null ? "" : sender.optString("role", "");
-            if (role.isEmpty()) role = "member";
-            JSONArray roles = new JSONArray();
-            roles.put(new JSONObject().put("id", role).put("name", role));
-            member.put("roles", roles);
+            // 身份说不准时不带 roles：写成 member 会让接收方以为「查过了，是普通成员」。
+            if (!role.isEmpty()) {
+                member.put("roles", new JSONArray().put(new JSONObject().put("id", role).put("name", role)));
+            }
             ev.put("member", member);
         }
         JSONObject msg = new JSONObject();

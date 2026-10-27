@@ -4,6 +4,8 @@ import android.os.Handler;
 import android.os.Looper;
 import com.satori.qq.L;
 import com.satori.qq.core.ApiError;
+import com.satori.qq.core.Json;
+import com.satori.qq.packet.Jce;
 import com.satori.qq.packet.PacketSvc;
 import com.satori.qq.packet.Pb;
 import com.satori.qq.satori.Codec;
@@ -14,6 +16,7 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -968,6 +971,17 @@ public final class ExtraSvc {
     private static final String SEARCH_GROUP_FILE_CB =
             "com.tencent.qqnt.kernel.nativeinterface.ISearchGroupFileCallback";
 
+    private static final String TRANSFER_GROUP_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.ITransferGroupCallback";
+    private static final String BATCH_DETAIL_REQ =
+            "com.tencent.qqnt.kernel.nativeinterface.BatchQueryCachedGroupDetailInfoReq";
+    private static final String BATCH_DETAIL_CB =
+            "com.tencent.qqnt.kernel.nativeinterface.IBatchQueryCachedGroupDetailInfoCallback";
+
+    private static final AtomicInteger LIKE_SEQ = new AtomicInteger((int) (System.nanoTime() & 0xFFFF) + 1);
+    /** ReqHead.vCookies：手机端点赞包里固定带的那段（oicq 抓包同值）。 */
+    private static final byte[] LIKE_COOKIE = {0x0C, 0x18, 0x00, 0x01, 0x06, 0x01, 0x31, 0x16, 0x01, 0x31};
+
     static {
         final String NS = "com.tencent.qqnt.kernel.nativeinterface.";
 
@@ -1767,6 +1781,526 @@ public final class ExtraSvc {
                     return s.call(s.svc("msg"), TEMP_CHAT_CB, "getTempChatInfo",
                             (svc2, cb) -> s.ref.call(svc2, "getTempChatInfo", chatType, peer, cb));
                 });
+        // ------------------------------------------------------- 账号资料（0.53.0）
+
+        // 一次改几项账号资料：setNickName / setLongNick / setGander(int) / setBirthday(y, m, d)。
+        // 每项各自一次内核调用，回执逐项列出；只带了的才改。性别 1 男、2 女（ProfileDetailInfo.sex 同口径）。
+        reg("profile_set", new String[]{"set_qq_profile", "set_profile"}, true,
+                "nick?, long_nick?, gender?（male/female 或 1/2）, birthday?（YYYY-MM-DD）",
+                (s, p) -> {
+                    JSONObject results = new JSONObject();
+                    boolean all = true;
+                    Object svc = s.svc("profile");
+                    if (p.has("nick") || p.has("nickname")) {
+                        String nick = p.optString("nick", p.optString("nickname", ""));
+                        Result r = s.call(svc, OPERATE_CB, "setNickName",
+                                (svc2, cb) -> s.ref.call(svc2, "setNickName", nick, cb));
+                        results.put("nick", resultJson(r));
+                        all &= r.ok();
+                    }
+                    if (p.has("long_nick") || p.has("signature")) {
+                        String text = p.optString("long_nick", p.optString("signature", ""));
+                        Result r = s.call(svc, OPERATE_CB, "setLongNick",
+                                (svc2, cb) -> s.ref.call(svc2, "setLongNick", text, cb));
+                        results.put("long_nick", resultJson(r));
+                        all &= r.ok();
+                    }
+                    if (p.has("gender") || p.has("sex")) {
+                        final int gender = genderCode(p.opt(p.has("gender") ? "gender" : "sex"));
+                        Result r = s.call(svc, OPERATE_CB, "setGander",
+                                (svc2, cb) -> s.ref.call(svc2, "setGander", gender, cb));
+                        results.put("gender", resultJson(r));
+                        all &= r.ok();
+                    }
+                    if (p.has("birthday")) {
+                        final int[] ymd = birthday(p.optString("birthday", ""));
+                        Result r = s.call(svc, OPERATE_CB, "setBirthday",
+                                (svc2, cb) -> s.ref.call(svc2, "setBirthday", ymd[0], ymd[1], ymd[2], cb));
+                        results.put("birthday", resultJson(r));
+                        all &= r.ok();
+                    }
+                    if (results.length() == 0)
+                        throw new IllegalArgumentException("nothing to set: nick / long_nick / gender / birthday");
+                    return new JSONObject().put("ok", all).put("results", results);
+                });
+
+        // IKernelMsgService.setStatus(StatusReq{status, extStatus, batteryStatus, customStatus}, IOperateCallback)
+        // 状态码同 NapCat set_online_status：10 在线、30 离开、40 隐身、50 忙碌、60 Q我吧、70 请勿打扰；
+        // ext_status 是「听歌中」这类扩展状态，平常为 0。
+        reg("online_status", new String[]{"set_online_status"}, true,
+                "status（online/away/invisible/busy/qme/dnd 或数字）, ext_status?, battery?",
+                (s, p) -> {
+                    final int status = onlineStatus(p.opt("status"));
+                    Object req = s.neu(NS + "StatusReq");
+                    s.put(req, "status", status);
+                    s.put(req, "extStatus", p.optInt("ext_status", 0));
+                    s.put(req, "batteryStatus", p.optInt("battery", 0));
+                    Object custom = s.neu(NS + "CustomStatus");
+                    if (custom != null) {
+                        s.put(custom, "faceId", 0L);
+                        s.put(custom, "faceType", 0L);
+                        s.put(custom, "wording", "");
+                        s.put(req, "customStatus", custom);
+                    }
+                    return s.call(s.svc("msg"), OPERATE_CB, "setStatus",
+                            (svc2, cb) -> s.ref.call(svc2, "setStatus", req, cb));
+                });
+
+        // 资料卡点赞：手机 QQ 走老式 WUP「VisitorSvc.ReqFavorite」（桌面端的 0x7E5_104 在手机 appid
+        // 上一律回 oidb=319）。0.23 以前借 QQ 自己的 ToServiceMsg 发、靠 Java 钩子收回包；现在由
+        // 本端拼 JCE，经 PacketSvc 的裸 SSO 通道发出、回包从同一条通道取回，不再需要钩子。
+        // 字段见 reference/PACKETS.md：ReqFavorite{0 ReqHead, 1 目标, 2 cOpType, 3 来源 66=资料卡, 4 次数}。
+        reg("like", new String[]{"send_like", "profile_like"}, true,
+                "user_id, times?（1–20，每天上限由 QQ 决定）",
+                (s, p) -> {
+                    long target = parseUin(p.optString("user_id", ""));
+                    if (target == 0) throw new IllegalArgumentException("missing user_id");
+                    int times = Math.max(1, Math.min(20, p.optInt("times", p.optInt("count", 1))));
+                    PacketSvc packets = s.qq.packets();
+                    if (packets == null || !packets.isReady())
+                        throw new IllegalStateException("like: raw SSO channel not ready");
+                    int seq = LIKE_SEQ.incrementAndGet();
+                    Jce.Writer head = Jce.w()
+                            .num(0, parseUin(s.qq.selfUin()))
+                            .num(1, 1)
+                            .num(2, seq)
+                            .num(3, 1)
+                            .num(4, 0)
+                            .bytes(5, LIKE_COOKIE);
+                    Jce.Writer body = Jce.w()
+                            .struct(0, head)
+                            .num(1, target)
+                            .num(2, 0)
+                            .num(3, p.optInt("source", 66))
+                            .num(4, times);
+                    byte[] pkt = Jce.uniPacket(seq, "VisitorSvc", "ReqFavorite", "ReqFavorite", body);
+                    PacketSvc.Result r = packets.sendSso("VisitorSvc.ReqFavorite", pkt);
+                    if (r.timedOut || r.ssoRetCode != 0)
+                        throw new IllegalStateException("like: " + r.describe());
+                    Map<Integer, Object> resp = Jce.uniResponse(r.body, "RespFavorite");
+                    Object rh = resp.get(0);
+                    long code = -1;
+                    String reason = "";
+                    if (rh instanceof Map<?, ?> h) {
+                        Object c = h.get(3);
+                        code = c instanceof Long l ? l : -1;
+                        Object m = h.get(4);
+                        reason = m instanceof String str ? str : "";
+                    }
+                    JSONObject out = new JSONObject().put("ok", code == 0).put("code", code)
+                            .put("user_id", String.valueOf(target)).put("times", times);
+                    // 失败回 ok:false + msg，由 Dispatcher 统一转成错误体：10003 对方设置了不许赞、54 不能赞自己。
+                    out.put("msg", reason.isEmpty() ? (code == 0 ? "ok" : "code " + code) : reason);
+                    return out;
+                });
+
+        // 拉黑 / 解除拉黑：IKernelBuddyService.setBlock(String uid, boolean, IOperateCallback)
+        reg("friend_block", new String[]{"block_user", "set_block"}, true, "user_id, block?（默认 true）",
+                (s, p) -> {
+                    final String uid = s.uidForUin(p.optString("user_id", ""));
+                    final boolean block = p.optBoolean("block", true);
+                    return s.call(s.svc("buddy"), OPERATE_CB, "setBlock",
+                            (svc2, cb) -> s.ref.call(svc2, "setBlock", uid, block, cb));
+                });
+
+        // 会话置顶：群走 IKernelGroupService.setTop(long, boolean)，私聊走 IKernelBuddyService.setTop(uid, boolean)。
+        reg("session_top", new String[]{"pin", "set_top"}, true, "channel_id|guild_id|user_id, top?（默认 true）",
+                (s, p) -> {
+                    final boolean top = p.optBoolean("top", p.optBoolean("pin", true));
+                    final long g = groupOf(p);
+                    if (g != 0) {
+                        return s.call(s.svc("group"), OPERATE_CB, "setTop",
+                                (svc2, cb) -> s.ref.call(svc2, "setTop", g, top, cb));
+                    }
+                    String ch = p.optString("channel_id", "");
+                    String user = !ch.isEmpty() && Codec.isPrivateChannel(ch)
+                            ? String.valueOf(Codec.channelPeer(ch)) : p.optString("user_id", "");
+                    if (parseUin(user) == 0) throw new IllegalArgumentException("missing channel_id");
+                    final String uid = s.uidForUin(user);
+                    return s.call(s.svc("buddy"), OPERATE_CB, "setTop",
+                            (svc2, cb) -> s.ref.call(svc2, "setTop", uid, top, cb));
+                });
+
+        // 资料详情，整理成固定字段：getUserDetailInfoByUin → ProfileDetailInfo。
+        reg("user_info", new String[]{"user_profile", "get_stranger_info"}, false, "user_id",
+                (s, p) -> {
+                    final long uin = parseUin(p.optString("user_id", p.optString("uin", "")));
+                    if (uin == 0) throw new IllegalArgumentException("missing user_id");
+                    Result r = s.call(s.svc("profile"), DETAIL_BY_UIN_CB, "getUserDetailInfoByUin",
+                            (svc2, cb) -> s.ref.call(svc2, "getUserDetailInfoByUin", uin, cb));
+                    if (!r.ok() || r.payload == null)
+                        throw new IllegalStateException("user_info: " + r.describe());
+                    return s.profileJson(r.payload, uin);
+                });
+
+        // ------------------------------------------------------- 群管理（0.53.0）
+
+        // 群详情，整理成固定字段。batchQueryCachedGroupDetailInfo 只读内核缓存、回调里直接是
+        // ArrayList<GroupDetailInfo>；缓存里没有（或要新的）时先 getGroupDetailInfo 拉一次——它的
+        // IOperateCallback 不带值，只负责把缓存喂上（0.23.3 真机核过的两步）。
+        reg("group_detail", new String[]{"group_info_ex", "get_group_info_ex"}, false,
+                "guild_id, refresh?, raw?",
+                (s, p) -> {
+                    long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    Object info = p.optBoolean("refresh", false) ? null : s.cachedGroupDetail(g);
+                    if (info == null) {
+                        s.call(s.svc("group"), OPERATE_CB, "getGroupDetailInfo",
+                                (svc2, cb) -> s.ref.call(svc2, "getGroupDetailInfo", g,
+                                        s.groupInfoSource("KDATACARD"), cb));
+                        info = s.cachedGroupDetail(g);
+                    }
+                    if (info == null) throw new IllegalStateException("group_detail: no detail for " + g);
+                    JSONObject out = s.groupDetailJson(info);
+                    if (p.optBoolean("raw", false)) out.put("raw", Json.reflect(info));
+                    return out;
+                });
+
+        // 群设置：modifyGroupDetailInfoV2(GroupModifyInfoReq, serviceType=0, IOperateCallback)，
+        // 只把带了的那几项写进 filter（=1），其余不动——写法照 QQ 自己的 TroopOperationRepo：
+        // 加群方式 addOption（为 1 时 QQ 顺手把 allowMemberInvite 也置 1）、问题与答案成对写、
+        // 搜索两枚旗子成对写。什么都不带就读当前值（同 group_detail 的 settings 段）。
+        reg("group_settings", new String[]{"group_setting", "set_group_option"}, true,
+                "guild_id, join?（any/verify/deny/question_review/question_answer 或 1–5）, question?, answer?, "
+                        + "allow_invite?, searchable?（或 search_by_name?/search_by_code?）, msg_limit?, intro?",
+                (s, p) -> {
+                    final long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    Object req = s.neu(NS + "GroupModifyInfoReq");
+                    s.put(req, "groupCode", g);
+                    Object filter = s.ref.get(req, "filter");
+                    Object info = s.ref.get(req, "modifyInfo");
+                    if (filter == null || info == null)
+                        throw new IllegalStateException("GroupModifyInfoReq fields unavailable");
+                    JSONArray changed = new JSONArray();
+                    if (p.has("join") || p.has("add_option")) {
+                        int opt = joinOption(p.opt(p.has("join") ? "join" : "add_option"));
+                        s.put(filter, "addOption", 1);
+                        s.put(info, "addOption", opt);
+                        if (opt == 1) { s.put(filter, "allowMemberInvite", 1); s.put(info, "allowMemberInvite", 1); }
+                        changed.put("join");
+                    }
+                    if (p.has("question") || p.has("answer")) {
+                        s.put(filter, "groupQuestion", 1);
+                        s.put(filter, "groupAnswer", 1);
+                        s.put(info, "groupQuestion", p.optString("question", ""));
+                        s.put(info, "groupAnswer", p.optString("answer", ""));
+                        changed.put("question");
+                    }
+                    if (p.has("allow_invite")) {
+                        s.put(filter, "allowMemberInvite", 1);
+                        s.put(info, "allowMemberInvite", p.optBoolean("allow_invite") ? 1 : 0);
+                        changed.put("allow_invite");
+                    }
+                    if (p.has("searchable") || p.has("search_by_name") || p.has("search_by_code")) {
+                        boolean both = p.optBoolean("searchable", true);
+                        boolean byName = p.optBoolean("search_by_name", both);
+                        boolean byCode = p.optBoolean("search_by_code", both);
+                        s.put(filter, "noFingerOpenFlag", 1);
+                        s.put(filter, "noCodeFingerOpenFlag", 1);
+                        s.put(info, "noFingerOpenFlag", byName ? 0 : 1);
+                        s.put(info, "noCodeFingerOpenFlag", byCode ? 0 : 1);
+                        changed.put("searchable");
+                    }
+                    if (p.has("msg_limit")) {
+                        s.put(filter, "msgLimitFrequency", 1);
+                        s.put(info, "msgLimitFrequency", Math.max(0, p.optInt("msg_limit", 0)));
+                        changed.put("msg_limit");
+                    }
+                    if (p.has("intro")) {
+                        s.put(filter, "fingerMemo", 1);
+                        s.put(info, "fingerMemo", p.optString("intro", ""));
+                        changed.put("intro");
+                    }
+                    if (changed.length() == 0) {
+                        Object detail = s.cachedGroupDetail(g);
+                        if (detail == null) throw new IllegalStateException("group_settings: no cached detail, call group_detail first");
+                        return s.groupDetailJson(detail).optJSONObject("settings");
+                    }
+                    s.put(req, "operatorUin", parseUin(s.qq.selfUin()));
+                    Result r = s.call(s.svc("group"), OPERATE_CB, "modifyGroupDetailInfoV2",
+                            (svc2, cb) -> s.ref.call(svc2, "modifyGroupDetailInfoV2", req, 0, cb));
+                    return resultJson(r).put("changed", changed);
+                });
+
+        // 批量踢人：kickMember(long, ArrayList<uid>, boolean 拒绝再加, String 理由, IKickMemberOperateCallback)
+        reg("group_kick", new String[]{"group_kick_members", "kick_members"}, true,
+                "guild_id, user_ids[]（或 user_id）, permanent?（拒绝再次申请）, reason?",
+                (s, p) -> {
+                    final long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    final ArrayList<String> uids = s.memberUids(p);
+                    final boolean reject = p.optBoolean("permanent", p.optBoolean("reject", false));
+                    final String reason = p.optString("reason", "");
+                    return s.call(s.svc("group"), QQClient.KICK_CB, "kickMember",
+                            (svc2, cb) -> s.ref.call(svc2, "kickMember", g, uids, reject, reason, cb));
+                });
+
+        // 批量禁言：setMemberShutUp(long, ArrayList<GroupMemberShutUpInfo{uid, timeStamp=秒}>, IOperateCallback)
+        reg("group_mute", new String[]{"group_ban_members", "mute_members"}, true,
+                "guild_id, user_ids[]（或 user_id）, duration（毫秒，0 解除）",
+                (s, p) -> {
+                    final long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    long ms = Math.max(0, p.optLong("duration", 0));
+                    final int seconds = (int) Math.min(30L * 24 * 3600, (ms + 999) / 1000);
+                    final ArrayList<Object> list = new ArrayList<>();
+                    for (String uid : s.memberUids(p)) {
+                        Object info = s.neu(NS + "GroupMemberShutUpInfo");
+                        s.put(info, "uid", uid);
+                        s.put(info, "timeStamp", seconds);
+                        list.add(info);
+                    }
+                    return s.call(s.svc("group"), OPERATE_CB, "setMemberShutUp",
+                            (svc2, cb) -> s.ref.call(svc2, "setMemberShutUp", g, list, cb));
+                });
+
+        // 转让群：transferGroupV2(long, oldOwnerUid, newOwnerUid, ITransferGroupCallback)。只有群主能做。
+        reg("group_transfer", new String[]{"transfer_group"}, true, "guild_id, user_id（新群主）",
+                (s, p) -> {
+                    final long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    if (parseUin(p.optString("user_id", "")) == 0) throw new IllegalArgumentException("missing user_id");
+                    final String self = s.selfUid();
+                    final String target = s.uidForUin(p.optString("user_id", ""));
+                    Result r = s.call(s.svc("group"), TRANSFER_GROUP_CB, "transferGroupV2",
+                            (svc2, cb) -> s.ref.call(svc2, "transferGroupV2", g, self, target, cb));
+                    JSONObject out = resultJson(r);
+                    if (r.payload != null) {
+                        int result = Ref.asInt(s.ref.get(r.payload, "result"));
+                        String err = Ref.asStr(s.ref.get(r.payload, "strErrorInfo"));
+                        String prompt = Ref.asStr(s.ref.get(r.payload, "strClientPrompt"));
+                        out.put("result", result);
+                        if (err != null && !err.isEmpty()) out.put("error", err);
+                        if (prompt != null && !prompt.isEmpty()) out.put("prompt", prompt);
+                        if (result != 0) out.put("ok", false);
+                    }
+                    if (!out.optBoolean("ok")) out.put("msg", out.optString("error", out.optString("prompt", r.describe())));
+                    return out;
+                });
+
+        // 解散群：destroyGroupV2(DestroyGroupReq{groupCode, needDeleteLocalMsg}, IOperateCallback)。
+        // 不可撤销，要求 confirm 等于群号，免得一句手滑就解散了。
+        reg("group_destroy", new String[]{"dismiss_group", "destroy_group"}, true,
+                "guild_id, confirm（再写一遍群号）, delete_local_msg?",
+                (s, p) -> {
+                    final long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    if (parseUin(p.optString("confirm", "")) != g)
+                        throw new IllegalArgumentException("group_destroy needs confirm = guild_id");
+                    Object req = s.neu(NS + "DestroyGroupReq");
+                    s.put(req, "groupCode", g);
+                    s.put(req, "needDeleteLocalMsg", p.optBoolean("delete_local_msg", false));
+                    return s.call(s.svc("group"), OPERATE_CB, "destroyGroupV2",
+                            (svc2, cb) -> s.ref.call(svc2, "destroyGroupV2", req, cb));
+                });
+
+        // 群消息接收方式：setGroupMsgMask(long, GroupMsgMask, IOperateCallback)。只影响本号自己。
+        reg("group_msg_mask", new String[]{"set_group_msg_mask", "group_notify_mode"}, true,
+                "guild_id, mode（notify 接收并提醒 / receive 接收不提醒 / assistant 收进群助手 / shield 屏蔽）",
+                (s, p) -> {
+                    final long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    final Object mask = s.enumOf(NS + "GroupMsgMask", msgMask(p.optString("mode", "")));
+                    if (mask == null) throw new IllegalArgumentException("unknown mode");
+                    return s.call(s.svc("group"), OPERATE_CB, "setGroupMsgMask",
+                            (svc2, cb) -> s.ref.call(svc2, "setGroupMsgMask", g, mask, cb));
+                });
+    }
+
+    // ------------------------------------------------------- 0.53.0 的小零件
+
+    /** 内核回执 → {ok, code, msg}，写动作失败时 Dispatcher 据此回错误体。 */
+    static JSONObject resultJson(Result r) throws Exception {
+        return new JSONObject().put("ok", r != null && r.ok())
+                .put("code", r == null ? -1 : r.code)
+                .put("msg", r == null ? "no result" : r.describe());
+    }
+
+    static int genderCode(Object v) {
+        String s = String.valueOf(v).trim().toLowerCase(Locale.ROOT);
+        switch (s) {
+            case "1": case "male": case "m": case "男": return 1;
+            case "2": case "female": case "f": case "女": return 2;
+            default: throw new IllegalArgumentException("gender: male / female");
+        }
+    }
+
+    static int[] birthday(String s) {
+        String[] parts = s == null ? new String[0] : s.trim().split("[-/.]");
+        if (parts.length != 3) throw new IllegalArgumentException("birthday: YYYY-MM-DD");
+        try {
+            int y = Integer.parseInt(parts[0]), m = Integer.parseInt(parts[1]), d = Integer.parseInt(parts[2]);
+            if (y < 1900 || m < 1 || m > 12 || d < 1 || d > 31) throw new NumberFormatException();
+            return new int[]{y, m, d};
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("birthday: YYYY-MM-DD");
+        }
+    }
+
+    static int onlineStatus(Object v) {
+        String s = v == null ? "" : String.valueOf(v).trim().toLowerCase(Locale.ROOT);
+        switch (s) {
+            case "online": case "在线": return 10;
+            case "away": case "离开": return 30;
+            case "invisible": case "隐身": return 40;
+            case "busy": case "忙碌": return 50;
+            case "qme": case "q我吧": return 60;
+            case "dnd": case "请勿打扰": return 70;
+            default:
+                try { return Integer.parseInt(s); } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("status: online / away / invisible / busy / qme / dnd");
+                }
+        }
+    }
+
+    /** 加群方式（GroupModifyInfo.addOption）。数字原样透传，名字按 QQ 设置页的五档。 */
+    static int joinOption(Object v) {
+        String s = String.valueOf(v).trim().toLowerCase(Locale.ROOT);
+        switch (s) {
+            case "any": case "允许任何人": return 1;
+            case "verify": case "需要验证": return 2;
+            case "deny": case "不允许": return 3;
+            case "question_review": return 4;
+            case "question_answer": return 5;
+            default:
+                try { return Integer.parseInt(s); } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("join: any / verify / deny / question_review / question_answer");
+                }
+        }
+    }
+
+    static String msgMask(String mode) {
+        switch (mode == null ? "" : mode.trim().toLowerCase(Locale.ROOT)) {
+            case "notify": case "接收并提醒": return "NOTIFY";
+            case "receive": case "silent": case "接收不提醒": return "RECEIVE";
+            case "assistant": case "收进群助手": return "ASSISTANT";
+            case "shield": case "屏蔽": return "SHIELD";
+            default: throw new IllegalArgumentException("mode: notify / receive / assistant / shield");
+        }
+    }
+
+    /** user_ids[]（或单个 user_id）→ uid 列表，去重保序，最多 50 个。 */
+    private ArrayList<String> memberUids(JSONObject p) {
+        JSONArray a = p.optJSONArray("user_ids");
+        if (a == null && p.has("user_id")) a = new JSONArray().put(p.opt("user_id"));
+        ArrayList<String> out = new ArrayList<>();
+        for (int i = 0; a != null && i < a.length() && out.size() < 50; i++) {
+            if (parseUin(a.optString(i, "")) == 0) continue;
+            String uid = uidForUin(a.optString(i, ""));
+            if (!out.contains(uid)) out.add(uid);
+        }
+        if (out.isEmpty()) throw new IllegalArgumentException("missing user_ids");
+        return out;
+    }
+
+    /** 内核缓存里的一份 GroupDetailInfo，没有就 null。 */
+    private Object cachedGroupDetail(long groupCode) {
+        try {
+            Object req = neu(BATCH_DETAIL_REQ);
+            put(req, "groupCodes", new ArrayList<>(Collections.singletonList(groupCode)));
+            Result r = call(svc("group"), BATCH_DETAIL_CB, "batchQueryCachedGroupDetailInfo",
+                    (svc2, cb) -> ref.call(svc2, "batchQueryCachedGroupDetailInfo", req, cb), 8_000L);
+            if (!(r.payload instanceof Collection<?> items)) return null;
+            for (Object item : items) {
+                if (Ref.asLong(ref.get(item, "groupCode")) == groupCode) return item;
+            }
+        } catch (Throwable t) {
+            L.e("cachedGroupDetail " + groupCode, t);
+        }
+        return null;
+    }
+
+    private Object field(Object o, String name) {
+        try { return ref.get(o, name); } catch (Throwable t) { return null; }
+    }
+    private int intOf(Object o, String name) { return Ref.asInt(field(o, name)); }
+    private long longOf(Object o, String name) { return Ref.asLong(field(o, name)); }
+    private String strOf(Object o, String name) {
+        String s = Ref.asStr(field(o, name));
+        return s == null ? "" : s;
+    }
+    private static String enumName(Object v) {
+        if (v == null) return "";
+        String s = v instanceof Enum<?> e ? e.name() : String.valueOf(v);
+        return s.toLowerCase(Locale.ROOT).replaceFirst("^k", "");
+    }
+
+    /** GroupDetailInfo → 固定字段。时间都换成毫秒；禁言截止 0 表示没有。 */
+    private JSONObject groupDetailJson(Object d) throws Exception {
+        long now = System.currentTimeMillis() / 1000;
+        long allUntil = longOf(d, "shutUpAllTimestamp"), meUntil = longOf(d, "shutUpMeTimestamp");
+        String role = enumName(field(d, "cmdUinPrivilege"));
+        JSONObject settings = new JSONObject()
+                .put("join", intOf(d, "groupOption"))
+                .put("question", strOf(d, "groupQuestion"))
+                .put("answer", strOf(d, "groupAnswer"))
+                .put("searchable_by_name", intOf(d, "noFingerOpenFlag") == 0)
+                .put("searchable_by_code", intOf(d, "noCodeFingerOpenFlag") == 0)
+                .put("msg_limit", intOf(d, "msgLimitFrequency"))
+                .put("allow_recall", intOf(d, "isAllowRecallMsg") != 0);
+        return new JSONObject()
+                .put("guild_id", String.valueOf(longOf(d, "groupCode")))
+                .put("name", strOf(d, "groupName"))
+                .put("remark", strOf(d, "remarkName"))
+                .put("owner_id", String.valueOf(longOf(d, "ownerUin")))
+                .put("created_at", longOf(d, "groupCreateTime") * 1000)
+                .put("member_count", intOf(d, "memberNum"))
+                .put("max_member_count", intOf(d, "maxMemberNum"))
+                .put("admin_max", intOf(d, "groupAdminMaxNum"))
+                .put("active_member_count", intOf(d, "activeMemberNum"))
+                .put("intro", strOf(d, "fingerMemo"))
+                .put("memo", strOf(d, "groupMemo"))
+                .put("class", strOf(d, "groupClassText"))
+                .put("grade", intOf(d, "groupGrade"))
+                .put("frozen", intOf(d, "isGroupFreeze") != 0)
+                .put("mute_all_until", allUntil > now ? allUntil * 1000 : 0)
+                .put("self", new JSONObject()
+                        .put("role", role)
+                        .put("joined_at", longOf(d, "cmdUinJoinTime") * 1000)
+                        .put("muted_until", meUntil > now ? meUntil * 1000 : 0)
+                        .put("msg_mask", enumName(field(d, "cmdUinMsgMask")))
+                        .put("pinned", Boolean.TRUE.equals(field(d, "isTop"))))
+                .put("settings", settings);
+    }
+
+    /** ProfileDetailInfo → 固定字段。性别 male/female/unknown；年龄按生日算，没填是 0。 */
+    private JSONObject profileJson(Object d, long uin) throws Exception {
+        int sex = intOf(d, "sex");
+        int y = intOf(d, "birthdayYear"), m = intOf(d, "birthdayMonth"), day = intOf(d, "birthdayDay");
+        int age = 0;
+        if (y > 1900) {
+            Calendar c = Calendar.getInstance();
+            age = c.get(Calendar.YEAR) - y;
+            int nowMd = (c.get(Calendar.MONTH) + 1) * 100 + c.get(Calendar.DAY_OF_MONTH);
+            if (nowMd < m * 100 + day) age--;
+        }
+        Object level = field(d, "qqLevel");
+        JSONObject out = new JSONObject()
+                .put("user_id", String.valueOf(uin))
+                .put("uid", strOf(d, "uid"))
+                .put("nick", strOf(d, "nick"))
+                .put("remark", strOf(d, "remark"))
+                .put("long_nick", strOf(d, "longNick"))
+                .put("gender", sex == 1 ? "male" : sex == 2 ? "female" : "unknown")
+                .put("age", Math.max(0, age))
+                .put("birthday", y > 0 ? String.format(Locale.ROOT, "%04d-%02d-%02d", y, m, day) : "")
+                .put("qid", strOf(d, "qid"))
+                .put("country", strOf(d, "country"))
+                .put("province", strOf(d, "province"))
+                .put("city", strOf(d, "city"))
+                .put("hometown", strOf(d, "homeTown"))
+                .put("college", strOf(d, "college"))
+                .put("registered_at", longOf(d, "regTime") * 1000)
+                .put("vip", Boolean.TRUE.equals(field(d, "vipFlag")))
+                .put("svip", Boolean.TRUE.equals(field(d, "svipFlag")))
+                .put("vip_level", intOf(d, "vipLevel"))
+                .put("status", intOf(d, "status"))
+                .put("ext_status", intOf(d, "extStatus"))
+                .put("blocked", Boolean.TRUE.equals(field(d, "isBlock")))
+                .put("avatar", "https://q.qlogo.cn/headimg_dl?dst_uin=" + uin + "&spec=640");
+        if (level != null) out.put("level", Json.reflect(level));
+        return out;
     }
 
     /** uin → uid；取不到就回原值（有些入口收的就是 uin 字符串）。 */

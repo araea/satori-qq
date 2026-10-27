@@ -164,7 +164,9 @@ final class Dispatcher {
             case "special_title", "set_group_special_title" -> write("internal.special_title", () -> groupOps.specialTitle(p));
             case "title_display" -> gate.guarded("internal.title_display", () -> groupOps.titleDisplay(p));
             case "honor_display" -> gate.guarded("internal.honor_display", () -> groupOps.honorDisplay(p));
-            case "card", "set_card" -> write("internal.card", () -> groupOps.card(p));
+            case "card", "set_card" -> p.has("guild_ids") || p.optBoolean("all", false)
+                    ? groupOps.cardBatch(p)
+                    : write("internal.card", () -> groupOps.card(p));
             case "sign", "clock_in", "group_sign" -> gate.guarded("internal.sign", () -> groupOps.sign(p));
             case "essence", "set_essence" -> write("internal.essence", () -> groupOps.essence(p));
             case "invite" -> write("internal.invite", () -> groupOps.invite(p));

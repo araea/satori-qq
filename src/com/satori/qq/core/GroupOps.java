@@ -4,9 +4,12 @@ import com.satori.qq.L;
 import com.satori.qq.packet.PacketSvc;
 import com.satori.qq.packet.Pb;
 import com.satori.qq.qq.QQClient;
+import com.satori.qq.qq.Ref;
 import com.satori.qq.satori.Codec;
 import com.satori.qq.satori.Protocol;
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.json.JSONArray;
@@ -187,6 +190,50 @@ final class GroupOps {
         long u = user(p);
         if (u == 0) u = identity.selfUin();
         ApiError.require(qq.setCard(g, directory.uidFor(g, u), p.optString("card", "")));
+    }
+
+    /**
+     * 一次改本号在多个群里的群名片：{@code guild_ids[]}，或 {@code all: true} 表示所有群。
+     * 每个群单独过一次出站闸门（限频与熔断照旧），一个群失败不拦后面的，回执逐群列出。
+     * 只改自己的——批量改别人的名片不是正常客户端会做的事。
+     */
+    JSONObject cardBatch(JSONObject p) throws Exception {
+        long self = identity.selfUin();
+        long u = user(p);
+        if (u != 0 && u != self) throw ApiError.badRequest("batch card only applies to the bot itself");
+        String card = p.optString("card", "");
+        List<Long> groups = new ArrayList<>();
+        JSONArray ids = p.optJSONArray("guild_ids");
+        if (ids != null) {
+            for (int i = 0; i < ids.length(); i++) {
+                long g = Ids.parse(ids.optString(i, ""));
+                if (g != 0 && !groups.contains(g)) groups.add(g);
+            }
+        } else if (p.optBoolean("all", false)) {
+            for (Object info : qq.getGroupList()) {
+                long g = Ref.asLong(qq.ref.get(info, "groupCode"));
+                if (g != 0 && !groups.contains(g)) groups.add(g);
+            }
+        }
+        if (groups.isEmpty()) throw ApiError.badRequest("missing guild_ids");
+        JSONArray results = new JSONArray();
+        int ok = 0;
+        for (long g : groups) {
+            JSONObject r = new JSONObject().put("guild_id", String.valueOf(g));
+            try {
+                gate.guarded("internal.card", () -> {
+                    ApiError.require(qq.setCard(g, directory.uidFor(g, self), card));
+                    return null;
+                });
+                r.put("ok", true);
+                ok++;
+            } catch (Exception e) {
+                r.put("ok", false).put("msg", String.valueOf(e.getMessage()));
+            }
+            results.put(r);
+        }
+        return new JSONObject().put("ok", ok == groups.size()).put("done", ok)
+                .put("total", groups.size()).put("results", results);
     }
 
     /** OidbSvcTrpcTcp.0x8FC_2: set (or clear) one member's special title. */

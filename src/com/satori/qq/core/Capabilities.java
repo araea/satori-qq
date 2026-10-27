@@ -20,13 +20,15 @@ final class Capabilities {
     private static final List<String> REMOVED_0_17 = List.of(
             "group_overview", "group_extra", "member_info", "group_member_search", "recent_contacts",
             "contact_search", "friend_relation", "profile_self", "group_honor",
-            "group_active", "group_anniversary", "group_detail",
+            "group_active", "group_anniversary",
             "group_statistic", "voice_to_text",
-            "get_resource", "session_top", "group_msg_mask", "offline");
+            "get_resource", "offline");
 
-    /** 0.23.0 收掉的：这些在旧实现里靠通用 Java hook 才成立。 */
-    private static final Map<String, String> REMOVED_0_23 = Map.of(
-            "like", "资料卡点赞走 QQ 的 WUP/Handler 通道，本实现端只走 JNI 层");
+    /**
+     * 0.23.0 收掉的：这些在旧实现里靠通用 Java hook 才成立。`like` 在 0.53.0 改走裸 SSO
+     * 通道回来了（ExtraSvc 注册表），所以名单现在是空的。
+     */
+    private static final Map<String, String> REMOVED_0_23 = Map.of();
 
     private static final String REMOVED_0_17_WHY = "QQ 内核查询接口不再向客户端暴露";
 
@@ -61,7 +63,8 @@ final class Capabilities {
             "essence", "special_title", "invite", "group_file_delete", "group_file_rename",
             "group_file_move", "group_file_folder_delete", "group_file_folder_rename",
             "group_bulletin_publish", "group_bulletin_delete", "group_quit",
-            "group_join_noverify", "online_file_refuse", "group_file_trans");
+            "group_join_noverify", "online_file_refuse", "group_file_trans",
+            "group_kick", "group_mute", "group_transfer", "group_destroy", "group_settings");
 
     /**
      * 标准方法的参数说明。只写常用的那几个：客户端真正需要读的是下面
@@ -135,7 +138,7 @@ final class Capabilities {
             case "invite" -> "guild_id, user_id";
             case "reaction_clear" -> "channel_id, message_id, emoji_id?; scope=self";
             case "reaction_summary" -> "channel_id, message_id; cached counts and self flags";
-            case "card" -> "guild_id, user_id?, card";
+            case "card" -> "guild_id, user_id?, card；批量改本号：guild_ids[] 或 all:true";
             case "special_title" -> "guild_id, user_id, title";
             case "title_display" -> "guild_id, show?";
             case "title_wear" -> "guild_id, title_id?|role?（owner/admin/level/off）|name?，title?（≤6字，群主专属），strategy?（auto/identity/special），verify?，settle_ms?";
@@ -213,7 +216,7 @@ final class Capabilities {
                 .put("reaction_clear", "channel_id, message_id, emoji_id?; scope=self")
                 .put("reaction_summary", "channel_id, message_id; cached counts and self flags")
                 .put("invite", "guild_id, user_id")
-                .put("card", "guild_id, user_id?, card")
+                .put("card", "guild_id, user_id?, card；批量改本号：guild_ids[] 或 all:true")
                 .put("special_title", "guild_id, user_id, title；别名 set_group_special_title")
                 .put("title_display", "guild_id, show?（省略 show/enable 则只读当前开关状态，不写）")
                 .put("honor_display", "guild_id, show?")

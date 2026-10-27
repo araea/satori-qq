@@ -9,7 +9,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** org.json 上的几个小零件：消息段、拷贝、反射导出、分页。 */
-final class Json {
+public final class Json {
     private Json() {}
 
     /** 内部消息段 {@code {type:"text", data:{text}}}。 */
@@ -35,7 +35,7 @@ final class Json {
     static boolean blank(String s) { return s == null || s.trim().isEmpty(); }
 
     /** Reflect a kernel payload into JSON so read actions stay tolerant of QQ's field churn. */
-    static Object reflect(Object v) throws Exception { return reflect(v, 4, 50); }
+    public static Object reflect(Object v) throws Exception { return reflect(v, 4, 50); }
 
     private static Object reflect(Object v, int depth, int listCap) throws Exception {
         if (v == null) return JSONObject.NULL;

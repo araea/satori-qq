@@ -62,8 +62,15 @@ public final class CapabilitiesTest {
 
     private static void removedActionsAreNotDeclared() {
         // 移除过的动作既不该在目录里，也不该被 declares 认下——它有自己的错误码。
-        check(!Capabilities.declares("like"), "移除过的 like 不该还能调");
-        check(Capabilities.removedSince("like") != null, "like 应该记着是哪个版本移除的");
+        check(Capabilities.removedSince("like") == null, "like 0.53.0 起回来了，不该再记成移除");
+        check(Capabilities.removedSince("offline") != null, "offline 应该记着是哪个版本移除的");
+        check(!Capabilities.declares("offline"), "移除过的 offline 不该还能调");
+        for (String name : new String[]{"like", "group_kick", "group_mute", "group_transfer",
+                "group_settings", "group_detail", "group_msg_mask", "session_top", "profile_set",
+                "online_status", "user_info", "friend_block", "group_destroy"}) {
+            check(Capabilities.declares(name), name + " 应该在能力目录里");
+            check(Capabilities.removedSince(name) == null, name + " 不能同时记成移除");
+        }
     }
 
     private static JSONArray catalog() throws Exception {

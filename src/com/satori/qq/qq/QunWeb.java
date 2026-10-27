@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -34,10 +35,18 @@ public final class QunWeb {
             return out.toString();
         }
 
-        /** bkn 的候选：网页按 skey 算，没有 skey 或被拒时再试 p_skey 算的那一个。 */
+        /**
+         * bkn 的候选，按网页自己的算法排：有 skey 用 skey，没有就用 p_skey 的<b>前 10 个字符</b>
+         * （qun.qq.com 前端 base 模块 getSkey 的写法；整串 p_skey 算出来的会被荣誉接口判 csrf error）。
+         * 整串的那个留在最后，给只认它的老接口。
+         */
         List<Long> bkns() {
             List<Long> out = new ArrayList<>();
             if (skey != null && !skey.isEmpty()) out.add(Qzone.gtk(skey));
+            if (pskey != null && pskey.length() > 10) {
+                long short10 = Qzone.gtk(pskey.substring(0, 10));
+                if (!out.contains(short10)) out.add(short10);
+            }
             long fromPskey = Qzone.gtk(pskey);
             if (!out.contains(fromPskey)) out.add(fromPskey);
             return out;
@@ -168,6 +177,78 @@ public final class QunWeb {
                 .put("count", out.length()).put("essences", out);
         if (!rsp.optBoolean("ok", false)) result.put("error", describe(rsp)).put("raw", rsp);
         return result;
+    }
+
+    /** 群荣誉榜：「群荣誉」H5 页的数据接口，类别 → 路径。 */
+    private static final String HONOR_BASE = "https://qun.qq.com/cgi-bin/qunapp/";
+    private static final String HONOR_REFERER = "https://qun.qq.com/interactive/honorlist?gc=%d&type=1";
+    /** 类别名、榜单名、请求路径（不含 bkn）。continuous_type 取自页面脚本：2 群聊之火、3 群聊炽焰、5 冒尖小春笋。 */
+    private static final String[][] HONOR_KINDS = {
+            {"talkative", "龙王", "honor_talkative?gc=%d&num=%d"},
+            {"performer", "群聊之火", "honor_continuous?gc=%d&num=%d&continuous_type=2"},
+            {"legend", "群聊炽焰", "honor_continuous?gc=%d&num=%d&continuous_type=3"},
+            {"newbie", "冒尖小春笋", "honor_continuous?gc=%d&num=%d&continuous_type=5"},
+            {"emotion", "快乐源泉", "honor_emotion?gc=%d&num=%d"},
+    };
+
+    /**
+     * 群荣誉榜。{@code kind} 是 {@link #HONOR_KINDS} 的类别名或 {@code all}；返回
+     * {ok, group, honors: {类别: {title, current?, list[{user_id, name, avatar, days, …}]}}}，
+     * 失败的类别带 {@code error}。
+     */
+    public static JSONObject honors(Ticket ticket, long group, String kind, int limit) throws Exception {
+        String want = kind == null || kind.isEmpty() ? "all" : kind.toLowerCase(Locale.ROOT);
+        if (want.equals("strong_newbie")) want = "newbie";
+        int num = Math.max(1, Math.min(limit <= 0 ? 10 : limit, 50));
+        JSONObject honors = new JSONObject();
+        boolean anyOk = false;
+        boolean known = false;
+        for (String[] k : HONOR_KINDS) {
+            if (!want.equals("all") && !want.equals(k[0])) continue;
+            known = true;
+            JSONObject rsp = null;
+            for (long bkn : ticket.bkns()) {
+                rsp = get(HONOR_BASE + String.format(k[2], group, num) + "&bkn=" + bkn, ticket,
+                        String.format(HONOR_REFERER, group));
+                if (rsp.optBoolean("ok", false)) break;
+            }
+            JSONObject entry = new JSONObject().put("title", k[1]);
+            if (rsp == null || !rsp.optBoolean("ok", false)) {
+                entry.put("error", rsp == null ? "no reply" : describe(rsp));
+                honors.put(k[0], entry);
+                continue;
+            }
+            anyOk = true;
+            JSONObject data = rsp.optJSONObject("data");
+            if (data == null) data = new JSONObject();
+            JSONObject current = data.optJSONObject("current_talkative");
+            if (current != null && current.optLong("uin", 0) != 0) entry.put("current", honorEntry(current));
+            JSONArray list = new JSONArray();
+            for (String key : new String[]{"talkative_list", "continuous_list", "emotion_list"}) {
+                JSONArray rows = data.optJSONArray(key);
+                for (int i = 0; rows != null && i < rows.length() && list.length() < num; i++) {
+                    JSONObject row = rows.optJSONObject(i);
+                    if (row != null) list.put(honorEntry(row));
+                }
+            }
+            honors.put(k[0], entry.put("list", list));
+        }
+        if (!known) throw new IllegalArgumentException("unknown honor kind: " + kind);
+        return new JSONObject().put("ok", anyOk).put("group", group).put("honors", honors);
+    }
+
+    private static JSONObject honorEntry(JSONObject row) throws Exception {
+        String avatar = row.optString("avatar", "");
+        if (!avatar.isEmpty() && avatar.endsWith("s=")) avatar += row.optInt("avatar_size", 140);
+        JSONObject out = new JSONObject()
+                .put("user_id", String.valueOf(row.optLong("uin", 0)))
+                .put("name", row.optString("nick", ""))
+                .put("avatar", avatar.replaceFirst("^http:", "https:"))
+                .put("days", row.optInt("day_count", 0));
+        if (row.has("day_count_history")) out.put("total_days", row.optInt("day_count_history"));
+        if (row.has("day_count_max")) out.put("longest_days", row.optInt("day_count_max"));
+        if (row.has("update_ymd")) out.put("updated", String.valueOf(row.optLong("update_ymd")));
+        return out;
     }
 
     private static String describe(JSONObject rsp) {

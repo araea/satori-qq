@@ -32,12 +32,14 @@ final class Dispatcher {
     private final Requests requests;
     private final Forwards forwards;
     private final Monitor monitor;
+    private final MessageOps messageOps;
     /** 幂等信封的账本（见 {@link CallLedger}）。 */
     private final CallLedger ledger = new CallLedger();
 
     Dispatcher(QQClient qq, Identity identity, OutboundGate gate, Directory directory, Messages messages,
                History history, Reactions reactions, GroupOps groupOps, Requests requests, Forwards forwards,
-               Monitor monitor) {
+               Monitor monitor, MessageOps messageOps) {
+        this.messageOps = messageOps;
         this.qq = qq;
         this.identity = identity;
         this.gate = gate;
@@ -204,6 +206,16 @@ final class Dispatcher {
             // 合并转发在入站只有 `<message forward id="…"/>` 一个元素，没有正文，
             // 也没有第二条能取回它的路，所以这条解析保留。
             case "get_forward" -> forwards.get(p);
+            case "message_forward", "forward_message" -> write("internal.message_forward", () -> messageOps.forward(p));
+            case "voice_to_text", "ptt_to_text" -> messageOps.voiceToText(p);
+            case "request_list", "pending_requests" -> {
+                if (p.optBoolean("refresh", true)) {
+                    qq.refreshBuddyReqs();
+                    qq.refreshGroupNotifies();
+                    Thread.sleep(800); // 内核把列表经监听器推回来，比 onResult 晚一点
+                }
+                yield new JSONObject().put("data", requests.pendingEvents());
+            }
             case "capabilities", "help" -> Capabilities.build();
             case "compat", "selftest" -> new JSONObject()
                     .put("static", monitor.compat(p.optBoolean("force", false)))

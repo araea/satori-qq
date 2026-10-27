@@ -41,7 +41,8 @@ public final class SatoriHub implements HttpServer.Handler {
         OutboundGate gate = new OutboundGate(cfg, qq, identity);
         Lookup lookup = new Lookup(qq, store, conv, directory);
 
-        events = new Events(cfg, identity, directory, store, freshness);
+        Webhooks webhooks = new Webhooks();
+        events = new Events(cfg, identity, directory, store, freshness, webhooks);
         Sender sender = new Sender(cfg, qq, store, conv, identity, directory, gate, freshness);
         Forwards forwards = new Forwards(cfg, qq, store, conv, identity, directory, sender);
         History history = new History(qq, store, conv, identity, directory, lookup, resources);
@@ -64,8 +65,8 @@ public final class SatoriHub implements HttpServer.Handler {
             history.reset();
         });
         dispatcher = new Dispatcher(qq, identity, gate, directory, messages, history, reactions, groupOps,
-                requests, forwards, monitor);
-        routes = new HttpRoutes(cfg, qq, identity, store, resources, gate, dispatcher, monitor);
+                requests, forwards, monitor, new MessageOps(qq, lookup, directory));
+        routes = new HttpRoutes(cfg, qq, identity, store, resources, gate, dispatcher, monitor, webhooks);
     }
 
     public void start() {

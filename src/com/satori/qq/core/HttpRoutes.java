@@ -37,9 +37,11 @@ final class HttpRoutes {
     private final OutboundGate gate;
     private final Dispatcher dispatcher;
     private final Monitor monitor;
+    private final Webhooks webhooks;
 
     HttpRoutes(Cfg cfg, QQClient qq, Identity identity, MsgStore store, Resources resources, OutboundGate gate,
-               Dispatcher dispatcher, Monitor monitor) {
+               Dispatcher dispatcher, Monitor monitor, Webhooks webhooks) {
+        this.webhooks = webhooks;
         this.cfg = cfg;
         this.qq = qq;
         this.identity = identity;
@@ -80,7 +82,11 @@ final class HttpRoutes {
             }
             if (!path.startsWith("/v1/")) return HttpResult.error(404, "not found");
             String method = path.substring("/v1/".length());
+            // 元信息 API 与登录无关，不看 Satori-Platform / Satori-User-ID（协议 advanced/meta）。
             if ("meta".equals(method)) return json(meta());
+            if ("meta/webhook.create".equals(method)) return json(webhooks.create(body(req)));
+            if ("meta/webhook.delete".equals(method)) return json(webhooks.delete(body(req)));
+            if (method.startsWith("meta/")) throw ApiError.unsupported(method);
             checkLoginHeaders(req);
             if ("upload.create".equals(method)) return json(upload(req));
             if (method.startsWith("internal/")) {

@@ -5,7 +5,7 @@ import org.json.JSONObject;
 /** 即时灰条与慢成员列表回调必须共用成员事件去重。 */
 public final class MemberEventsTest {
     public static void main(String[] args) throws Exception {
-        Events events = new Events(null, null, null, null, null);
+        Events events = new Events(null, null, null, null, null, new Webhooks(null));
         JSONObject joined = Notices.groupIncrease(1, 100, 280183116L, 123456, 0);
         check(events.firstMemberChange(joined), "first immediate join");
         check(!events.firstMemberChange(joined), "slow member-list duplicate is suppressed");

@@ -147,6 +147,9 @@ final class Capabilities {
             case "chat_screenshot" -> "channel_id, start_message_id, end_message_id（含端点，最多 40 条）";
             case "message_search" -> "keyword；可选 channel_id|guild_id、user_id、before/after（unix 秒）、limit（≤50）；搜本进程见过的最近四千条，按时间倒序";
             case "message_context" -> "message_id；可选 before/after（各 ≤40）；取同频道前后文";
+            case "message_forward" -> "message_id 或 message_ids[]（同一来源）, target 或 targets[]（群号 / private:QQ号，≤10）, channel_id?（来源，消息不在缓存时用）";
+            case "voice_to_text" -> "message_id, channel_id?, wait?（秒，默认 12）；返回 {text}";
+            case "request_list" -> "refresh?（默认 true）；返回 {data:[未处理的 friend-request / guild-member-request / guild-request 事件]}";
             default -> "";
         };
     }
@@ -161,6 +164,9 @@ final class Capabilities {
             case "chat_screenshot" -> "把一段群聊截成一张图";
             case "message_search" -> "在本进程见过的消息里按关键词检索";
             case "message_context" -> "取某条消息同频道的前后几条";
+            case "message_forward" -> "把已有消息原样转发到别的群或私聊（媒体不重传）";
+            case "voice_to_text" -> "QQ 自带的语音转文字";
+            case "request_list" -> "还没处理的好友申请、入群申请与群邀请";
             case "capabilities" -> "这份目录本身";
             case "compat", "selftest" -> "内核兼容性自检";
             case "restart" -> "重启 QQ 进程";
@@ -189,13 +195,15 @@ final class Capabilities {
     /** 只读的内部动作（与 {@link #CORE_ACTIONS} 同一份名单的子集）。 */
     private static final List<String> CORE_READ = List.of(
             "get_forward", "reaction_summary", "title_display", "chat_screenshot",
-            "message_search", "message_context", "status", "version", "capabilities", "compat");
+            "message_search", "message_context", "voice_to_text", "request_list",
+            "status", "version", "capabilities", "compat");
 
     /** 核心内部动作的完整名单；目录、`actions` 与 {@link #declares} 共用。 */
     private static final List<String> CORE_ACTIONS = List.of(
             "poke", "invite", "reaction_clear", "reaction_summary",
             "card", "special_title", "title_display", "honor_display", "sign", "essence",
             "dice", "rps", "get_forward", "chat_screenshot", "message_search", "message_context",
+            "message_forward", "voice_to_text", "request_list",
             "capabilities", "compat", "status", "version", "clean_cache", "restart");
 
     static JSONObject build() throws Exception {
@@ -217,6 +225,9 @@ final class Capabilities {
                 .put("chat_screenshot", "channel_id, start_message_id, end_message_id（含端点，最多 40 条；返回 PNG internal: 资源）")
                 .put("message_search", "keyword；可选 channel_id|guild_id、user_id、before/after（unix 秒）、limit（≤50）；搜本进程见过的最近四千条，按时间倒序")
                 .put("message_context", "message_id；可选 before/after（各 ≤40）；取同频道前后文")
+                .put("message_forward", "message_id 或 message_ids[]（同一来源）, target 或 targets[]（群号 / private:QQ号，≤10）, channel_id?（来源，消息不在缓存时用）")
+                .put("voice_to_text", "message_id, channel_id?, wait?（秒，默认 12）；返回 {text}")
+                .put("request_list", "refresh?（默认 true）；返回 {data:[未处理的 friend-request / guild-member-request / guild-request 事件]}")
                 .put("compat", "force?");
         JSONArray reads = new JSONArray(CORE_READ);
         JSONArray writes = new JSONArray(CORE_ACTIONS.stream().filter(n -> !CORE_READ.contains(n)).toList());

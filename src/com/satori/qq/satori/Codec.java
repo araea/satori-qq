@@ -287,6 +287,11 @@ public final class Codec {
                     copyAttrs(el, d);
                     segs.put(seg("poke", d));
                     break;
+                case "contact":
+                    // QQ 的名片卡（推荐群 / 推荐好友）：<satori-qq:contact type="group" id="群号"/>。
+                    d.put("type", first(el.attr("type"), "user")).put("id", el.attr("id"));
+                    segs.put(seg("contact", d));
+                    break;
                 default:
                     if (!el.children.isEmpty()) {
                         JSONArray inner = toSegments(el.children);

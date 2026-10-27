@@ -286,6 +286,74 @@ public final class ExtraSvc {
                 (svc, cb) -> ref.call(svc, "getDraft", contact, cb));
     }
 
+    // ----------------------------------------------------------- 转发 / 语音转文字
+
+    private static final String FORWARD_CB = "com.tencent.qqnt.kernel.nativeinterface.IForwardOperateCallback";
+
+    /**
+     * 原生逐条转发：{@code forwardMsg(ArrayList<Long> msgIds, Contact 来源, ArrayList<Contact> 目标,
+     * HashMap 附加, IForwardOperateCallback)}。QQ 自己的「转发」菜单走的就是它：图片、文件、语音不重新
+     * 上传，消息在目标会话里是新的一条（发送者是本号）。目标可以有多个。
+     */
+    public Result forward(int srcType, String srcPeer, List<Long> msgIds, List<Object> targets) throws Exception {
+        Object src = ref.neu(QQClient.CONTACT, srcType, srcPeer, "");
+        ArrayList<Long> ids = new ArrayList<>(msgIds);
+        ArrayList<Object> dst = new ArrayList<>(targets);
+        return call(qq.getMsgService(), FORWARD_CB, "forwardMsg",
+                (svc, cb) -> ref.call(svc, "forwardMsg", ids, src, dst, new HashMap<>(), cb));
+    }
+
+    /** 目标会话的 Contact：群号，或私聊对象的 uid。 */
+    public Object contact(int chatType, String peer) throws Exception {
+        return ref.neu(QQClient.CONTACT, chatType, peer, "");
+    }
+
+    /**
+     * 语音转文字：{@code translatePtt2Text(msgId, Contact, MsgElement, IOperateCallback)}，就是长按语音点
+     * 「转文字」那一下。结果不在回调里，内核把识别出的文字写回那条消息的 {@code pttElement.text}，
+     * 所以回调之后重读消息，最多等 {@code waitMs}。
+     */
+    public JSONObject pttToText(int chatType, String peer, long msgId, Object record, long waitMs) throws Exception {
+        Object element = null;
+        Object elements = ref.get(record, "elements");
+        if (elements instanceof Collection<?> list) {
+            for (Object e : list) {
+                if (e != null && Ref.asInt(ref.get(e, "elementType")) == 4) { element = e; break; }
+            }
+        }
+        if (element == null) throw new IllegalArgumentException("message has no voice element");
+        String ready = pttText(element);
+        if (!ready.isEmpty()) return new JSONObject().put("text", ready).put("cached", true);
+        Object contact = contact(chatType, peer);
+        Object msgElement = element;
+        Result r = call(qq.getMsgService(), OPERATE_CB, "translatePtt2Text",
+                (svc, cb) -> ref.call(svc, "translatePtt2Text", msgId, contact, msgElement, cb));
+        if (!r.ok()) throw ApiError.failed("translatePtt2Text: " + r.describe());
+        long deadline = System.currentTimeMillis() + Math.max(1_000L, waitMs);
+        while (System.currentTimeMillis() < deadline) {
+            QQClient.MsgListResult got = qq.getMsgsByMsgId(chatType, peer, msgId);
+            if (got.ok() && got.records != null && !got.records.isEmpty()) {
+                Object el = null;
+                Object again = ref.get(got.records.get(0), "elements");
+                if (again instanceof Collection<?> list) {
+                    for (Object e : list) {
+                        if (e != null && Ref.asInt(ref.get(e, "elementType")) == 4) { el = e; break; }
+                    }
+                }
+                String text = el == null ? "" : pttText(el);
+                if (!text.isEmpty()) return new JSONObject().put("text", text).put("cached", false);
+            }
+            Thread.sleep(600);
+        }
+        throw ApiError.failed("voice recognition returned no text in " + waitMs / 1000 + "s");
+    }
+
+    private String pttText(Object element) {
+        Object ptt = ref.get(element, "pttElement");
+        String text = ptt == null ? "" : Ref.asStr(ref.get(ptt, "text"));
+        return text == null ? "" : text.trim();
+    }
+
     // --------------------------------------------------------- recent contacts
 
     // ------------------------------------------------------------------- robot
@@ -1058,6 +1126,37 @@ public final class ExtraSvc {
                             p.optInt("page_limit", p.optInt("limit", 20)));
                 });
 
+        // 群荣誉榜（龙王、群聊之火、群聊炽焰、冒尖小春笋、快乐源泉…）：客户端「群荣誉」H5 页的
+        // 数据接口 /cgi-bin/qunapp/honor_*。内核只有本号自己的荣誉（getGroupHonorList），没有榜单。
+        reg("group_honor", new String[]{"group_honors"}, false,
+                "guild_id, kind?（talkative 龙王 / performer 群聊之火 / legend 群聊炽焰 / newbie 冒尖小春笋 / "
+                        + "emotion 快乐源泉 / all，默认 all）, limit?（每类 ≤50，默认 10）",
+                (s, p) -> {
+                    long g = groupOf(p);
+                    if (g == 0) throw new IllegalArgumentException("missing guild_id");
+                    return QunWeb.honors(s.webTicket(p), g, p.optString("kind", p.optString("type", "all")),
+                            p.optInt("limit", 10));
+                });
+
+        // getGroupRecommendContactArkJson(long groupCode, cb) / getBuddyRecommendContactArkJson(
+        // long uin, String phone, cb)：QQ「推荐给好友」那张名片卡。回的是 ark 载荷，原样放进
+        // <satori-qq:json data="…"/> 就能发出去；发送时也可以直接写 <satori-qq:contact type id/>。
+        reg("contact_card", new String[]{"share_contact"}, false,
+                "type（group / user）, id（群号或 QQ 号）",
+                (s, p) -> s.contactArk(p.optString("type", p.has("guild_id") ? "group" : "user"),
+                        p.optString("id", p.optString("guild_id", p.optString("user_id", "")))));
+
+        // fetchFavEmojiList(String resId, int count, boolean backward, boolean forceRefresh, cb)：
+        // 本号收藏的表情。条目里的 url / 本地路径可直接放进 <img sub-type="1"/> 当表情发。
+        reg("fav_emoji_list", new String[]{"custom_face_list"}, false,
+                "count?（默认 48，≤200）, refresh?",
+                (s, p) -> {
+                    int count = Math.max(1, Math.min(p.optInt("count", 48), 200));
+                    boolean refresh = p.optBoolean("refresh", false);
+                    return s.call(s.svc("msg"), "com.tencent.qqnt.kernel.nativeinterface.IFetchFavEmojiListCallback", "fetchFavEmojiList",
+                            (svc2, cb) -> s.ref.call(svc2, "fetchFavEmojiList", "", count, true, refresh, cb));
+                });
+
         // getGroupLatestEssenceList(GetGroupLatestEssenceListReq, IGetGroupLatestEssenceListCallback)
         // GetGroupLatestEssenceListReq: groupCode(long) sign(String) pageCookie(String)
         //   msgType(int) excludeMsgType(int) signTs(long) source(int)
@@ -1695,6 +1794,24 @@ public final class ExtraSvc {
         throw new IllegalStateException("pskey for " + domain + " unavailable");
     }
 
+    private static final String GROUP_ARK_CB = "com.tencent.qqnt.kernel.nativeinterface.IGetGroupRecommendContactArkJsonCallback";
+    private static final String BUDDY_ARK_CB = "com.tencent.qqnt.kernel.nativeinterface.IGetBuddyRecommendContactArkJsonCallback";
+
+    /** 名片卡的 ark 载荷：{type, id, ark}，{@code ark} 是 JSON 字符串。 */
+    public JSONObject contactArk(String type, String id) throws Exception {
+        long target = parseUin(id);
+        if (target == 0) throw new IllegalArgumentException("missing id");
+        boolean group = "group".equals(type) || "guild".equals(type);
+        Result r = group
+                ? call(svc("group"), GROUP_ARK_CB, "getGroupRecommendContactArkJson",
+                        (svc2, cb) -> ref.call(svc2, "getGroupRecommendContactArkJson", target, cb))
+                : call(svc("buddy"), BUDDY_ARK_CB, "getBuddyRecommendContactArkJson",
+                        (svc2, cb) -> ref.call(svc2, "getBuddyRecommendContactArkJson", target, "", cb));
+        String ark = r.payload == null ? "" : String.valueOf(r.payload);
+        if (!r.ok() || ark.isEmpty()) throw ApiError.failed("contact card: " + r.describe());
+        return new JSONObject().put("type", group ? "group" : "user").put("id", String.valueOf(target)).put("ark", ark);
+    }
+
     /** qun.qq.com 网页 CGI 的整套凭据：p_skey 必须有，skey 能拿到就带上（bkn 优先按它算）。 */
     QunWeb.Ticket webTicket(JSONObject p) throws Exception {
         String uin = qq.selfUin();
@@ -1885,7 +2002,9 @@ public final class ExtraSvc {
             why.append("oidb: ").append(t.getMessage() == null ? t.toString() : t.getMessage()).append("; ");
         }
         try {
-            return listGroupFilesKernel(group, folder, start, want);
+            JSONObject viaKernel = listGroupFilesKernel(group, folder, start, want);
+            if (why.length() > 0) viaKernel.put("oidb_error", why.toString().replaceAll("; $", ""));
+            return viaKernel;
         } catch (Throwable t) {
             if (viaOidb != null) return viaOidb;
             why.append("kernel: ").append(t.getMessage() == null ? t.toString() : t.getMessage());
@@ -1945,6 +2064,24 @@ public final class ExtraSvc {
                 .put("is_end", end).put("next_index", index).put("items", rows).put("source", "oidb");
     }
 
+    /**
+     * 内核 {@code GroupFileInfo} 的两处毛病：md5 / sha 是按 UTF-8 硬解的二进制串（不可逆，
+     * 只能丢掉），上传时间落在 {@code uploadedSize} 里、{@code uploadTime} 恒为 0（9.3.80 实测）。
+     */
+    static JSONObject tidyKernelFile(JSONObject f) {
+        for (String key : new String[]{"md5", "sha", "sha3"}) {
+            String v = f.optString(key, "");
+            if (!v.isEmpty() && !v.matches("[0-9A-Fa-f]+")) f.remove(key);
+        }
+        long uploaded = f.optLong("uploadedSize", 0);
+        if (f.optLong("uploadTime", 0) == 0 && uploaded > 1_000_000_000L && uploaded < 4_000_000_000L
+                && uploaded != f.optLong("fileSize", -1)) {
+            f.put("uploadTime", uploaded);
+            f.remove("uploadedSize");
+        }
+        return f;
+    }
+
     private static String nz(String text) {
         return text == null ? "" : text;
     }
@@ -1995,15 +2132,21 @@ public final class ExtraSvc {
                 for (Object item : items) {
                     Object info = ref.get(item, "fileInfo");
                     Object dir = ref.get(item, "folderInfo");
-                    if (info != null) rows.put(reflectItem(info).put("type", "file"));
+                    if (rows.length() >= want) break;
+                    if (info != null) rows.put(tidyKernelFile(reflectItem(info)).put("type", "file"));
                     else if (dir != null) rows.put(reflectItem(dir).put("type", "folder"));
+                    index++;
                 }
             }
             allCount = Ref.asInt(ref.get(result, "allFileCount"));
             end = Ref.asBool(ref.get(result, "isEnd"));
             int next = Ref.asInt(ref.get(result, "nextIndex"));
-            if (next <= index) end = true;
-            index = next;
+            if (rows.length() >= want && index < next) {
+                end = false; // 这一页没交完，下次从交到的那条接着翻
+                break;
+            }
+            if (next <= index && !end) end = true;
+            index = Math.max(index, next);
         }
         return new JSONObject().put("group", group).put("folder_id", folder)
                 .put("all_file_count", allCount).put("is_end", end).put("next_index", index)

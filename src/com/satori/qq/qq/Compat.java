@@ -41,10 +41,12 @@ public final class Compat {
             "com.tencent.qqnt.kernel.nativeinterface.GroupNotifyTargetMsg", "com.tencent.qqnt.kernel.nativeinterface.IBatchGroupFileCountCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IClickInlineKeyboardButtonCallback", "com.tencent.qqnt.kernel.nativeinterface.IDeleteGroupFileCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IDetailInfoByUinCallback", "com.tencent.qqnt.kernel.nativeinterface.IDigestCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IFetchGroupEssenceListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetAioFirstViewLatestMsgCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetDraftOperateCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupIdentityManageSettingCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupLatestEssenceListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupMemberCardInfoCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupProfileCardInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupRemainAtAllTimesOperateCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IFetchFavEmojiListCallback", "com.tencent.qqnt.kernel.nativeinterface.IFetchGroupEssenceListCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IForwardOperateCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetAioFirstViewLatestMsgCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetBuddyRecommendContactArkJsonCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetDraftOperateCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupIdentityManageSettingCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupLatestEssenceListCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupMemberCardInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupProfileCardInfoCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IGetGroupRecommendContactArkJsonCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetGroupRemainAtAllTimesOperateCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IGetIdentityListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetJoinGroupLinkCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IGetMsgAbstractsCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetMsgEmojiLikesListCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IGetMultiMsgCallback", "com.tencent.qqnt.kernel.nativeinterface.IGetOcrDataCallback",
@@ -176,6 +178,10 @@ public final class Compat {
             {"IUploadGroupBulletinPicCallback", "2+"},
             {"IGuestPskeyCallback", "2+"},
             {"IVideoPlayUrlCallback", "2+"},
+            {"IForwardOperateCallback", "2+"},
+            {"IGetGroupRecommendContactArkJsonCallback", "2+"},
+            {"IGetBuddyRecommendContactArkJsonCallback", "2+"},
+            {"IFetchFavEmojiListCallback", "2+"},
     };
 
 

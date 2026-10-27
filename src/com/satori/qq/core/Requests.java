@@ -2,11 +2,13 @@ package com.satori.qq.core;
 
 import com.satori.qq.qq.QQClient;
 import com.satori.qq.qq.Ref;
+import com.satori.qq.satori.Codec;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** 好友申请与入群申请：从内核通知生成事件，记住还没处理的，再按 flag 同意或拒绝。 */
@@ -39,6 +41,20 @@ final class Requests {
         Collection<JSONObject> out = new ArrayList<>();
         for (Friend f : friends.values()) if (f.event() != null && !f.decided()) out.add(f.event());
         for (Group g : groups.values()) if (g.event() != null && !g.decided()) out.add(g.event());
+        return out;
+    }
+
+    /**
+     * internal/request_list：还没处理的好友申请与入群申请 / 群邀请，形状与推送的
+     * {@code friend-request} / {@code guild-member-request} / {@code guild-request} 事件一样，
+     * {@code message.id} 就是 {@code *.approve} 要的那个 ID。客户端重启、错过事件时用它补。
+     */
+    JSONArray pendingEvents() throws Exception {
+        JSONArray out = new JSONArray();
+        for (JSONObject ob : pending()) {
+            JSONObject ev = Codec.promote(Codec.toSatoriEvent(ob, identity.loginSlim(), 0, identity.assetBase()));
+            if (ev != null) out.put(ev);
+        }
         return out;
     }
 

@@ -44,6 +44,7 @@ public final class Convert {
                     case "lightapp": addArk(out, d.optString("content", d.optString("data", ""))); break;
                     case "mface": addMface(out, d); break;
                     case "poke":  addPoke(out, d); break;
+                    case "contact": addArk(out, qq.extra().contactArk(d.optString("type"), d.optString("id")).getString("ark")); break;
             case "record":addRecord(out, d); break;
                     case "file":  addFile(out, d); break;
                     case "video": addVideo(out, d); break;

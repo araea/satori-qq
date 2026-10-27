@@ -52,6 +52,7 @@ final class Events {
     private final Set<String> seenMemberChanges = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> recentGuildChanges = new ConcurrentHashMap<>();
     private volatile Supplier<Collection<JSONObject>> pending = List::of;
+    private final Webhooks webhooks;
 
     // Server-side heartbeat counters, surfaced in /healthz. Application-level OP_PING answers
     // are handled in onText; these count the transport-level pings we initiate.
@@ -59,8 +60,10 @@ final class Events {
     private final AtomicLong pongs = new AtomicLong();
     private final AtomicLong reaped = new AtomicLong();
 
-    Events(Cfg cfg, Identity identity, Directory directory, MsgStore store, MessageFreshness freshness) {
+    Events(Cfg cfg, Identity identity, Directory directory, MsgStore store, MessageFreshness freshness,
+           Webhooks webhooks) {
         this.cfg = cfg;
+        this.webhooks = webhooks;
         this.identity = identity;
         this.directory = directory;
         this.store = store;
@@ -206,6 +209,7 @@ final class Events {
             }
             String payload = frame(OP_EVENT, body).toString();
             for (WsConn c : identified) c.send(payload);
+            webhooks.deliver(OP_EVENT, body.toString());
         }
     }
 
@@ -323,6 +327,7 @@ final class Events {
                         .put("login", identity.loginFull());
                 String payload = frame(OP_EVENT, body).toString();
                 for (WsConn c : identified) c.send(payload);
+                webhooks.deliver(OP_EVENT, body.toString());
             } catch (Throwable t) {
                 L.e("login-updated", t);
             }

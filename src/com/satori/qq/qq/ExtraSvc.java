@@ -2068,7 +2068,7 @@ public final class ExtraSvc {
      * 内核 {@code GroupFileInfo} 的两处毛病：md5 / sha 是按 UTF-8 硬解的二进制串（不可逆，
      * 只能丢掉），上传时间落在 {@code uploadedSize} 里、{@code uploadTime} 恒为 0（9.3.80 实测）。
      */
-    static JSONObject tidyKernelFile(JSONObject f) {
+    static JSONObject tidyKernelFile(JSONObject f) throws Exception {
         for (String key : new String[]{"md5", "sha", "sha3"}) {
             String v = f.optString(key, "");
             if (!v.isEmpty() && !v.matches("[0-9A-Fa-f]+")) f.remove(key);

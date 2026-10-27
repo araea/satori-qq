@@ -13,7 +13,7 @@
 - **事件**：`GET /v1/events` 升级 WebSocket，须在 10 秒内发 `IDENTIFY`，服务端回 `READY` 与 `EVENT`。省略 `sn` 建新会话，`sn=0` 回放缓冲区内 `sn>0` 的事件。账号未知时不发 `READY`，可知后补发。
 - `READY` 里的登录账号就是之后每个请求要带回来的 `Satori-User-ID`。
 - **官方客户端的登录域内路由**：动作 `POST /v1/internal/{platform}/{selfId}/_api/{name}`（`bot.internal.*`，参数按 `JsonForm` 编码，带 `Satori-Pagination: true` 时回 `{data, …}`）、资源 `GET /v1/internal/{platform}/{selfId}/_tmp/{id}`（`upload.create` 返回的 `internal:` 回落地址，免令牌）。两者只服务本机登录自身，其他登录 404。`POST /v1/internal/{name}` 是模块自己的简写。
-- `POST /v1/meta` 取元信息。`GET`（及 `HEAD`，不带正文、`Content-Length` 照旧）`/v1/proxy/{url}` 代理本机资源，不需要任何头：不是合法 URL 或 `internal:` 格式不对回 400，登录或资源不存在 404，合法但不在 `proxy_urls` 的外链 403。本实现不下载外链，`proxy_urls` 恒为空。回包按块从文件读出，不整份进堆；支持单段 `Range`（`bytes=a-b`、`a-`、`-n` 回 206，越界 416，多段忽略当整份回）。
+- `POST /v1/meta` 取元信息；`POST /v1/meta/webhook.create`（`url`、`token?`）/ `webhook.delete`（`url`）登记或撤掉 WebHook，与官方服务端同形：每个事件（含 `login-updated`）原样 POST 到登记的地址，头里带 `Satori-Opcode: 0` 与 `Authorization: Bearer <token>`。登记写在模块数据目录的 `webhooks.json`，QQ 进程重启后接着推；每个地址一条队列、按序送达、不重试（对方挂了丢的是它自己的事件，要补就用 WebSocket 的 `sn`）。元信息 API 不看 `Satori-Platform` / `Satori-User-ID`。`GET`（及 `HEAD`，不带正文、`Content-Length` 照旧）`/v1/proxy/{url}` 代理本机资源，不需要任何头：不是合法 URL 或 `internal:` 格式不对回 400，登录或资源不存在 404，合法但不在 `proxy_urls` 的外链 403。本实现不下载外链，`proxy_urls` 恒为空。回包按块从文件读出，不整份进堆；支持单段 `Range`（`bytes=a-b`、`a-`、`-n` 回 206，越界 416，多段忽略当整份回）。
 - **分页**：`guild.list`、`guild.member.list`、`guild.role.list`、`guild.member.role.list`、`channel.list`、`friend.list` 返回 `{data, next?}`。不带 `next` / `limit` 时一次给完，带时按偏移分页，`next` 是下一次的偏移量。非法令牌返回 400，不会悄悄从头重放。`message.list` 双向分页，见下表。
 - `platform` 为 `red`，`adapter` 为 `satori-qq`。群频道的 `channel.id` 与 `guild.id` 均为群号、`channel.type=0`，私聊频道为 `private:{uin}`、`channel.type=1`。
 - 消息 ID 用 QQ NT `msgId` 字符串，历史游标用 `message_seq`。`<quote>` 与 `[CQ:reply]` 的 `id` 可直接用于 `message.get` 与 `message.delete`。
@@ -113,6 +113,9 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息。`essence` 附带 `guild_id` 时，本进程没缓存过的旧消息也能由内核补取 |
 | 特殊消息 | `dice` / `rps` | 发送 QQ 原生骰子或猜拳（超级表情） |
 | 消息检索 | `message_search` / `message_context` | 在本进程见过的最近四千条消息里按关键词找（`keyword`，可选 `channel_id` / `user_id` / `before` / `after` / `limit` ≤ 50），按时间倒序；`message_context` 以一条消息为中心取同频道前后文（各 ≤ 40 条）。只读、不占出站额度；更早的记录用 `message.list` 按游标翻 |
+| 转发 | `message_forward` | 把已有消息原样转发到别的群或私聊：`message_id` 或 `message_ids[]`（同一来源，≤100），`target` 或 `targets[]`（群号或 `private:QQ号`，≤10），消息不在缓存里时加来源 `channel_id`。走 QQ「转发」菜单那条内核调用 `forwardMsg`，图片、文件、语音不重新上传；目标会话里是本号发的新消息，不显示「转发自」 |
+| 语音 | `voice_to_text` | QQ 自带的语音转文字（长按语音「转文字」）：`message_id`，可选 `channel_id`、`wait`（秒，默认 12，≤25）。回 `{text, cached}`；内核把识别结果写回那条消息，同一条再问直接读缓存 |
+| 申请 | `request_list` | 还没处理的好友申请、入群申请与群邀请，形状与推送的 `friend-request` / `guild-member-request` / `guild-request` 一样（`message.id` 就是 `*.approve` 要的 ID）。默认先让内核重拉一遍（`refresh:false` 只读缓存）。客户端重启、错过事件时用它补 |
 | 消息读取 | `get_forward` / `chat_screenshot` | `chat_screenshot` 的范围渲染见下；`get_forward` 读取合并转发。`id` 是转发卡片里的 resId，或 `native:<父消息 ID>`。resId 走伪造节点协议，NT 客户端发的图片会整段丢失；`native:` 走 QQ 内核，图片、逐条消息 ID 与时间都在，优先使用。父消息不在模块缓存里时（模块重启或消息较旧）附带 `channel_id` 即可读取 |
 | 能力查询 | `capabilities` / `help` / `compat` | `capabilities` 与 satori-wx 共用一份口径（另见下面的能力目录与幂等信封）：`adapter`、`version`、`platform`、`standard_methods`（与 `login.features` 同源）、`unsupported`、`event_types`、`message_elements`（`message.create` 接受的元素）、`limits`（`upload_bytes`：`upload.create` 单个文件的字节上限，acumen 取片时按它收窄），再加本实现端的扩展动作清单（`actions`、`params`、`removed`）；`compat` 是内核接口面静态自检与运行时调用观测，QQ 升级后先跑它，`force=true` 强制重算 |
 | 状态查询 | `status` / `version` | 健康状态或版本 |
@@ -135,6 +138,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 群文件 | `group_file_count`、`group_file_list`、`group_file_get`、`group_file_search`、`group_file_folder_create`、`group_file_folder_delete`、`group_file_folder_rename`、`group_file_delete`、`group_file_rename`、`group_file_move`、`group_file_trans`、`group_file_download`、`group_file_upload` |
 | 头衔 / 身份原语 | `identity_title_info`、`identity_level_info`：`setIdentityTitleInfo` / `setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
 | 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`（别名 `signature`）、`nick`（QQ 昵称）、`avatar`（QQ 头像）、`pskey`、`feed_publish`（QQ 空间说说）、`group_bulletin_get`（读群公告）、`group_essence_list`（读群精华）、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add` |
+| 群荣誉与名片 | `group_honor`（别名 `group_honors`）、`contact_card`（别名 `share_contact`）、`fav_emoji_list`（别名 `custom_face_list`） |
 | 其它 | `online_file_list`、`online_file_refuse`、`temp_chat_info` |
 
 **群公告**（0.37.0 起）：`POST /v1/internal/group_bulletin_publish`，参数 `guild_id, text, pinned?, image?`。`image` 接受本地路径、`file:`、`data:`、`http(s):` 与 `internal:`，先经 `uploadGroupBulletinPic` 换成配图信息再发布。p_skey 由本端经 `IKernelLoginService.guestA2ToPskey` 自取（会话上的 `IKernelTipOffService.getPskey` 在 9.3.80 上调用即段错误，不再使用），调用方不必（也不该）再传；`text` 由本端做 `encodeURI` 之后交给内核。账号须是群主或管理员。`group_bulletin_delete` 同样自取 p_skey。
@@ -143,7 +147,13 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 
 **群公告 / 群精华的读**（0.41.0 起，0.51.0 重做凭据与接口）：内核的 `getGroupBulletinList` 与 `fetchGroupEssenceList` 在 9.3.75/9.3.80 上调用即段错误，因此两条读都走客户端 H5 页自己的数据接口——`web.qun.qq.com/cgi-bin/announce/get_t_list`（带 `qid`）与 `qun.qq.com/cgi-bin/group_digest/digest_list`。凭据是 qun.qq.com 的 p_skey（依次取票据管理器缓存、`IPskeyManager.getPskey`、访客票 `guestA2ToPskey`；最后这条只给访客模式发票，0.50 以前只有它，所以正常登录的账号一直报 `no valid local guest ticket`）加上能拿到的 skey，bkn 先按 skey 算、被拒再按 p_skey 算。回包规整成固定字段：公告 `{id, sender_id, published_at, title, text, pinned, read_count, images}`（正文已解开 HTML 转义），精华按页翻（`page` 从 0 起、`page_limit` ≤ 50），每条 `{message_seq, message_random, sender_id, sender_name, sent_at, operator_id, operator_name, added_at, text, images}`。失败时带 `error` 与原回包 `raw`。
 
-**群文件读写**（0.40.0 起）：`group_file_list` 按 `folder_id`（根目录 `/`）翻页列出，0.51.0 起先发 `OidbSvcTrpcTcp.0x6D8_1`、回不来再走内核 `getGroupFileList`（回包按请求号取回；0.50 以前按条目的群号分发、又漏填 `sortType`，列表恒为空）。条目统一成内核 `GroupFileInfo` / `GroupFolderInfo` 的字段名外加 `type`（`file` / `folder`），回执带 `source` 说明走的哪条路；`group_file_search` 按名搜索；`group_file_download` 用 `onlyDownloadFile` 落盘（完成通知按 `file_id` 对上，等不到时以 `getGroupFileInfo` 的本地路径兜底），成功回执带 `url`（`internal:` 资源，字节经 `GET /v1/internal/red/{selfId}/_tmp/{id}` 取走）；`group_file_upload` 把本地路径或直链的文件经 `onlyUploadFile` 传进群文件（上传完成通知按文件名对上，等不到时标 `assumed`）。
+**群荣誉榜**（0.52.0 起）：`group_honor` 参数 `guild_id`、`kind?`（`talkative` 龙王 / `performer` 群聊之火 / `legend` 群聊炽焰 / `newbie` 冒尖小春笋 / `emotion` 快乐源泉 / `all`，默认 `all`）、`limit?`（每类 ≤50，默认 10）。数据来自客户端「群荣誉」页背后的 `qun.qq.com/cgi-bin/qunapp/honor_*`（页面已改成前端渲染，旧的 `interactive/honorlist` 里不再内嵌数据）。回 `{ok, group, honors: {类别: {title, current?, list[{user_id, name, avatar, days, total_days?, longest_days?}]}}}`，`current` 是当前龙王；拿不到的类别带 `error`。这批网页接口的 bkn 按 p_skey 的前 10 个字符算（网页自己的写法），整串算出来的回 `csrf error`；群精华、群公告也照这个顺序试。
+
+**名片卡**（0.52.0 起）：`contact_card` 参数 `type`（`group` / `user`）与 `id`，回 `{type, id, ark}`，`ark` 是 QQ「推荐给好友」那张卡的载荷。发送时更省事的写法是元素 `<satori-qq:contact type="group" id="群号"/>`（或 `type="user"`），本端取卡后按 ark 发出。
+
+**收藏表情**（0.52.0 起）：`fav_emoji_list` 参数 `count?`（默认 48，≤200）、`refresh?`，回内核 `FavEmotionRspData` 原样（`emojiInfoList` 里有 url 与本地路径），拿到的图片用 `<img sub-type="1">` 发就还是表情。
+
+**群文件读写**（0.40.0 起）：`group_file_list` 按 `folder_id`（根目录 `/`）翻页列出，0.51.0 起先发 `OidbSvcTrpcTcp.0x6D8_1`、回不来再走内核 `getGroupFileList`（回包按请求号取回；0.50 以前按条目的群号分发、又漏填 `sortType`，列表恒为空）。条目统一成内核 `GroupFileInfo` / `GroupFolderInfo` 的字段名外加 `type`（`file` / `folder`），回执带 `source` 说明走的哪条路；0.52.0 起内核路径的条目去掉按 UTF-8 硬解出来的二进制 `md5` / `sha`（不可逆，留着只是乱码），上传时间从内核误放的 `uploadedSize` 归位到 `uploadTime`，`limit` 按条数截断（`next_index` 接着翻），走了内核路径时回执带 `oidb_error` 说明 0x6D8_1 为什么没用上。`group_file_search` 按名搜索；`group_file_download` 用 `onlyDownloadFile` 落盘（完成通知按 `file_id` 对上，等不到时以 `getGroupFileInfo` 的本地路径兜底），成功回执带 `url`（`internal:` 资源，字节经 `GET /v1/internal/red/{selfId}/_tmp/{id}` 取走）；`group_file_upload` 把本地路径或直链的文件经 `onlyUploadFile` 传进群文件（上传完成通知按文件名对上，等不到时标 `assumed`）。
 
 `group_remark`、`group_shut_up_list`、`user_detail`、`mark_read` 走反射内核服务这一条 JNI 通道，不发新的原始封包。批量查询与管理类的参数结构体字段名随 QQ 版本变化的风险比核心动作更高，调用前先用 `capabilities` 核对。
 
@@ -249,6 +259,14 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 图片不在其列：`img` 可与引用、文字同条（`<quote/><img/>` 是常见形状）。
 
 `message.create` 同步等 QQ 内核回调：语音约 1 秒，文件要等上传，慢时会占满 20 秒的等待窗口（超时后按「无回调」放行，消息通常已经发出）。客户端超时不要低于 30 秒。
+
+## QQ 升级后怎么核对
+
+模块靠反射调用 QQ 的内核接口，QQ 升级时最先坏的是这一层：类改名、方法换参数、结构体删字段，这些都不报错，只会让某个动作静默超时。三道防线：
+
+- **自动察觉**：模块记住上次运行的 QQ 版本（数据目录的 `qq-version.json`），版本一变，第一次自检就把「从哪版升到哪版、内核接口面过了多少、缺了什么」写进日志，`/healthz` 在升级后 7 天内带 `qq_upgrade: {from, to, at, compat_ok, missing}`。
+- **签名错位带出新签名**：反射找不到方法时，错误信息里直接写着新版同名方法的真实签名（`… — have forwardMsg(ArrayList,Contact,ArrayList,HashMap,IForwardOperateCallback)`），也记进 `internal/compat` 的 `observed.signature_mismatches`。照着改参数即可，不必先开反编译器。
+- **一条命令核对**：`scripts/qq-upgrade.sh` 把手机上的新安装包存进 `~/archive/qq-apk/`，与上一版做 `dex-diff`（模块点名的类、内核包增删、成员签名变化，报告存成 `diff-<旧>-<新>.txt`），再让模块强制重算自检，最后只留最新两版安装包。要查某个类或方法在新版里长什么样：`scripts/dex-sig.py <类名正则>`，或 `-m <方法名正则>` 在内核包里按方法名找（内核包解析一次后缓存，第二次查不到一秒）。
 
 ## 客户端注意事项
 

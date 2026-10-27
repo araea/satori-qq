@@ -24,7 +24,7 @@ public final class Convert {
     // ---------------- internal segments -> QQ elements (for sending) ----------------
 
     /** message may be a JSONArray of segments or a plain String. */
-    public List<Object> toElements(Object message, int chatType) {
+    public List<Object> toElements(Object message, int chatType, long groupId) {
         ArrayList<Object> out = new ArrayList<>();
         JSONArray arr = normalize(message);
         for (int i = 0; i < arr.length(); i++) {
@@ -36,7 +36,7 @@ public final class Convert {
             try {
                 switch (type) {
                     case "text": addText(out, d.optString("text", "")); break;
-                    case "at":   addAt(out, d.optString("qq", "")); break;
+                    case "at":   addAt(out, d, groupId); break;
                     case "face": addFace(out, d); break;
                     case "reply":addReply(out, d.optString("id", "")); break;
                     case "image": addImage(out, d); break;
@@ -99,22 +99,66 @@ public final class Convert {
         out.add(e);
     }
 
-    private void addAt(ArrayList<Object> out, String qq) {
+    /**
+     * @ 某人：QQ 认的是 uid（{@code atNtUid}），只写号码的话服务端会把它降成一段普通文字，
+     * 客户端里既点不开、也不会给对方提醒。新入群的人还没发过言，消息缓存里没有他的 uid，
+     * 所以按 成员表缓存 → 资料服务 的顺序补齐——这两步都是本地调用，不会拖慢发送。
+     */
+    private void addAt(ArrayList<Object> out, JSONObject d, long groupId) {
         Object e = newElement(1);
         Object t = ref.neu(QQClient.TEXT_ELEMENT);
-        if ("all".equalsIgnoreCase(qq)) {
+        String target = d.optString("qq", "");
+        if ("all".equalsIgnoreCase(target)) {
             ref.set(t, "content", "@全体成员");
             ref.set(t, "atType", 1);
         } else {
-            long uin = parseLong(qq);
-            String uid = store.uidOf(uin);
-            ref.set(t, "content", "@" + qq);
+            long uin = parseLong(target);
+            String uid = uidForAt(groupId, uin);
+            String name = atName(d, groupId, uin);
+            ref.set(t, "content", "@" + (name.isEmpty() ? target : name));
             ref.set(t, "atType", 2);
             ref.set(t, "atUid", uin);
-            if (uid != null && !uid.isEmpty()) ref.set(t, "atNtUid", uid);
+            if (!uid.isEmpty()) {
+                ref.set(t, "atNtUid", uid);
+            } else {
+                L.w("at " + uin + " 没解析出 uid，QQ 只会画出普通文字");
+            }
         }
         ref.set(e, "textElement", t);
         out.add(e);
+    }
+
+    /** 号码找 uid：消息缓存 → 群成员表（只读内存）→ 资料服务。 */
+    private String uidForAt(long groupId, long uin) {
+        if (uin == 0) return "";
+        String uid = store.uidOf(uin);
+        if (uid != null && !uid.isEmpty()) return uid;
+        if (groupId != 0) {
+            uid = qq.cachedGroupMemberUid(groupId, uin);
+            if (!uid.isEmpty()) {
+                store.learnUid(uin, uid);
+                return uid;
+            }
+        }
+        uid = qq.resolveUid(uin);
+        if (uid != null && !uid.isEmpty()) store.learnUid(uin, uid);
+        return uid == null ? "" : uid;
+    }
+
+    /** @ 后面跟的名字：调用方给了就用，否则从成员表、资料服务里拿；都没有就留空（退回号码）。 */
+    private String atName(JSONObject d, long groupId, long uin) {
+        String given = d.optString("name", "").trim();
+        if (!given.isEmpty()) return given;
+        if (groupId != 0) {
+            Object member = qq.cachedGroupMember(groupId, null, uin);
+            String card = member == null ? "" : Ref.asStr(ref.getOrNull(member, "cardName"));
+            if (!card.isEmpty()) return card;
+            String nick = member == null ? "" : Ref.asStr(ref.getOrNull(member, "nick"));
+            if (!nick.isEmpty()) return nick;
+        }
+        Object core = qq.getCoreInfo(uin);
+        String nick = core == null ? "" : Ref.asStr(ref.getOrNull(core, "nick"));
+        return nick == null ? "" : nick;
     }
 
     /**
@@ -938,6 +982,8 @@ public final class Convert {
             long admin = store.uinOf(adminUid);
             if (!memberUid.isEmpty()) {
                 if (member == 0) member = qq.resolveUin(memberUid);
+                // 灰条里带着当事人的 uid：记下来，紧接着的入群欢迎就能发出真 @。
+                if (member != 0) store.learnUid(member, memberUid);
                 if (admin == 0 && !adminUid.isEmpty()) admin = qq.resolveUin(adminUid);
                 if (member == 0) member = senderUin;
                 if (type == 1) return Notices.groupIncrease(selfUin, time, peerUin, member, admin);
@@ -981,6 +1027,7 @@ public final class Convert {
         String adminUid = n.optString("admin_uid");
         long member = resolvePerson(memberUid);
         long admin = resolvePerson(adminUid);
+        if (member != 0 && memberUid != null && !memberUid.isEmpty()) store.learnUid(member, memberUid);
         if (member == selfUin && admin != 0 && admin != selfUin) {
             long tmp = member;
             member = admin;

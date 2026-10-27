@@ -102,13 +102,19 @@ final class Sender {
                 L.e("media transfer failed (" + result.msg + "); retry " + i + "/" + (attempts - 1), null);
                 Thread.sleep(backoff);
             }
-            List<Object> elements = conv.toElements(message, chatType);
+            List<Object> elements = conv.toElements(message, chatType, groupOf(chatType, peer));
             if (skipEmpty && (elements == null || elements.isEmpty())) return null;
             long left = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
             result = track(chatType, peer, elements, left);
             if (result.code == 0 || !isMediaTransferFailure(result)) return result;
         }
         return result;
+    }
+
+    /** @ 要用的群号：私聊没有群成员表，传 0。 */
+    private static long groupOf(int chatType, String peer) {
+        if (chatType != QQClient.CT_GROUP || peer == null) return 0;
+        try { return Long.parseLong(peer.trim()); } catch (Exception e) { return 0; }
     }
 
     /** QQ's wording for an upload that never left the device; the send failed before dispatch. */

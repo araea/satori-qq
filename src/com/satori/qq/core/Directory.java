@@ -59,6 +59,11 @@ final class Directory {
         long uin = ob.optLong("user_id");
         if (groupId == 0 || uin == 0) return;
         Object member = qq.cachedGroupMember(groupId, null, uin);
+        if (member != null) {
+            String uid = Ref.asStr(qq.ref.getOrNull(member, "uid"));
+            // 入群欢迎紧接着就要 @ 这个人：uid 在这里学到，发消息时不必再问一次资料服务。
+            if (!uid.isEmpty()) store.learnUid(uin, uid);
+        }
         String name = member == null ? "" : firstNonEmpty(
                 Ref.asStr(qq.ref.getOrNull(member, "cardName")),
                 Ref.asStr(qq.ref.getOrNull(member, "nick")));

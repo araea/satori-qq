@@ -1114,6 +1114,13 @@ public final class QQClient {
                 Object te = ref.get(e, "textElement");
                 String c = Ref.asStr(ref.get(te, "content"));
                 sb.append(" textLen=").append(c.length());
+                int atType = ref.asInt(ref.get(te, "atType"));
+                if (atType != 0) {
+                    // 真 @ 靠 atNtUid：缺了它，客户端只会把这一段画成普通文字。
+                    sb.append(" atType=").append(atType)
+                            .append(" atUid=").append(ref.get(te, "atUid"))
+                            .append(" atNtUid=").append(Ref.asStr(ref.get(te, "atNtUid")).isEmpty() ? "MISSING" : "ok");
+                }
             }
             sb.append('\n');
         }
@@ -1160,6 +1167,13 @@ public final class QQClient {
                 Object te = ref.get(e, "textElement");
                 String c = Ref.asStr(ref.get(te, "content"));
                 sb.append(" textLen=").append(c.length());
+                int atType = ref.asInt(ref.get(te, "atType"));
+                if (atType != 0) {
+                    // 真 @ 靠 atNtUid：缺了它，客户端只会把这一段画成普通文字。
+                    sb.append(" atType=").append(atType)
+                            .append(" atUid=").append(ref.get(te, "atUid"))
+                            .append(" atNtUid=").append(Ref.asStr(ref.get(te, "atNtUid")).isEmpty() ? "MISSING" : "ok");
+                }
             }
             sb.append('\n');
         }
@@ -2223,6 +2237,12 @@ public final class QQClient {
             if (candidate != null && ref.getLong(candidate, "uin") == uin) return candidate;
         }
         return null;
+    }
+
+    /** 成员表缓存里这个人的 uid：只读内存、不等内核；没有就是空串。 */
+    public String cachedGroupMemberUid(long groupCode, long uin) {
+        Object member = cachedGroupMember(groupCode, null, uin);
+        return member == null ? "" : Ref.asStr(ref.getOrNull(member, "uid"));
     }
 
     /** Resolve a message sender's role from an already fetched QQ member map, without blocking. */

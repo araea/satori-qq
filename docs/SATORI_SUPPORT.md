@@ -191,6 +191,10 @@ QQ 客户端手动发出的消息以 `qq-client:{selfUin}` 作为虚拟作者，
 | 发送 | `text` `at` `sharp` `quote` `emoji` `a` `br` `p` `img` `audio` `video` `file`、修饰元素与 `<message>`；另接受 `face` `json` `mface` `poke` |
 | 接收 | `text` `at` `quote` `emoji` `face` `img` `audio` `video` `file` `json` `mface`；合并转发为 `<message forward id="resid"/>` |
 
+### @ 某人
+
+`<at id="123456"/>` 编成 QQ 的 `TextElement`：`atType=2`、`atUid` 填号码，`atNtUid` 填 uid。QQ 服务端按 `atNtUid` 判定这是不是真 @；缺了 uid 的 @ 会退化成普通文字，不发提醒、也点不开。实现端在缺 uid 时按「成员表缓存 → 资料服务」补齐再发，两步都是本地调用；元素里的 `name` 优先作为 @ 后面的文字，其次群名片、昵称，最后退回号码。
+
 ### @全体成员
 
 收发都用标准写法 `<at type="all"/>`：发送时 `type="all"`（以及 `id="all"`、只有 `role="all"`）都编成 QQ 的 `atType=1`；收到的 @全体成员 一律给出 `<at type="all"/>`。`type="here"`（在线成员）QQ 没有对应物，按文字「@在线成员」发出。

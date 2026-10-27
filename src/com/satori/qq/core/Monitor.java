@@ -45,6 +45,7 @@ final class Monitor {
     private volatile long generation;
     private volatile boolean watching;
 
+    private final QqUpgrade upgrade = new QqUpgrade();
     private volatile JSONObject compatCache;
     private volatile String compatCacheVersion = "";
     private volatile long compatCacheMs;
@@ -416,6 +417,7 @@ final class Monitor {
             compatCache = fresh;
             compatCacheVersion = version;
             compatCacheMs = now;
+            upgrade.observe(version, fresh);
             if (!fresh.optBoolean("ok")) {
                 // 只在坏掉时才吱声：正常时每个探针周期打一行会把日志刷满。
                 L.e("compat: " + fresh.optInt("passed") + "/" + fresh.optInt("total")
@@ -461,6 +463,7 @@ final class Monitor {
                 .put("self_id", identity.selfUin())
                 .put("qq_version", qq.qqVersion())
                 .put("compat", compatSummary())
+                .put("qq_upgrade", upgrade.recent())
                 .put("online_since_epoch_ms", gate.onlineSinceMs())
                 .put("connections", connections())
                 .put("notice", noticeDiag())

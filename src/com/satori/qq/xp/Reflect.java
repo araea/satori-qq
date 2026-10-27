@@ -10,6 +10,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -68,19 +69,63 @@ public final class Reflect {
     public static Object callMethod(Object obj, String methodName, Object... args) {
         if (methodName == null) throw new IllegalArgumentException("methodName must not be null");
         if (obj == null) throw new NullPointerException("object must not be null");
-        return invoke(resolve(obj.getClass(), methodName, typesOf(args), false), obj, methodName, args);
+        Class<?>[] types = typesOf(args);
+        Method m = resolve(obj.getClass(), methodName, types, false);
+        if (m == null) throw missing(obj.getClass(), methodName, types);
+        return invoke(m, obj, methodName, args);
     }
 
     public static Object callMethod(Object obj, String methodName, Class<?>[] parameterTypes,
                                     Object... args) {
         if (methodName == null) throw new IllegalArgumentException("methodName must not be null");
         if (obj == null) throw new NullPointerException("object must not be null");
-        return invoke(resolve(obj.getClass(), methodName, parameterTypes, false), obj, methodName, args);
+        Method m = resolve(obj.getClass(), methodName, parameterTypes, false);
+        if (m == null) throw missing(obj.getClass(), methodName, parameterTypes);
+        return invoke(m, obj, methodName, args);
     }
 
     public static Object callStaticMethod(Class<?> clazz, String methodName, Object... args) {
         if (methodName == null) throw new IllegalArgumentException("methodName must not be null");
-        return invoke(resolve(clazz, methodName, typesOf(args), true), null, methodName, args);
+        Class<?>[] types = typesOf(args);
+        Method m = resolve(clazz, methodName, types, true);
+        if (m == null) throw missing(clazz, methodName, types);
+        return invoke(m, null, methodName, args);
+    }
+
+    // ------------------------------------------------------------ 签名对不上的记录
+
+    /** 最近对不上的调用：「类.方法(实参)」→ 新版里同名方法的真实签名。QQ 升级后先看这里。 */
+    private static final Map<String, String> MISMATCHES = new ConcurrentHashMap<>();
+
+    /**
+     * 找不到方法时把同名方法的现有签名一并带上：QQ 改了参数，错误信息里就写着新的长什么样，
+     * 不必再开 jadx。也记进 {@link #mismatches()}，由 {@code internal/compat} 的 observed 带出。
+     */
+    private static NoSuchMethodError missing(Class<?> clazz, String name, Class<?>[] given) {
+        Set<String> have = new LinkedHashSet<>();
+        for (Class<?> c = clazz; c != null && have.size() < 8; c = c.getSuperclass()) {
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals(name)) have.add(name + describe(m.getParameterTypes()));
+            }
+            for (Class<?> itf : c.getInterfaces()) {
+                for (Method m : itf.getMethods()) {
+                    if (m.getName().equals(name)) have.add(name + describe(m.getParameterTypes()));
+                }
+            }
+        }
+        String key = clazz.getName() + "." + name + describe(given);
+        String detail = have.isEmpty() ? "no method named " + name : "have " + String.join("; ", have);
+        if (MISMATCHES.size() < 64) MISMATCHES.put(key, detail);
+        return new NoSuchMethodError(key + " — " + detail);
+    }
+
+    /**
+     * 本进程里遇到过的方法签名错位，给自检用。字段不记：转换代码大量按「有就读」探测可选字段，
+     * 记下来全是噪声；结构体字段由 Compat 的静态表核对。有意的退路（先试新签名、不行换旧的）
+     * 也会在这里留一行，看的时候以 calls 里的失败计数为准。
+     */
+    public static Map<String, String> mismatches() {
+        return new TreeMap<>(MISMATCHES);
     }
 
     private static Object invoke(Method method, Object target, String methodName, Object[] args) {

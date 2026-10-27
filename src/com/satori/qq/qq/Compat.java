@@ -1,5 +1,6 @@
 package com.satori.qq.qq;
 
+import com.satori.qq.xp.Reflect;
 import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.TreeMap;
@@ -377,6 +378,10 @@ public final class Compat {
         }
         out.put("calls", rows);
         out.put("count", rows.length());
+        // 反射找不到的方法 / 字段：键是「类.方法(实参)」，值里写着新版同名方法的真实签名。
+        JSONObject mismatches = new JSONObject();
+        for (Map.Entry<String, String> e : Reflect.mismatches().entrySet()) mismatches.put(e.getKey(), e.getValue());
+        out.put("signature_mismatches", mismatches);
         return out;
     }
 }

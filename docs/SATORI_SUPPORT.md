@@ -107,7 +107,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 互动 | `poke` / `invite` | 戳一戳、邀请入群；poke 支持 `channel_id`（群号或 `private:QQ号`） |
 | 提及 | `at_all_quota` | 本号此刻能否在该群 @全体成员、今天还剩几次，见下 |
 | 表态 | `reaction_summary` / `reaction_clear` | 消息的回应计数与自己是否回应；仅清除自己的回应 |
-| 群成员 | `special_title` / `card` | 设置群头衔或群名片；`special_title` 只设头衔，不带显示开关参数 |
+| 群成员 | `special_title` / `card` | 设置群头衔或群名片；`special_title` 只设头衔，不带显示开关参数。`card` 不带 `user_id` 时改本号；带 `guild_ids[]` 或 `all:true` 一次改本号在多个群的名片（每个群单独过出站闸门，回执逐群列出） |
 | 群身份 | `title_list` / `title_wear` | 读群身份目录（群主 300、管理员 301、群主授予的专属头衔 302、群等级 315）与账号在本群的角色；给自己佩戴 / 更换 / 摘下。`role` 认 `owner`/`admin`/`level`/`off` 与中文，`title` 是群主专属的六字以内文字，`strategy` 认 `auto`/`identity`/`special`，`verify` 回读确认。300/301 只有真的拥有角色才戴得上；普通成员要用「群主 / 管理员」字样，需要群主写一枚专属头衔 |
 | 群显示 | `title_display` / `honor_display` | 群头衔、群荣誉的显示开关；不带 `show` / `enable` 时只读当前状态，不写 |
 | 群消息 | `sign` / `essence` | 群打卡；设置或取消精华消息。`essence` 附带 `guild_id` 时，本进程没缓存过的旧消息也能由内核补取 |
@@ -134,16 +134,33 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 域 | 方法（部分带别名，见 `capabilities`） |
 | --- | --- |
 | 消息 | `typing`、`mark_read`、`mark_read_seq`、`mark_all_read`、`message_abstract`、`click_inline_keyboard`、`reedit_recall`、`image_ocr`、`ocr_data`、`ocr_by_aio` |
-| 群管理 | `group_shut_up_list`、`group_join_link`、`group_essence_list`、`group_essence_latest`、`group_essence_cached`、`group_remark`、`group_quit`、`group_join`、`group_join_info`、`group_join_noverify`、`group_bulletin_publish`、`group_bulletin_delete`、`group_bulletin_get`、`group_ext_list`、`group_member_level`、`group_identity_list`、`group_member_card`、`group_profile_card` |
+| 群管理 | `group_detail`、`group_settings`、`group_kick`、`group_mute`、`group_transfer`、`group_destroy`、`group_msg_mask`、`group_shut_up_list`、`group_join_link`、`group_essence_list`、`group_essence_latest`、`group_essence_cached`、`group_remark`、`group_quit`、`group_join`、`group_join_info`、`group_join_noverify`、`group_bulletin_publish`、`group_bulletin_delete`、`group_bulletin_get`、`group_ext_list`、`group_member_level`、`group_identity_list`、`group_member_card`、`group_profile_card` |
 | 群文件 | `group_file_count`、`group_file_list`、`group_file_get`、`group_file_search`、`group_file_folder_create`、`group_file_folder_delete`、`group_file_folder_rename`、`group_file_delete`、`group_file_rename`、`group_file_move`、`group_file_trans`、`group_file_download`、`group_file_upload` |
 | 头衔 / 身份原语 | `identity_title_info`、`identity_level_info`：`setIdentityTitleInfo` / `setGroupIdentityLevelInfo` 的单次调用，不做读回校验；日常切换显示开关用上表的 `title_display`，它在这两条之外还加了本地 DB 补写与读回确认 |
-| 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`（别名 `signature`）、`nick`（QQ 昵称）、`avatar`（QQ 头像）、`pskey`、`feed_publish`（QQ 空间说说）、`group_bulletin_get`（读群公告）、`group_essence_list`（读群精华）、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add` |
+| 资料与好友 | `user_detail`、`user_detail_by_uin`、`user_simple_info`、`long_nick`（别名 `signature`）、`nick`（QQ 昵称）、`avatar`（QQ 头像）、`pskey`、`feed_publish`（QQ 空间说说）、`group_bulletin_get`（读群公告）、`group_essence_list`（读群精华）、`friend_remark_get`、`friend_remark_set`、`friend_category_add`、`friend_category_delete`、`friend_category_rename`、`friend_category_set`、`friend_category_set_batch`、`friend_add`、`friend_block`、`session_top`、`profile_set`、`online_status`、`user_info`、`like` |
 | 群荣誉与名片 | `group_honor`（别名 `group_honors`）、`contact_card`（别名 `share_contact`）、`fav_emoji_list`（别名 `custom_face_list`） |
 | 其它 | `online_file_list`、`online_file_refuse`、`temp_chat_info` |
 
 **群公告**（0.37.0 起）：`POST /v1/internal/group_bulletin_publish`，参数 `guild_id, text, pinned?, image?`。`image` 接受本地路径、`file:`、`data:`、`http(s):` 与 `internal:`，先经 `uploadGroupBulletinPic` 换成配图信息再发布。p_skey 由本端经 `IKernelLoginService.guestA2ToPskey` 自取（会话上的 `IKernelTipOffService.getPskey` 在 9.3.80 上调用即段错误，不再使用），调用方不必（也不该）再传；`text` 由本端做 `encodeURI` 之后交给内核。账号须是群主或管理员。`group_bulletin_delete` 同样自取 p_skey。
 
 **账号级动作**（0.40.0 起）：`nick`（QQ 昵称，内核 `setNickName`）、`avatar`（QQ 头像，内核 `setHeader`，入参同群公告 `image`）、`long_nick`（个性签名，别名 `signature`）都只写不回读。`feed_publish` 发 QQ 空间说说：凭据走空间域 `p_skey`（内核自取）与 `g_tk`，请求是空间 H5 的 `emotion_cgi_publish_v6`，只支持文本（`text`），可选 `auto_sig` / `to_sign` / `qzonetoken`；失败时回包带空间 CGI 的原始 `raw`。
+
+**群管理补齐**（0.53.0 起，内核签名按 9.3.80 安装包核对，真机待重启后验证）：
+
+- `group_detail`：`guild_id, refresh?, raw?`。回固定字段 `{guild_id, name, remark, owner_id, created_at, member_count, max_member_count, admin_max, active_member_count, intro, memo, class, grade, frozen, mute_all_until, self:{role, joined_at, muted_until, msg_mask, pinned}, settings:{join, question, answer, searchable_by_name, searchable_by_code, msg_limit, allow_recall}}`，时间都是毫秒，`mute_all_until` / `muted_until` 为 0 表示没在禁言。先读内核缓存（`batchQueryCachedGroupDetailInfo`），没有或带 `refresh` 时 `getGroupDetailInfo` 拉一次再读；`raw:true` 附内核原样。
+- `group_settings`（群主或管理员）：`join`（`any` 允许任何人 / `verify` 需要验证 / `deny` 不允许 / `question_review` 回答问题并由管理员审核 / `question_answer` 正确回答问题，或直接写 1–5）、`question` / `answer`（成对写）、`allow_invite`、`searchable`（或分开的 `search_by_name` / `search_by_code`）、`msg_limit`（发言频率）、`intro`（群介绍）。走 `modifyGroupDetailInfoV2`，只把带了的字段写进 filter，其余不动；回执带 `changed`。什么都不带时读当前值（同 `group_detail.settings`）。`join` 的名字与数字的对应按 QQ 设置页口径，拿不准时先用 `group_detail` 读当前值对照。
+- `group_kick`：`guild_id, user_ids[]（≤50）, permanent?, reason?`，一次踢多人；`group_mute`：`guild_id, user_ids[], duration`（毫秒，0 解除，上限 30 天），一次禁言多人。单人仍可用标准的 `guild.member.kick` / `guild.member.mute`。
+- `group_transfer`：`guild_id, user_id`（新群主），只有群主能做，回执带服务端的 `result` / `error` / `prompt`。`group_destroy`：`guild_id, confirm`（再写一遍群号，不等就拒绝）、`delete_local_msg?`，不可撤销。
+- `group_msg_mask`：本号对这个群的接收方式，`mode` 取 `notify` 接收并提醒 / `receive` 接收不提醒 / `assistant` 收进群助手 / `shield` 屏蔽。
+- `session_top`：`channel_id|guild_id|user_id, top?`，置顶或取消置顶会话。`friend_block`：`user_id, block?`，拉黑或解除。
+- 分类：`group_kick`、`group_mute`、`group_transfer`、`group_destroy`、`group_settings` 在能力目录里是 `manage`。
+
+**账号资料补齐**（0.53.0 起）：
+
+- `profile_set`：`nick?, long_nick?, gender?（male/female）, birthday?（YYYY-MM-DD）`，一次改几项，回执 `results` 逐项给出 `{ok, code, msg}`。单改昵称、签名、头像仍可用 `nick` / `long_nick` / `avatar`。
+- `online_status`：`status` 取 `online` 10 / `away` 30 / `invisible` 40 / `busy` 50 / `qme` 60 / `dnd` 70（或数字），可选 `ext_status`，走 `IKernelMsgService.setStatus`。
+- `user_info`：`user_id`，回 `{user_id, uid, nick, remark, long_nick, gender, age, birthday, qid, country, province, city, hometown, college, registered_at, vip, svip, vip_level, level, status, ext_status, blocked, avatar}`，来自 `getUserDetailInfoByUin`。`user_detail_by_uin` 仍回内核原样。
+- `like`：`user_id, times?`（1–20，每天上限由 QQ 决定）。手机 QQ 的资料卡点赞是老式 WUP `VisitorSvc.ReqFavorite`（桌面端的 `0x7E5_104` 在手机 appid 上一律回 `oidb=319`）；0.23 以前借 QQ 自己的发送通道、要 Java 钩子收回包，0.53.0 起由本端编码 JCE、经裸 SSO 通道收发。成功判据是回包 `RespHead.iReplyCode == 0`，失败时 `msg` 是服务端原文，常见 `10003`（对方设置不允许点赞）、`54`（不能赞自己）。
 
 **群公告 / 群精华的读**（0.41.0 起，0.51.0 重做凭据与接口）：内核的 `getGroupBulletinList` 与 `fetchGroupEssenceList` 在 9.3.75/9.3.80 上调用即段错误，因此两条读都走客户端 H5 页自己的数据接口——`web.qun.qq.com/cgi-bin/announce/get_t_list`（带 `qid`）与 `qun.qq.com/cgi-bin/group_digest/digest_list`。凭据是 qun.qq.com 的 p_skey（依次取票据管理器缓存、`IPskeyManager.getPskey`、访客票 `guestA2ToPskey`；最后这条只给访客模式发票，0.50 以前只有它，所以正常登录的账号一直报 `no valid local guest ticket`）加上能拿到的 skey，bkn 先按 skey 算、被拒再按 p_skey 算。回包规整成固定字段：公告 `{id, sender_id, published_at, title, text, pinned, read_count, images}`（正文已解开 HTML 转义），精华按页翻（`page` 从 0 起、`page_limit` ≤ 50），每条 `{message_seq, message_random, sender_id, sender_name, sent_at, operator_id, operator_name, added_at, text, images}`。失败时带 `error` 与原回包 `raw`。
 

@@ -373,6 +373,130 @@ final class History {
         }
     }
 
+    // ------------------------------------------------------------------ 消息检索
+
+    /**
+     * {@code internal/message_search}：在本进程见过的消息里按关键词找。
+     *
+     * <p>客户端的记录库是它自己的事；这一端从开机起看过的每一条都在 {@link MsgStore} 的
+     * 环里，最多四千条。智能体问「之前谁提过这个」「上午那句在哪」时，这是唯一一条不依赖
+     * 客户端存档的检索路径。只读，按消息时间倒序，最多五十条。</p>
+     *
+     * <p>参数：{@code keyword}（必填）、{@code channel_id}（或 {@code guild_id}，省略则全库）、
+     * {@code user_id}、{@code before} / {@code after}（unix 秒）、{@code limit}。</p>
+     */
+    JSONObject search(JSONObject p) throws Exception {
+        String keyword = p.optString("keyword", p.optString("query", "")).trim();
+        if (keyword.isEmpty()) throw ApiError.badRequest("missing keyword");
+        if (keyword.length() > 64) throw ApiError.badRequest("keyword too long (max 64)");
+        String channel = p.optString("channel_id", "").trim();
+        if (channel.isEmpty()) channel = p.optString("guild_id", "").trim();
+        long peer = channel.isEmpty() ? 0 : Codec.channelPeer(channel);
+        boolean privateChannel = !channel.isEmpty() && Codec.isPrivateChannel(channel);
+        int chatType = channel.isEmpty() ? 0 : (privateChannel ? QQClient.CT_C2C : QQClient.CT_GROUP);
+        if (!channel.isEmpty() && peer == 0) throw ApiError.badRequest("invalid channel_id");
+        long before = p.optLong("before", 0);
+        long after = p.optLong("after", 0);
+        long user = p.optLong("user_id", 0);
+        int limit = Math.min(Math.max(p.optInt("limit", 20), 1), 50);
+        String needle = keyword.toLowerCase(Locale.ROOT);
+        List<MsgStore.Rec> hits = new ArrayList<>();
+        for (MsgStore.Rec rec : store.all()) {
+            if (rec == null || rec.msgId == 0) continue;
+            if (chatType != 0 && rec.chatType != chatType) continue;
+            if (peer != 0 && rec.peerUin != peer) continue;
+            if (user != 0 && rec.senderUin != user) continue;
+            long time = seconds(rec.msgTime);
+            if (after > 0 && time < after) continue;
+            if (before > 0 && time >= before) continue;
+            String text = plainText(rec);
+            if (text.isEmpty() || !text.toLowerCase(Locale.ROOT).contains(needle)) continue;
+            hits.add(rec);
+        }
+        hits.sort((a, b) -> Long.compare(seconds(b.msgTime), seconds(a.msgTime)));
+        JSONArray data = new JSONArray();
+        for (int i = 0; i < hits.size() && i < limit; i++) data.put(item(hits.get(i)));
+        return new JSONObject()
+                .put("data", data)
+                .put("matched", hits.size())
+                .put("scanned", store.size())
+                .put("scope", channel.isEmpty() ? "all" : channel)
+                .put("note", "只搜本进程启动以来见过的消息（最多四千条）；更早的用 message.list 按游标翻。");
+    }
+
+    /**
+     * {@code internal/message_context}：以某条消息为中心，取同频道的前后几条。
+     *
+     * <p>引用旧消息、补全一段对话、判断「他这句在回谁」时，一条孤立的消息常常不够。
+     * 这里按消息序列取同一频道里的上下文，{@code before} / {@code after} 各最多四十条。</p>
+     */
+    JSONObject context(JSONObject p) throws Exception {
+        MsgStore.Rec center = lookup.require(p.optString("message_id", ""), p);
+        int before = Math.min(Math.max(p.optInt("before", 10), 0), 40);
+        int after = Math.min(Math.max(p.optInt("after", 10), 0), 40);
+        List<MsgStore.Rec> peer = store.listPeer(center.chatType, center.peerUin, center.peerUid, 4000);
+        int index = -1;
+        for (int i = 0; i < peer.size(); i++) {
+            if (peer.get(i).id == center.id) { index = i; break; }
+        }
+        JSONArray data = new JSONArray();
+        if (index >= 0) {
+            int from = Math.max(0, index - before);
+            int to = Math.min(peer.size(), index + after + 1);
+            for (int i = from; i < to; i++) data.put(item(peer.get(i)));
+        }
+        return new JSONObject()
+                .put("data", data)
+                .put("message_id", String.valueOf(center.msgId))
+                .put("channel_id", channelOf(center))
+                .put("note", "按消息序列取的本地上下文；更早的更完整的用 message.list。");
+    }
+
+    /** 一条本地记录 → 检索结果里的紧凑一项：不带资源直链，只给定位与文本。 */
+    private JSONObject item(MsgStore.Rec r) throws Exception {
+        long time = seconds(r.msgTime);
+        JSONObject o = new JSONObject()
+                .put("message_id", String.valueOf(r.msgId))
+                .put("channel_id", channelOf(r))
+                .put("user_id", String.valueOf(r.senderUin))
+                .put("time", time)
+                .put("created_at", time * 1000L)
+                .put("message_seq", r.msgSeq)
+                .put("text", plainText(r));
+        return o;
+    }
+
+    private static String channelOf(MsgStore.Rec r) {
+        return r.chatType == QQClient.CT_GROUP ? String.valueOf(r.peerUin) : "private:" + r.peerUin;
+    }
+
+    /** 内核时间有的是毫秒：统一成秒，排序与游标才不会被一个数量级搅乱。 */
+    private static long seconds(long time) {
+        return time > 10_000_000_000L ? time / 1000L : time;
+    }
+
+    /** 记录的纯文本：优先问内核那份元素表，退回本地存的正文（可能是 Satori 元素串）。 */
+    private String plainText(MsgStore.Rec r) {
+        String live = qq.peekRecordText(r.msgRecord);
+        if (live != null && !live.isEmpty()) return live;
+        String content = r.content == null ? "" : r.content;
+        if (content.isEmpty() || !r.contentIsElements) return content;
+        try {
+            JSONArray segments = Codec.toSegments(content);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < segments.length(); i++) {
+                JSONObject seg = segments.optJSONObject(i);
+                if (seg == null || !"text".equals(seg.optString("type"))) continue;
+                JSONObject data = seg.optJSONObject("data");
+                String text = data == null ? "" : data.optString("text", "");
+                if (!text.isEmpty()) sb.append(text);
+            }
+            return sb.length() == 0 ? content : sb.toString();
+        } catch (Exception ignore) {
+            return content;
+        }
+    }
+
     // ------------------------------------------------------------------ 聊天截图
 
     /** An off-screen history rendering, not a pixel capture of QQ's conversation activity. */

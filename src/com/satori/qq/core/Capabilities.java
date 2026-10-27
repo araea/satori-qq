@@ -21,7 +21,7 @@ final class Capabilities {
             "group_overview", "group_extra", "member_info", "group_member_search", "recent_contacts",
             "contact_search", "friend_relation", "profile_self", "group_honor",
             "group_active", "group_anniversary", "group_detail",
-            "group_statistic", "voice_to_text", "message_context", "message_search",
+            "group_statistic", "voice_to_text",
             "get_resource", "session_top", "group_msg_mask", "offline");
 
     /** 0.23.0 收掉的：这些在旧实现里靠通用 Java hook 才成立。 */
@@ -145,6 +145,8 @@ final class Capabilities {
             case "dice", "rps" -> "channel_id|guild_id";
             case "get_forward" -> "id 或 native:<父消息 ID>，可选 channel_id";
             case "chat_screenshot" -> "channel_id, start_message_id, end_message_id（含端点，最多 40 条）";
+            case "message_search" -> "keyword；可选 channel_id|guild_id、user_id、before/after（unix 秒）、limit（≤50）；搜本进程见过的最近四千条，按时间倒序";
+            case "message_context" -> "message_id；可选 before/after（各 ≤40）；取同频道前后文";
             default -> "";
         };
     }
@@ -157,6 +159,8 @@ final class Capabilities {
             case "essence" -> "加/撤群精华（需群主或管理员）";
             case "get_forward" -> "展开合并转发";
             case "chat_screenshot" -> "把一段群聊截成一张图";
+            case "message_search" -> "在本进程见过的消息里按关键词检索";
+            case "message_context" -> "取某条消息同频道的前后几条";
             case "capabilities" -> "这份目录本身";
             case "compat", "selftest" -> "内核兼容性自检";
             case "restart" -> "重启 QQ 进程";
@@ -185,13 +189,13 @@ final class Capabilities {
     /** 只读的内部动作（与 {@link #CORE_ACTIONS} 同一份名单的子集）。 */
     private static final List<String> CORE_READ = List.of(
             "get_forward", "reaction_summary", "title_display", "chat_screenshot",
-            "status", "version", "capabilities", "compat");
+            "message_search", "message_context", "status", "version", "capabilities", "compat");
 
     /** 核心内部动作的完整名单；目录、`actions` 与 {@link #declares} 共用。 */
     private static final List<String> CORE_ACTIONS = List.of(
             "poke", "invite", "reaction_clear", "reaction_summary",
             "card", "special_title", "title_display", "honor_display", "sign", "essence",
-            "dice", "rps", "get_forward", "chat_screenshot",
+            "dice", "rps", "get_forward", "chat_screenshot", "message_search", "message_context",
             "capabilities", "compat", "status", "version", "clean_cache", "restart");
 
     static JSONObject build() throws Exception {
@@ -211,6 +215,8 @@ final class Capabilities {
                 .put("rps", "channel_id|guild_id")
                 .put("get_forward", "id 或 native:<父消息 ID>，可选 channel_id")
                 .put("chat_screenshot", "channel_id, start_message_id, end_message_id（含端点，最多 40 条；返回 PNG internal: 资源）")
+                .put("message_search", "keyword；可选 channel_id|guild_id、user_id、before/after（unix 秒）、limit（≤50）；搜本进程见过的最近四千条，按时间倒序")
+                .put("message_context", "message_id；可选 before/after（各 ≤40）；取同频道前后文")
                 .put("compat", "force?");
         JSONArray reads = new JSONArray(CORE_READ);
         JSONArray writes = new JSONArray(CORE_ACTIONS.stream().filter(n -> !CORE_READ.contains(n)).toList());

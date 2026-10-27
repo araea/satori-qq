@@ -199,6 +199,8 @@ final class Dispatcher {
                 yield result;
             }
             case "chat_screenshot" -> history.screenshot(p);
+            case "message_search" -> history.search(p);
+            case "message_context" -> history.context(p);
             // 合并转发在入站只有 `<message forward id="…"/>` 一个元素，没有正文，
             // 也没有第二条能取回它的路，所以这条解析保留。
             case "get_forward" -> forwards.get(p);

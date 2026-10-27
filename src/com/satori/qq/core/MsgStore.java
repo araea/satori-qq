@@ -100,6 +100,12 @@ public final class MsgStore {
 
     public Rec get(int id) { return byId.get(id); }
 
+    /** 本进程见过的全部消息（环内，最多四千条），顺序不作保证；检索用。 */
+    public List<Rec> all() { return new ArrayList<>(byId.values()); }
+
+    /** 环里现在有多少条。 */
+    public int size() { return byId.size(); }
+
     public Rec getByMsgId(long msgId) {
         if (msgId == 0) return null;
         Integer id = byMsgId.get(msgId);

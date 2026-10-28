@@ -33,7 +33,7 @@ QQ 没有等价能力的方法返回 404。下表中「受限」表示本地调�
 | `channel.update` | 支持 | 群主或管理员修改群名与群头像 |
 | `channel.mute` | 支持 | 全员禁言。`duration` 为毫秒，`0` 解除；也可只传 `enable`，`false` 解除、`true` 表示停到手动解除（按 30 天上限计时） |
 | `user.channel.create` | 支持 | 创建 `private:{uin}` 私聊频道 |
-| `guild.get` / `guild.list` | 支持 | 查询群 |
+| `guild.get` / `guild.list` | 支持 | 查询群；群资源另带扩展字段 `member_count` / `max_member_count`（内核群列表缓存里的人数，读不出时不带） |
 | `guild.member.get` / `guild.member.list` | 支持 | 查询成员及 owner、admin、member 角色；扩展字段 `last_sent_at`（QQ 服务器记的最后发言，毫秒，0 = 进群后没说过话）与 `level`（群等级）。`guild.member.get` 先读本地成员表，表里没有才向服务器重拉一遍（最多等 4 秒）；`guild.member.list` 带 `refresh: true` 先向服务器重拉名单 |
 | `guild.member.kick` | 支持 | `permanent` 对应拒绝再次加群 |
 | `guild.member.mute` | 支持 | `duration` 单位为毫秒 |

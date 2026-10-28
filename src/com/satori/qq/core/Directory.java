@@ -312,8 +312,7 @@ final class Directory {
     // ------------------------------------------------------------------ Satori shapes
 
     JSONObject guild(JSONObject p) throws Exception {
-        JSONObject g = groupInfo(guildId(p));
-        return Codec.guild(g.optLong("group_id"), g.optString("group_name"));
+        return guildOf(groupInfo(guildId(p)));
     }
 
     JSONArray guilds() throws Exception {
@@ -321,9 +320,23 @@ final class Directory {
         JSONArray data = new JSONArray();
         for (int i = 0; i < src.length(); i++) {
             JSONObject g = src.optJSONObject(i);
-            if (g != null) data.put(Codec.guild(g.optLong("group_id"), g.optString("group_name")));
+            if (g != null) data.put(guildOf(g));
         }
         return data;
+    }
+
+    /**
+     * 群资源，外加人数（扩展字段 {@code member_count} / {@code max_member_count}）。人数就在内核的
+     * 群列表缓存里，不多问一次；客户端连上时翻一遍 {@code guild.list} 就能记下每个群的名字与人数，
+     * 欢迎词里的「第 N 位成员」不必再为每个新人问一次 {@code guild.get}。读不出（0）就不带。
+     */
+    private static JSONObject guildOf(JSONObject g) throws Exception {
+        JSONObject guild = Codec.guild(g.optLong("group_id"), g.optString("group_name"));
+        int members = g.optInt("member_count");
+        int max = g.optInt("max_member_count");
+        if (members > 0) guild.put("member_count", members);
+        if (max > 0) guild.put("max_member_count", max);
+        return guild;
     }
 
     JSONObject channel(JSONObject p) throws Exception {

@@ -1,7 +1,7 @@
 id=satori_qq
 name=知弦
-version=0.53.1
-versionCode=191
+version=0.53.2
+versionCode=192
 author=araea
 description=QQ 的 Satori v1 实现端（Zygisk 注入，纯 JNI 层，不挂钩子引擎）。
 updateJson=https://github.com/araea/satori-qq/releases/latest/download/update.json

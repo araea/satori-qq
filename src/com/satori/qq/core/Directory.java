@@ -129,6 +129,22 @@ final class Directory {
         throw ApiError.notFound("cannot resolve uid for user " + uin);
     }
 
+    /**
+     * 群里这个 uid 的号码：缓存 → 资料服务 → 成员表缓存；{@code refresh} 时再向服务器重拉一份
+     * 成员表（最多等 {@link #MEMBER_WAIT_MS}）。刚进群的人常常要重拉之后才查得到。
+     */
+    long memberUin(long groupId, String uid, boolean refresh) {
+        long uin = uinOf(uid);
+        if (uin != 0 || groupId == 0) return uin;
+        Object member = qq.cachedGroupMember(groupId, uid, 0);
+        if (member == null && refresh && qq.getAllMembers(groupId, true, MEMBER_WAIT_MS) != null)
+            member = qq.cachedGroupMember(groupId, uid, 0);
+        if (member == null) return 0;
+        uin = Ref.asLong(qq.ref.get(member, "uin"));
+        if (uin != 0) store.learnUid(uin, uid);
+        return uin;
+    }
+
     long uinOf(String uid) {
         if (uid == null || uid.isEmpty()) return 0;
         long uin = store.uinOf(uid);

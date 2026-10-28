@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import org.json.JSONArray;
@@ -51,6 +52,16 @@ final class Events {
     /** 当前已知的成员状态；即时灰条与较慢的成员列表回调共用，避免重复欢迎。 */
     private final Set<String> seenMemberChanges = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> recentGuildChanges = new ConcurrentHashMap<>();
+    /**
+     * 入群灰条到了、uid 却一时换不成号码的新人（键 {@code 群号:uid}）。原来整条丢掉、等成员列表
+     * 回调补发，那条回调常常晚到新人已经说了好几句话；现在挂在这里，号码一查到就补发，这个人
+     * 先开口的话就在他那条消息之前补发——客户端总是先看到「进群」，再看到他说的话。
+     */
+    private final Map<String, JSONObject> parkedJoins = new ConcurrentHashMap<>();
+    /** 挂起后隔这么久（毫秒）再查一次号码；第一次与第四次顺带向服务器重拉成员表。 */
+    private static final long[] JOIN_RETRY_MS = {0, 1_000, 3_000, 8_000, 20_000, 60_000};
+    /** 挂这么久还没认出人就放弃，交给成员列表回调。 */
+    private static final long JOIN_PARK_MS = 10 * 60_000L;
     private volatile Supplier<Collection<JSONObject>> pending = List::of;
     private final Webhooks webhooks;
 
@@ -186,8 +197,10 @@ final class Events {
 
     /** QQ 侧产生的事件（OneBot 形状）→ Satori 事件 → 广播。 */
     void emit(JSONObject ob) {
+        if (parkJoin(ob)) return;
         synchronized (lock) {
             try {
+                releaseJoinsBefore(ob);
                 directory.attachGroupName(ob);
                 directory.attachMemberName(ob);
                 JSONObject body = Codec.promote(Codec.toSatoriEvent(ob, identity.loginSlim(), 0, identity.assetBase()));
@@ -196,6 +209,74 @@ final class Events {
             } catch (Throwable t) {
                 L.e("emit event", t);
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ 认不出人的入群
+
+    /** 认不出号码的入群通知：挂起并开始查号码。返回 true 表示已挂起、这次不发。 */
+    private boolean parkJoin(JSONObject ob) {
+        if (ob == null || !"group_increase".equals(ob.optString("notice_type"))) return false;
+        String uid = ob.optString("member_uid", "");
+        if (ob.optLong("user_id") != 0) {
+            ob.remove("member_uid");
+            return false;
+        }
+        long group = ob.optLong("group_id");
+        if (uid.isEmpty() || group == 0) return true;
+        long now = System.currentTimeMillis();
+        parkedJoins.values().removeIf(old -> now - old.optLong("_parked_at") > JOIN_PARK_MS);
+        String key = group + ":" + uid;
+        try {
+            ob.put("_parked_at", now);
+        } catch (Exception ignore) {
+            // 记不下时刻也照样挂
+        }
+        if (parkedJoins.putIfAbsent(key, ob) != null) return true;
+        L.i("join " + group + " uid " + uid + " parked until its uin resolves");
+        for (int i = 0; i < JOIN_RETRY_MS.length; i++) {
+            boolean refresh = i == 0 || i == 3;
+            Workers.scheduler().schedule(() -> {
+                if (!parkedJoins.containsKey(key)) return;
+                long uin = directory.memberUin(group, uid, refresh);
+                if (uin != 0) releaseJoin(key, uin);
+            }, JOIN_RETRY_MS[i], TimeUnit.MILLISECONDS);
+        }
+        return true;
+    }
+
+    /** 补发一条挂起的入群；已经被别的路发过（成员列表回调）的由 {@link #firstMemberChange} 去重。 */
+    private void releaseJoin(String key, long uin) {
+        JSONObject ob = parkedJoins.remove(key);
+        if (ob == null) return;
+        try {
+            ob.put("user_id", uin);
+            ob.remove("member_uid");
+            ob.remove("_parked_at");
+        } catch (Exception e) {
+            return;
+        }
+        L.i("join " + key + " resolved to " + uin);
+        emit(ob);
+    }
+
+    /**
+     * 有群消息或退群要发：同群挂着的新人号码已经认得了（发消息的人 Convert 刚学过 uid），先把
+     * 入群补发出去；退群的人还挂着就直接作废，免得退群之后才冒出一条「进群」。
+     */
+    private void releaseJoinsBefore(JSONObject ob) {
+        if (parkedJoins.isEmpty() || ob == null) return;
+        long group = ob.optLong("group_id");
+        if (group == 0) return;
+        String prefix = group + ":";
+        boolean removed = "group_decrease".equals(ob.optString("notice_type"));
+        long leaving = removed ? ob.optLong("user_id") : 0;
+        for (String key : new ArrayList<>(parkedJoins.keySet())) {
+            if (!key.startsWith(prefix)) continue;
+            long uin = store.uinOf(key.substring(prefix.length()));
+            if (uin == 0) continue;
+            if (removed && uin == leaving) parkedJoins.remove(key);
+            else releaseJoin(key, uin);
         }
     }
 

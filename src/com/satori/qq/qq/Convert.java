@@ -930,9 +930,12 @@ public final class Convert {
             if (group) {
                 JSONObject joined = Notices.memberIncreaseFromJson(busi, jsonStr, selfUin, time, peerUin);
                 if (joined != null) {
+                    String uid = joined.optString("member_uid");
                     applyMemberPeople(joined, selfUin);
-                    // uid 暂时换不成号码时宁可等成员列表兜底，不能欢迎一个 id=0 的人。
-                    return joined.optLong("user_id") == 0 ? null : joined;
+                    // uid 暂时换不成号码：带着 uid 交给 Events 挂起，号码一查到（或这个人先开口）
+                    // 就补发；不发 id=0 的假事件，也不再干等慢吞吞的成员列表回调。
+                    if (joined.optLong("user_id") == 0) joined.put("member_uid", uid);
+                    return joined;
                 }
             }
             JSONObject poke = Notices.pokeFromJson(jsonStr, selfUin, time, group, peerUin);

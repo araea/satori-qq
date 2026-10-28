@@ -89,7 +89,17 @@ public final class Notices {
         if (json == null || json.isEmpty()) return null;
         JSONArray items = new JSONObject(json).optJSONArray("items");
         if (items == null) return null;
+        // 「A 邀请 B 加入了群聊」：新人是「邀请」后面那个，前面的是邀请人。没有这几个字就从头找。
+        int from = 0;
         for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item != null && item.optString("uid", "").isEmpty() && item.optString("uin", "").isEmpty()
+                    && item.optString("jp", "").isEmpty() && item.optString("txt", "").contains("邀请")) {
+                from = i + 1;
+                break;
+            }
+        }
+        for (int i = from; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
             // 号码优先：灰条里直接带了号码（uin、名片链接）就不必再拿 uid 去换，新人刚进群时

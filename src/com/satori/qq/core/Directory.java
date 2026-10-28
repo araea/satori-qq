@@ -132,16 +132,18 @@ final class Directory {
     }
 
     /**
-     * 群里这个 uid 的号码：缓存 → 资料服务 → 成员表缓存；{@code refresh} 时再向服务器重拉一份
-     * 成员表（最多等 {@link #MEMBER_WAIT_MS}）。刚进群的人常常要重拉之后才查得到。
+     * 群里这个 uid 的号码：缓存 → 资料服务 → 成员表缓存；都没有且 {@code refresh} 时在后台向服务器
+     * 重拉一份成员表（同一个群同时只拉一份，不在调用线程上等），下一次再查就有了。刚进群的人
+     * 常常要重拉之后才查得到。
      */
     long memberUin(long groupId, String uid, boolean refresh) {
         long uin = uinOf(uid);
         if (uin != 0 || groupId == 0) return uin;
         Object member = qq.cachedGroupMember(groupId, uid, 0);
-        if (member == null && refresh && qq.getAllMembers(groupId, true, MEMBER_WAIT_MS) != null)
-            member = qq.cachedGroupMember(groupId, uid, 0);
-        if (member == null) return 0;
+        if (member == null) {
+            if (refresh) qq.refreshGroupMembersAsync(groupId, true);
+            return 0;
+        }
         uin = Ref.asLong(qq.ref.get(member, "uin"));
         if (uin != 0) store.learnUid(uin, uid);
         return uin;

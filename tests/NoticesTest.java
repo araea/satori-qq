@@ -144,6 +144,15 @@ public final class NoticesTest {
                         + "\"jp\":\"mqqapi://card/show?uin=123456&source=external\"}]}",
                 1, 1, 280183116L);
         check(linked != null && linked.getLong("user_id") == 123456, "link uin fallback");
+        JSONObject invited = Notices.memberIncreaseFromJson("1022",
+                "{\"items\":[{\"type\":\"qq\",\"uid\":\"u_inviter\",\"txt\":\"老成员\"},"
+                        + "{\"type\":\"nor\",\"txt\":\" 邀请 \"},"
+                        + "{\"type\":\"qq\",\"uid\":\"u_new\",\"uin\":\"654321\",\"txt\":\"新成员\"},"
+                        + "{\"type\":\"nor\",\"txt\":\" 加入了群聊\"}]}",
+                1, 1, 280183116L);
+        eq("u_new", invited.getString("member_uid"), "invite: newcomer, not inviter");
+        eq(654321, invited.getLong("user_id"), "invite: uin carried in the tip is used directly");
+        eq("新成员", invited.getString("member_name"), "invite: newcomer nickname");
 
         JSONObject ban = Notices.groupBan(1, 1, 280183116L, 2, 3, 600);
         eq("ban", ban.getString("sub_type"), "ban");

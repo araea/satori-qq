@@ -58,8 +58,8 @@ final class Events {
      * 先开口的话就在他那条消息之前补发——客户端总是先看到「进群」，再看到他说的话。
      */
     private final Map<String, JSONObject> parkedJoins = new ConcurrentHashMap<>();
-    /** 挂起后隔这么久（毫秒）再查一次号码；第一次与第四次顺带向服务器重拉成员表。 */
-    private static final long[] JOIN_RETRY_MS = {0, 1_000, 3_000, 8_000, 20_000, 60_000};
+    /** 挂起后隔这么久（毫秒）再查一次号码；第一次与 8 秒那次没查到就在后台重拉成员表。 */
+    private static final long[] JOIN_RETRY_MS = {0, 500, 1_000, 2_000, 4_000, 8_000, 12_000, 20_000, 60_000};
     /** 挂这么久还没认出人就放弃，交给成员列表回调。 */
     private static final long JOIN_PARK_MS = 10 * 60_000L;
     private volatile Supplier<Collection<JSONObject>> pending = List::of;
@@ -235,7 +235,7 @@ final class Events {
         if (parkedJoins.putIfAbsent(key, ob) != null) return true;
         L.i("join " + group + " uid " + uid + " parked until its uin resolves");
         for (int i = 0; i < JOIN_RETRY_MS.length; i++) {
-            boolean refresh = i == 0 || i == 3;
+            boolean refresh = JOIN_RETRY_MS[i] == 0 || JOIN_RETRY_MS[i] == 8_000;
             Workers.scheduler().schedule(() -> {
                 if (!parkedJoins.containsKey(key)) return;
                 long uin = directory.memberUin(group, uid, refresh);

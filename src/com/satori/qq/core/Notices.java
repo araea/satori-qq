@@ -92,15 +92,18 @@ public final class Notices {
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
-            String person = item.optString("uid", "").trim();
-            if (person.isEmpty()) person = item.optString("uin", "").trim();
-            if (person.isEmpty()) {
+            // 号码优先：灰条里直接带了号码（uin、名片链接）就不必再拿 uid 去换，新人刚进群时
+            // 那一换常常换不出来，入群事件就得挂起等。uid 照样带上，让 Convert 记下对应关系。
+            String uid = item.optString("uid", "").trim();
+            long uin = numericId(item.optString("uin", "").trim());
+            if (uin == 0) {
                 Matcher link = LINK_UIN.matcher(item.optString("jp", ""));
-                if (link.find()) person = link.group(1);
+                if (link.find()) uin = numericId(link.group(1));
             }
-            if (person.isEmpty()) continue;
-            JSONObject n = groupIncrease(self, time, groupId, numericId(person), 0, "approve");
-            n.put("member_uid", person);
+            if (uin == 0) uin = numericId(uid);
+            if (uid.isEmpty() && uin == 0) continue;
+            JSONObject n = groupIncrease(self, time, groupId, uin, 0, "approve");
+            if (!uid.isEmpty()) n.put("member_uid", uid);
             String name = item.optString("txt", item.optString("nm", "")).trim();
             if (!name.isEmpty()) n.put("member_name", name);
             return n;

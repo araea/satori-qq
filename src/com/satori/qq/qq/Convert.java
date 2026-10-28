@@ -931,6 +931,13 @@ public final class Convert {
                 JSONObject joined = Notices.memberIncreaseFromJson(busi, jsonStr, selfUin, time, peerUin);
                 if (joined != null) {
                     String uid = joined.optString("member_uid");
+                    long known = joined.optLong("user_id");
+                    if (known != 0) {
+                        // 灰条自己带着号码：不再问资料服务，记下 uid 就发。
+                        if (!uid.isEmpty()) store.learnUid(known, uid);
+                        joined.remove("member_uid");
+                        return joined;
+                    }
                     applyMemberPeople(joined, selfUin);
                     // uid 暂时换不成号码：带着 uid 交给 Events 挂起，号码一查到（或这个人先开口）
                     // 就补发；不发 id=0 的假事件，也不再干等慢吞吞的成员列表回调。

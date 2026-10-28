@@ -59,6 +59,8 @@ final class Directory {
         long groupId = ob.optLong("group_id");
         long uin = ob.optLong("user_id");
         if (groupId == 0 || uin == 0) return;
+        // 入群灰条自己带着昵称：用它，别再查成员表与资料服务。
+        if (!ob.optString("member_name", "").isEmpty()) return;
         Object member = qq.cachedGroupMember(groupId, null, uin);
         if (member != null) {
             String uid = Ref.asStr(qq.ref.getOrNull(member, "uid"));

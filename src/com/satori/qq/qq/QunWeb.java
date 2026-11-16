@@ -308,7 +308,7 @@ public final class QunWeb {
         conn.setRequestProperty("Referer", referer);
         conn.setRequestProperty("User-Agent",
                 "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) "
-                        + "Chrome/130.0.0.0 Mobile Safari/537.36 QQ/9.3.80");
+                        + "Chrome/130.0.0.0 Mobile Safari/537.36 QQ/9.3.85");
         int status = conn.getResponseCode();
         StringBuilder reply = new StringBuilder();
         InputStream stream = status >= 400 ? conn.getErrorStream() : conn.getInputStream();

@@ -9,6 +9,7 @@ libs/*.jar
 
 # os cruft
 .DS_Store
+__pycache__/
 libs/arm64-v8a/
 # 锚定到仓库根：裸 lib/ 会连 tests/lib/ 这类同名目录一起忽略掉
 /lib/

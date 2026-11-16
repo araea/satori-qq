@@ -15,9 +15,10 @@ import org.json.JSONObject;
  * 会报错，只会让某个动作静默超时或回空。逐个动作打一遍要几十分钟，所以这里把模块依赖的
  * 内核类型、服务入口、结构体字段与回调形状写成表，用反射一次性核对，几毫秒出结果。
  *
- * <p>`TYPES` 由源码里的类名字面量生成，不是手抄的；`CALLBACKS` 与 `STRUCT_FIELDS` 手写，但只许列
- * 源码真在用的类型。`scripts/compat-table.py --write` 重新生成 `TYPES`，`--check` 由 `test.sh`
- * 跑，表与源码对不上就失败。
+ * <p>`TYPES` 由源码里的类名字面量生成，不是手抄的；`CALLBACKS`、`STRUCT_FIELDS` 与 `QQ_SIDE`
+ * 手写，但只许列源码真在用的类型。`QQ_SIDE` 补的是按字面量反射的 QQ 侧与静态入口，内核包那几张表
+ * 盖不到。`scripts/compat-table.py --write` 重新生成 `TYPES`，`--check` 由 `test.sh` 跑，
+ * 表与源码对不上就失败。
  *
  * <p>表里没有的运行时事实（方法参数个数、回调是否真的会回调）靠
  * {@link #observed()} 记录：`ExtraSvc.call` 每次调用都会记一行结果，跑一遍巡检脚本就能看到
@@ -55,9 +56,8 @@ public final class Compat {
             "com.tencent.qqnt.kernel.nativeinterface.IGetTempChatInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupFileCommonResultCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IGroupFileInfoCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupInfoForJoinCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IGroupItemCallback", "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberExtCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberListCallback", "com.tencent.qqnt.kernel.nativeinterface.IGuestPskeyCallback",
-            "com.tencent.qqnt.kernel.nativeinterface.IJoinGroupCallback", "com.tencent.qqnt.kernel.nativeinterface.IKernelBuddyListener",
-            "com.tencent.qqnt.kernel.nativeinterface.IKernelGroupListener", "com.tencent.qqnt.kernel.nativeinterface.IKernelLoginService",
+            "com.tencent.qqnt.kernel.nativeinterface.IGroupMemberListCallback", "com.tencent.qqnt.kernel.nativeinterface.IJoinGroupCallback",
+            "com.tencent.qqnt.kernel.nativeinterface.IKernelBuddyListener", "com.tencent.qqnt.kernel.nativeinterface.IKernelGroupListener",
             "com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener", "com.tencent.qqnt.kernel.nativeinterface.IKickMemberOperateCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IMoveGroupFileCallback", "com.tencent.qqnt.kernel.nativeinterface.IMsgOperateCallback",
             "com.tencent.qqnt.kernel.nativeinterface.IOperateCallback", "com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession",
@@ -180,7 +180,6 @@ public final class Compat {
             {"ISetMsgEmojiLikesCallback", "2+"},
             {"ITransGroupFileCallback", "2+"},
             {"IUploadGroupBulletinPicCallback", "2+"},
-            {"IGuestPskeyCallback", "2+"},
             {"IVideoPlayUrlCallback", "2+"},
             {"IForwardOperateCallback", "2+"},
             {"IGetGroupRecommendContactArkJsonCallback", "2+"},
@@ -190,6 +189,20 @@ public final class Compat {
             {"ITransferGroupCallback", "2+"},
     };
 
+    /**
+     * 按字面量反射的 QQ 侧与静态入口。内核 nativeinterface 那几张表盖不到它们：9.3.85 删了
+     * {@code IKernelLoginService.getLoginService}，自检当时仍报全过，缺口就在这里。每项按
+     * 名字 + 参数个数核对，不比具体类型。
+     */
+    private static final String[][] QQ_SIDE = {
+            {"com.tencent.mobileqq.qroute.QRoute", "api", "1"},
+            {"mqq.app.AppRuntime", "getRuntimeService", "2"},
+            {"mqq.app.AppRuntime", "getManager", "1"},
+            {"com.tencent.qqnt.kernel.nativeinterface.QQNTWrapperUtil$CppProxy", "genFileMd5Hex", "1"},
+            {"com.tencent.qqnt.kernel.nativeinterface.QQNTWrapperUtil$CppProxy", "fileIsExist", "1"},
+            {"com.tencent.qqnt.kernel.nativeinterface.QQNTWrapperUtil$CppProxy", "getFileSize", "1"},
+            {"com.tencent.qqnt.kernel.nativeinterface.QQNTWrapperUtil$CppProxy", "copyFile", "2"},
+    };
 
     /** 静态自检：类在不在、字段在不在、回调形状对不对。不发任何内核请求。 */
     public static JSONObject audit(Ref ref, String qqVersion) throws Exception {        JSONObject out = new JSONObject();
@@ -214,15 +227,25 @@ public final class Compat {
         }
         JSONObject services = new JSONObject().put("ok", ok).put("total", SERVICES.length);
 
-        // pskey 的主入口：运行时服务 IPskeyManager.getPskey(String[], cb)（0.51.0 起），
-        // 退路是登录服务的 guestA2ToPskey——它只给访客模式发票，正常登录的账号拿不到。
-        // 会话上的 getTipOffService 在 9.3.80 上能取到对象，但 getPskey 必段错误，已经不用了。
+        // pskey 主入口：运行时服务 IPskeyManager.getPskey(String[], cb)（0.51.0 起）。
+        // 回调接口每版重排混淆名，动态代理只认「某个 on* 方法收一个参数」，形状也一起核。
+        // 访客票 guestA2ToPskey 的静态入口在 9.3.85 被删，那条退路已移除。
         Class<?> pskeyManager = ref.clsOrNull("com.tencent.mobileqq.pskey.api.IPskeyManager");
-        boolean pskeyOk = pskeyManager != null && hasMethod(pskeyManager, "getPskey", 2);
+        boolean pskeyOk = pskeyManager != null && hasMethod(pskeyManager, "getPskey", 2)
+                && pskeyCallbackShape(pskeyManager);
         if (!pskeyOk) {
             missing.put(new JSONObject().put("kind", "pskey").put("name", "IPskeyManager.getPskey"));
         }
         JSONObject pskey = new JSONObject().put("ok", pskeyOk ? 1 : 0).put("total", 1);
+
+        ok = 0;
+        for (String[] entry : QQ_SIDE) {
+            Class<?> cls = ref.clsOrNull(entry[0]);
+            if (cls != null && hasMethod(cls, entry[1], Integer.parseInt(entry[2]))) { ok++; continue; }
+            missing.put(new JSONObject().put("kind", "qq_side")
+                    .put("name", entry[0] + "." + entry[1]));
+        }
+        JSONObject qqSide = new JSONObject().put("ok", ok).put("total", QQ_SIDE.length);
 
         int lifecycleOk = 0;
         for (String method : new String[]{"switchToFront", "switchToBackGround"}) {
@@ -281,17 +304,19 @@ public final class Compat {
         JSONObject callbacks = new JSONObject().put("ok", ok).put("total", CALLBACKS.length);
 
 
-        int total = TYPES.length + SERVICES.length + STRUCT_FIELDS.length + CALLBACKS.length + 4;
+        int total = TYPES.length + SERVICES.length + STRUCT_FIELDS.length + CALLBACKS.length
+                + QQ_SIDE.length + 4;
         out.put("qq_version", qqVersion == null ? "" : qqVersion);
         out.put("checked_epoch_ms", System.currentTimeMillis());
         out.put("ok", missing.length() == 0);
         out.put("passed", types.optInt("ok") + services.optInt("ok") + structs.optInt("ok")
-                + callbacks.optInt("ok") + lifecycleOk + pskey.optInt("ok"));
+                + callbacks.optInt("ok") + qqSide.optInt("ok") + lifecycleOk + pskey.optInt("ok"));
         out.put("total", total);
         out.put("types", types);
         out.put("services", services);
         out.put("structs", structs);
         out.put("callbacks", callbacks);
+        out.put("qq_side", qqSide);
         out.put("lifecycle", new JSONObject().put("ok", lifecycleOk).put("total", 3));
         out.put("pskey", pskey);
         out.put("missing", missing);
@@ -350,6 +375,18 @@ public final class Compat {
             if (!m.getName().startsWith("on")) continue;
             int n = m.getParameterTypes().length;
             if (atLeast ? n >= argc : n == argc) return true;
+        }
+        return false;
+    }
+
+    /** getPskey 的回调接口混淆名每版重排；动态代理只认「某个 on* 方法收一个参数」。 */
+    private static boolean pskeyCallbackShape(Class<?> manager) {
+        for (Method m : manager.getMethods()) {
+            if (!"getPskey".equals(m.getName()) || m.getParameterCount() != 2
+                    || m.getParameterTypes()[0] != String[].class) continue;
+            for (Method cb : m.getParameterTypes()[1].getMethods()) {
+                if (cb.getName().startsWith("on") && cb.getParameterCount() == 1) return true;
+            }
         }
         return false;
     }

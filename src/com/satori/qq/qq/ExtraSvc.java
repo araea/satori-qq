@@ -53,12 +53,8 @@ public final class ExtraSvc {
             "com.tencent.qqnt.kernel.nativeinterface.IGetIdentityListCallback";
     private static final String DETAIL_BY_UIN_CB =
             "com.tencent.qqnt.kernel.nativeinterface.IDetailInfoByUinCallback";
-    // guestA2ToPskey 要的是 IGuestPskeyCallback（onResult(int, String, ArrayList<GuestPskey>)）。
-    // 拿 IGetPskeyCallback 去接会让内核按错误的接口回调，段错误直接把 QQ 带走。
     /** QQ 网页业务取 p_skey 的运行时服务（见 {@link #runtimePskey}）。 */
     private static final String PSKEY_MANAGER = "com.tencent.mobileqq.pskey.api.IPskeyManager";
-    private static final String GUEST_PSKEY_CB =
-            "com.tencent.qqnt.kernel.nativeinterface.IGuestPskeyCallback";
 
     // --- 0.8.9.39: kernel types used by the extended group/message/media/profile actions ---
     private static final String JOIN_LINK_CB =
@@ -2376,18 +2372,18 @@ public final class ExtraSvc {
     }
 
     /**
-     * 拉指定域的 p_skey 表，三条路依次试：
+     * 拉指定域的 p_skey 表，两条路依次试：
      *
      * <ol>
      *   <li>票据管理器的缓存 {@code TicketManager.getPskey(uin, domain)}：同步、不出网，
      *       客户端自己开过对应网页就有；</li>
      *   <li>{@code IPskeyManager.getPskey(String[], cb)}：QQ 自己的网页业务（公告页、精华页、
-     *       小程序）取票走的就是它，缓存没有时向服务器换；</li>
-     *   <li>登录服务的 {@code guestA2ToPskey}：0.41–0.50 唯一的一条，但它是给访客模式用的，
-     *       正常登录的账号回「no valid local guest ticket」，只留作最后的退路。</li>
+     *       小程序）取票走的就是它，缓存没有时向服务器换。</li>
      * </ol>
      *
-     * <p>不走会话的 {@code IKernelTipOffService.getPskey}：9.3.75 上该服务为 null，
+     * <p>9.3.85 删掉了 {@code IKernelLoginService.getLoginService} 静态入口，访客票
+     * {@code guestA2ToPskey} 那条退路随之失效；它本来也只给访客模式发票，正常登录的账号
+     * 拿不到，故移除。不走会话的 {@code IKernelTipOffService.getPskey}：9.3.75 上该服务为 null，
      * 9.3.80 上能取到对象但调用即段错误（libkernel.so+0x192f918）。
      */
     private Map<?, ?> fetchPskeyMap(ArrayList<String> domains) throws Exception {
@@ -2413,27 +2409,14 @@ public final class ExtraSvc {
         } catch (Throwable t) {
             why.append("runtime=").append(t.getMessage() == null ? t.toString() : t.getMessage()).append("; ");
         }
-        Object login = qq.getLoginService();
-        if (login != null) {
-            Result r = call(login, GUEST_PSKEY_CB, "guestA2ToPskey",
-                    (svc, cb) -> ref.call(svc, "guestA2ToPskey", parseUin(qq.selfUin()), domains, cb));
-            if (r.ok() && r.payload instanceof Collection<?> keys) {
-                for (Object item : keys) {
-                    String domain = Ref.asStr(ref.get(item, "domain"));
-                    String key = Ref.asStr(ref.get(item, "key"));
-                    if (!domain.isEmpty() && !key.isEmpty()) map.put(domain, key);
-                }
-            }
-            if (map.keySet().containsAll(domains)) return map;
-            why.append("guest=").append(r.describe());
-        }
         if (!map.isEmpty()) return map;
         throw new IllegalStateException("pskey unavailable: " + why);
     }
 
     /**
-     * {@code IPskeyManager}（运行时服务）的异步取票。回调接口是混淆名（9.3.80 上是 {@code oe2.a}），
-     * 所以不写死类名：从 {@code getPskey(String[], X)} 的第二个参数类型取，按参数形状认
+     * {@code IPskeyManager}（运行时服务）的异步取票。回调接口是混淆名，每版重排（9.3.80 是
+     * {@code oe2.a}，9.3.85 是 {@code rh2.a}），所以不写死类名：从
+     * {@code getPskey(String[], X)} 的第二个参数类型取，按参数形状认
      * 成功（一张 Map）与失败（一句 String）。
      */
     private Map<String, String> runtimePskey(ArrayList<String> domains) throws Exception {

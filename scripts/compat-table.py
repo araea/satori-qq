@@ -6,7 +6,7 @@
 
 TYPES 是 Compat 之外源码里全部 `com.tencent.qqnt.(kernel|kernelpublic).nativeinterface.X` 字面量。
 CALLBACKS 与 STRUCT_FIELDS 仍是手写（参数个数与字段名要看 dex），但每一项都必须是源码在用的
-类型，源码用到的每个 `I…Callback` 也必须列进 CALLBACKS。
+类型，源码用到的每个 `I…Callback` 也必须列进 CALLBACKS。QQ_SIDE 里的类名同样要在源码出现过。
 """
 import pathlib
 import re
@@ -29,6 +29,12 @@ def used_types():
 def table(src, name):
     block = re.search(r'private static final String\[\]\[\] ' + name + r' = \{\n(.*?)\n    \};', src, re.S)
     return re.findall(r'\{"([A-Za-z0-9_]+)"', block.group(1))
+
+
+def qside_classes(src):
+    block = re.search(r'private static final String\[\]\[\] QQ_SIDE = \{\n(.*?)\n    \};', src, re.S)
+    # 类名带点号与 $，不能用 table() 那条只收 [A-Za-z0-9_] 的正则。
+    return re.findall(r'\{"([^"]+)"', block.group(1))
 
 
 def render(types):
@@ -62,12 +68,19 @@ def main():
         for c in table(src, name):
             if c not in simple:
                 problems.append('%s lists unused %s' % (name, c))
+    qside = qside_classes(src)
+    src_text = ''.join(p.read_text(encoding='utf-8')
+                       for p in (ROOT / 'src').rglob('*.java') if p != COMPAT)
+    for cls in qside:
+        if cls not in src_text:
+            problems.append('QQ_SIDE lists unused ' + cls)
     for p in problems:
         print('   ' + p)
     if problems:
-        print('   run scripts/compat-table.py --write, then fix CALLBACKS / STRUCT_FIELDS by hand')
+        print('   run scripts/compat-table.py --write, then fix CALLBACKS / STRUCT_FIELDS / QQ_SIDE by hand')
         return 1
-    print('   %d types, %d callbacks, %d structs in step' % (len(types), len(callbacks), len(table(src, 'STRUCT_FIELDS'))))
+    print('   %d types, %d callbacks, %d structs, %d qq_side entries in step'
+          % (len(types), len(callbacks), len(table(src, 'STRUCT_FIELDS')), len(qside)))
     return 0
 
 

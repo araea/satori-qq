@@ -1,6 +1,6 @@
 # Satori v1 接口
 
-列出 QQ 9.3.80（NT）已核验的接口、事件与消息元素。
+列出 QQ 9.3.85（NT）已核验的接口、事件与消息元素。
 
 `typing` 与 `mark_read` 是实验性 JNI 扩展，不属于标准 Satori。内核回调以现场回执为准，超时不可推断为成功或失败。`typing` 是给人看的状态、不是消息：它不过出站闸门，不占每分钟发送额度，也不会排在真正要说的话前面。
 
@@ -141,11 +141,11 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 | 群荣誉与名片 | `group_honor`（别名 `group_honors`）、`contact_card`（别名 `share_contact`）、`fav_emoji_list`（别名 `custom_face_list`） |
 | 其它 | `online_file_list`、`online_file_refuse`、`temp_chat_info` |
 
-**群公告**（0.37.0 起）：`POST /v1/internal/group_bulletin_publish`，参数 `guild_id, text, pinned?, image?`。`image` 接受本地路径、`file:`、`data:`、`http(s):` 与 `internal:`，先经 `uploadGroupBulletinPic` 换成配图信息再发布。p_skey 由本端经 `IKernelLoginService.guestA2ToPskey` 自取（会话上的 `IKernelTipOffService.getPskey` 在 9.3.80 上调用即段错误，不再使用），调用方不必（也不该）再传；`text` 由本端做 `encodeURI` 之后交给内核。账号须是群主或管理员。`group_bulletin_delete` 同样自取 p_skey。
+**群公告**（0.37.0 起）：`POST /v1/internal/group_bulletin_publish`，参数 `guild_id, text, pinned?, image?`。`image` 接受本地路径、`file:`、`data:`、`http(s):` 与 `internal:`，先经 `uploadGroupBulletinPic` 换成配图信息再发布。p_skey 由本端自取：先读票据管理器缓存，再走 `IPskeyManager.getPskey`。9.3.85 删掉了 `IKernelLoginService.getLoginService`，访客票 `guestA2ToPskey` 那条退路已移除。调用方不必（也不该）再传；`text` 由本端做 `encodeURI` 之后交给内核。账号须是群主或管理员。`group_bulletin_delete` 同样自取 p_skey。
 
-**账号级动作**（0.40.0 起）：`nick`（QQ 昵称，内核 `setNickName`）、`avatar`（QQ 头像，内核 `setHeader`，入参同群公告 `image`）、`long_nick`（个性签名，别名 `signature`）都只写不回读。`feed_publish` 发 QQ 空间说说：凭据走空间域 `p_skey`（内核自取）与 `g_tk`，请求是空间 H5 的 `emotion_cgi_publish_v6`，只支持文本（`text`），可选 `auto_sig` / `to_sign` / `qzonetoken`；失败时回包带空间 CGI 的原始 `raw`。
+**账号级动作**（0.40.0 起）：`nick`（QQ 昵称，内核 `setNickName`）、`avatar`（QQ 头像，内核 `setHeader`，入参同群公告 `image`）、`long_nick`（个性签名，别名 `signature`）都只写不回读。`feed_publish` 发 QQ 空间说说：凭据走空间域 `p_skey`（本端自取）与 `g_tk`，请求是空间 H5 的 `emotion_cgi_publish_v6`，只支持文本（`text`），可选 `auto_sig` / `to_sign` / `qzonetoken`；失败时回包带空间 CGI 的原始 `raw`。
 
-**群管理补齐**（0.53.0 起，内核签名按 9.3.80 安装包核对，真机待重启后验证）：
+**群管理补齐**（0.53.0 起，内核签名按 9.3.85 安装包核对）：
 
 - `group_detail`：`guild_id, refresh?, raw?`。回固定字段 `{guild_id, name, remark, owner_id, created_at, member_count, max_member_count, admin_max, active_member_count, intro, memo, class, grade, frozen, mute_all_until, self:{role, joined_at, muted_until, msg_mask, pinned}, settings:{join, question, answer, searchable_by_name, searchable_by_code, msg_limit, allow_recall}}`，时间都是毫秒，`mute_all_until` / `muted_until` 为 0 表示没在禁言。先读内核缓存（`batchQueryCachedGroupDetailInfo`），没有或带 `refresh` 时 `getGroupDetailInfo` 拉一次再读；`raw:true` 附内核原样。
 - `group_settings`（群主或管理员）：`join`（`any` 允许任何人 / `verify` 需要验证 / `deny` 不允许 / `question_review` 回答问题并由管理员审核 / `question_answer` 正确回答问题，或直接写 1–5）、`question` / `answer`（成对写）、`allow_invite`、`searchable`（或分开的 `search_by_name` / `search_by_code`）、`msg_limit`（发言频率）、`intro`（群介绍）。走 `modifyGroupDetailInfoV2`，只把带了的字段写进 filter，其余不动；回执带 `changed`。什么都不带时读当前值（同 `group_detail.settings`）。`join` 的名字与数字的对应按 QQ 设置页口径，拿不准时先用 `group_detail` 读当前值对照。
@@ -162,7 +162,7 @@ QQ 只能为当前登录号添加或撤销表态，因此 `reaction.delete` 传�
 - `user_info`：`user_id`，回 `{user_id, uid, nick, remark, long_nick, gender, age, birthday, qid, country, province, city, hometown, college, registered_at, vip, svip, vip_level, level, status, ext_status, blocked, avatar}`，来自 `getUserDetailInfoByUin`。`user_detail_by_uin` 仍回内核原样。
 - `like`：`user_id, times?`（1–20，每天上限由 QQ 决定）。手机 QQ 的资料卡点赞是老式 WUP `VisitorSvc.ReqFavorite`（桌面端的 `0x7E5_104` 在手机 appid 上一律回 `oidb=319`）；0.23 以前借 QQ 自己的发送通道、要 Java 钩子收回包，0.53.0 起由本端编码 JCE、经裸 SSO 通道收发。成功判据是回包 `RespHead.iReplyCode == 0`，失败时 `msg` 是服务端原文，常见 `10003`（对方设置不允许点赞）、`54`（不能赞自己）。
 
-**群公告 / 群精华的读**（0.41.0 起，0.51.0 重做凭据与接口）：内核的 `getGroupBulletinList` 与 `fetchGroupEssenceList` 在 9.3.75/9.3.80 上调用即段错误，因此两条读都走客户端 H5 页自己的数据接口——`web.qun.qq.com/cgi-bin/announce/get_t_list`（带 `qid`）与 `qun.qq.com/cgi-bin/group_digest/digest_list`。凭据是 qun.qq.com 的 p_skey（依次取票据管理器缓存、`IPskeyManager.getPskey`、访客票 `guestA2ToPskey`；最后这条只给访客模式发票，0.50 以前只有它，所以正常登录的账号一直报 `no valid local guest ticket`）加上能拿到的 skey，bkn 先按 skey 算、被拒再按 p_skey 算。回包规整成固定字段：公告 `{id, sender_id, published_at, title, text, pinned, read_count, images}`（正文已解开 HTML 转义），精华按页翻（`page` 从 0 起、`page_limit` ≤ 50），每条 `{message_seq, message_random, sender_id, sender_name, sent_at, operator_id, operator_name, added_at, text, images}`。失败时带 `error` 与原回包 `raw`。
+**群公告 / 群精华的读**（0.41.0 起，0.51.0 重做凭据与接口）：内核的 `getGroupBulletinList` 与 `fetchGroupEssenceList` 在 9.3.75/9.3.80 上调用即段错误，因此两条读都走客户端 H5 页自己的数据接口——`web.qun.qq.com/cgi-bin/announce/get_t_list`（带 `qid`）与 `qun.qq.com/cgi-bin/group_digest/digest_list`。凭据是 qun.qq.com 的 p_skey（依次取票据管理器缓存与 `IPskeyManager.getPskey`；访客票 `guestA2ToPskey` 的静态入口在 9.3.85 被删，且只给访客模式发票，已移除）加上能拿到的 skey，bkn 先按 skey 算、被拒再按 p_skey 算。回包规整成固定字段：公告 `{id, sender_id, published_at, title, text, pinned, read_count, images}`（正文已解开 HTML 转义），精华按页翻（`page` 从 0 起、`page_limit` ≤ 50），每条 `{message_seq, message_random, sender_id, sender_name, sent_at, operator_id, operator_name, added_at, text, images}`。失败时带 `error` 与原回包 `raw`。
 
 **群荣誉榜**（0.52.0 起）：`group_honor` 参数 `guild_id`、`kind?`（`talkative` 龙王 / `performer` 群聊之火 / `legend` 群聊炽焰 / `newbie` 冒尖小春笋 / `emotion` 快乐源泉 / `all`，默认 `all`）、`limit?`（每类 ≤50，默认 10）。数据来自客户端「群荣誉」页背后的 `qun.qq.com/cgi-bin/qunapp/honor_*`（页面已改成前端渲染，旧的 `interactive/honorlist` 里不再内嵌数据）。回 `{ok, group, honors: {类别: {title, current?, list[{user_id, name, avatar, days, total_days?, longest_days?}]}}}`，`current` 是当前龙王；拿不到的类别带 `error`。这批网页接口的 bkn 按 p_skey 的前 10 个字符算（网页自己的写法），整串算出来的回 `csrf error`；群精华、群公告也照这个顺序试。
 
@@ -284,6 +284,8 @@ ark 卡整段载荷原样放在 `json` 元素的 `data` 属性里，`raw_message
 - **自动察觉**：模块记住上次运行的 QQ 版本（数据目录的 `qq-version.json`），版本一变，第一次自检就把「从哪版升到哪版、内核接口面过了多少、缺了什么」写进日志，`/healthz` 在升级后 7 天内带 `qq_upgrade: {from, to, at, compat_ok, missing}`。
 - **签名错位带出新签名**：反射找不到方法时，错误信息里直接写着新版同名方法的真实签名（`… — have forwardMsg(ArrayList,Contact,ArrayList,HashMap,IForwardOperateCallback)`），也记进 `internal/compat` 的 `observed.signature_mismatches`。照着改参数即可，不必先开反编译器。
 - **一条命令核对**：`scripts/qq-upgrade.sh` 把手机上的新安装包存进 `~/archive/qq-apk/`，与上一版做 `dex-diff`（模块点名的类、内核包增删、成员签名变化，报告存成 `diff-<旧>-<新>.txt`），再让模块强制重算自检，最后只留最新两版安装包。要查某个类或方法在新版里长什么样：`scripts/dex-sig.py <类名正则>`，或 `-m <方法名正则>` 在内核包里按方法名找（内核包解析一次后缓存，第二次查不到一秒）。
+
+`internal/compat` 的 `qq_side` 还把按字面量反射的 QQ 侧与静态入口列进表：`QRoute.api`、`AppRuntime.getRuntimeService` / `getManager`、`QQNTWrapperUtil$CppProxy` 的四个文件助手，以及 `IPskeyManager.getPskey` 的回调形状。9.3.85 删掉 `IKernelLoginService.getLoginService` 这类不在内核 nativeinterface 里的改动，自检现在会报出来。
 
 ## 客户端注意事项
 

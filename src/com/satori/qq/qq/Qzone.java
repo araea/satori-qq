@@ -14,8 +14,8 @@ import org.json.JSONObject;
  * QZone（QQ 空间）的动态发布走空间自己的 H5 CGI，不从 QQNT 内核走——内核没有
  * 空间服务，客户端自己发动态也走这条 {@code proxy/domain/taotao.qq.com} 的代理。
  *
- * <p>凭据只有两样：空间域的 {@code p_skey}（内核 {@code IKernelTipOffService.getPskey}
- * 拉取）与由它算出的 {@code g_tk}。发布接口 {@code emotion_cgi_publish_v6} 是网页版
+ * <p>凭据只有两样：空间域的 {@code p_skey}（本端自取：票据管理器缓存或
+ * {@code IPskeyManager.getPskey}）与由它算出的 {@code g_tk}。发布接口 {@code emotion_cgi_publish_v6} 是网页版
  * 空间一直在用的老 CGI，客户端 dex 里也还有同族的 {@code emotion_cgi_msgdetail_v6}，
  * 说明代理与凭据体系仍然被服务端接受。</p>
  */
